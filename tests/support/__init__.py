@@ -7,14 +7,14 @@ place. HOME isolation itself is not one of these: `conftest.py::_isolate_unit_co
 autouse and already relocates it for every non-integration test.
 """
 
-from .agents import ScriptedProvider, install_provider, register_run, use_policy
-from .browser import browser_config, browser_manager, interactive_element, ready_or_skip
-from .capture import async_capture
-from .desktop import RecordingBackend, bare_nested_backend, desktop_window
-from .environment import child_environment
-from .git import commit_all, git_out, init_repo, run_git
-from .media import solid_png, varied_png
-from .models import catalog_dict, catalog_json, catalog_of, model
+from support.agents import ScriptedProvider, install_provider, register_run, use_policy
+from support.browser import browser_config, browser_manager, interactive_element, ready_or_skip
+from support.capture import async_capture
+from support.desktop import RecordingBackend, bare_nested_backend, desktop_window
+from support.environment import child_environment
+from support.git import commit_all, git_out, init_repo, run_git
+from support.media import solid_png, varied_png
+from support.models import catalog_dict, catalog_json, catalog_of, model
 
 __all__ = [
     "register_run",

@@ -9,8 +9,8 @@ import sys
 import pytest
 from pydantic import ValidationError
 
-from galaius.agents import ceiling as ceiling_module
-from galaius.agents.ceiling import SLICE, Ceiling, contained, end_run_scope
+from galaius.agents.limits import ceiling as ceiling_module
+from galaius.agents.limits.ceiling import SLICE, Ceiling, contained, end_run_scope
 
 CEILING = Ceiling(memory_max_percent=45, run_memory_max_percent=20, oomd_pressure_percent=80, cpu_percent=75, cpu_weight=20)
 

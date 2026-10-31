@@ -48,11 +48,11 @@ from textual.widgets import (
 from galaius.cli.clients import ClientTarget
 from galaius.cli.usage import UsageReport
 from galaius.config import SETTINGS, Setting, UserConfig, groups
-from galaius.server_tool_settings import PORTABLE_ENV, MachineNotice, ServerToolSettings
+from galaius.account.tool_settings import PORTABLE_ENV, MachineNotice, ServerToolSettings
 from galaius.upgrade.quiet import QuietPoint, UpgradeReady
 from galaius.upgrade.store import EXIT_UPGRADE
-from galaius.agents.catalog_connection import CatalogConnectionError
-from galaius.server_workspace import AgentEdit, ServerWorkspace, WorkflowConflictError, WorkflowRunRejected, WorkflowRunRequest
+from galaius.agents.catalog.connection import CatalogConnectionError
+from galaius.account.workspace import AgentEdit, ServerWorkspace, WorkflowConflictError, WorkflowRunRejected, WorkflowRunRequest
 
 # Every role-carrying setting (image/component/video/audio criteria) comes from the shared
 # schema — the Status tab shows what each one resolves to; the Config tab renders every setting

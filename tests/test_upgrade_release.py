@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from galaius.machines import MachineConfig, MachineRunner
-from galaius.private_files import PRIVATE_FILES
-from galaius.server_tool_settings import PORTABLE_ENV
+from galaius.machine.connection import MachineConfig, MachineRunner
+from galaius.host.private_files import PRIVATE_FILES
+from galaius.account.tool_settings import PORTABLE_ENV
 from galaius.config.settings import Config
 from galaius.upgrade.check import UpgradeCheck
 from galaius.upgrade.release import BuildIdentity, Release, ReleaseFile, ReleaseRefused

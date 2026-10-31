@@ -13,8 +13,8 @@ import time
 
 import pytest
 
-import galaius.live_sources as live
-from galaius.ttl_cache import RefreshFailed, TTLCache
+import galaius.catalog.live_sources as live
+from galaius.catalog.ttl_cache import RefreshFailed, TTLCache
 
 
 def _source(name, load=lambda **_: None, filename=None):
@@ -83,9 +83,9 @@ def test_refreshing_actually_WRITES_every_cache(monkeypatch, tmp_path):
     no-op (it was: `load_catalog` was `@lru_cache`d, so the refresher re-read memory and never
     refetched). The only evidence that counts is both cache files on disk, freshly stamped.
     """
-    import galaius.benchmark_source as bs
-    import galaius.benchmark_tables as bt
-    import galaius.model_catalog as mc
+    import galaius.catalog.source as bs
+    import galaius.catalog.tables as bt
+    import galaius.catalog.models as mc
 
     monkeypatch.setattr(mc, "_from_openrouter", lambda payload: [mc.ModelInfo(id="x/y", name="Y")])
     monkeypatch.setattr(mc.httpx, "get", lambda *a, **k: _Response({"data": [{}]}))
@@ -94,7 +94,7 @@ def test_refreshing_actually_WRITES_every_cache(monkeypatch, tmp_path):
         source="artificial_analysis", fetched_at=time.time()))
 
     monkeypatch.setattr(
-        "galaius.benchmarks.upstream.fetch_all",
+        "galaius.catalog.upstream.fetch_all",
         lambda *a, **k: {"mmmu": _published_table()},
     )
     assert live.refresh_all() == {"model catalog": None, "benchmark scores": None, "benchmark tables": None}
@@ -128,7 +128,7 @@ def test_a_cache_write_is_atomic_so_a_concurrent_reader_never_sees_a_half_file(t
     both readers swallow the parse error — the panel silently shows nothing."""
     import json
 
-    import galaius.model_catalog as mc
+    import galaius.catalog.models as mc
 
     mc._write_cache(mc.Catalog(models=[mc.ModelInfo(id="a/b")], source="openrouter", fetched_at=1.0))
     target = mc.cache_path()
@@ -149,7 +149,7 @@ def test_the_startup_refresh_can_be_turned_off():
 
 
 def _published_table():
-    from galaius.benchmarks.published import PublishedEntry, PublishedTable
+    from galaius.catalog.published import PublishedEntry, PublishedTable
 
     return PublishedTable(source_url="https://example.test", retrieved="2026-08-18",
                           entries=[PublishedEntry(model_name="M", score=0.9)])

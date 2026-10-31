@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from galaius import debug_utils
+from galaius.diagnostics import debug_output as debug_utils
 from galaius.cli import usage
 from galaius.config import Config
 
@@ -105,7 +105,7 @@ def test_usage_default_log_follows_debug_dir(monkeypatch, tmp_path):
 
 
 def test_dump_input_writes_both_files(tmp_path):
-    from galaius.debug_utils import Debug
+    from galaius.diagnostics.debug_output import Debug
 
     inv = str(tmp_path / "inv")
     Debug.dump_input(inv, {"tool": "screenshot", "query": "q"}, {"image_model": "m", "headless": True})
@@ -116,7 +116,7 @@ def test_dump_input_writes_both_files(tmp_path):
 
 
 def test_dump_output_records_exact_return_including_errors(tmp_path):
-    from galaius.debug_utils import Debug
+    from galaius.diagnostics.debug_output import Debug
 
     inv = str(tmp_path / "ok")
     Debug.dump_output(inv, "clicked [3] button: 'Play'")
@@ -159,7 +159,7 @@ def test_new_invocation_dir(srv, tmp_path):
     """Debug.new_invocation_dir creates HHMMSS_tool subfolder under session timestamp, deduplicates on collision."""
     now = datetime(2026, 4, 23, 14, 52, 14)
     with (
-        patch("galaius.debug_utils._dt", wraps=datetime) as mock_dt,
+        patch("galaius.diagnostics.debug_output._dt", wraps=datetime) as mock_dt,
         patch.object(srv.Debug, "SESSION_TS", "20260423_140000"),
     ):
         mock_dt.now.return_value = now
@@ -174,7 +174,7 @@ def test_new_invocation_dir(srv, tmp_path):
 
     # Second call in same second creates _2 suffix
     with (
-        patch("galaius.debug_utils._dt", wraps=datetime) as mock_dt,
+        patch("galaius.diagnostics.debug_output._dt", wraps=datetime) as mock_dt,
         patch.object(srv.Debug, "SESSION_TS", "20260423_140000"),
     ):
         mock_dt.now.return_value = now

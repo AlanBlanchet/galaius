@@ -9,8 +9,8 @@ import time
 from PIL import Image as PILImage
 from pydantic import BaseModel
 
-from galaius.desktop.atspi import AtSpi
-from galaius.debug_utils import Debug
+from galaius.desktop.accessibility.atspi import AtSpi
+from galaius.diagnostics.debug_output import Debug
 from galaius.desktop import (
     CoordTransform,
     DesktopElement,

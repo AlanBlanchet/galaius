@@ -5,13 +5,13 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, ValidationError
 
-from galaius.agents.codex_transport import _CodexTransport
-from galaius.agents.completion_transport import _CompletionTransport
+from galaius.agents.transport.codex import _CodexTransport
+from galaius.agents.transport.completion import _CompletionTransport
 from galaius.agents.policy import Policy, PolicyError
-from galaius.agents.protocol import ConversationRoute, RouteAvailability
-from galaius.agents.providers import CodexProvider, provider_for
+from galaius.agents.transport.protocol import ConversationRoute, RouteAvailability
+from galaius.agents.limits.providers import CodexProvider, provider_for
 from galaius.agents.registry import AgentRun
-from galaius.agents.transport import _ConversationTransport
+from galaius.agents.transport.base import _ConversationTransport
 from galaius.models import Model, ModelCapability
 
 

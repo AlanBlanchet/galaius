@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from galaius.sandbox import gvisor_available, run_pooled
+from galaius.isolation.sandbox import gvisor_available, run_pooled
 
 pytestmark = pytest.mark.skipif(not gvisor_available(), reason="gVisor (runsc) is not installed/registered as a Docker runtime here")
 

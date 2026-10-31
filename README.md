@@ -32,7 +32,7 @@ The older worktree at `${XDG_DATA_HOME:-~/.local/share}/galaius/prompts` remains
 server-connected writes do not overwrite it. Standalone local authoring remains available when no
 server is configured. `prompts/manifest.json` here defines shipped product defaults, digest-validated
 before publication.
-`galaius.prompt_client._PromptClient.sync(account, cache)` downloads the authenticated typed catalog
+`galaius.prompts.client._PromptClient.sync(account, cache)` downloads the authenticated typed catalog
 and exact immutable revisions into an account-scoped `_PromptCache`. A conversation start may carry a
 `PromptSelection` beside the ordinary `prompt`: the console resolves it, sends the verified content as
 the provider's system instruction, and persists the server-derived `PromptExecutionRef` on `AgentRun`.

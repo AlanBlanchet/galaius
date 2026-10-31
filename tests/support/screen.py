@@ -23,7 +23,7 @@ from galaius_core import (
 )
 from PIL import Image
 
-from galaius.desktop.screen_trust import new_nonce
+from galaius.desktop.screen.trust import new_nonce
 
 ORIGIN = "https://galaius.ai"
 MACHINE = UUID("68b0d749-0000-4000-8000-000000000001")

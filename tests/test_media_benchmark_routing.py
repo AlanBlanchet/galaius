@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 
-import galaius.benchmark_tables as benchmark_tables
+import galaius.catalog.tables as benchmark_tables
 import galaius.vision.core as vision
-from galaius.benchmarks.published import PublishedEntry, PublishedTable
-from galaius.benchmarks.upstream import GroundingLeaderboardJS, UpstreamSource
+from galaius.catalog.published import PublishedEntry, PublishedTable
+from galaius.catalog.upstream import GroundingLeaderboardJS, UpstreamSource
 from galaius.config import Config
 from galaius.models import Benchmark, Model, ModelCapability
 from galaius.vision import MediaItem
@@ -48,7 +48,7 @@ async def test_refreshed_published_table_changes_actual_media_dispatch(monkeypat
     for revision in ("before", "after"):
         table = PublishedTable.model_validate(fixture[revision])
         monkeypatch.setattr(
-            "galaius.criteria.benchmark_tables.load_tables", lambda table=table: {"mmmu_pro": table},
+            "galaius.catalog.criteria.benchmark_tables.load_tables", lambda table=table: {"mmmu_pro": table},
         )
         await analyze_media([MediaItem.from_bytes(solid_png(12, 8, (0, 0, 128)))], "context", config, role="image")
 
@@ -76,7 +76,7 @@ async def test_shared_non_authoritative_table_stops_before_media_dispatch(
         else PublishedTable.model_validate(fixture["excluded"][state])
     )
     monkeypatch.setattr(
-        "galaius.criteria.benchmark_tables.load_tables", lambda: {"mmmu_pro": table},
+        "galaius.catalog.criteria.benchmark_tables.load_tables", lambda: {"mmmu_pro": table},
     )
 
     async def forbidden(*args, **kwargs):
@@ -155,7 +155,7 @@ async def test_expired_cached_table_reloads_stale_and_stops_before_dispatch(monk
     def unavailable():
         raise RuntimeError("offline")
 
-    monkeypatch.setattr("galaius.benchmarks.upstream.fetch_all", unavailable)
+    monkeypatch.setattr("galaius.catalog.upstream.fetch_all", unavailable)
     loaded = benchmark_tables.load_tables()
     assert loaded["mmmu_pro"].freshness == "stale"
 
@@ -188,7 +188,7 @@ async def test_normalized_weights_flip_the_actual_configured_media_route(
     monkeypatch.setattr(Model, "_registry", [first, second])
     monkeypatch.setattr(Model, "is_available", lambda self: True)
     monkeypatch.setattr(
-        "galaius.criteria.benchmark_tables.load_tables",
+        "galaius.catalog.criteria.benchmark_tables.load_tables",
         lambda: {
             benchmark_id: PublishedTable(
                 source_url="https://example.test", retrieved="2026-09-06", freshness="current",

@@ -187,7 +187,7 @@ async def test_session_save_and_load_share_the_same_resolved_path(sandbox, monke
 def test_a_per_call_debug_dir_follows_the_same_rule(sandbox):
     """`Debug.dump_dir("run1")` resolved against the server's cwd — the class of #120 with one
     more door in: ~ expands, an absolute dir is kept, a RELATIVE one lands under the output dir."""
-    from galaius.debug_utils import Debug
+    from galaius.diagnostics.debug_output import Debug
 
     assert Debug.dump_dir("run1") == sandbox["out"] / "run1"
     assert Debug.dump_dir("~/dumps") == sandbox["home"] / "dumps"

@@ -8,8 +8,8 @@ models. The tables must bind their as-published row names to registered models t
 
 import pytest
 
-from galaius.benchmarks.published import PublishedEntry, PublishedTable
-from galaius.criteria import Criteria, Variables
+from galaius.catalog.published import PublishedEntry, PublishedTable
+from galaius.catalog.criteria import Criteria, Variables
 from galaius.models import Benchmark, Model
 
 from tests.support.models import catalog_of, model

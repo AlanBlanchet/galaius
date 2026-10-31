@@ -14,7 +14,7 @@ import os
 import struct
 import zlib
 
-from galaius.criteria import Criteria, CriteriaError
+from galaius.catalog.criteria import Criteria, CriteriaError
 from galaius.models import Model
 
 

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
-from galaius.benchmarks.published import (
+from galaius.catalog.published import (
     PublishedEntry,
     PublishedTable,
 )
@@ -16,7 +16,7 @@ from galaius.data import PackageData
 from galaius.formats import CoordFormat
 
 if TYPE_CHECKING:
-    from galaius.ollama import OllamaModel
+    from galaius.inference.ollama import OllamaModel
 
 _log = logging.getLogger(__name__)
 
@@ -335,9 +335,9 @@ class Model(RegistryMixin, BaseModel):
         """
         # WHO measured it comes from the variable registry, which already owns that fact — a
         # literal here would keep announcing this board's name if a second one supplied the same
-        # field. Imported inside the method because `galaius.criteria` imports this module at
+        # field. Imported inside the method because `galaius.catalog.criteria` imports this module at
         # import time: a genuine cycle, not a lazy-loading habit.
-        from galaius.criteria import Variables
+        from galaius.catalog.criteria import Variables
 
         variable = Variables.by_name("aa.intelligence")
         source = (variable.source if variable else "") or "an unnamed source"
@@ -350,7 +350,7 @@ class Model(RegistryMixin, BaseModel):
         # model was "joint 1st" with itself, saying "17th of 697" while the ranked list one
         # command away said "2nd of 433" — two numbers for one fact, the exact disagreement
         # live-board rescoring was written to end.
-        from galaius.model_catalog import bare_model_name, live_scores
+        from galaius.catalog.models import bare_model_name, live_scores
 
         # Rank over the BOARD, never over what this machine happens to reach — same population
         # `agents models` ranks over: a denominator of "models you can route to" is a local-
@@ -419,7 +419,7 @@ class Model(RegistryMixin, BaseModel):
         # one model two ways — `kimi-k3` from its cloud endpoint, `kimi-k3:cloud` from the local
         # daemon — whichever answered discovery decided which spelling the set holds, and a pin
         # written in the other read as "not served".
-        from galaius.model_catalog import bare_model_name
+        from galaius.catalog.models import bare_model_name
 
         mine = bare_model_name(self.id)
         return any(bare_model_name(name) == mine for name in served)
@@ -759,7 +759,7 @@ class Model(RegistryMixin, BaseModel):
         scores and grounding format survive since the daemon doesn't know those and overwriting
         with nothing would be a downgrade.
 
-        Takes CHAT-capable models only (:func:`galaius.ollama.serving`): an embedding model
+        Takes CHAT-capable models only (:func:`galaius.inference.ollama.serving`): an embedding model
         returns vectors not answers, letting it into a pool of prompt-answering candidates would
         only produce a confusing failure later.
         """
@@ -833,7 +833,7 @@ class Model(RegistryMixin, BaseModel):
         leader. The live board wins where it speaks; the snapshot answers where it doesn't, so a
         model the board never listed keeps whatever was known about it.
         """
-        from galaius.model_catalog import bare_model_name, live_scores
+        from galaius.catalog.models import bare_model_name, live_scores
 
         live = live_scores()
         if not live:
@@ -864,7 +864,7 @@ class Model(RegistryMixin, BaseModel):
         Returns how many were added — worth watching, since a snapshot caught up makes this
         pass do nothing.
         """
-        from galaius.model_catalog import bare_model_name
+        from galaius.catalog.models import bare_model_name
 
         have = {bare_model_name(m.id) for m in cls._registry}
         best: dict[str, tuple[str, dict]] = {}
@@ -894,7 +894,7 @@ class Model(RegistryMixin, BaseModel):
 
         Then the LIVE pass: a running Ollama daemon is asked what it actually has, since a
         bundled catalog structurally cannot know. Cached, short-timeout, silent — no daemon
-        means no models, no error, no delay (see :mod:`galaius.ollama`).
+        means no models, no error, no delay (see :mod:`galaius.inference.ollama`).
         """
         cls._reset()
         cls._provider_keys = {}
@@ -911,11 +911,11 @@ class Model(RegistryMixin, BaseModel):
         if grounding_raw:
             cls.hydrate_measured(grounding_raw)
         try:
-            # Imported HERE, not at module scope: `galaius.ollama` pulls in httpx (~167ms
+            # Imported HERE, not at module scope: `galaius.inference.ollama` pulls in httpx (~167ms
             # cold), and `galaius.models` is on the import path of every CLI command — same
             # reason `_litellm()` above is lazy. Module attribute lookup, so a caller can
             # substitute the daemon by swapping `ollama.discover_cached`.
-            from galaius import ollama
+            from galaius.inference import ollama
 
             cls.merge_ollama(ollama.serving())
         except Exception:  # a live source must never be able to break the catalog
@@ -924,7 +924,7 @@ class Model(RegistryMixin, BaseModel):
             # The second live pass, same reason as the first: the board on disk ranks models the
             # bundled snapshot never heard of, and a criterion can't choose what the catalog
             # doesn't know exists. Cached, so no command pays litellm's import to find that out.
-            from galaius.model_catalog import bare_model_name, live_scores, load_catalog, ranked_extras
+            from galaius.catalog.models import bare_model_name, live_scores, load_catalog, ranked_extras
 
             scores = live_scores()
             rows = ranked_extras()
@@ -959,7 +959,7 @@ class Model(RegistryMixin, BaseModel):
             # `TTL_SECONDS` old, which is most of the time between refreshes. `is_live` still
             # governs what a UI may call "current" — never whether a real, if aged, measurement
             # counts for ranking.
-            from galaius import benchmark_source
+            from galaius.catalog import source as benchmark_source
 
             board = benchmark_source.load_scores()
             if board.scores:
@@ -1213,7 +1213,7 @@ class CircuitBreaker:
 _ = PublishedTable  # re-exported via __all__; reference here silences unused-import lint
 
 # Pre-register known grounding benchmarks at import time.
-# Published tables for these benchmarks live in galaius.benchmarks.published.
+# Published tables for these benchmarks live in galaius.catalog.published.
 # GUI grounding — "can the model point at the right on-screen element to click?"
 Benchmark._register(
     Benchmark(

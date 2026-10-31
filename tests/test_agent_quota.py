@@ -12,9 +12,9 @@ from uuid import UUID
 import pytest
 from galaius_core import UsageWindow
 
-from galaius.agents import quota
+from galaius.agents.limits import quota
 from galaius.agents import registry as reg
-from galaius.agents.events import AgentEvent
+from galaius.agents.transport.events import AgentEvent
 from tests.support.agents import register_run
 
 
@@ -468,8 +468,8 @@ def test_a_conversation_too_long_to_compact_is_still_a_usage_LIMIT_cut_that_resu
     ending read as a usage-limit CUT naming an instant (`registry.limit_resume_at`). That reading comes
     from `AgentProvider.cut_words`, not from `classify`: making the line no model's quota must not take
     the resume away with it."""
-    from galaius.agents.events import RunCut
-    from galaius.agents.providers import ClaudeCodeProvider
+    from galaius.agents.transport.events import RunCut
+    from galaius.agents.limits.providers import ClaudeCodeProvider
 
     assert ClaudeCodeProvider.cut_of(CONTEXT_FULL_LINE) is RunCut.usage_limit
     refusal = quota.Refusal.read(CONTEXT_FULL_LINE, now=HEARD_AT)

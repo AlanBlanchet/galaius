@@ -25,7 +25,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from galaius.machines import MachineRunner
+from galaius.machine.connection import MachineRunner
 
 
 class Pending(BaseModel):

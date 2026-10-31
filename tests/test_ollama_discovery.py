@@ -12,7 +12,7 @@ import json
 import httpx
 import pytest
 
-from galaius import ollama
+from galaius.inference import ollama
 from galaius.models import Model, ModelCapability
 
 # --- captured from a real daemon -------------------------------------------------------------
@@ -538,7 +538,7 @@ async def test_list_providers_names_the_models_the_daemon_serves(monkeypatch):
     "what models can I pass?" has to name them, or they may as well not exist."""
     import json as _json
 
-    from galaius.server.tools_meta import list_providers
+    from galaius.server.tools.meta import list_providers
 
     monkeypatch.delenv("GALAIUS_CONFIGURED_PROVIDERS", raising=False)
     monkeypatch.delenv("OLLAMA_API_KEY", raising=False)

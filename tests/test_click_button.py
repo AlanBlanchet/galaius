@@ -65,7 +65,7 @@ async def test_desktop_click_report_names_a_non_left_button(desktop_spies, butto
 @pytest.mark.asyncio
 async def test_desktop_click_element_still_defaults_to_left(desktop_spies):
     """click_element carries no `button` field — it must not break the desktop click call."""
-    from galaius.desktop.element import DesktopElement
+    from galaius.desktop.accessibility.element import DesktopElement
 
     click, _ = desktop_spies
     win = DesktopWindow(name="app", wid=44, w=1200, h=800, x=0, y=0)

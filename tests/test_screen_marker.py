@@ -1,4 +1,4 @@
-"""The badge this computer shows while it is watched, and its own stop (`galaius.desktop.screen_marker`).
+"""The badge this computer shows while it is watched, and its own stop (`galaius.desktop.screen.marker`).
 
 Threat review 2026-10-23 (binding): « the runner draws an always-on-top window … If that window
 disappears, streaming stops. Kill: a local hotkey stops the session. » These pin that the badge
@@ -17,8 +17,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from galaius_core import ScreenAllowance
 
-from galaius.desktop.screen_marker import ScreenMarker
-from galaius.desktop.screen_switch import ScreenSwitch
+from galaius.desktop.screen.marker import ScreenMarker
+from galaius.desktop.screen.switch import ScreenSwitch
 
 
 @pytest.fixture

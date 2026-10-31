@@ -20,8 +20,8 @@ from uuid import uuid4
 from galaius_core import MachineFunctionSummary, PortSpec, ValueType
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from galaius.paths import UserPaths
-from galaius.private_files import PRIVATE_FILES
+from galaius.host.paths import UserPaths
+from galaius.host.private_files import PRIVATE_FILES
 
 FunctionKind = Literal["python", "shell"]
 #: What a step may do on a machine: its permission, and the machine owner's ceiling over every step.

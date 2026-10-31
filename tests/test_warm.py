@@ -6,8 +6,8 @@ import sys
 
 import pytest
 
-from galaius.agents.warm import WarmStart
-from galaius.processes import process_group_options
+from galaius.agents.limits.warm import WarmStart
+from galaius.host.processes import process_group_options
 
 
 async def _waiting(run_id: str) -> asyncio.subprocess.Process:

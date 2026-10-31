@@ -38,29 +38,29 @@ from typing import TYPE_CHECKING, BinaryIO, ClassVar, Literal, NamedTuple, Self,
 from uuid import UUID
 
 from pydantic import ConfigDict, BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
-from galaius.agents import quota
+from galaius.agents.limits import quota
 from galaius_core import ASKED_BY_MAX, LaunchSkipReason, ReasoningLevel, RecordedReasoning, FILE_KEY, KEPT_FILE_MAX, MACHINE_AGENT_MEDIA, MEDIA_KEY, file_key, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor
 
-from galaius.agents.events import (
+from galaius.agents.transport.events import (
     CONTEXT_FIELDS, PERSON_SENDER, TOKEN_FIELDS, AgentEvent, MessageFields, RunCut, TokenUsage, UsageLedger, answered_line, its_work, model_spoke,
     received, stream_lines,
 )
-from galaius.agents.catalog_connection import CatalogConnection
-from galaius.caller import Caller
-from galaius.agents.ceiling import contained, end_run_scope, is_run_scope
-from galaius.agents.providers import PROVIDERS, AgentProvider, DeniedTool
-from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused
-from galaius.agents.community import CommunityAgent
-from galaius.fence import FenceSpec
-from galaius.paths import UserPaths
-from galaius.file_lock import LockTimeout, SoleHolder, exclusive
-from galaius.file_stamp import FileStamp
+from galaius.agents.catalog.connection import CatalogConnection
+from galaius.account.caller import Caller
+from galaius.agents.limits.ceiling import contained, end_run_scope, is_run_scope
+from galaius.agents.limits.providers import PROVIDERS, AgentProvider, DeniedTool
+from galaius.agents.limits.subscriptions import RunSubscription, Subscription, SubscriptionRefused
+from galaius.agents.catalog.community import CommunityAgent
+from galaius.isolation.fence import FenceSpec
+from galaius.host.paths import UserPaths
+from galaius.host.file_lock import LockTimeout, SoleHolder, exclusive
+from galaius.host.file_stamp import FileStamp
 from galaius.models import TokenMix
-from galaius.pinned_directory import DescriptorDirectory, PinnedDirectory
-from galaius.private_files import PRIVATE_FILES
-from galaius.processes import detached_options, end_process_tree, process_ancestry, process_started, process_unit
+from galaius.host.pinned_directory import DescriptorDirectory, PinnedDirectory
+from galaius.host.private_files import PRIVATE_FILES
+from galaius.host.processes import detached_options, end_process_tree, process_ancestry, process_started, process_unit
 from galaius.upgrade.store import active_interpreter
-from galaius.server_registry import (
+from galaius.mcp.registry import (
     _alive,  # generic pid liveness (Windows-safe, no signal sent)
 )
 
@@ -69,7 +69,7 @@ OwnLogin = Literal["own_login"]
 OWN_LOGIN: OwnLogin = "own_login"
 
 if TYPE_CHECKING:
-    from galaius.agents.agent_queue import QueueItem  # imports this module at run time
+    from galaius.agents.limits.agent_queue import QueueItem  # imports this module at run time
 
 RunStatus = Literal[
     "starting", "running", "waiting", "done", "failed", "cancelled", "interrupted", "stopped",
@@ -378,7 +378,7 @@ class AgentRun(ContextGauge):
     #: Only an explicitly recorded opt-in may add the launcher mesh on resume.
     mesh_enabled: bool = False
     #: What the OS fence of every turn is built from, at that turn, from the levels as they are then
-    #: (`galaius.fence`); None: unfenced. Held here, in the runner's store, never inside a fence.
+    #: (`galaius.isolation.fence`); None: unfenced. Held here, in the runner's store, never inside a fence.
     fence: FenceSpec | None = None
     #: Where in the files its usage is read from (its raw stream, its session record: path -> byte offset) the readings
     #: start being its CURRENT subscription's: set when it moved to another (`repin`), so the old one's never cap it.
@@ -433,7 +433,7 @@ class AgentRun(ContextGauge):
     #: True for a session galaius did NOT spawn — the user's own editor windows, surfaced so the
     #: supervisor shows the machine's real state rather than only its own children.
     foreign: bool = False
-    #: The subscription every turn and child of this run runs on (`galaius.agents.subscriptions`);
+    #: The subscription every turn and child of this run runs on (`galaius.agents.limits.subscriptions`);
     #: None: this PC's default login.
     subscription: RunSubscription | None = None
     #: A move asked while a turn worked (his pick in a conversation, `RunMove.resume` False): made once that turn ended,
@@ -453,7 +453,7 @@ class AgentRun(ContextGauge):
     replaced_by: RunReplacement | None = None
     #: The run whose brief it took, refused by its plan's limit before its first turn did anything (`Relaunch`).
     relaunched_from: Relaunch | None = None
-    #: The community entry it runs (`galaius.agents.community`): every turn's prompt is rebuilt from it. Its `agent` is
+    #: The community entry it runs (`galaius.agents.catalog.community`): every turn's prompt is rebuilt from it. Its `agent` is
     #: its caller's role, for what a launch decides alone: it plays no role (`plays`).
     community: CommunityAgent | None = None
     #: When its brief was relaunched on another model (`claim_resume`): once per run; a relaunch that could not start leaves
@@ -555,7 +555,7 @@ class AgentRun(ContextGauge):
     cost_usd: float | None = None
     #: Cumulative token use — how much CONTEXT this run has consumed, which is invisible from a
     #: cost figure alone (two models at the same price consume very differently). Same meaning
-    #: as :class:`galaius.agents.events.TokenUsage`; always the sum over the run's events.
+    #: as :class:`galaius.agents.transport.events.TokenUsage`; always the sum over the run's events.
     input_tokens: int | None = None
     output_tokens: int | None = None
     cached_input_tokens: int | None = None
@@ -961,9 +961,9 @@ def hook_command(module: str, *arguments: str) -> str:
 
 
 def brief_hook(run_id: str) -> str:
-    """The command a turn of `run_id` runs once its conversation was compacted (`galaius.brief_hook`):
+    """The command a turn of `run_id` runs once its conversation was compacted (`galaius.hooks.brief`):
     it hands the agent back the task recorded here."""
-    return hook_command("galaius.brief_hook", str(_record_path(run_id)))
+    return hook_command("galaius.hooks.brief", str(_record_path(run_id)))
 
 class RunMedia:
     """The images a run was shown (attached to its brief, pasted in a message), each kept beside the run's other files
@@ -1355,7 +1355,7 @@ def task_taken(run_id: str, task: str) -> AgentRun | None:
     """`run_id` took `task` as its next turn (`spawn_line.Spawn.hand_over`): from now on its record says THAT
     task, never only the one it was first launched with. Everything that reads a run's task reads the current
     one — its row on the web (`machine_agents`), the card its own children start on (`relations.card`), the
-    brief a compaction hands its agent back (`galaius.brief_hook`), and a relaunch of its brief elsewhere
+    brief a compaction hands its agent back (`galaius.hooks.brief`), and a relaunch of its brief elsewhere
     (`spawn_line.Spawn.of_run`). Returns the record as it now stands, None when there is none.
     """
     with record_lock(run_id):
@@ -1478,7 +1478,7 @@ def finish(
         # SIGTERM's code (-15, or 143 through a shell) and its reaper must not turn it "failed".
         if stored.status == "stopped":
             exit_code = stored.exit_code
-        from galaius.agents import agent_queue  # imports this module: a top-level import would be circular
+        from galaius.agents.limits import agent_queue
         # Ended by SIGTERM after its answer (a parent's stop, its unit stopped): it had finished, a clean end.
         idle = (stored.status != "stopped" and exit_code in (-signal.SIGTERM, 128 + signal.SIGTERM)
                 and _cuts_nothing(answered, agent_queue.items_locked(run_id)))
@@ -1595,7 +1595,7 @@ def stop(run_id: str, *, by: StopActor | None, expected_lifecycle_token: str | N
             return False
         # Cancel first. A failed queue write must not leave a stopped run resumable with old work.
         try:
-            from galaius.agents import agent_queue
+            from galaius.agents.limits import agent_queue
             idle = _cuts_nothing(answered, agent_queue.items_locked(run_id))
             agent_queue.cancel_pending_locked(run_id)
         except (ImportError, OSError, ValueError, RuntimeError):
@@ -2260,7 +2260,8 @@ def mirror_is_current(run_id: str) -> bool:
 def _reader_code() -> str:
     """Fingerprint of the code turning a run's streams into events and a digest: a release that
     reads streams differently re-derives every run once (and rewrites the panel's mirror)."""
-    from galaius.agents import events, providers
+    from galaius.agents.transport import events
+    from galaius.agents.limits import providers
 
     code = hashlib.sha256()
     for module in (events, providers):
@@ -2648,7 +2649,7 @@ def _resuming(run: AgentRun, *, now: float | None = None) -> bool:
 
 def _in_flight(run: AgentRun) -> bool:
     """A message to `run` is still being delivered by a live dispatcher of this PC (`agent_queue.resuming`)."""
-    from galaius.agents import agent_queue  # imports this module: a top-level import would be circular
+    from galaius.agents.limits import agent_queue
     return run.kind == "process" and agent_queue.resuming(run.run_id)
 
 

@@ -12,7 +12,7 @@ from types import TracebackType
 from typing import Self
 
 from galaius.config import Config
-from galaius.private_files import PRIVATE_FILES
+from galaius.host.private_files import PRIVATE_FILES
 from galaius.vision.types import MediaItem
 
 _STALE_SECONDS = 24 * 60 * 60

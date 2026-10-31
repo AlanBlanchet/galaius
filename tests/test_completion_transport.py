@@ -9,8 +9,8 @@ CLI-subprocess spawn choosing the very model that just refused a moment ago on t
 import litellm
 import pytest
 
-from galaius.agents import quota
-from galaius.agents.completion_transport import _CompletionTransport
+from galaius.agents.limits import quota
+from galaius.agents.transport.completion import _CompletionTransport
 
 
 @pytest.fixture(autouse=True)

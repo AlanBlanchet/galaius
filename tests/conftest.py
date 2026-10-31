@@ -33,10 +33,10 @@ os.environ.setdefault("GALAIUS_MEDIA_BACKEND", "api")
 os.environ.setdefault("GALAIUS_MEDIA_BILLING", "api_allowed")
 
 from galaius.config import UserConfig, load_dotenv_for_cli
-from galaius.agents.providers import AgentProvider, ClaudeCodeProvider
+from galaius.agents.limits.providers import AgentProvider, ClaudeCodeProvider
 from galaius.models import Model
 from tests.support.models import catalog_of
-from galaius.pinned_directory import PinnedDirectory
+from galaius.host.pinned_directory import PinnedDirectory
 
 # Playwright's own browser cache, read before any test moves HOME: a unit test's HOME is a fresh
 # folder, and a browser looked up there is downloaded again for every browser test (minutes each,
@@ -135,24 +135,24 @@ def _isolate_unit_configuration(
 @pytest.fixture(autouse=True)
 def _turn_facts_read_nothing_real(monkeypatch):
     """A coordinator's card reads no real server, CLI or machine file in a test (`turn_facts.readers`)."""
-    from galaius.agents.turn_facts import Readers
-    monkeypatch.setattr("galaius.agents.turn_facts.readers", lambda: Readers(build=lambda: "a test build", pcs=lambda: "none", this_pc=lambda: "a test PC"))
+    from galaius.agents.turns.facts import Readers
+    monkeypatch.setattr("galaius.agents.turns.facts.readers", lambda: Readers(build=lambda: "a test build", pcs=lambda: "none", this_pc=lambda: "a test PC"))
 
 
 @pytest.fixture(autouse=True)
 def _in_no_run_scope(monkeypatch):
     """A test process lives in no run's scope whatever unit runs the suite (an agent's own run scope, a `systemd-run`
-    unit): a test that means a scope sets its own (`galaius.caller.process_unit`)."""
-    monkeypatch.setattr("galaius.caller.process_unit", lambda pid: None)
-    monkeypatch.setattr("galaius.caller.run_of_process", lambda pid: None)
-    monkeypatch.setattr("galaius.caller.Caller._for_no_run", False)
+    unit): a test that means a scope sets its own (`galaius.account.caller.process_unit`)."""
+    monkeypatch.setattr("galaius.account.caller.process_unit", lambda pid: None)
+    monkeypatch.setattr("galaius.account.caller.run_of_process", lambda pid: None)
+    monkeypatch.setattr("galaius.account.caller.Caller._for_no_run", False)
 
 
 @pytest.fixture(autouse=True)
 def _codex_sandbox_starts(monkeypatch):
     """Codex's argv never depends on whether this host refuses bubblewrap a user namespace (a systemd
     service on Ubuntu 24.04 does): a test that means it probes on purpose."""
-    monkeypatch.setattr("galaius.agents.providers.userns_refusal", lambda bwrap: None)
+    monkeypatch.setattr("galaius.agents.limits.providers.userns_refusal", lambda bwrap: None)
 
 
 @pytest.fixture(autouse=True)
@@ -307,7 +307,8 @@ def _forget_desktop_caches() -> None:
     26 pixels, which is only visible when the two run in the same session — ten failures in the
     full suite, green file by file. Clearing here fixes the class, not the pair.
     """
-    from galaius.desktop import coords, element
+    from galaius.desktop import coords
+    from galaius.desktop.accessibility import element
 
     coords._coord_cache.clear()
     element._element_cache.clear()

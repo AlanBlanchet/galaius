@@ -1,4 +1,4 @@
-"""Every media tool asks the platform the same way (`galaius.media`): its price first, then the job within the cost the
+"""Every media tool asks the platform the same way (`galaius.media.platform`): its price first, then the job within the cost the
 agent accepts; what comes back is saved in the working folder and kept for the asking run like a created file, so the
 person's chat shows it as a file to download. Never a provider key from this computer."""
 
@@ -11,8 +11,8 @@ import pytest
 from galaius_core import FILE_REFUSED, MediaAnswer, MediaFile, MediaQuote, created_files
 
 from galaius.agents import registry as reg
-from galaius.server import tools_media
-from galaius.server_workspace import PlatformRefused, ServerWorkspace
+from galaius.server.tools import media as tools_media
+from galaius.account.workspace import PlatformRefused, ServerWorkspace
 from tests.support import register_run
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==")
@@ -101,7 +101,7 @@ def test_a_source_image_outside_the_working_folder_is_never_read(here, monkeypat
 
 
 def test_a_fenced_run_sends_no_image_from_a_folder_it_may_not_read(here, monkeypatch):
-    from galaius.fence import FenceSpec
+    from galaius.isolation.fence import FenceSpec
 
     (here / "work").mkdir()
     (here / "private").mkdir()

@@ -385,7 +385,7 @@ class NestedBackend(X11Display):
         report a helper's pid, not the browser process's) — sound because this sandbox runs ONE
         app at a time by default (``launch_app``'s ``replace=True``, #92/#118); with exactly one
         tracked launch there is no ambiguity to resolve."""
-        from galaius.desktop.cdp import resolve_port  # noqa: PLC0415 — avoid import cycle at load
+        from galaius.desktop.accessibility.cdp import resolve_port  # noqa: PLC0415 — avoid import cycle at load
 
         pid = self.window_pid(wid)
         argv = self._commands.get(pid) if pid is not None else None

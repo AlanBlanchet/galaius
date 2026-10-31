@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 
-from galaius.private_files import PRIVATE_FILES
+from galaius.host.private_files import PRIVATE_FILES
 
 
 def _identity() -> tuple[str, str]:

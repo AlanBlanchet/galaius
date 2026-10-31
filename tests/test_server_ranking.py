@@ -5,8 +5,8 @@ catalog included, never nothing."""
 import pytest
 
 from galaius.agents import run
-from galaius.agents.providers import PROVIDERS
-from galaius.agents.server_ranking import ServerRanking, ServerRankingUnavailable
+from galaius.agents.limits.providers import PROVIDERS
+from galaius.agents.catalog.server_ranking import ServerRanking, ServerRankingUnavailable
 from galaius.models import Model
 
 

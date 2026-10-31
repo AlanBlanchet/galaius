@@ -366,7 +366,7 @@ async def test_desktop_scroll_defaults_to_window_center(scroll_spy):
 
 @pytest.mark.asyncio
 async def test_desktop_scroll_anchors_on_a_ref_element(scroll_spy):
-    from galaius.desktop.element import DesktopElement
+    from galaius.desktop.accessibility.element import DesktopElement
 
     win = DesktopWindow(name="app", wid=43, w=1200, h=800, x=0, y=0)
     el = DesktopElement(index=3, ref="e3", role="list", name="dock", x=650, y=700, w=100, h=60)

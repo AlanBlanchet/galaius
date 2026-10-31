@@ -11,10 +11,10 @@ from textual.widgets import Button, Input, Static, TabbedContent
 from galaius_core import PortableToolSettings, PortableToolSettingsUpdate
 from galaius_core.accounts import Account, Bootstrap, Workspace
 
-from galaius.agents.catalog_connection import CatalogAuthenticationError, CatalogConnection, CatalogConnectionError
+from galaius.agents.catalog.connection import CatalogAuthenticationError, CatalogConnection, CatalogConnectionError
 from galaius.config import SETTINGS, UserConfig
 from galaius.cli.tui import GalaiusTUI, WorkspacePane, _build_widget, _field_id
-from galaius.server_tool_settings import ServerToolSettings, ToolSettingsConflict
+from galaius.account.tool_settings import ServerToolSettings, ToolSettingsConflict
 
 
 def test_delayed_revision_cannot_replace_newer_cache(settings_server):
@@ -372,7 +372,7 @@ def test_machine_connection_refuses_personal_write_in_plain_words(machine_connec
 def test_machine_connection_notice_is_said_once(machine_connection, monkeypatch, capsys):
     import io
     from galaius.cli.app_commands import config_set
-    from galaius.server_tool_settings import MachineNotice
+    from galaius.account.tool_settings import MachineNotice
     class Terminal(io.StringIO):
         def isatty(self):
             return True
@@ -393,7 +393,7 @@ def test_machine_connection_notice_is_said_once(machine_connection, monkeypatch,
 @pytest.mark.parametrize("auth_mode", ["token", "preview"])
 def test_session_directory_left_open_by_the_notice_is_made_private(tmp_path, auth_mode):
     import io
-    from galaius.server_tool_settings import MachineNotice
+    from galaius.account.tool_settings import MachineNotice
     connection = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode=auth_mode, workspace_id=uuid4(),
                                    token_file=tmp_path / "machine.key" if auth_mode == "token" else None)
     connection.save()

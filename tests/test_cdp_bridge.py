@@ -2,7 +2,7 @@
 (#143), so a click never moved DOM focus (#174) and typed characters were dropped/garbled via
 xdotool's XKB translation (#126); a drag left a webview's mouse capture stuck (#136).
 
-Discovery/target-selection (`galaius.desktop.cdp`) is pure — argv parsing, a real tmp-file poll,
+Discovery/target-selection (`galaius.desktop.accessibility.cdp`) is pure — argv parsing, a real tmp-file poll,
 and an `httpx.MockTransport` fake CDP endpoint, no real browser. The dispatch-layer fallback
 (`_CdpSlot`, `_dispatch_click`, `_d_type_text`) is exercised with a stub bridge, never a real
 Playwright connection — connecting to a genuine Electron/VS Code CDP endpoint is integration-level
@@ -16,7 +16,7 @@ import httpx
 import pytest
 
 from galaius.desktop import DesktopBackend, NestedBackend
-from galaius.desktop import cdp
+from galaius.desktop.accessibility import cdp
 from galaius.actions import dispatch as D
 from tests.support.desktop import RecordingBackend as _RecordingBackend, bare_nested_backend
 

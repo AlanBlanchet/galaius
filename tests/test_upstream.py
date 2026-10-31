@@ -1,4 +1,4 @@
-"""Tests for src/galaius/benchmarks/upstream.py."""
+"""Tests for src/galaius/catalog/upstream.py."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from galaius.benchmarks.published import PublishedTable
-from galaius.benchmarks.upstream import (
+from galaius.catalog.published import PublishedTable
+from galaius.catalog.upstream import (
     GroundingLeaderboardJS,
     SeeClickReadme,
     UpstreamSource,

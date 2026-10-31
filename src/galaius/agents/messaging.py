@@ -10,18 +10,20 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from galaius.caller import Caller
+from galaius.account.caller import Caller
 from galaius_core import refusal_of, Coded, MachineRefusal, ReadsAt
 
-from galaius.agents import agent_queue, community, relations
-from galaius.agents.critic_rounds import CriticRounds, turn_of
+from galaius.agents.limits import agent_queue
+from galaius.agents.catalog import community
+from galaius.agents.catalog import relations
+from galaius.agents.turns.critic_rounds import CriticRounds, turn_of
 from galaius.agents import registry as reg
-from galaius.agents.catalog_connection import CatalogOffline
-from galaius.agents.events import Relation
+from galaius.agents.catalog.connection import CatalogOffline
+from galaius.agents.transport.events import Relation
 from galaius.agents.policy import PolicyError
-from galaius.agents.providers import AgentProvider, provider_for
+from galaius.agents.limits.providers import AgentProvider, provider_for
 from galaius.agents.run import ModelUnavailable, load_policy, resolve_continuable_model
-from galaius.agents.catalog_connection import RoleAbsent
+from galaius.agents.catalog.connection import RoleAbsent
 
 DeliveryState = Literal["queued", "replied", "error"]
 
@@ -219,7 +221,7 @@ def queue_message(
 ) -> Delivery:
     """Record one message and enqueue its delivery (`queued`, with its queue id), or say why not;
     whoever called delivers it: the run's dispatcher (`deliver_message`), or a long-lived launcher
-    holding the run's next child (`galaius.agents.followup`). `environment` as `deliver_message`'s.
+    holding the run's next child (`galaius.agents.turns.followup`). `environment` as `deliver_message`'s.
     `message_id`: the id its sender gave it (a request id from the web), kept by its queue item and
     its transcript entry; a message already queued under it is never queued again (`repeated`).
     `only_if_idle`: refused when the run is at work or has a message waiting, read under its lock (a

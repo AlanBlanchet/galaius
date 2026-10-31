@@ -8,7 +8,7 @@ from rich.console import Console, RenderableType
 from rich.text import Text
 
 from galaius import installed_version
-from galaius.mcp_endpoint import SharedEndpoint
+from galaius.mcp.endpoint import SharedEndpoint
 from galaius.upgrade.quiet import UpgradeReady
 from galaius.upgrade.handoff import Handoff
 from galaius.upgrade.release import BuildIdentity
@@ -35,7 +35,7 @@ app = App(
 )
 
 app.command(
-    "galaius.cli.mcp_command:mcp", name="mcp",
+    "galaius.cli.commands.mcp:mcp", name="mcp",
     help="Run the MCP server over stdio.",
 )
 app.command(
@@ -59,7 +59,7 @@ app.command(
     help="Summarise local VLM spend, tokens, and calls.",
 )
 app.command(
-    "galaius.cli.upgrade_command:upgrade_app", name="upgrade",
+    "galaius.cli.commands.upgrade:upgrade_app", name="upgrade",
     help="Automatic upgrades: status, check now, pin, turn off, go back.",
 )
 app.command(
@@ -87,27 +87,27 @@ app.command(
     help="Spawn and supervise agent runs across providers.",
 )
 app.command(
-    "galaius.cli.login_command:login", name="login",
+    "galaius.cli.commands.login:login", name="login",
     help="Connect this computer to your Galaius account.",
 )
 app.command(
-    "galaius.cli.login_command:logout", name="logout",
+    "galaius.cli.commands.login:logout", name="logout",
     help="Disconnect this computer from your Galaius account.",
 )
 app.command(
-    "galaius.cli.machine_command:machine_app", name="machine",
+    "galaius.cli.commands.machine:machine_app", name="machine",
     help="Connect this computer as a workflow machine.",
 )
 app.command(
-    "galaius.cli.function_command:function_app", name="functions",
+    "galaius.cli.commands.function:function_app", name="functions",
     help="Register and test typed functions this machine can run from a workflow.",
 )
 app.command(
-    "galaius.cli.workflows_command:workflows_app", name="workflows",
+    "galaius.cli.commands.workflows:workflows_app", name="workflows",
     help="Run a server workflow from this machine.",
 )
 app.command(
-    "galaius.cli.images_command:images_app", name="images",
+    "galaius.cli.commands.images:images_app", name="images",
     help="Draw images on the Galaius platform, charged to you.",
 )
 app.command(
@@ -115,7 +115,7 @@ app.command(
     help="Author and synchronize prompts through a local Git worktree.",
 )
 app.command(
-    "galaius.cli.screen_command:screen_app", name="screen",
+    "galaius.cli.commands.screen:screen_app", name="screen",
     help="Let this computer's screen be watched from the web, or stop it.",
 )
 app.command(
@@ -123,7 +123,7 @@ app.command(
     help="Inspect and edit the connected server workspace.",
 )
 app.command(
-    "galaius.cli.tui_command:tui", name="_tui", show=False,
+    "galaius.cli.commands.tui:tui", name="_tui", show=False,
     help="Open the interactive configuration dashboard.",
 )
 
@@ -137,7 +137,7 @@ def version() -> None:
 
 def main() -> None:
     """Every command continues in the active runtime (`Handoff`). `mcp` then becomes a relay to this
-    computer's shared MCP server (`galaius.mcp_relay`, where a Unix socket exists); another
+    computer's shared MCP server (`galaius.mcp.relay`, where a Unix socket exists); another
     long-lived one (`machine connect`, the TUI) starts as its supervisor, which runs it again as a
     worker; a worker at its quiet point exits `EXIT_UPGRADE` for the supervisor to start the new runtime."""
     force_utf8_io()

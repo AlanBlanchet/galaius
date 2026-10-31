@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from galaius.desktop import atspi
+from galaius.desktop.accessibility import atspi
 from galaius.browser import BrowserManager
 from galaius.desktop import DesktopElement, DesktopWindow
 from galaius.vision.detect import _vlm_detect_elements
@@ -24,7 +24,7 @@ from galaius.models import Model
 from galaius.runtime import config
 from galaius.state import annotate_screenshot
 
-from .harness import (
+from e2e.harness import (
     OUT_DIR,
     Comparison,
     E2EResult,

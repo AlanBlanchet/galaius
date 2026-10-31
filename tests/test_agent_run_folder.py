@@ -9,11 +9,12 @@ import sys
 
 import pytest
 
-from galaius.agents import agent_queue, messaging
+from galaius.agents import messaging
+from galaius.agents.limits import agent_queue
 from galaius.agents import registry as reg
 import threading
 
-from galaius.agents.providers import PROJECT_SETTINGS_OFF, UNTRUSTED_FOLDERS
+from galaius.agents.limits.providers import PROJECT_SETTINGS_OFF, UNTRUSTED_FOLDERS
 from galaius.agents.run_folder import MISSING_PREFIX, RESTORED_PREFIX, shown
 from tests.support.agents import ScriptedProvider, install_provider, use_policy
 

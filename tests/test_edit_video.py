@@ -10,9 +10,9 @@ import pytest
 from galaius_core import MACHINE_TOOLS, file_key
 
 from galaius.agents import registry as reg
-from galaius.fence import FenceSpec
-from galaius.machine_tools import MachineTools, ToolNotReady
-from galaius.video import VideoEdit, edit
+from galaius.isolation.fence import FenceSpec
+from galaius.machine.tools import MachineTools, ToolNotReady
+from galaius.media.video import VideoEdit, edit
 from tests.support import register_run
 
 pytestmark = pytest.mark.skipif(not (shutil.which("ffmpeg") and shutil.which("ffprobe") and shutil.which("uv")), reason="needs ffmpeg, ffprobe and uv")

@@ -11,12 +11,12 @@ from typing import Any, TypeAlias
 
 from pydantic import BaseModel
 
-from galaius.agents.providers import MEDIA_PROVIDERS
+from galaius.agents.limits.providers import MEDIA_PROVIDERS
 from galaius.config import Config
-from galaius.criteria import Criteria
+from galaius.catalog.criteria import Criteria
 from galaius.lazy import deferred
 from galaius.models import ModelRole, supports_native_video_inline
-from galaius.processes import run_isolated_process
+from galaius.host.processes import run_isolated_process
 from galaius.runtime import breaker
 from galaius.state import PageState, bytes_to_b64
 from galaius.vision.session import sample_video_frames, subscription_media_completion

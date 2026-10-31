@@ -70,7 +70,7 @@ def test_session_log_dir_is_sessions_name_date(monkeypatch, tmp_path):
 
 
 def test_new_invocation_dir_default_nests_under_sessions_name_date(monkeypatch, tmp_path):
-    from galaius.debug_utils import Debug
+    from galaius.diagnostics.debug_output import Debug
     from galaius.runtime import config as rc
 
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)

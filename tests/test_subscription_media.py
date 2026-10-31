@@ -25,16 +25,16 @@ import pytest
 from jsonschema.exceptions import SchemaError
 from PIL import Image
 
-import galaius.processes as isolated_processes
+import galaius.host.processes as isolated_processes
 import galaius.server.vlm as server_vlm
 import galaius.vision.core as vision
 import galaius.vision.session as vision_session
 import galaius.vision.workspace as vision_workspace
-from galaius.agents.events import AgentEvent
+from galaius.agents.transport.events import AgentEvent
 from tests.support import solid_png
 from tests.support.agents import install_fake_cli
 from tests.support.private_files import private
-from galaius.agents.providers import (
+from galaius.agents.limits.providers import (
     ClaudeCodeProvider,
     CodexProvider,
     _MediaProcessFailure,

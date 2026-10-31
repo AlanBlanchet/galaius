@@ -5,9 +5,9 @@ from uuid import UUID
 
 import pytest
 
-from galaius.pinned_directory import PinnedDirectory
-from galaius.prompt_publisher import publish_projection
-from galaius.prompt_projection import MANIFEST_NAME
+from galaius.host.pinned_directory import PinnedDirectory
+from galaius.prompts.publisher import publish_projection
+from galaius.prompts.projection import MANIFEST_NAME
 from galaius_core import (
     PromptCatalogPage,
     PromptChannelEntry,
@@ -86,7 +86,7 @@ def test_publisher_sends_complete_snapshot_and_only_changed_revisions(
         requests.append(PromptPublicationRequest.model_validate(body))
         return catalog.model_dump(mode="json")
 
-    monkeypatch.setattr("galaius.prompt_publisher._request", request)
+    monkeypatch.setattr("galaius.prompts.publisher._request", request)
     publish_projection(projection, "http://localhost", "secret")
 
     publication = requests.pop()
@@ -116,7 +116,7 @@ def test_identical_content_at_distinct_paths_keeps_distinct_prompt_keys(
             captured.append(PromptPublicationRequest.model_validate(body))
         return empty.model_dump(mode="json")
 
-    monkeypatch.setattr("galaius.prompt_publisher._request", request)
+    monkeypatch.setattr("galaius.prompts.publisher._request", request)
     publish_projection(projection, "http://localhost", "secret")
     publication = captured.pop()
     assert len({(entry.key.namespace, entry.key.slug) for entry in publication.entries}) == 2

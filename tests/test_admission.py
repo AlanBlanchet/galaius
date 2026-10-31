@@ -1,5 +1,5 @@
 """A turn this computer may not start now waits, said why, and starts once that clears with no click
-(`galaius.agents.admission`, `SpawnLine`). 2026-10-13..20: 71 usage-limit cuts in bursts of ~10 runs, each run
+(`galaius.agents.limits.admission`, `SpawnLine`). 2026-10-13..20: 71 usage-limit cuts in bursts of ~10 runs, each run
 starting or resuming after the first refusal refused too; 8 runs cut at once by a lost login; 29 kernel kills at
 the agents' memory cap."""
 
@@ -14,10 +14,11 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from galaius.agents import agent_queue, quota
+from galaius.agents.limits import agent_queue
+from galaius.agents.limits import quota
 from galaius.agents import registry as reg
-from galaius.agents.admission import Hold, Paused, SoftMemory
-from galaius.agents.events import RunCut
+from galaius.agents.limits.admission import Hold, Paused, SoftMemory
+from galaius.agents.transport.events import RunCut
 from galaius.agents.spawn_line import Admission, Spawn, SpawnLine
 from tests.support import register_run
 

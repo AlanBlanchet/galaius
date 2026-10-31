@@ -17,9 +17,9 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 import pytest
 from galaius_core import AgentSignIn
 
-from galaius.agents.providers import PROVIDERS, AgentProvider, LoginStatus
-from galaius.machine_programs import AgentPrograms, ProgramFailed
-from galaius.sign_in_browser import SignInHandoff
+from galaius.agents.limits.providers import PROVIDERS, AgentProvider, LoginStatus
+from galaius.machine.programs import AgentPrograms, ProgramFailed
+from galaius.machine.sign_in_browser import SignInHandoff
 
 SCRIPT = b"#!/bin/sh\necho installed\n"
 
@@ -146,7 +146,7 @@ def test_claude_signs_in_from_any_browser_with_the_code_its_page_shows(tmp_path:
     opener.write_text(f'#!/bin/sh\necho "$1 $BROWSER" > {opened}\n')
     opener.chmod(0o755)
     helper = tmp_path / "galaius-sign-in-browser"  # this install's helper, whatever the test environment installed
-    helper.write_text(f'#!/bin/sh\nPYTHONPATH={shlex.quote(os.pathsep.join(sys.path))} exec {shlex.quote(sys.executable)} -m galaius.sign_in_browser "$@"\n')
+    helper.write_text(f'#!/bin/sh\nPYTHONPATH={shlex.quote(os.pathsep.join(sys.path))} exec {shlex.quote(sys.executable)} -m galaius.machine.sign_in_browser "$@"\n')
     helper.chmod(0o755)
     monkeypatch.setattr(SignInHandoff, "helper", staticmethod(lambda: helper))
     by_hand = threading.Event()

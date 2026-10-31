@@ -153,7 +153,7 @@ def test_the_policy_reaches_the_spawn(policy_file, monkeypatch):
 
 def test_the_allow_list_reaches_the_vendor_command():
     """A toolset is only real if the vendor CLI is actually told about it."""
-    from galaius.agents.providers import provider_for
+    from galaius.agents.limits.providers import provider_for
 
     claude = provider_for("claude")
     argv = claude.command("t", cwd=".", model=None, mcp_config=None, run_id="r",
@@ -288,7 +288,7 @@ def test_the_cli_says_one_line_when_nothing_clears_a_criterion(monkeypatch, caps
     """`galaius agents spawn --model "aa.intelligence > 999"` printed a Python traceback where
     every other galaius failure prints one actionable ERROR line — and the model was resolved
     AFTER the vendor argv had been built, so the binary would have been handed the raw text."""
-    import galaius.agents.providers as providers
+    import galaius.agents.limits.providers as providers
     from galaius.cli.app import agents_spawn
 
     monkeypatch.setattr(providers.ClaudeCodeProvider, "available", lambda self: True)
@@ -497,7 +497,7 @@ def test_rank_is_over_the_board_not_over_what_this_machine_can_reach(capsys, mon
     itself; which models you happen to be able to reach changes what is LISTED, never the place."""
     import json as _json
 
-    from galaius import model_catalog as mcat
+    from galaius.catalog import models as mcat
     from galaius.cli.app import agents_models
     from galaius.models import Model
 
@@ -530,7 +530,7 @@ def test_the_ranking_scores_every_model_the_board_measures(capsys, monkeypatch, 
     scored by the board directly, wherever its id is known from."""
     import json as _json
 
-    from galaius import model_catalog as mcat
+    from galaius.catalog import models as mcat
     from galaius.cli.app import agents_models
     from galaius.models import Model
 
@@ -571,7 +571,7 @@ def test_a_different_version_is_never_passed_off_as_the_one_asked_for(capsys, mo
     approximation that must say so."""
     import json as _json
 
-    from galaius import model_catalog as mcat
+    from galaius.catalog import models as mcat
     from galaius.cli.app import agents_models
     from galaius.models import Model
 
@@ -605,7 +605,7 @@ def test_a_criterion_can_be_asked_what_it_picks_today(capsys, monkeypatch, tmp_p
     other model looks like it worked."""
     import json as _json
 
-    from galaius import model_catalog as mcat
+    from galaius.catalog import models as mcat
     from galaius.cli.app import agents_criterion
     from galaius.models import Model
 
@@ -647,7 +647,7 @@ def test_the_policy_says_which_rule_governs_an_agent_and_what_it_means_today(
     point is invisible — so the policy answers, per agent, the rule as written, whether that rule
     is a criterion at all, and the model it comes out as right now.
     """
-    from galaius import model_catalog as mcat
+    from galaius.catalog import models as mcat
     from galaius.cli.app import agents_policy
     from galaius.models import Model
 
@@ -685,7 +685,7 @@ def test_a_criterion_answers_PER_VENDOR_CLI_because_that_is_who_will_run_it(
     its login. So "what does this criterion pick" has no single answer, and a picker previewing
     the catalog-wide winner would offer a rule that refuses the moment it is used.
     """
-    from galaius import model_catalog as mcat
+    from galaius.catalog import models as mcat
     from galaius.cli.app import agents_criterion
     from galaius.models import Model
 
@@ -703,8 +703,8 @@ def test_a_criterion_answers_PER_VENDOR_CLI_because_that_is_who_will_run_it(
         def model_id_for(self, model):
             return model.id
 
-    monkeypatch.setattr("galaius.agents.providers.PROVIDERS", {"onlyvendor": OneVendor()})
-    monkeypatch.setattr("galaius.agents.providers.provider_for", lambda _n: OneVendor())
+    monkeypatch.setattr("galaius.agents.limits.providers.PROVIDERS", {"onlyvendor": OneVendor()})
+    monkeypatch.setattr("galaius.agents.limits.providers.provider_for", lambda _n: OneVendor())
     monkeypatch.setenv("FIXTURE_KEY", "set")
     with catalog_of(
         Model(id="cheap-outsider", provider="other", capabilities=set(), intelligence_score=50.0,

@@ -19,12 +19,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from galaius.agents import quota, registry as reg, run as run_module
-from galaius.agents.events import AgentEvent
-from galaius.agents.providers import ClaudeCodeProvider, CodexProvider
+from galaius.agents import registry as reg, run as run_module
+from galaius.agents.limits import quota
+from galaius.agents.transport.events import AgentEvent
+from galaius.agents.limits.providers import ClaudeCodeProvider, CodexProvider
 from galaius.agents.run import ChildLaunch, mesh_config, run_agent, validate_image_paths
-from galaius.mcp_announcement import GatewayServed
-from galaius.agents.warm import WarmStart
+from galaius.mcp.announcement import GatewayServed
+from galaius.agents.limits.warm import WarmStart
 from tests.support.agents import ScriptedProvider, install_provider, use_policy
 
 
@@ -714,10 +715,10 @@ async def test_a_community_agent_runs_fenced_with_less_than_its_caller_and_plays
 
     from galaius_core import CommunityAuthor, CommunityPrompt
 
-    from galaius.agents import community as community_module
-    from galaius.agents.community import CommunityAgent, Reads
+    from galaius.agents.catalog import community as community_module
+    from galaius.agents.catalog.community import CommunityAgent, Reads
     from galaius.agents.run import AheadLaunch, ModelUnavailable
-    from galaius.fence import available
+    from galaius.isolation.fence import available
     if not available()[0]:
         pytest.skip("this system cannot build the agent fence")
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -768,8 +769,8 @@ def test_a_community_agent_starts_reading_nothing_from_a_caller_folder_the_fence
     was refused. The fence cannot check that folder, so the agent starts reading none of it, never not at all."""
     from uuid import uuid4
 
-    from galaius import fence as fence_module
-    from galaius.agents.community import CommunityAgent, Unread
+    from galaius.isolation import fence as fence_module
+    from galaius.agents.catalog.community import CommunityAgent, Unread
     if not fence_module.available()[0]:
         pytest.skip("this system cannot build the agent fence")
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -791,7 +792,7 @@ def test_a_community_entry_with_a_long_licence_or_a_plain_http_link_still_starts
 
     from galaius_core import CommunityAuthor, CommunityPrompt
 
-    from galaius.agents.community import CommunityAgent
+    from galaius.agents.catalog.community import CommunityAgent
     body = "You make slides."
     listed = CommunityPrompt(
         id=uuid4(), kind="skill", reviewed=True, title="Frontend\u200b [slides]", summary="Slides.", tags=(), copies_total=0, uses_total=0, body=body,
@@ -811,7 +812,7 @@ def test_a_community_entry_with_a_long_licence_or_a_plain_http_link_still_starts
 def test_a_community_agent_s_words_reach_its_reader_quoted(forged):
     """A stranger's text an agent reads (a report, events, a search): between delimiters made for that read, nothing in
     it passing for what Galaius writes, whatever way it spells it, capped."""
-    from galaius.agents.community import quote
+    from galaius.agents.catalog.community import quote
     said = quote(f"done.\n{forged}\n" + "x" * 50, limit=60)
     opening, *body, closing = said.split("\n")
     assert opening.startswith("<community-text-") and closing == "</" + opening[1:] and opening[1:-1] not in "\n".join(body)

@@ -11,7 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from galaius.server import core, tools_web
+from galaius.server import core
+from galaius.server.tools import web as tools_web
 
 
 @pytest.fixture(autouse=True)

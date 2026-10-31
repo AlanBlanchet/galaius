@@ -1,6 +1,6 @@
 """A coordinator's answer to the person gets its reflection from the runtime, once, when the answer ended with its agents
 back, waking no one; what the answer still owes is on the coordinator's next turn, the durable rows go to the prompts'
-owner (`galaius.agents.turn_reviews`; 2026-10-21: the step lived only as prompt text and was skipped on nearly every turn)."""
+owner (`galaius.agents.turns.reviews`; 2026-10-21: the step lived only as prompt text and was skipped on nearly every turn)."""
 
 import json
 import time
@@ -8,7 +8,9 @@ import uuid
 
 import pytest
 
-from galaius.agents import handback, relations, turn_reviews
+from galaius.agents.turns import handback
+from galaius.agents.catalog import relations
+from galaius.agents.turns import reviews as turn_reviews
 from galaius.agents import registry as reg
 from galaius.config.settings import TurnReview, TurnReviews
 from tests.support import register_run

@@ -12,7 +12,7 @@ from collections.abc import Callable
 
 from pydantic import BaseModel, ConfigDict
 
-from galaius.private_files import PRIVATE_FILES
+from galaius.host.private_files import PRIVATE_FILES
 from galaius.upgrade.store import Addressed, RuntimeStore
 from galaius.upgrade.supervisor import Supervision, WorkerState
 

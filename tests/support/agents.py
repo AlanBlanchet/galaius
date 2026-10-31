@@ -16,8 +16,8 @@ from pathlib import Path
 from galaius.agents import registry as reg
 from galaius.agents import run as _run_module
 from galaius.agents.policy import Policy
-from galaius.agents.providers import AgentProvider, ClaudeCodeProvider
-from galaius.agents.relations import CARD_HEADING
+from galaius.agents.limits.providers import AgentProvider, ClaudeCodeProvider
+from galaius.agents.catalog.relations import CARD_HEADING
 
 def said(prompt: str) -> str:
     """What a turn's prompt says past the turn card (`relations.card`) it opens with, for a test judging the message."""
@@ -81,10 +81,10 @@ def install_provider(monkeypatch, provider: AgentProvider) -> None:
     """Register `provider` into the live `PROVIDERS` registry for the test's duration. A run's
     raw stream is parsed by the provider named on its record, looked up in that global registry,
     so a test double has to be registered exactly like a real provider is. Four files reached the
-    module via `__import__("galaius.agents.providers", fromlist=["PROVIDERS"]).PROVIDERS` to
+    module via `__import__("galaius.agents.limits.providers", fromlist=["PROVIDERS"]).PROVIDERS` to
     dodge a stale-binding import; `monkeypatch.setitem` on the module's own dict never goes stale,
     so a plain import serves every call site."""
-    from galaius.agents.providers import PROVIDERS
+    from galaius.agents.limits.providers import PROVIDERS
 
     monkeypatch.setitem(PROVIDERS, provider.name, provider)
 

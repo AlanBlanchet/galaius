@@ -4,8 +4,8 @@ import json
 
 from pydantic import TypeAdapter
 
-from galaius.agents.events import AgentEvent
-from galaius.agents.protocol import (
+from galaius.agents.transport.events import AgentEvent
+from galaius.agents.transport.protocol import (
     ConversationCommand,
     ConversationResponse,
     ConversationStreamEvent,

@@ -15,11 +15,11 @@ from uuid import uuid4
 import pytest
 
 from galaius_core import refusal_of, MACHINE_AGENT_REQUESTS, PROJECT_TEXT_MAX, MachineAgentAnswer, ProjectFileRefusal, Refused
-from galaius.machine_agents import MachineAgents, WebRuns
-from galaius.pinned_directory import PinnedDirectory
-from galaius.project_files import ProjectFolder
-from galaius.places import PlaceMap
-from galaius.redaction import holds_secret, redact
+from galaius.machine.agents import MachineAgents, WebRuns
+from galaius.host.pinned_directory import PinnedDirectory
+from galaius.machine.project_files import ProjectFolder
+from galaius.machine.levels import PlaceMap
+from galaius.host.redaction import holds_secret, redact
 
 # Built in pieces so no secret scanner mistakes the fixture for a real key.
 SHAPED = "sk-" + "abcdefghijklmnop"

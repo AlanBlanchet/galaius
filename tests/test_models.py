@@ -120,7 +120,7 @@ class TestModelCapability:
         see the model and carry its source price when present."""
         from types import SimpleNamespace
 
-        from galaius import model_catalog
+        from galaius.catalog import models as model_catalog
 
         monkeypatch.setattr(model_catalog, "live_scores", lambda: {"new-live": 90.0})
         monkeypatch.setattr(model_catalog, "ranked_extras", lambda: {})
@@ -143,7 +143,7 @@ class TestModelCapability:
         "The 'gpt-5-6-luna' model is not supported when using Codex with a ChatGPT account"."""
         from types import SimpleNamespace
 
-        from galaius import model_catalog
+        from galaius.catalog import models as model_catalog
 
         monkeypatch.setattr(model_catalog, "live_scores", lambda: {"gpt-5-6-luna": 80.0})
         monkeypatch.setattr(model_catalog, "ranked_extras", lambda: {})

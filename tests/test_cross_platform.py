@@ -13,11 +13,11 @@ from pathlib import Path
 import pytest
 
 from galaius.desktop import backend as db
-from galaius.mcp_relay import locked
+from galaius.mcp.relay import locked
 from tests.support import browser_manager
 
 #: Standard modules Windows does not ship. Each import of one sits under `sys.platform` or in a `try`, never at a
-#: module's top level: 2026-10-23 `galaius/mcp_relay.py` imported `fcntl` there, and the owner's Windows PC could
+#: module's top level: 2026-10-23 `galaius/mcp/relay.py` imported `fcntl` there, and the owner's Windows PC could
 #: not run `galaius install` at all (« ModuleNotFoundError: No module named 'fcntl' » out of `galaius.cli.app`).
 UNIX_ONLY = ("fcntl", "termios", "pwd", "grp", "resource", "tty", "pty", "syslog")
 
@@ -42,7 +42,7 @@ def test_the_relay_imports_where_fcntl_does_not_exist():
         "        return None\n"
         "sys.meta_path.insert(0, Absent())\n"
         "sys.modules.pop('fcntl', None)\n"
-        "import galaius.mcp_relay as relay\n"
+        "import galaius.mcp.relay as relay\n"
         "print('relay imported', relay.HELLO)\n"
     )
     done = subprocess.run([sys.executable, "-c", program], capture_output=True, text=True)
@@ -58,17 +58,17 @@ def test_no_module_imports_a_unix_only_module_at_its_top_level():
     assert offenders == [], offenders
 
 
-#: Ways to start a program that never pass through `subprocess.Popen`, so `galaius.windowless.hide_child_consoles`
+#: Ways to start a program that never pass through `subprocess.Popen`, so `galaius.host.windowless.hide_child_consoles`
 #: cannot keep their console hidden on Windows (owner 2026-10-25: a console window kept opening on a Windows PC running
 #: galaius). Each site allowed keeps its reason: never run on Windows, or no console program started.
 BYPASSING = {"os.system", "os.popen", "os.spawnl", "os.spawnle", "os.spawnlp", "os.spawnlpe", "os.spawnv", "os.spawnve",
              "os.spawnvp", "os.spawnvpe", "os.execl", "os.execle", "os.execlp", "os.execlpe", "os.execv", "os.execve",
              "os.execvp", "os.execvpe", "os.startfile", "asyncio.create_subprocess_shell"}
 BYPASS_ALLOWED = {
-    ("mcp_endpoint.py", "os.execv"): "the shared relay, turned off on win32 a few lines above",
+    ("mcp/endpoint.py", "os.execv"): "the shared relay, turned off on win32 a few lines above",
     ("upgrade/handoff.py", "os.execv"): "POSIX only: Windows hands over through a child (`continue_in`, `replace`)",
-    ("sign_in_browser.py", "os.startfile"): "opens the person's browser, a windowed program, no console",
-    ("feedback.py", "os.startfile"): "opens the person's browser, a windowed program, no console",
+    ("machine/sign_in_browser.py", "os.startfile"): "opens the person's browser, a windowed program, no console",
+    ("diagnostics/feedback.py", "os.startfile"): "opens the person's browser, a windowed program, no console",
 }
 #: Spawn flags that give a child a console of its own (`CREATE_NEW_CONSOLE`) or none to share with what IT starts
 #: (`DETACHED_PROCESS`: each console program it runs then opens a window): `hide_child_consoles` keeps either as asked.
@@ -100,14 +100,14 @@ def _calls_and_names(path):
 def test_every_program_galaius_starts_goes_through_popen_where_windows_hides_its_console():
     """Owner 2026-10-25 (dictated): « elle aura un CMD qui va s'ouvrir … C'est vraiment un red flag de fou. » Every spawn
     passes through `subprocess.Popen`, where a galaius process with no console window gives each child none either
-    (`galaius.windowless`, pinned on Windows by tests/test_processes_windows.py). A call that bypasses it, `shell=True`
+    (`galaius.host.windowless`, pinned on Windows by tests/test_processes_windows.py). A call that bypasses it, `shell=True`
     (cmd.exe in between), or a flag asking for a console of the child's own is named here with its file and line."""
     import ast
     source = Path(importlib.import_module("galaius").__file__).parent
     offenders = []
     for path in sorted(source.rglob("*.py")):
         where = path.relative_to(source).as_posix()
-        if where == "windowless.py":  # the one place that reads those flags, to keep a console a caller asked for
+        if where == "host/windowless.py":  # the one place that reads those flags, to keep a console a caller asked for
             continue
         for line, name, node in _calls_and_names(path):
             if name in BYPASSING and (where, name) not in BYPASS_ALLOWED:
@@ -124,9 +124,9 @@ def test_every_program_galaius_starts_goes_through_popen_where_windows_hides_its
 
 def test_the_relay_lock_lets_one_process_at_a_time_through(tmp_path):
     """`mcp_relay.locked`, the relay's own stdlib-only lock (it runs under `python -I -S`: no pydantic, no pywin32,
-    so `galaius.file_lock` cannot serve it). Here: a held lock makes the next taker wait."""
+    so `galaius.host.file_lock` cannot serve it). Here: a held lock makes the next taker wait."""
     path = str(tmp_path / "endpoint.lock")
-    program = f"import sys; sys.path.insert(0, {str(Path(importlib.import_module('galaius').__file__).parents[1])!r});\nfrom galaius.mcp_relay import locked\nimport time\nwith locked({path!r}):\n    time.sleep(1.5)\n"
+    program = f"import sys; sys.path.insert(0, {str(Path(importlib.import_module('galaius').__file__).parents[1])!r});\nfrom galaius.mcp.relay import locked\nimport time\nwith locked({path!r}):\n    time.sleep(1.5)\n"
     holder = subprocess.Popen([sys.executable, "-c", program])
     time.sleep(0.4)
     started = time.monotonic()

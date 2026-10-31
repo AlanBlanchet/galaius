@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from galaius.data import PackageData  # noqa: E402
-from galaius.benchmarks.upstream import UpstreamSource  # noqa: E402
+from galaius.catalog.upstream import UpstreamSource  # noqa: E402
 from galaius.models import Benchmark, Model  # noqa: E402
 
 # Benchmark scores come from published online leaderboards; optional measured scores

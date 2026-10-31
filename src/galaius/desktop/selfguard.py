@@ -16,7 +16,7 @@ worse than no guard at all.
 
 import re
 from pathlib import Path
-from galaius.caller import Caller
+from galaius.account.caller import Caller
 
 #: Editors whose windows can host a coding agent. Matching an editor's window title is what makes
 #: "my own window" identifiable at all; a browser or terminal of the same name is not one.

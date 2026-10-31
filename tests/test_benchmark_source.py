@@ -16,14 +16,14 @@ import time
 
 import pytest
 
-from galaius import benchmark_source as bs
+from galaius.catalog import source as bs
 from galaius.data import PackageData
-from galaius.criteria import Criteria, CriteriaError
-from galaius.benchmarks.upstream import GroundingLeaderboardJS, UpstreamSource, fetch_all
-from galaius.benchmarks.published import PublishedEntry, PublishedTable
-import galaius.benchmark_tables as benchmark_tables
-import galaius.benchmark_tables as bt
-import galaius.live_sources as live_sources
+from galaius.catalog.criteria import Criteria, CriteriaError
+from galaius.catalog.upstream import GroundingLeaderboardJS, UpstreamSource, fetch_all
+from galaius.catalog.published import PublishedEntry, PublishedTable
+import galaius.catalog.tables as benchmark_tables
+import galaius.catalog.tables as bt
+import galaius.catalog.live_sources as live_sources
 from galaius.models import Benchmark, Model, ModelCapability
 
 
@@ -287,7 +287,7 @@ def _empty():
 
 def test_a_fetch_is_cached_so_the_panel_does_not_hit_the_network_every_render(monkeypatch):
     calls = []
-    monkeypatch.setattr("galaius.benchmarks.upstream.fetch_all",
+    monkeypatch.setattr("galaius.catalog.upstream.fetch_all",
                         lambda *a, **k: calls.append(1) or {"mmmu": _table()})
     assert bt.load_tables()["mmmu"].entries[0].model_name == "NewModel-9B"
     bt.load_tables()
@@ -296,7 +296,7 @@ def test_a_fetch_is_cached_so_the_panel_does_not_hit_the_network_every_render(mo
 
 def test_refresh_bypasses_the_ttl(monkeypatch):
     calls = []
-    monkeypatch.setattr("galaius.benchmarks.upstream.fetch_all",
+    monkeypatch.setattr("galaius.catalog.upstream.fetch_all",
                         lambda *a, **k: calls.append(1) or {"mmmu": _table()})
     bt.load_tables()
     bt.load_tables(refresh=True)
@@ -304,7 +304,7 @@ def test_refresh_bypasses_the_ttl(monkeypatch):
 
 
 def test_an_unreachable_upstream_serves_the_stale_cache_rather_than_nothing(monkeypatch):
-    monkeypatch.setattr("galaius.benchmarks.upstream.fetch_all", lambda *a, **k: {"mmmu": _table()})
+    monkeypatch.setattr("galaius.catalog.upstream.fetch_all", lambda *a, **k: {"mmmu": _table()})
     bt.load_tables()
     raw = bt.CACHE.read()
     raw["fetched_at"] = time.time() - (bt.TTL_SECONDS * 10)
@@ -313,7 +313,7 @@ def test_an_unreachable_upstream_serves_the_stale_cache_rather_than_nothing(monk
     def _boom(*a, **k):
         raise RuntimeError("offline")
 
-    monkeypatch.setattr("galaius.benchmarks.upstream.fetch_all", _boom)
+    monkeypatch.setattr("galaius.catalog.upstream.fetch_all", _boom)
     stale = bt.load_tables()["mmmu"]
     assert stale.entries[0].model_name == "NewModel-9B"
     assert stale.freshness == "stale"
@@ -331,13 +331,13 @@ def test_a_failed_download_holds_off_the_ranking_reads_for_ten_minutes(monkeypat
     """A ranking pass reads stale tables thousands of times; with the leaderboards unreachable each
     read downloaded again (18,606 tries, ~190 s a pass). One try, then the stale tables for 10 min;
     a person's own refresh still tries at once."""
-    monkeypatch.setattr("galaius.benchmarks.upstream.fetch_all", lambda *a, **k: {"mmmu": _table()})
+    monkeypatch.setattr("galaius.catalog.upstream.fetch_all", lambda *a, **k: {"mmmu": _table()})
     bt.load_tables()
     raw = bt.CACHE.read()
     raw["fetched_at"] = time.time() - bt.TTL_SECONDS * 2
     bt.CACHE.write(raw)
     calls = []
-    monkeypatch.setattr("galaius.benchmarks.upstream.fetch_all", lambda *a, **k: calls.append(1) or fail())
+    monkeypatch.setattr("galaius.catalog.upstream.fetch_all", lambda *a, **k: calls.append(1) or fail())
 
     assert all(bt.load_tables()["mmmu"].freshness == "stale" for _ in range(200))
     assert len(calls) == 1
@@ -357,7 +357,7 @@ def test_no_cache_and_no_network_is_empty_not_an_exception(monkeypatch):
     def _boom(*a, **k):
         raise RuntimeError("offline")
 
-    monkeypatch.setattr("galaius.benchmarks.upstream.fetch_all", _boom)
+    monkeypatch.setattr("galaius.catalog.upstream.fetch_all", _boom)
     assert bt.load_tables() == {}
 
 
@@ -417,7 +417,7 @@ def test_cache_requires_current_envelope_and_explicit_entry_authority() -> None:
 
 
 def test_one_corrupt_table_does_not_blank_the_others(monkeypatch):
-    monkeypatch.setattr("galaius.benchmarks.upstream.fetch_all",
+    monkeypatch.setattr("galaius.catalog.upstream.fetch_all",
                         lambda *a, **k: {"mmmu": _table(), "video_mme": _table("Other")})
     bt.load_tables()
     raw = bt.CACHE.read()
@@ -430,7 +430,7 @@ def test_one_corrupt_table_does_not_blank_the_others(monkeypatch):
 def test_an_empty_upstream_table_is_not_cached_over_a_real_one(monkeypatch):
     """OpenVLM sources answered 200 with ZERO entries for MMMU and Video-MME. Caching that would
     replace a real (if old) snapshot with nothing — trading stale data for no data."""
-    monkeypatch.setattr("galaius.benchmarks.upstream.fetch_all",
+    monkeypatch.setattr("galaius.catalog.upstream.fetch_all",
                         lambda *a, **k: {"mmmu": _table(), "video_mme": _empty()})
     tables = bt.load_tables()
     assert "mmmu" in tables
@@ -461,7 +461,7 @@ def test_live_display_table_is_the_same_score_criteria_executes(monkeypatch) -> 
     live.entries[0].score = 0.91
     live.entries[0].normalized_score = 0.91
     live.entries[0].model_id = model.id
-    monkeypatch.setattr("galaius.criteria.benchmark_tables.load_tables", lambda: {"mmmu_pro": live})
+    monkeypatch.setattr("galaius.catalog.criteria.benchmark_tables.load_tables", lambda: {"mmmu_pro": live})
 
     assert Criteria.parse("aa.mmmu_pro > 0.9").choose(available_only=False) == model
 
@@ -483,7 +483,7 @@ def test_non_authoritative_scores_never_qualify(
         entries=[PublishedEntry(model_name="exact-model", model_id=model_id, score=0.99,
                                 normalized_score=normalized, status=status)],
     )
-    monkeypatch.setattr("galaius.criteria.benchmark_tables.load_tables", lambda: {"mmmu_pro": table})
+    monkeypatch.setattr("galaius.catalog.criteria.benchmark_tables.load_tables", lambda: {"mmmu_pro": table})
     assert Criteria.parse("aa.mmmu_pro > 0.9").choose(available_only=False) is None
 
 
@@ -520,7 +520,7 @@ def _unreachable(url, **_):
 ])
 def test_a_refresh_that_did_not_happen_says_why_and_how_old_the_board_is(monkeypatch, get, reason, defers):
     """`galaius refresh` printed "Refreshed" while AA answered 429 and the board stayed 8 h old."""
-    from galaius.ttl_cache import RefreshFailed
+    from galaius.catalog.ttl_cache import RefreshFailed
 
     monkeypatch.setenv("ARTIFICIAL_ANALYSIS_API_KEY", "k")
     _stale_board(8)
@@ -537,7 +537,7 @@ def test_a_refresh_that_did_not_happen_says_why_and_how_old_the_board_is(monkeyp
 
 
 def test_no_key_is_a_named_reason_too(monkeypatch):
-    from galaius.ttl_cache import RefreshFailed
+    from galaius.catalog.ttl_cache import RefreshFailed
 
     with pytest.raises(RefreshFailed, match="no ARTIFICIAL_ANALYSIS_API_KEY set"):
         bs.load_scores(refresh=True)

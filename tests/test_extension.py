@@ -21,8 +21,8 @@ from pathlib import Path
 
 import pytest
 
-from galaius import extension_status as es
-from galaius import server_registry as reg
+from galaius.diagnostics import extension_status as es
+from galaius.mcp import registry as reg
 from galaius.cli import app_commands
 
 
@@ -125,8 +125,8 @@ def test_dashboard_has_no_run_grounding_bench():
 
 def test_an_older_installed_version_is_reported(tmp_path, monkeypatch):
     (tmp_path / "alanblanchet.galaius-0.27.0").mkdir()
-    monkeypatch.setattr("galaius.extension_status._extensions_dir", lambda: tmp_path)
-    monkeypatch.setattr("galaius.extension_status._tree_version", lambda: "0.28.0")
+    monkeypatch.setattr("galaius.diagnostics.extension_status._extensions_dir", lambda: tmp_path)
+    monkeypatch.setattr("galaius.diagnostics.extension_status._tree_version", lambda: "0.28.0")
 
     st = es.extension_status()
 
@@ -144,10 +144,10 @@ def test_a_matching_version_with_a_newer_build_than_the_editor_is_still_stale(tm
     tree = tmp_path / "tree"
     (tree / "out").mkdir(parents=True)
     (tree / "out" / "extension.js").write_text("// rebuilt just now\n")
-    monkeypatch.setattr("galaius.extension_status._extensions_dir", lambda: tmp_path)
-    monkeypatch.setattr("galaius.extension_status._extension_dir", lambda: tree)
-    monkeypatch.setattr("galaius.extension_status._tree_version", lambda: "0.28.0")
-    monkeypatch.setattr("galaius.extension_status._editor_starts", lambda: [time.time() - 3600])
+    monkeypatch.setattr("galaius.diagnostics.extension_status._extensions_dir", lambda: tmp_path)
+    monkeypatch.setattr("galaius.diagnostics.extension_status._extension_dir", lambda: tree)
+    monkeypatch.setattr("galaius.diagnostics.extension_status._tree_version", lambda: "0.28.0")
+    monkeypatch.setattr("galaius.diagnostics.extension_status._editor_starts", lambda: [time.time() - 3600])
 
     st = es.extension_status()
 
@@ -179,11 +179,11 @@ def test_matching_version_with_an_editor_started_after_the_build_uses_compiled_b
     tree_compiled.parent.mkdir(parents=True)
     tree_compiled.write_bytes(b"exports.activate = 'current';\n")
 
-    monkeypatch.setattr("galaius.extension_status._extensions_dir", lambda: extensions)
-    monkeypatch.setattr("galaius.extension_status._extension_dir", lambda: tree)
-    monkeypatch.setattr("galaius.extension_status._tree_version", lambda: "0.28.0")
+    monkeypatch.setattr("galaius.diagnostics.extension_status._extensions_dir", lambda: extensions)
+    monkeypatch.setattr("galaius.diagnostics.extension_status._extension_dir", lambda: tree)
+    monkeypatch.setattr("galaius.diagnostics.extension_status._tree_version", lambda: "0.28.0")
     monkeypatch.setattr(
-        "galaius.extension_status._editor_starts",
+        "galaius.diagnostics.extension_status._editor_starts",
         lambda: [installed_compiled.stat().st_mtime + 60],
     )
 
@@ -195,7 +195,7 @@ def test_matching_version_with_an_editor_started_after_the_build_uses_compiled_b
 
 def test_no_installed_extension_is_not_a_complaint(tmp_path, monkeypatch):
     """Plenty of people use galaius purely as an MCP server; that is not a problem to report."""
-    monkeypatch.setattr("galaius.extension_status._extensions_dir", lambda: tmp_path)
+    monkeypatch.setattr("galaius.diagnostics.extension_status._extensions_dir", lambda: tmp_path)
     assert es.extension_status() is None
 
 

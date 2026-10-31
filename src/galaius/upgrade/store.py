@@ -24,12 +24,12 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
-from galaius.file_lock import exclusive
-from galaius.paths import UserPaths
-from galaius.private_files import PRIVATE_FILES
-from galaius.server_registry import _alive
+from galaius.host.file_lock import exclusive
+from galaius.host.paths import UserPaths
+from galaius.host.private_files import PRIVATE_FILES
+from galaius.mcp.registry import _alive
 from galaius.upgrade.release import BuildIdentity, ReleaseOrder
-from galaius.windowless import console_python
+from galaius.host.windowless import console_python
 
 #: A worker exits with this at its quiet point when the pointer names another runtime: "start the
 #: active one in my place" (EX_TEMPFAIL, unused by anything else galaius exits with).
@@ -87,7 +87,7 @@ class Runtime(BaseModel):
     @property
     def python(self) -> Path:
         """Its interpreter; on Windows the console `python.exe` even under pythonw: a child's console
-        is hidden (`galaius.windowless`) and shared by what it starts, which a windowless child's is not."""
+        is hidden (`galaius.host.windowless`) and shared by what it starts, which a windowless child's is not."""
         if sys.platform == "win32":
             return self.path / "Scripts" / "python.exe"
         return self.path / "bin" / "python"
@@ -417,9 +417,9 @@ class RuntimeStore(BaseModel):
     @staticmethod
     def probe(runtime: Runtime) -> dict[str, str]:
         """Both packages, the command entry (supervisor, handoff) and the MCP relay and shared server every
-        client reaches (`galaius.mcp_relay`, `galaius.server.shared`) import inside `runtime`, from `runtime`
+        client reaches (`galaius.mcp.relay`, `galaius.server.shared`) import inside `runtime`, from `runtime`
         (never a stray path): a runtime that cannot start a command or serve its clients is never activated."""
-        script = ("import json, galaius, galaius_core, galaius.cli.app, galaius.mcp_relay, galaius.server.shared; "
+        script = ("import json, galaius, galaius_core, galaius.cli.app, galaius.mcp.relay, galaius.server.shared; "
                   "from importlib.metadata import version; "
                   "print(json.dumps({'galaius': version('galaius'), 'galaius-core': version('galaius-core'), "
                   "'sources': [galaius.__file__, galaius_core.__file__]}))")

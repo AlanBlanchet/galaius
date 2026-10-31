@@ -11,17 +11,19 @@ import uuid
 import pytest
 from galaius_core import ASKED_BY_MAX, AgentMedia
 
-from galaius import brief_hook, inbox_hook
-from galaius.agents import agent_queue, messaging
+from galaius.hooks import brief as brief_hook
+from galaius.hooks import inbox as inbox_hook
+from galaius.agents import messaging
+from galaius.agents.limits import agent_queue
 from galaius.agents import run as agent_run
 from galaius.agents import registry as reg
-from galaius.agents.catalog_connection import CatalogAuthenticationError, CatalogConnectionError
+from galaius.agents.catalog.connection import CatalogAuthenticationError, CatalogConnectionError
 from galaius.agents.policy import Policy
-from galaius.agents.providers import ClaudeCodeProvider, ClaudeTurnSettings
+from galaius.agents.limits.providers import ClaudeCodeProvider, ClaudeTurnSettings
 from galaius.cli.app_commands import agents_work_for
 from galaius.config import Config
-from galaius.fence import FenceSpec
-from galaius.agents.relations import CARD_HEADING
+from galaius.isolation.fence import FenceSpec
+from galaius.agents.catalog.relations import CARD_HEADING
 from tests.support.agents import ScriptedProvider, install_provider, said, use_policy
 
 
@@ -210,7 +212,7 @@ def _listed(run_id: str) -> str:
 
 def _dispatched_here(run_id: str) -> None:
     """Record this test process as the run's live dispatcher, as `ensure_dispatcher_locked` records the PC's hub."""
-    from galaius.processes import process_started
+    from galaius.host.processes import process_started
     with reg.record_lock(run_id):
         agent_queue._set_dispatcher_locked(run_id, os.getpid(), "test-hub", process_started(os.getpid()))
 
@@ -350,7 +352,7 @@ def test_crash_after_queue_intent_leaves_recoverable_bounded_failure(monkeypatch
     script = """
 import os
 from galaius.agents import messaging, registry
-from galaius.agents.catalog_connection import CatalogAuthenticationError, CatalogConnectionError
+from galaius.agents.catalog.connection import CatalogAuthenticationError, CatalogConnectionError
 from galaius.agents.policy import Policy
 from tests.support.agents import ScriptedProvider
 
@@ -532,7 +534,7 @@ def test_two_runs_queued_at_once_are_drained_by_one_dispatcher_process(monkeypat
     deliveries = [messaging.deliver_message(run_id, f"for {run_id}", sender="operator") for run_id in ("r1", "r2")]
     [(module, verb, token)] = started
     hub = {agent_queue._state(run_id)["dispatcher_pid"] for run_id in ("r1", "r2")}
-    assert (module, verb, len(hub)) == ("galaius.agents.agent_queue", "--serve", 1)
+    assert (module, verb, len(hub)) == ("galaius.agents.limits.agent_queue", "--serve", 1)
     assert how[0]["contain"] and "GALAIUS_RUN_ID" not in how[0]["environment"]
 
     drained = []
@@ -550,7 +552,7 @@ def test_a_run_its_dispatcher_drained_never_keeps_a_place_in_the_line(monkeypatc
     """2026-10-21: a deployer run whose queued turn was cancelled while it waited for a place kept that place, first in
     line, held by the PC's dispatcher (which lives on): every resumed turn on the PC waited behind it, 2 places of 6 taken."""
     from galaius.agents.spawn_line import Place, Spawn, SpawnLine
-    from galaius.processes import process_started
+    from galaius.host.processes import process_started
 
     _setup(monkeypatch)
     line = SpawnLine.here()
@@ -655,7 +657,7 @@ def test_reused_dispatcher_pid_does_not_stall_on_unrelated_process(monkeypatch):
 def test_a_dispatcher_is_trusted_only_while_the_recorded_process_lives():
     """Its pid + start time name one process on Linux and Windows alike: a live dispatcher is never
     doubled, and a pid reused by a later process (another start time) or a dead one is not it."""
-    from galaius.processes import process_started
+    from galaius.host.processes import process_started
 
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
@@ -853,7 +855,7 @@ def test_a_turn_whose_service_is_unreachable_keeps_its_message_pending_and_tries
     """Owner 2026-10-23: a six-minute link outage made « Non transmis : votre PC a refusé » of what he dictated. The
     dispatcher reads the run's pinned revision through that link: unreachable, the item keeps its place (`pending`) and
     the run is not failed — a later pass delivers it."""
-    from galaius.agents.catalog_connection import CatalogOffline
+    from galaius.agents.catalog.connection import CatalogOffline
     provider = _setup(monkeypatch)
     messaging.deliver_message("r1", "ce que je viens de dicter", sender="operator", message_id="press-1")
     tries: list[str] = []
@@ -880,7 +882,7 @@ def test_a_turn_whose_service_is_unreachable_keeps_its_message_pending_and_tries
 def test_a_turn_waiting_for_a_service_that_never_comes_back_fails_with_its_reason(monkeypatch):
     """Code-reviewer r1 S4: a cause that is not passing (a wrong address, DNS) must not hold his message for ever. While
     it waits, the item says what it waits for (`waiting`), and past `SERVICE_WAIT_SECONDS` it fails with the reason."""
-    from galaius.agents.catalog_connection import CatalogOffline
+    from galaius.agents.catalog.connection import CatalogOffline
     _setup(monkeypatch)
     messaging.deliver_message("r1", "ce que je viens de dicter", sender="operator", message_id="press-2")
     seen: list[str | None] = []

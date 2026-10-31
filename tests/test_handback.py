@@ -1,5 +1,5 @@
 """A parent whose turn ended while its agents worked is resumed with their reports once the last one ends
-(`galaius.agents.handback`). Owner 2026-10-16: « it said in the UI that tasks were done... But i never got another
+(`galaius.agents.turns.handback`). Owner 2026-10-16: « it said in the UI that tasks were done... But i never got another
 report saying "DONE" forthe tasks... »."""
 
 import asyncio
@@ -10,9 +10,11 @@ import uuid
 
 import pytest
 
-from galaius.agents import agent_queue, handback, relations
+from galaius.agents.limits import agent_queue
+from galaius.agents.turns import handback
+from galaius.agents.catalog import relations
 from galaius.agents import registry as reg
-from galaius.agents.events import Relation
+from galaius.agents.transport.events import Relation
 from galaius.agents.spawn_line import Spawn, SpawnLine
 from tests.support import register_run
 
@@ -368,7 +370,7 @@ def test_a_report_read_inline_is_answered_and_never_handed_back_again(sent, monk
     if read_through == "agents-wait":
         assert [report.text for report in handback.wait([reviewer], timeout=1, interval=0.05, asker=reader).reports] == ["Verdict: PASS."]
     else:
-        from galaius.server import tools_agents
+        from galaius.server.tools import agents as tools_agents
 
         async def replied(delivery):
             delivery.state = read_through
@@ -467,7 +469,7 @@ def test_a_verdict_that_ended_while_its_maker_worked_reaches_it_when_its_turn_en
     handback.hand_back(reviewer)                                   # the maker is at work: nothing handed to it yet
     assert all(call["run_id"] != maker for call in sent)
     if read_mid_turn:   # the maker reads its reviewer's events (`agent_events`, `galaius agents events`) while it works
-        from galaius.server import tools_agents
+        from galaius.server.tools import agents as tools_agents
         monkeypatch.setenv("GALAIUS_RUN_ID", maker)
         assert verdict in asyncio.run(tools_agents.agent_events(reviewer))   # the whole verdict, past the events' cut lines
     reg.finish(maker, exit_code=0, first=0)

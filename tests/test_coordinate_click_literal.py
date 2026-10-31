@@ -16,7 +16,7 @@ import pytest
 
 from galaius.actions.models import ClickAction, HoverAction
 from galaius.desktop import DesktopWindow
-from galaius.desktop.element import DesktopElement
+from galaius.desktop.accessibility.element import DesktopElement
 from galaius.server import _run_actions_desktop
 
 WID = 77

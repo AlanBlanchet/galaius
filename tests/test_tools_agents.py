@@ -13,9 +13,9 @@ import pytest
 from galaius_core import AgentRevisionRef
 
 import galaius.server as srv
-import galaius.server.tools_agents as tools_agents
+import galaius.server.tools.agents as tools_agents
 from galaius.agents import registry as reg
-from galaius.agents.events import AgentEvent
+from galaius.agents.transport.events import AgentEvent
 
 
 def test_agent_tool_functions_have_no_local_imports() -> None:
@@ -44,7 +44,7 @@ async def test_an_unknown_provider_lists_the_real_ones():
 
 @pytest.mark.asyncio
 async def test_an_uninstalled_provider_says_what_is_installed(monkeypatch):
-    from galaius.agents.providers import CodexProvider
+    from galaius.agents.limits.providers import CodexProvider
 
     monkeypatch.setattr(CodexProvider, "available", lambda self: False)
     out = await srv.agent_spawn("do it", provider="codex")
@@ -146,8 +146,8 @@ async def test_an_agent_can_be_spawned_by_its_definition_name(monkeypatch):
 
         return _H()
 
-    monkeypatch.setattr("galaius.server.tools_agents.run_agent", _fake_run)
-    monkeypatch.setattr("galaius.agents.providers.ClaudeCodeProvider.available", lambda self: True)
+    monkeypatch.setattr("galaius.server.tools.agents.run_agent", _fake_run)
+    monkeypatch.setattr("galaius.agents.limits.providers.ClaudeCodeProvider.available", lambda self: True)
     await srv.agent_spawn("review it", agent="code-reviewer")
     assert seen["agent"] == "code-reviewer", "the definition must reach the CLI"
 
@@ -169,8 +169,8 @@ async def test_mcp_validates_and_forwards_exact_revision_without_latest_lookup(m
         pytest.fail("pinned MCP launch tried resolving latest local definition")
 
     monkeypatch.setattr(tools_agents, "run_agent", launch)
-    monkeypatch.setattr("galaius.agents.providers.ClaudeCodeProvider.available", lambda self: True)
-    monkeypatch.setattr("galaius.agents.providers.ClaudeCodeProvider.valid_definition", forbidden_lookup)
+    monkeypatch.setattr("galaius.agents.limits.providers.ClaudeCodeProvider.available", lambda self: True)
+    monkeypatch.setattr("galaius.agents.limits.providers.ClaudeCodeProvider.valid_definition", forbidden_lookup)
     result = await srv.mcp.call_tool("agent_spawn", {
         "task": "Bounded task", "agent": "fixture-worker", "agent_ref": reference.model_dump(mode="json"),
         "delegate": "ask_worker",
@@ -192,8 +192,8 @@ async def test_the_run_is_NAMED_after_the_definition_not_the_provider(monkeypatc
 
         return _H()
 
-    monkeypatch.setattr("galaius.server.tools_agents.run_agent", _fake_run)
-    monkeypatch.setattr("galaius.agents.providers.ClaudeCodeProvider.available", lambda self: True)
+    monkeypatch.setattr("galaius.server.tools.agents.run_agent", _fake_run)
+    monkeypatch.setattr("galaius.agents.limits.providers.ClaudeCodeProvider.available", lambda self: True)
     await srv.agent_spawn("review it", agent="code-reviewer")
     assert seen["name"] == "code-reviewer"
 
@@ -210,8 +210,8 @@ async def test_an_explicit_name_still_wins_over_the_definition(monkeypatch):
 
         return _H()
 
-    monkeypatch.setattr("galaius.server.tools_agents.run_agent", _fake_run)
-    monkeypatch.setattr("galaius.agents.providers.ClaudeCodeProvider.available", lambda self: True)
+    monkeypatch.setattr("galaius.server.tools.agents.run_agent", _fake_run)
+    monkeypatch.setattr("galaius.agents.limits.providers.ClaudeCodeProvider.available", lambda self: True)
     await srv.agent_spawn("do it", agent="code-reviewer", name="second-opinion")
     assert seen["name"] == "second-opinion"
 
@@ -227,9 +227,9 @@ async def test_an_explicit_name_still_wins_over_the_definition(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_tool_caller_cannot_spawn_an_unrestricted_agent(monkeypatch):
-    from galaius.server import tools_agents
+    from galaius.server.tools import agents as tools_agents
 
-    monkeypatch.setattr("galaius.agents.providers.ClaudeCodeProvider.available", lambda self: True)
+    monkeypatch.setattr("galaius.agents.limits.providers.ClaudeCodeProvider.available", lambda self: True)
 
     spawned = []
 
@@ -249,9 +249,9 @@ async def test_a_tool_caller_cannot_spawn_an_unrestricted_agent(monkeypatch):
 async def test_a_restricted_mode_still_goes_through(monkeypatch):
     """The control is not disabled for models — only its unrestricted end is. Handing an agent
     'plan' is exactly the safe delegation this feature exists for."""
-    from galaius.server import tools_agents
+    from galaius.server.tools import agents as tools_agents
 
-    monkeypatch.setattr("galaius.agents.providers.ClaudeCodeProvider.available", lambda self: True)
+    monkeypatch.setattr("galaius.agents.limits.providers.ClaudeCodeProvider.available", lambda self: True)
 
     got = {}
 

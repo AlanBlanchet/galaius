@@ -1,5 +1,5 @@
 """Windows: from a galaius process with no console window, the programs it starts open none
-either (`galaius.windowless`); a caller asking for a console of its own keeps it; a terminal is left alone."""
+either (`galaius.host.windowless`); a caller asking for a console of its own keeps it; a terminal is left alone."""
 
 import asyncio
 import ctypes
@@ -12,8 +12,8 @@ import pytest
 if sys.platform != "win32":
     pytest.skip("Windows console windows", allow_module_level=True)
 
-from galaius.machine_service import WindowsMachineService  # noqa: E402
-from galaius.windowless import hide_child_consoles  # noqa: E402
+from galaius.machine.service import WindowsMachineService  # noqa: E402
+from galaius.host.windowless import hide_child_consoles  # noqa: E402
 
 PROBE = "import ctypes; print(ctypes.windll.kernel32.GetConsoleWindow())"
 
@@ -65,7 +65,7 @@ def test_a_program_run_from_a_terminal_is_left_alone(monkeypatch: pytest.MonkeyP
 def test_every_entry_point_has_it_from_the_package_import(tmp_path: Path) -> None:
     """pythonw (no console window), any entry point: `import galaius` alone installs it."""
     pythonw, said = Path(sys.executable).with_name("pythonw.exe"), tmp_path / "said.txt"
-    subprocess.run([str(pythonw), "-c", "import sys, subprocess, galaius.agents.agent_queue; "
+    subprocess.run([str(pythonw), "-c", "import sys, subprocess, galaius.agents.limits.agent_queue; "
                     "open(sys.argv[1], 'w').write(str(getattr(subprocess.Popen.__init__, 'hides_consoles', False)))", str(said)], check=True, timeout=120)
     assert said.read_text() == "True"
 
@@ -73,7 +73,7 @@ def test_every_entry_point_has_it_from_the_package_import(tmp_path: Path) -> Non
 def test_python_children_get_the_console_interpreter_under_pythonw(tmp_path: Path) -> None:
     """Under pythonw a Python child is started as python.exe, whose hidden console what it starts shares."""
     pythonw, said = Path(sys.executable).with_name("pythonw.exe"), tmp_path / "said.txt"
-    subprocess.run([str(pythonw), "-c", "import sys; from galaius.windowless import console_python, windowless_process; "
+    subprocess.run([str(pythonw), "-c", "import sys; from galaius.host.windowless import console_python, windowless_process; "
                     "open(sys.argv[1], 'w').write(console_python() + '|' + str(windowless_process()))", str(said)], check=True, timeout=120)
     interpreter, windowless = said.read_text().split("|")
     assert Path(interpreter).name.lower() == "python.exe" and windowless == "True"
@@ -82,9 +82,9 @@ def test_python_children_get_the_console_interpreter_under_pythonw(tmp_path: Pat
 def test_the_service_logs_from_a_hidden_console(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A worker in a hidden console has a stdout nobody sees: the service still writes its log."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.setattr("galaius.machine_service.windowless_process", lambda: True)
+    monkeypatch.setattr("galaius.machine.service.windowless_process", lambda: True)
     monkeypatch.setattr(WindowsMachineService, "held_children", staticmethod(lambda: type("Job", (), {"Close": lambda self: None})()))
-    monkeypatch.setattr("galaius.machine_service.MachineService.run", lambda self: print("connecting"))
+    monkeypatch.setattr("galaius.machine.service.MachineService.run", lambda self: print("connecting"))
     stdout, stderr = sys.stdout, sys.stderr
     try:
         WindowsMachineService().run()

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 import galaius
-from galaius.private_files import PRIVATE_FILES
+from galaius.host.private_files import PRIVATE_FILES
 from galaius.functions import FunctionRegistry, discover_python, discover_shell, invoke
 
 

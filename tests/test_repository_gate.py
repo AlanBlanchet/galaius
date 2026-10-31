@@ -11,7 +11,7 @@ from uuid import uuid4
 
 import pytest
 
-from galaius.private_files import PRIVATE_FILES
+from galaius.host.private_files import PRIVATE_FILES
 from tests.support import child_environment, commit_all, git_out, init_repo
 from tests.support.private_files import loosen
 

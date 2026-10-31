@@ -21,8 +21,8 @@ from galaius.desktop.coords import CoordTransform
 from galaius.desktop.cursor import Cursor
 from galaius.desktop.video import _ffmpeg_grab_args, _VideoSession
 from galaius.desktop.input import MULTI_CLICK_GAP_MS, to_xdotool_key
-from galaius.parsing import Parse
-from galaius.server_registry import _alive as process_alive
+from galaius.vision.parsing import Parse
+from galaius.mcp.registry import _alive as process_alive
 from galaius.state import Element, InteractiveElement
 
 _log = logging.getLogger("galaius")

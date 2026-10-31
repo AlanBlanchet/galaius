@@ -269,7 +269,7 @@ class DesktopState(BaseModel):
 
     @classmethod
     def capture(cls, window_name: str):
-        from galaius.desktop.atspi import AtSpi  # noqa: PLC0415 — platform-guarded optional native dep
+        from galaius.desktop.accessibility.atspi import AtSpi  # noqa: PLC0415 — platform-guarded optional native dep
 
         return cls(
             window_name=window_name,

@@ -10,8 +10,8 @@ from uuid import uuid4
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from galaius.agents.catalog_connection import CatalogConnection
-from galaius.mcp_announcement import GatewayServed
+from galaius.agents.catalog.connection import CatalogConnection
+from galaius.mcp.announcement import GatewayServed
 from galaius.agents.tool_gateway import AgentToolList, GatewayTool, ServedGateway, ToolGateway
 
 

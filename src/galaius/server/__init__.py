@@ -16,7 +16,15 @@ import asyncio  # noqa: F401 — re-exported: some tests patch galaius.server.as
 
 # Submodules — importing the tools_* modules runs their @mcp.tool decorators (registration).
 from galaius.server import capture, core, sandbox, targets, vlm  # noqa: F401
-from galaius.server import tools_agents, tools_desktop, tools_files, tools_images, tools_media, tools_video, tools_meta, tools_vision, tools_web  # noqa: F401
+from galaius.server.tools import agents as tools_agents
+from galaius.server.tools import desktop as tools_desktop
+from galaius.server.tools import files as tools_files
+from galaius.server.tools import images as tools_images
+from galaius.server.tools import media as tools_media
+from galaius.server.tools import video as tools_video
+from galaius.server.tools import meta as tools_meta
+from galaius.server.tools import vision as tools_vision
+from galaius.server.tools import web as tools_web
 
 # --- Shared instances / entrypoint (core) ---
 from galaius.server.core import (  # noqa: F401
@@ -101,7 +109,7 @@ from galaius.server.capture import (  # noqa: F401
 )
 
 # --- Tools ---
-from galaius.server.tools_web import (  # noqa: F401
+from galaius.server.tools.web import (  # noqa: F401
     download_asset,
     get_logs,
     get_page_state,
@@ -109,7 +117,7 @@ from galaius.server.tools_web import (  # noqa: F401
     run_actions,
     session,
 )
-from galaius.server.tools_vision import (  # noqa: F401
+from galaius.server.tools.vision import (  # noqa: F401
     get_interactive_elements,
     measure_ui,
     review_ui,
@@ -117,7 +125,7 @@ from galaius.server.tools_vision import (  # noqa: F401
     transcribe,
     verify_ui,
 )
-from galaius.server.tools_desktop import (  # noqa: F401
+from galaius.server.tools.desktop import (  # noqa: F401
     _record_browser,
     _record_desktop,
     launch_app,
@@ -125,9 +133,9 @@ from galaius.server.tools_desktop import (  # noqa: F401
     record,
     reset_sandbox,
 )
-from galaius.server.tools_audit import audit_ui  # noqa: F401
-from galaius.server.tools_meta import list_providers, report_issue  # noqa: F401
-from galaius.server.tools_agents import (  # noqa: F401
+from galaius.server.tools.audit import audit_ui  # noqa: F401
+from galaius.server.tools.meta import list_providers, report_issue  # noqa: F401
+from galaius.server.tools.agents import (  # noqa: F401
     agent_events,
     agent_list,
     agent_providers,
@@ -137,7 +145,7 @@ from galaius.server.tools_agents import (  # noqa: F401
 )
 
 # --- Names other modules define but tests reach through galaius.server (back-compat) ---
-from galaius.debug_utils import Debug  # noqa: F401
+from galaius.diagnostics.debug_output import Debug  # noqa: F401
 from galaius.desktop import DesktopElement, DesktopWindow  # noqa: F401
 from galaius.vision.detect import _crop_image, _desktop_context, _detect_desktop_elements  # noqa: F401
 from galaius.actions.dispatch import _run_actions_browser, _run_actions_desktop  # noqa: F401

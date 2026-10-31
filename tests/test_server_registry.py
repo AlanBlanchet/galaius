@@ -18,8 +18,8 @@ from pathlib import Path
 
 import pytest
 
-from galaius import server_registry as sr
-from galaius import server_registry as reg  # kept for the staleness block's readability
+from galaius.mcp import registry as sr
+from galaius.mcp import registry as reg
 from galaius.cli import app_commands
 
 # HOME isolation comes from tests/conftest.py's `_isolate_unit_configuration`; the runtime dir

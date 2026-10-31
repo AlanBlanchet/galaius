@@ -338,7 +338,7 @@ async def test_the_recorded_frames_are_the_emulated_size_on_a_real_recording():
 
 @pytest.mark.asyncio
 async def test_browser_recording_keeps_requested_fps_until_stop(monkeypatch):
-    from galaius.server import tools_desktop
+    from galaius.server.tools import desktop as tools_desktop
     from galaius.vision.types import RecordingResult, RecordingCapture, MediaAnalysis
 
     mgr = browser_manager()
@@ -369,7 +369,7 @@ async def test_browser_recording_keeps_requested_fps_until_stop(monkeypatch):
 async def test_record_metadata_reads_encoded_fps_not_requested_sampling(tmp_path):
     import shutil
     import subprocess
-    from galaius.server.tools_desktop import _record_metadata
+    from galaius.server.tools.desktop import _record_metadata
 
     executable = shutil.which('ffmpeg')
     if executable is None or shutil.which('ffprobe') is None:
@@ -391,7 +391,7 @@ async def test_record_metadata_reads_encoded_fps_not_requested_sampling(tmp_path
     ({'streams': 'invalid shape'}, (None, None)),
 ])
 async def test_record_metadata_validates_probe_boundary(monkeypatch, payload, expected):
-    from galaius.server import tools_desktop
+    from galaius.server.tools import desktop as tools_desktop
 
     process = AsyncMock(return_value=(0, json.dumps(payload).encode(), b''))
     monkeypatch.setattr(tools_desktop, 'run_isolated_process', process)
@@ -401,7 +401,7 @@ async def test_record_metadata_validates_probe_boundary(monkeypatch, payload, ex
 
 @pytest.mark.asyncio
 async def test_record_metadata_failure_does_not_invent_an_effective_rate(monkeypatch):
-    from galaius.server import tools_desktop
+    from galaius.server.tools import desktop as tools_desktop
 
     monkeypatch.setattr(tools_desktop, 'run_isolated_process', AsyncMock(side_effect=TimeoutError))
     assert await tools_desktop._record_metadata(b'fixture clip') == (None, None)
@@ -421,7 +421,7 @@ async def test_failed_browser_recording_drops_requested_fps(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('fps', [0, -1])
 async def test_record_refuses_invalid_fps_before_target_lookup(monkeypatch, fps):
-    from galaius.server import tools_desktop
+    from galaius.server.tools import desktop as tools_desktop
     from unittest.mock import Mock
 
     lookup = Mock(side_effect=AssertionError('must reject before target lookup'))

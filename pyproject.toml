@@ -19,7 +19,7 @@ dependencies = [
     "python-xlib>=0.33; sys_platform == 'linux'", # enumerate override-redirect popups to composite into captures (#31)
     "mss>=9.0", # cross-platform screen capture for the macOS/Windows desktop backend (#24)
     "pynput>=1.7; sys_platform != 'linux'", # pointer + keyboard for the macOS/Windows desktop backend (#24); on Linux it would pull source-only evdev
-    "pywin32>=306; sys_platform == 'win32'", # Windows: owner-only file ACLs + DPAPI for saved credentials (galaius/private_files.py)
+    "pywin32>=306; sys_platform == 'win32'", # Windows: owner-only file ACLs + DPAPI for saved credentials (galaius/host/private_files.py)
     # wait_for text= on a desktop target reads the screen with the OS's own OCR (galaius/desktop/ocr.py)
     "winrt-runtime>=3.2; sys_platform == 'win32'",
     "winrt-Windows.Media.Ocr>=3.2; sys_platform == 'win32'",
@@ -42,8 +42,8 @@ dependencies = [
     "jsonschema>=4.23,<5",
     "datasets>=2.20",
     "textual>=8.2.7",
-    "huggingface_hub>=0.35",  # fetches a workspace's own huggingface_repo model weights (galaius/user_models.py); no torch dependency
-    # create_file's formats (galaius/files.py), written locally: Word, Excel, PowerPoint (MIT), PDF from Typst (Apache-2.0)
+    "huggingface_hub>=0.35",  # fetches a workspace's own huggingface_repo model weights (galaius/inference/user_models.py); no torch dependency
+    # create_file's formats (galaius/media/files.py), written locally: Word, Excel, PowerPoint (MIT), PDF from Typst (Apache-2.0)
     "python-docx>=1.2,<2",
     "openpyxl>=3.1.5,<4",
     "python-pptx>=1.0.2,<2",
@@ -91,13 +91,13 @@ packages = [
 artifacts = [
     "src/galaius/js/*.js",
     "src/galaius/data/*.json",
-    "src/galaius/agents/codex_app_server_schema/*.json",
+    "src/galaius/agents/transport/codex_app_server_schema/*.json",
 ]
 
 [project.scripts]
 galaius = "galaius.cli:main"
-galaius-fetch-upstream = "galaius.benchmarks.upstream:_main"
-galaius-sign-in-browser = "galaius.sign_in_browser:main"
+galaius-fetch-upstream = "galaius.catalog.upstream:_main"
+galaius-sign-in-browser = "galaius.machine.sign_in_browser:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

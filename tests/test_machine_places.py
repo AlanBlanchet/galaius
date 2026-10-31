@@ -1,4 +1,4 @@
-"""Levels from the web, as the PC answers signed requests (`galaius.machine_places.PlaceDesk`):
+"""Levels from the web, as the PC answers signed requests (`galaius.machine.places.PlaceDesk`):
 a change applies at once, a widening never past the home folder's insides, hidden names or
 credential stores; every change lands in the PC's own log with its digest; browsing lists folder
 names inside the home folder, file names only with the PC's opt-in; a review can be read or
@@ -19,8 +19,8 @@ from pydantic import ValidationError
 from galaius_core import MACHINE_AGENT_REQUESTS, AgentRefusal, MachineFence, OwnFault
 from galaius_core.wire import internals
 from galaius.agents.run import ModelUnavailable
-from galaius.machines import MachineConfig, MachineRunner, said_of
-from galaius.place_reviews import PlaceReviews
+from galaius.machine.connection import MachineConfig, MachineRunner, said_of
+from galaius.machine.place_reviews import PlaceReviews
 
 pytestmark = pytest.mark.usefixtures("directory_backend")
 
@@ -131,7 +131,7 @@ def test_a_narrowing_stops_every_fenced_agent_turn_running_now(runner: MachineRu
     """Its next turn is built from the narrowed levels; the turn running now is not left with the
     old ones. A widening stops nothing."""
     from galaius.agents import registry as reg
-    from galaius.fence import FenceSpec
+    from galaius.isolation.fence import FenceSpec
     spec = FenceSpec(working_directory=home, levels_file=runner.config_path, start=home / "docs", state=tmp_path / "state")
     fenced, loose = reg.AgentRun(run_id="fenced", provider="claude", name="a", fence=spec), reg.AgentRun(run_id="loose", provider="claude", name="b")
     stopped: list[str] = []

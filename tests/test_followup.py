@@ -9,13 +9,14 @@ import sys
 
 import pytest
 
-from galaius.agents import agent_queue, messaging
+from galaius.agents import messaging
+from galaius.agents.limits import agent_queue
 from galaius.agents import registry as reg
-from galaius.agents import followup as followup_module
+from galaius.agents.turns import followup as followup_module
 from galaius.agents import run as run_module
-from galaius.agents.followup import FollowUps
-from galaius.agents.warm import WarmStart
-from galaius.agents.providers import ClaudeCodeProvider
+from galaius.agents.turns.followup import FollowUps
+from galaius.agents.limits.warm import WarmStart
+from galaius.agents.limits.providers import ClaudeCodeProvider
 from tests.support.agents import ScriptedProvider, install_provider, said, use_policy
 
 #: The next turn's child: waits for its message, says it read it (as `--replay-user-messages` does), answers it.

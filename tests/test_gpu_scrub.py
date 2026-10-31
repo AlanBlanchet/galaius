@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from galaius import gpu_scrub
+from galaius.isolation import gpu_scrub
 
 
 def _cuda_reachable() -> bool:

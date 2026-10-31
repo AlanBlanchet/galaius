@@ -29,11 +29,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from galaius_core import StopActor
-from galaius.agents import quota, registry as reg
-from galaius.agents.events import TOKEN_FIELDS, AgentEvent
-from galaius.pinned_directory import DescriptorDirectory
-from galaius.private_files import PRIVATE_FILES
-from galaius.processes import process_exited
+from galaius.agents import registry as reg
+from galaius.agents.limits import quota
+from galaius.agents.transport.events import TOKEN_FIELDS, AgentEvent
+from galaius.host.pinned_directory import DescriptorDirectory
+from galaius.host.private_files import PRIVATE_FILES
+from galaius.host.processes import process_exited
 from tests.support import register_run
 from tests.support.private_files import loosen
 
@@ -698,7 +699,7 @@ def test_stop_rejects_a_stale_lifecycle_token():
 
 
 def test_stop_fails_closed_when_queue_cancellation_cannot_persist(monkeypatch):
-    from galaius.agents import agent_queue
+    from galaius.agents.limits import agent_queue
 
     register_run(pid=None)
     monkeypatch.setattr(
@@ -872,7 +873,7 @@ _WORKING = {"type": "assistant", "session_id": "s", "message": {"role": "assista
 def test_a_stop_after_its_answer_leaves_the_run_finished(monkeypatch, lines, turn, alive, exit_code, expected):
     """A run whose own stream ended on its answer, no turn claimed since, is done whoever stops it after; only a run cut
     mid-work reads stopped (and offers Continue)."""
-    from galaius.agents import agent_queue
+    from galaius.agents.limits import agent_queue
 
     reg.register(run_id="r1", name="tester", provider="claude", task="t", pid=1)
     register_run("boss", pid=2, agent="main")
@@ -1762,7 +1763,7 @@ def _claude_answer_stream() -> str:
 
 
 def test_a_late_refusal_ending_a_fresh_run_records_a_cooldown():
-    from galaius.agents import quota
+    from galaius.agents.limits import quota
 
     reg.register(run_id="late1", pid=222, provider="claude", name="w",
                 agent="web-researcher", model="claude-fable-5-1")
@@ -1786,7 +1787,7 @@ def test_a_late_model_refusal_is_remembered_against_the_login_that_heard_it():
     the same model the account cannot run. A LATE refusal of the model to this login is remembered
     here exactly as a late quota refusal is — against the login (`record_unsupported`), never as a
     quota block."""
-    from galaius.agents import quota
+    from galaius.agents.limits import quota
 
     reg.register(run_id="late-unsupported", pid=555, provider="codex", name="w",
                 agent="app-engineer", model="gpt-6-astra", login="chatgpt-account")
@@ -1812,7 +1813,7 @@ def test_a_late_refusal_ending_a_RESUMED_run_records_a_cooldown():
     `agents send` produces. The refusal arrives on this second turn, after the first turn's own
     successful reply, exactly like the captured evidence's resumed run
     (`e3655140*` — a queued `agents send` delivery that died on the same Fable refusal)."""
-    from galaius.agents import quota
+    from galaius.agents.limits import quota
 
     reg.register(run_id="late2", pid=111, provider="claude", name="w",
                 agent="app-engineer", model="claude-fable-5-1")
@@ -1848,7 +1849,7 @@ def test_a_late_refusal_on_an_ORPHANED_run_records_a_cooldown_exactly_once():
     runs that died on the same refusal had exactly this shape (`exit_code: None` in their `.json`).
     Read repeatedly (as a panel polls), it must record the cooldown ONCE, never re-extend it
     forever."""
-    from galaius.agents import quota
+    from galaius.agents.limits import quota
 
     reg.register(run_id="orphan1", pid=999999, provider="claude", name="w",
                 agent="visual-critic", model="claude-fable-5-1")
@@ -1900,7 +1901,7 @@ def test_an_unreaped_run_answering_after_a_refusal_clears_it():
 
 
 def test_a_clean_finish_records_no_cooldown():
-    from galaius.agents import quota
+    from galaius.agents.limits import quota
 
     reg.register(run_id="late3", pid=444, provider="claude", name="w",
                 agent="tester", model="claude-fable-5-1")
@@ -1938,7 +1939,7 @@ def test_a_pid_given_to_another_process_is_neither_the_run_nor_stopped_with_it()
     """A run's pid names its process only with the start time recorded beside it: once the system
     gives that pid to another program (Windows reuses pids within minutes), the run reads crashed
     and stopping it leaves that program alone. The run's own process is still stopped, whole tree."""
-    from galaius.processes import process_group_options
+    from galaius.host.processes import process_group_options
 
     def sleeper() -> subprocess.Popen:
         return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], **process_group_options())
@@ -2148,7 +2149,7 @@ def _ended_on(run_id: str, said: str, *, pid: int, parent: str | None = None, wo
     ("Error: the build failed", False),
 ])
 def test_only_a_usage_limit_naming_its_reset_pauses_a_run(resuming, said, paused):
-    from galaius.agents import quota
+    from galaius.agents.limits import quota
 
     run = _ended_on("lim1", said, pid=401)
     written = reg.schedule_resumes()
@@ -2167,7 +2168,7 @@ def test_only_a_usage_limit_naming_its_reset_pauses_a_run(resuming, said, paused
     ("claude-opus-5-5", -60.0, False),  # an answer heard before the refusal
 ])
 def test_a_paused_run_resumes_once_its_login_answers_again_before_the_named_reset(resuming, answered_by, after, early):
-    from galaius.agents import quota
+    from galaius.agents.limits import quota
 
     run = _ended_on("lim-lift", _SESSION_LIMIT, pid=404)
     reset = quota.Refusal.read(_SESSION_LIMIT, now=run.finished_at).reopens_at + quota.RESET_SLACK
@@ -2179,7 +2180,7 @@ def test_a_paused_run_resumes_once_its_login_answers_again_before_the_named_rese
 
 
 def test_his_press_keeps_the_lift_for_other_paused_runs_and_a_refused_early_resume_keeps_the_named_reset(resuming):
-    from galaius.agents import quota
+    from galaius.agents.limits import quota
 
     first, other = _ended_on("lim-a", _SESSION_LIMIT, pid=405), _ended_on("lim-b", _SESSION_LIMIT, pid=406)
     reset = quota.Refusal.read(_SESSION_LIMIT, now=other.finished_at).reopens_at + quota.RESET_SLACK

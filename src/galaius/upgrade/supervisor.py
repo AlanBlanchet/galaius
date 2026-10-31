@@ -35,9 +35,9 @@ from typing import ClassVar, Literal, NoReturn
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from galaius.mcp_announcement import McpAnnouncement
+from galaius.mcp.announcement import McpAnnouncement
 from galaius.upgrade.handoff import Children, Handoff
-from galaius.private_files import PRIVATE_FILES
+from galaius.host.private_files import PRIVATE_FILES
 from galaius.upgrade.store import EXIT_UPGRADE, Addressed, Runtime, RuntimeStore
 
 class SupervisorSettings(BaseModel):

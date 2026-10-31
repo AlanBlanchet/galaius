@@ -9,15 +9,15 @@ from uuid import uuid4
 
 import pytest
 
-from galaius import prompt_projection
-from galaius.private_files import PRIVATE_FILES
-from galaius.prompt_projection import (
+from galaius.prompts import projection as prompt_projection
+from galaius.host.private_files import PRIVATE_FILES
+from galaius.prompts.projection import (
     MANIFEST_NAME,
     compile_prompt_projection,
     install_prompt_projection,
     stage_projection_install,
 )
-from galaius.agents.subscriptions import Subscription
+from galaius.agents.limits.subscriptions import Subscription
 from tests.support import child_environment, commit_all, init_repo, run_git
 
 pytestmark = pytest.mark.usefixtures("directory_backend")

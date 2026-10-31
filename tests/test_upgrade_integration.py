@@ -21,11 +21,11 @@ from pathlib import Path
 import pytest
 from websockets.asyncio.server import serve
 
-from galaius.machines import MachineConfig, MachineRunner
+from galaius.machine.connection import MachineConfig, MachineRunner
 from galaius.config.settings import Config
 from galaius.upgrade.check import UpgradeCheck
 from galaius.upgrade.source import ReleaseSigner
-from galaius.server_registry import _alive
+from galaius.mcp.registry import _alive
 from galaius.upgrade.store import LiveProcess, Runtime, RuntimeStore
 
 CHECKOUT = Path(__file__).resolve().parents[1]

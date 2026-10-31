@@ -12,13 +12,13 @@ import pytest
 
 from galaius.agents import registry as reg
 from galaius.agents.conversations import TIERS, TYPED, ConversationIndex, ConversationScope
-from galaius.agents.events import AgentEvent, instant
-from galaius.agents.subscriptions import Subscription
-from galaius.agents.subscriptions import RunSubscription
-from galaius.fence import FenceSpec
-from galaius.machine_agents import MachineAgents
-from galaius.redaction import redact
-from galaius.server import tools_agents
+from galaius.agents.transport.events import AgentEvent, instant
+from galaius.agents.limits.subscriptions import Subscription
+from galaius.agents.limits.subscriptions import RunSubscription
+from galaius.isolation.fence import FenceSpec
+from galaius.machine.agents import MachineAgents
+from galaius.host.redaction import redact
+from galaius.server.tools import agents as tools_agents
 
 # Built in pieces so no secret scanner mistakes the fixture for a real key.
 SECRET = "sk-" + "proj" + "A1b2C3d4E5f6G7h8I9j0"

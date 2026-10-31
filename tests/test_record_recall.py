@@ -1,5 +1,5 @@
 """A coordinator's card recalls what the person asked before about the things his new words name, from the project's own
-record (`galaius.agents.record_recall`; 2026-10-22: an ask recorded days before was answered as new)."""
+record (`galaius.agents.turns.record_recall`; 2026-10-22: an ask recorded days before was answered as new)."""
 
 import subprocess
 import time
@@ -8,7 +8,7 @@ import uuid
 import pytest
 
 from galaius.agents import registry as reg
-from galaius.agents import relations
+from galaius.agents.catalog import relations
 from tests.support import register_run
 
 RECORD = """# Decisions

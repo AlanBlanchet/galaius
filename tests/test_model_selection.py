@@ -5,7 +5,7 @@ field and no separate fallback-chain field — ``Criteria.qualifying`` already r
 clearing model in rank order, so the second entry IS the fallback.
 
 A bare capability filter with no ranking term (``cap.vlm``) resolves CHEAPEST-clearing, same as
-every other criterion in this product (`galaius/criteria.py`); a bare measured benchmark switches
+every other criterion in this product (`galaius/catalog/criteria.py`); a bare measured benchmark switches
 to best-measured-first. Real cases this covers: no provider configured at all, a criterion that
 resolves once a key is set, an explicit per-call override beating everything, and a criterion
 that clears nothing REFUSING loudly rather than silently substituting a model nobody asked for.

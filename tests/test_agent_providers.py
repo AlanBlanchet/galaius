@@ -19,14 +19,14 @@ from pathlib import Path
 import pytest
 from galaius_core import ContextGauge
 
-from galaius.agents.events import TOKEN_FIELDS, AgentEvent, UsageLedger
-from galaius.agents.providers import (
+from galaius.agents.transport.events import TOKEN_FIELDS, AgentEvent, UsageLedger
+from galaius.agents.limits.providers import (
     PROJECT_SETTINGS_OFF,
     PROVIDERS, ClaudeCodeProvider, CodexProvider, UnsupportedToolPolicy, provider_for,
 )
 from galaius.models import Model
 from galaius.agents.registry import StreamDigest, participant_environment
-from galaius.processes import NpmShim, spawnable
+from galaius.host.processes import NpmShim, spawnable
 
 
 @pytest.mark.parametrize("resume", [False, True])
@@ -359,7 +359,7 @@ def test_codex_image_support_is_verified_from_installed_help(monkeypatch):
         returncode = 0
         stdout = "  -i, --image <FILE>...  Optional image(s)"
 
-    monkeypatch.setattr("galaius.agents.providers.subprocess.run", lambda *a, **k: _Help())
+    monkeypatch.setattr("galaius.agents.limits.providers.subprocess.run", lambda *a, **k: _Help())
     assert provider.image_attachment_support() is True
 
     _Help.stdout = "  -m, --model <MODEL>"
@@ -702,13 +702,13 @@ def test_a_verified_providers_real_caveat_still_shows():
     """`verified` says the flags were checked against a real binary; it is NOT permission to hide
     a caveat that stays true regardless — every one of the three surfaces that print this
     (`agent_providers`, the CLI `providers` command, the per-spawn NOTE) shares this one line."""
-    from galaius.agents.providers import provider_caveat_note
+    from galaius.agents.limits.providers import provider_caveat_note
 
     assert "no codex-documented equivalent" in provider_caveat_note(CodexProvider())
 
 
 def test_an_unverified_provider_with_no_written_caveat_falls_back_to_saying_so():
-    from galaius.agents.providers import provider_caveat_note
+    from galaius.agents.limits.providers import provider_caveat_note
 
     class _Untested(ClaudeCodeProvider):
         verified = False
@@ -718,7 +718,7 @@ def test_an_unverified_provider_with_no_written_caveat_falls_back_to_saying_so()
 
 
 def test_a_verified_provider_with_no_caveat_says_nothing():
-    from galaius.agents.providers import provider_caveat_note
+    from galaius.agents.limits.providers import provider_caveat_note
 
     class _Solid(ClaudeCodeProvider):
         verified = True
@@ -810,7 +810,7 @@ def test_a_provider_that_cannot_resume_says_so():
     ["thinking_tokens", "hook_started", "hook_response"],
 )
 def test_vendor_housekeeping_is_dropped_not_shown_as_other(subtype):
-    from galaius.agents.providers import ClaudeCodeProvider
+    from galaius.agents.limits.providers import ClaudeCodeProvider
 
     event = ClaudeCodeProvider().parse(
         json.dumps({"type": "system", "subtype": subtype, "session_id": "s"})
@@ -820,7 +820,7 @@ def test_vendor_housekeeping_is_dropped_not_shown_as_other(subtype):
 
 def test_a_spawned_subagent_is_real_activity_and_is_kept():
     """An agent starting a Task IS the team behaviour the panel exists to show."""
-    from galaius.agents.providers import ClaudeCodeProvider
+    from galaius.agents.limits.providers import ClaudeCodeProvider
 
     event = ClaudeCodeProvider().parse(
         json.dumps({"type": "system", "subtype": "task_started", "session_id": "s"})
@@ -830,7 +830,7 @@ def test_a_spawned_subagent_is_real_activity_and_is_kept():
 
 def test_an_unknown_system_subtype_is_still_kept_as_other():
     """A vendor adding a new event must not vanish — dropping is for the known-noisy only."""
-    from galaius.agents.providers import ClaudeCodeProvider
+    from galaius.agents.limits.providers import ClaudeCodeProvider
 
     event = ClaudeCodeProvider().parse(
         json.dumps({"type": "system", "subtype": "something_new", "session_id": "s"})
@@ -841,7 +841,7 @@ def test_an_unknown_system_subtype_is_still_kept_as_other():
 def test_the_incoming_prompt_is_named_not_lumped_as_other():
     """A `user` line carrying text is what was ASKED of the agent — the other half of the
     conversation. Left as `other` the activity view showed only the agent's replies."""
-    from galaius.agents.providers import ClaudeCodeProvider
+    from galaius.agents.limits.providers import ClaudeCodeProvider
 
     event = ClaudeCodeProvider().parse(json.dumps({
         "type": "user", "session_id": "s",
@@ -858,7 +858,7 @@ def test_the_incoming_prompt_is_named_not_lumped_as_other():
 
 
 def test_a_provider_lists_the_agent_definitions_it_can_resolve(tmp_path, monkeypatch):
-    from galaius.agents.providers import ClaudeCodeProvider
+    from galaius.agents.limits.providers import ClaudeCodeProvider
 
     home = tmp_path / ".claude" / "agents"
     home.mkdir(parents=True)
@@ -869,7 +869,7 @@ def test_a_provider_lists_the_agent_definitions_it_can_resolve(tmp_path, monkeyp
 
 
 def test_no_definitions_directory_is_an_empty_list_not_an_error(tmp_path, monkeypatch):
-    from galaius.agents.providers import ClaudeCodeProvider
+    from galaius.agents.limits.providers import ClaudeCodeProvider
 
     assert ClaudeCodeProvider().agent_definitions() == []
 
@@ -930,8 +930,8 @@ def _codex_turn(input_tokens: int, cached: int, write: int, output: int) -> dict
 
 
 def test_codex_turns_settle_the_reasoning_their_cumulative_counter_grew():
-    from galaius.agents.events import UsageLedger
-    from galaius.agents.providers import PROVIDERS
+    from galaius.agents.transport.events import UsageLedger
+    from galaius.agents.limits.providers import PROVIDERS
 
     ledger, turn = UsageLedger(), _codex_turn(1000, 0, 0, 400)
     thought = [PROVIDERS["codex"].parse(json.dumps({**turn, "usage": {**turn["usage"], "reasoning_output_tokens": n}}), ledger).thinking_tokens
@@ -980,7 +980,7 @@ def test_session_usage_sums_to_vendor_truth(provider, stream, truth):
 
 def test_no_usage_at_all_reports_nothing_rather_than_zero():
     """Zero would render as a real measurement of an empty context."""
-    from galaius.agents.providers import ClaudeCodeProvider
+    from galaius.agents.limits.providers import ClaudeCodeProvider
 
     event = ClaudeCodeProvider().parse(json.dumps({
         "type": "assistant", "session_id": "s",
@@ -1132,7 +1132,7 @@ def test_a_real_definition_is_accepted(monkeypatch):
 @pytest.mark.asyncio
 async def test_spawn_refuses_an_unknown_definition_and_says_which_exist(monkeypatch):
     import galaius.server as srv
-    from galaius.agents.providers import ClaudeCodeProvider
+    from galaius.agents.limits.providers import ClaudeCodeProvider
 
     monkeypatch.setattr(ClaudeCodeProvider, "available", lambda self: True)
     monkeypatch.setattr(ClaudeCodeProvider, "agent_definitions", lambda self: ["tester", "researcher"])
@@ -1175,7 +1175,7 @@ def test_codex_runs_in_its_windows_sandbox_on_windows(monkeypatch, tmp_path, sys
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     if config is not None:
         (tmp_path / "config.toml").write_text(config)
-    monkeypatch.setattr("galaius.agents.providers.sys.platform", system)
+    monkeypatch.setattr("galaius.agents.limits.providers.sys.platform", system)
     assert CodexProvider.platform_flags() == expected
     argv = CodexProvider().command("hi", cwd=str(tmp_path), model=None, mcp_config=None, run_id="r1")
     assert (argv[argv.index("exec") + 1:].count('windows.sandbox="unelevated"') == 1) == bool(expected)
@@ -1240,7 +1240,7 @@ def test_a_harness_injected_user_turn_is_never_an_operator_prompt(text, kind):
     """Claude Code writes its own turns into a headless stream as `user` lines marked
     `isSynthetic` (shape read off real run 6af52772): a Stop-hook block, an image note, a
     compaction summary. Read as `prompt`, the web transcript labelled them "You →"."""
-    from galaius.agents.providers import ClaudeCodeProvider
+    from galaius.agents.limits.providers import ClaudeCodeProvider
 
     event = ClaudeCodeProvider().parse(json.dumps({
         "type": "user", "session_id": "s", "isSynthetic": True,
@@ -1253,7 +1253,7 @@ def test_a_harness_injected_user_turn_is_never_an_operator_prompt(text, kind):
 def test_a_long_stop_hook_block_keeps_its_verdict():
     """The block opens on the hook's whole rule (15k chars on a real run) and CLOSES on what it
     found; clipped from the front only, every long one lost the verdict the reader needs."""
-    from galaius.agents.providers import ClaudeCodeProvider
+    from galaius.agents.limits.providers import ClaudeCodeProvider
 
     text = "Stop hook feedback:\n[" + "rule " * 3000 + "]: Check 1(b) fires: two items left as remaining."
     event = ClaudeCodeProvider().parse(json.dumps({

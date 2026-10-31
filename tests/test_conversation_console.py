@@ -21,28 +21,28 @@ from referencing.jsonschema import DRAFT7
 
 from galaius.agents import registry as reg
 from galaius.agents.assembly import _TransportRegistry
-from galaius.agents.codex_schema import encode_supported_response
-from galaius.agents.codex_transport import _CodexTransport, _Compaction, _RpcMessage
-from galaius.agents.events import AgentEvent, ConversationInteraction, InteractionField
+from galaius.agents.transport.codex_schema import encode_supported_response
+from galaius.agents.transport.codex import _CodexTransport, _Compaction, _RpcMessage
+from galaius.agents.transport.events import AgentEvent, ConversationInteraction, InteractionField
 from galaius.agents.host import _ConversationHost
-from galaius.agents.protocol import (
+from galaius.agents.transport.protocol import (
     ConversationRequest,
     InteractionSubmission,
     ModelSelection,
 )
-from galaius.agents.providers import CodexProvider
+from galaius.agents.limits.providers import CodexProvider
 from galaius.data import PackageData
 from galaius.config import Config
-from galaius.private_files import PRIVATE_FILES
-from galaius.processes import process_group_options, stop_process_tree
-from galaius.server_registry import _alive as process_alive
+from galaius.host.private_files import PRIVATE_FILES
+from galaius.host.processes import process_group_options, stop_process_tree
+from galaius.mcp.registry import _alive as process_alive
 from tests.support import catalog_json
 from tests.support.agents import install_fake_cli
 from tests.support.private_files import loosen
 
 FIXTURES = Path(__file__).parent / "fixtures" / "agents"
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
-CODEX_SCHEMA_CAPTURE = PROJECT_ROOT / "src/galaius/agents/codex_app_server_schema"
+CODEX_SCHEMA_CAPTURE = PROJECT_ROOT / "src/galaius/agents/transport/codex_app_server_schema"
 
 
 @pytest.fixture
@@ -1321,7 +1321,7 @@ async def test_continuation_conflict_cancel_and_process_restart_resume(
 async def test_resumed_conversation_skips_a_cooled_model_and_uses_the_next_ranked_one(
     console_workspace, monkeypatch
 ) -> None:
-    from galaius.agents import quota
+    from galaius.agents.limits import quota
 
     _, workspace, binary_dir = console_workspace
     model_ids = ["openai/expensive-example", "openai/cheap-example"]
@@ -1373,7 +1373,7 @@ async def test_resumed_conversation_skips_a_cooled_model_and_uses_the_next_ranke
 async def test_resumed_conversation_refuses_when_every_candidate_is_cooled(
     console_workspace, monkeypatch
 ) -> None:
-    from galaius.agents import quota
+    from galaius.agents.limits import quota
 
     _, workspace, binary_dir = console_workspace
     model_ids = ["openai/expensive-example", "openai/cheap-example"]
@@ -2317,7 +2317,7 @@ def test_codex_schema_capture_drives_complete_request_policy_without_handwritten
     assert refs and len(refs) == len(set(refs))
     for relative in refs:
         assert (fixture / relative.removeprefix("./")).is_file()
-    generated = Path("src/galaius/agents/codex_schema.py")
+    generated = Path("src/galaius/agents/transport/codex_schema.py")
     assert generated.is_file()
     source = generated.read_text()
     assert hashlib.sha256(server_request_path.read_bytes()).hexdigest() in source
@@ -2361,11 +2361,11 @@ def test_codex_schema_capture_imports_from_an_offline_wheel(wheel_build_cache: P
         wheel = next(wheelhouse.glob("galaius-*.whl"))
         shutil.unpack_archive(wheel, unpacked, "zip")
 
-        source = (unpacked / "galaius/agents/codex_schema.py").read_text()
+        source = (unpacked / "galaius/agents/transport/codex_schema.py").read_text()
         assert "tests/" not in source and '"tests"' not in source
-        assert (unpacked / "galaius/agents/codex_app_server_schema/manifest.json").is_file()
+        assert (unpacked / "galaius/agents/transport/codex_app_server_schema/manifest.json").is_file()
         imported = subprocess.run(
-            [sys.executable, "-m", "galaius.agents.codex_schema"],
+            [sys.executable, "-m", "galaius.agents.transport.codex_schema"],
             cwd=unpacked,
             # Windows needs SYSTEMROOT to load its socket layer and USERPROFILE to name a home.
             env={
@@ -2418,7 +2418,7 @@ def test_codex_schema_boundary_validates_derived_requests_results_and_rejections
         entry["method"] for entry in entries
     }
 
-    module_path = Path("src/galaius/agents/codex_schema.py")
+    module_path = Path("src/galaius/agents/transport/codex_schema.py")
     spec = importlib.util.spec_from_file_location("galaius_codex_schema_test", module_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -2605,7 +2605,7 @@ async def test_protocol_failure_immediately_reaps_owned_provider_process(
 
 def test_transport_and_cli_import_contracts_are_explicit_and_lightweight() -> None:
     """Architecture and entrypoint invariants are executable without importing provider code."""
-    transport = Path("src/galaius/agents/transport.py")
+    transport = Path("src/galaius/agents/transport/base.py")
     assert transport.exists(), "one private capability-typed transport owner must exist"
     host_source = Path("src/galaius/agents/host.py").read_text()
     host_tree = ast.parse(host_source)
@@ -2615,9 +2615,9 @@ def test_transport_and_cli_import_contracts_are_explicit_and_lightweight() -> No
         if isinstance(node, ast.ImportFrom) and node.module is not None
     }
     assert not imported_modules.intersection({
-        "galaius.agents.codex_transport",
-        "galaius.agents.completion_transport",
-        "galaius.agents.providers",
+        "galaius.agents.transport.codex",
+        "galaius.agents.transport.completion",
+        "galaius.agents.limits.providers",
         "galaius.models",
     }), "the host must receive a route-to-transport registry without concrete provider imports"
     assert "run.connection ==" not in host_source

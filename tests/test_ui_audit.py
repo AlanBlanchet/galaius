@@ -16,7 +16,7 @@ these are the fast, hermetic ground-truth cases for every category the detector 
 import pytest
 
 from galaius.server import _scan_elements
-from galaius.ui_audit import audit_element, audit_tab_groups
+from galaius.vision.ui_audit import audit_element, audit_tab_groups
 
 from tests.support import browser_manager, ready_or_skip
 

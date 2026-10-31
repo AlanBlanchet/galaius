@@ -7,8 +7,8 @@ listed here will NOT appear in the generated TS bindings.
 Keep this file flat — no behavior, just re-exports.
 """
 
-from galaius.agents.events import AgentEvent, ConversationInteraction, InteractionField
-from galaius.agents.protocol import (
+from galaius.agents.transport.events import AgentEvent, ConversationInteraction, InteractionField
+from galaius.agents.transport.protocol import (
     CancelCommand,
     CatalogCommand,
     CatalogResponse,
@@ -30,8 +30,8 @@ from galaius.agents.protocol import (
     StartCommand,
 )
 from galaius.agents.registry import AgentRun
-from galaius.benchmarks.published import PublishedEntry, PublishedTable
-from galaius.benchmarks.upstream import UpstreamSource
+from galaius.catalog.published import PublishedEntry, PublishedTable
+from galaius.catalog.upstream import UpstreamSource
 from galaius.formats import BoxOrder, CoordFormat
 from galaius.models import (
     Benchmark,

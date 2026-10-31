@@ -6,7 +6,7 @@ from typing import ClassVar, Self
 from pydantic import BaseModel, ConfigDict
 
 from galaius.desktop import DesktopElement
-from galaius.parsing import Parse
+from galaius.vision.parsing import Parse
 
 _log = logging.getLogger(__name__)
 

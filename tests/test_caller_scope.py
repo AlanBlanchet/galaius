@@ -6,12 +6,12 @@ import uuid
 
 import pytest
 
-from galaius import caller as caller_module
-from galaius import processes
+from galaius.account import caller as caller_module
+from galaius.host import processes
 from galaius.agents import messaging
 from galaius.agents import registry as reg
 from galaius.agents.spawn_line import Spawn
-from galaius.caller import Caller
+from galaius.account.caller import Caller
 
 RUN = str(uuid.UUID(int=11 << 96))
 SCOPE = f"galaius-run-{RUN}-0badc0de.scope"

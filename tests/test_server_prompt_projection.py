@@ -17,13 +17,13 @@ import pytest
 import yaml
 from galaius_core import AgentCatalogSnapshot, AgentRevision, AgentRevisionRef, PromptExecutionRef, PromptKey, PromptRevision
 
-from galaius.agents.catalog import AgentCatalog, CatalogSnapshot
-from galaius.agents.catalog_connection import CatalogAuthenticationError, CatalogConnection
-from galaius.agents.providers import PROVIDERS
+from galaius.agents.catalog.entries import AgentCatalog, CatalogSnapshot
+from galaius.agents.catalog.connection import CatalogAuthenticationError, CatalogConnection
+from galaius.agents.limits.providers import PROVIDERS
 from galaius.agents.run import _role_prompt
-from galaius.pinned_directory import PathDirectory
+from galaius.host.pinned_directory import PathDirectory
 from galaius.agents.tool_gateway import CONVERSATION_TOOLS, AgentToolList, GatewayTool
-from galaius.prompt_projection import (
+from galaius.prompts.projection import (
     MANIFEST_NAME, _server_destination, _server_outputs, compile_server_prompt_projection, install_prompt_projection,
     install_server_prompt_projection,
 )
@@ -477,7 +477,7 @@ def test_denied_server_install_never_writes_consumer_state(tmp_path, monkeypatch
             generation = catalog.connection.session_path().with_suffix(".generation")
             generation.write_text(str(uuid4()))
             generation.chmod(0o600)
-        monkeypatch.setattr("galaius.prompt_projection.compile_server_prompt_projection", lambda *args: compiled)
+        monkeypatch.setattr("galaius.prompts.projection.compile_server_prompt_projection", lambda *args: compiled)
     with pytest.raises(CatalogAuthenticationError):
         install_server_prompt_projection(catalog.connection, tmp_path / "home", tmp_path / "vscode", tmp_path / "state/installed.json")
     assert not (tmp_path / "home").exists()
@@ -520,7 +520,7 @@ import sys
 from pathlib import Path
 from uuid import UUID
 from galaius import prompt_projection as projection
-from galaius.agents.catalog_connection import CatalogConnection
+from galaius.agents.catalog.connection import CatalogConnection
 root, source, ordinal = Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3])
 CatalogConnection.path = classmethod(lambda cls: root / 'connection.json')
 connection = CatalogConnection(endpoint=f'http://127.0.0.1:{8817 + ordinal}',

@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from galaius.agents.paradigms import ParadigmError, plan_projections, read_paradigm
+from galaius.agents.catalog.paradigms import ParadigmError, plan_projections, read_paradigm
 from galaius.agents.policy import Policy, PolicyError
 
 

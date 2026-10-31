@@ -3,7 +3,7 @@
 import sys
 
 from galaius.config import Config, UserConfig, load_dotenv_for_cli
-from galaius.server_tool_settings import MachineNotice
+from galaius.account.tool_settings import MachineNotice
 
 
 def apply_command_environment() -> None:

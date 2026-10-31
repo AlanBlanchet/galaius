@@ -140,7 +140,7 @@ jobs:
           New-LocalUser -Name interacttest -Password $secure -AccountNeverExpires | Out-Null
           # galaius's own definition, from the installed build, naming the test user instead of this one.
           $python = Join-Path (uv tool dir).Trim() 'galaius\Scripts\python.exe'
-          & $python -c "from galaius.machine_service import WindowsMachineService as S; print(S().definition().replace(S.user(), r'$env:COMPUTERNAME\interacttest'))" |
+          & $python -c "from galaius.machine.service import WindowsMachineService as S; print(S().definition().replace(S.user(), r'$env:COMPUTERNAME\interacttest'))" |
             Out-File -Encoding unicode "$env:PUBLIC\task-user.xml"
           Get-Content "$env:PUBLIC\task-user.xml"
           $script = "try { Register-ScheduledTask -TaskName 'Galaius machine test' -Xml (Get-Content -Raw '$env:PUBLIC\task-user.xml') | Out-Null; " +

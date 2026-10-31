@@ -19,8 +19,8 @@ from galaius.agents import spawn_line
 from galaius.agents.run import run_agent
 from galaius.agents.spawn_line import ASIDE, STUCK, Admission, Load, Spawn, SpawnLine
 from galaius.cli.app_commands import agents_spawn
-from galaius.machine_agents import WebRun, WebRuns
-from galaius.paths import UserPaths
+from galaius.machine.agents import WebRun, WebRuns
+from galaius.host.paths import UserPaths
 from tests.support import register_run
 
 
@@ -432,7 +432,7 @@ def test_single_forgets_every_other_agent_of_its_role_not_at_work(at_work, monke
 def test_a_spawn_from_a_runs_process_never_leaves_its_tree(monkeypatch, capsys, from_a_run):
     """2026-10-17: 282 spawns in 68 transcripts cleared `GALAIUS_PARENT_RUN_ID` (`env -u`) or passed an empty
     --parent-run-id, starting runs whose reports reached no one."""
-    from galaius.processes import process_started
+    from galaius.host.processes import process_started
 
     monkeypatch.delenv("GALAIUS_PARENT_RUN_ID", raising=False)
     if from_a_run:  # this test's own parent process stands for the run's
@@ -450,7 +450,7 @@ def test_the_run_that_takes_a_spawns_task_records_THAT_task(at_work, monkeypatch
     record saying what it was FIRST launched with — weeks ago, for a long-lived coordinator or
     librarian. Everything that reads a run's task then reads the wrong one: its row on the web
     (`machine_agents`), the card its own children start on (`relations`), and the brief a compaction
-    hands its agent back as « the task your run was launched with » (`galaius.brief_hook`).
+    hands its agent back as « the task your run was launched with » (`galaius.hooks.brief`).
     2026-10-23: a spawn's task went to the librarian of the conversation and its recorded task was
     still a brief it had finished on 2026-10-06."""
     from galaius_core import AgentRevisionRef
@@ -481,7 +481,7 @@ def test_a_child_that_never_got_its_task_is_ended_instead_of_run(monkeypatch, tm
     """Handing a started-ahead child its task can fail on its stdin, and the failure was swallowed: the
     child then ran as if briefed — the role prompt and its card, no task — burning a whole run to answer
     « no task given ». Its launch fails instead, so its caller spawns again."""
-    from galaius.agents.providers import ClaudeCodeProvider
+    from galaius.agents.limits.providers import ClaudeCodeProvider
     from galaius.agents.run import ChildLaunch, TaskNotHanded
 
     class _Deaf:

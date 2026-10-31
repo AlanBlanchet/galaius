@@ -32,9 +32,9 @@ from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 from galaius import __version__
 from galaius.agents.tool_gateway import ServedGateway
 from galaius.browser import SessionRegistry
-from galaius.caller import Caller
-from galaius.debug_utils import _CURRENT_INV, Debug, resolve_output_path
-from galaius.mcp_announcement import GATEWAY_PREFIX, McpAnnouncement
+from galaius.account.caller import Caller
+from galaius.diagnostics.debug_output import _CURRENT_INV, Debug, resolve_output_path
+from galaius.mcp.announcement import GATEWAY_PREFIX, McpAnnouncement
 from galaius.desktop import CaptureError
 from galaius.runtime import (  # noqa: F401 — breaker re-exported for tests/vlm
     breaker,
@@ -337,7 +337,7 @@ def tool_catalog() -> list[dict[str, str]]:
 
 def announcement() -> dict:
     """What this server says before any call, as `galaius.data`'s `mcp_announcement.json` snapshots
-    it for the upgrade relay (`galaius.mcp_announcement.McpAnnouncement`): the handshake answer's
+    it for the upgrade relay (`galaius.mcp.announcement.McpAnnouncement`): the handshake answer's
     parts no install changes and every list as the server puts it on the wire (gateway tools are
     the server's word at start, never snapshotted)."""
 
@@ -385,9 +385,9 @@ def undispatchable_tools(names) -> list[str]:
 
 @asynccontextmanager
 async def _lifespan(_: FastMCP) -> AsyncIterator[None]:
-    from galaius import live_sources
+    from galaius.catalog import live_sources
     from galaius.server import sandbox
-    from galaius.server_registry import register_server, unregister_server
+    from galaius.mcp.registry import register_server, unregister_server
 
     reg = register_server()  # record pid+version so `galaius doctor` can flag a stale long-lived server
     sandbox.install_teardown_handlers()  # tear the display down on SIGTERM too, not only a clean exit

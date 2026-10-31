@@ -4,7 +4,7 @@ And it must NEVER raise — reporting a bug can't itself blow up."""
 
 import pytest
 
-import galaius.feedback as fb
+import galaius.diagnostics.feedback as fb
 
 
 @pytest.fixture(autouse=True)
@@ -205,7 +205,7 @@ def test_footer_survives_platform_platform_raising(monkeypatch):
     falls back to os.uname-backed pieces. Regression for the cross-OS CI failure."""
     import platform as _pl
 
-    import galaius.feedback as fb
+    import galaius.diagnostics.feedback as fb
 
     monkeypatch.setattr(_pl, "platform", lambda *a, **k: (_ for _ in ()).throw(AttributeError("boom")))
     footer = fb._footer()

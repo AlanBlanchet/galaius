@@ -10,9 +10,9 @@ from uuid import uuid4
 import pytest
 from galaius_core import GeneratedImage, ImageAnswer
 
-from galaius.agents.providers import PROVIDERS
-from galaius.server import tools_images
-from galaius.server_workspace import PlatformRefused, ServerWorkspace
+from galaius.agents.limits.providers import PROVIDERS
+from galaius.server.tools import images as tools_images
+from galaius.account.workspace import PlatformRefused, ServerWorkspace
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==")
 

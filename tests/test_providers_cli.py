@@ -9,12 +9,12 @@ import json
 import pytest
 
 from galaius import cli
-from galaius.agents.providers import ClaudeCodeProvider, CodexProvider, MEDIA_PROVIDERS
+from galaius.agents.limits.providers import ClaudeCodeProvider, CodexProvider, MEDIA_PROVIDERS
 from galaius.config import Config, UserConfig
 from galaius.models import Model
-import galaius.ollama as ollama
+import galaius.inference.ollama as ollama
 from galaius.runtime import config as runtime_config
-from galaius.server.tools_meta import list_providers
+from galaius.server.tools.meta import list_providers
 
 
 @pytest.fixture
@@ -129,7 +129,7 @@ async def test_list_providers_refreshes_a_live_config_file_edit(
 def test_modes_prints_one_tab_separated_row_per_mode(capsys):
     from galaius.cli.app import agents_modes
 
-    from galaius.agents.providers import ClaudeCodeProvider
+    from galaius.agents.limits.providers import ClaudeCodeProvider
 
     agents_modes(provider="claude")
     rows = [r for r in capsys.readouterr().out.splitlines() if r]

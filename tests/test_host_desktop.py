@@ -281,7 +281,7 @@ def test_a_window_wait_runs_through_run_actions_on_a_screen_target(monkeypatch):
 def test_listed_windows_become_regions_of_the_screen_capture():
     """On Windows / macOS the capture starts at the leftmost monitor (x=-1920 here), so a window at
     desktop x=100 is region x=2020 — and one hanging off the right edge is clipped."""
-    from galaius.server.tools_desktop import _capture_regions
+    from galaius.server.tools.desktop import _capture_regions
 
     whole = DesktopWindow.screen("screen", _portable())
     text = _capture_regions(

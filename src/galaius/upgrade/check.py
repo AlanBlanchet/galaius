@@ -19,11 +19,11 @@ import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from galaius.config.settings import Config
-from galaius.server_address import ServerAddress
+from galaius.account.address import ServerAddress
 from galaius.config.user import UserConfig
-from galaius.file_lock import exclusive
-from galaius.machines import MachineRunner
-from galaius.private_files import PRIVATE_FILES
+from galaius.host.file_lock import exclusive
+from galaius.machine.connection import MachineRunner
+from galaius.host.private_files import PRIVATE_FILES
 from galaius.upgrade.release import BuildIdentity, Release, ReleaseOrder, ReleaseRefused
 from galaius.upgrade.source import ReleaseKeys, ReleaseSource
 from galaius.upgrade.store import Runtime, RuntimeStore

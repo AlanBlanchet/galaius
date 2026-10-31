@@ -13,11 +13,11 @@ from galaius_core.accounts import Account, Bootstrap, Workspace
 from textual.widgets import Button, Input, Select, Static, TabbedContent, Tree
 
 from galaius import USER_AGENT
-from galaius.agents.catalog_connection import CatalogAuthenticationError, CatalogConnection
+from galaius.agents.catalog.connection import CatalogAuthenticationError, CatalogConnection
 from galaius.cli.app import app as cli
 from galaius.cli.tui import GalaiusTUI, WorkspacePane
 from galaius.config import UserConfig
-from galaius.server_workspace import AgentEdit, ServerWorkspace, WorkflowConflictError, WorkflowRunRejected, WorkflowRunRequest, WorkflowRunUncertain, WorkspaceConflictError
+from galaius.account.workspace import AgentEdit, ServerWorkspace, WorkflowConflictError, WorkflowRunRejected, WorkflowRunRequest, WorkflowRunUncertain, WorkspaceConflictError
 
 
 @pytest.fixture

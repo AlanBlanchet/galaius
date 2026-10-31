@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 
 from galaius.models import Model, ModelCapability
-from galaius.probe import Comparison, MatchedElement, UnmatchedElement
+from galaius.diagnostics.probe import Comparison, MatchedElement, UnmatchedElement
 
 load_dotenv()
 

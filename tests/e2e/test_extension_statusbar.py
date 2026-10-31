@@ -179,7 +179,7 @@ def test_status_bar_shows_galaius(tmp_path, vsix):
             return
 
         # Save artifacts for debugging before attempting VLM fallback.
-        from .harness import OUT_DIR
+        from e2e.harness import OUT_DIR
         out_dir = OUT_DIR
         out_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")

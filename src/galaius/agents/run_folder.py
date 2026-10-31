@@ -17,7 +17,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from galaius.agents import registry as reg
-from galaius.agents.providers import PROJECT_SETTINGS_OFF, UNTRUSTED_FOLDERS, AgentProvider
+from galaius.agents.limits.providers import PROJECT_SETTINGS_OFF, UNTRUSTED_FOLDERS, AgentProvider
 
 #: How long one git command may take while a turn waits on it.
 GIT_SECONDS = 60.0

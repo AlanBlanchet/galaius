@@ -1,5 +1,5 @@
 """What each message is to the run reading it, and where that run stands, computed from the run records
-(`galaius.agents.relations`). Owner 2026-10-17: « Even with your changes, it seems that everything is not clear enough
+(`galaius.agents.catalog.relations`). Owner 2026-10-17: « Even with your changes, it seems that everything is not clear enough
 for the agents »: a report read as an order to acknowledge, a third party's note read as the boss's."""
 
 import asyncio
@@ -10,11 +10,12 @@ import uuid
 
 import pytest
 
-from galaius.agents import messaging, relations
+from galaius.agents import messaging
+from galaius.agents.catalog import relations
 from galaius.agents import registry as reg
 from galaius.agents.spawn_line import Spawn
-from galaius.agents.events import AgentEvent, Relation
-from galaius.inbox_hook import HEADING, OPERATOR
+from galaius.agents.transport.events import AgentEvent, Relation
+from galaius.hooks.inbox import HEADING, OPERATOR
 from tests.support import register_run
 
 NAMES = ("lead", "eng", "coordinator", "stranger", "rev", "old", "new", "helper")
@@ -273,7 +274,7 @@ def _from_an_agents_process(monkeypatch, variable: str | None = None) -> None:
 def test_a_run_never_messages_or_hands_off_to_another_projects_run(two_projects, entry, capsys, monkeypatch):
     """Owner 2026-10-19: one project's coordinator handed its work to another project's coordinator (same web session,
     separate launch trees). Each entry refuses, naming both projects; nothing is recorded or queued."""
-    from galaius.server import tools_agents
+    from galaius.server.tools import agents as tools_agents
     heard = len(reg.read_events(IDS["coordinator"]))
     assert relations.foreign_project(IDS["eng"], IDS["lead"]) is None  # a child in another folder is its coordinator's project
     assert relations.foreign_project(IDS["stranger"], IDS["lead"]) is None  # a slice of the repository is the repository

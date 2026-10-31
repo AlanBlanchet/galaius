@@ -23,7 +23,7 @@ from mcp.shared.message import SessionMessage
 from galaius import __version__
 from galaius.agents.tool_gateway import AgentToolList, GatewayTool, ToolGateway
 from galaius.data import PackageData
-from galaius.mcp_announcement import GatewayServed, McpAnnouncement
+from galaius.mcp.announcement import GatewayServed, McpAnnouncement
 from galaius.server import core
 
 

@@ -18,7 +18,7 @@ from galaius.models import (
     supports_native_video_inline,
 )
 from galaius.config.settings import _ROLE_DEFAULT_CRITERIA
-from galaius.criteria import Criteria
+from galaius.catalog.criteria import Criteria
 
 
 @pytest.mark.parametrize(

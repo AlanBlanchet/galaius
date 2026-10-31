@@ -6,7 +6,7 @@ import shutil
 import pytest
 
 from galaius.install_migration import InstallMigration
-from galaius.paths import UserPaths
+from galaius.host.paths import UserPaths
 
 
 @pytest.fixture

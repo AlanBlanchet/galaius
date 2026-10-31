@@ -15,9 +15,9 @@ import pytest
 import galaius_core
 from pydantic import ValidationError
 
-from galaius.prompt_cache import _PromptCache
-from galaius.prompt_client import _PromptClient
-from galaius.private_files import PRIVATE_FILES
+from galaius.prompts.cache import _PromptCache
+from galaius.prompts.client import _PromptClient
+from galaius.host.private_files import PRIVATE_FILES
 from galaius_core import PromptCatalogPage, PromptChannelEntry, PromptKey, PromptRevision
 from tests.support.private_files import loosen
 

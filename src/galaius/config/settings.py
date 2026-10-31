@@ -9,12 +9,12 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ByteSize, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode
-from galaius.caller import Caller
+from galaius.account.caller import Caller
 from galaius_core import CompactAt
 from galaius_core.tool_settings import VLM_MIN_DIM_DEFAULT, VLM_MAX_DIM_DEFAULT
 
-from galaius.agents.providers import MEDIA_PROVIDERS
-from galaius.criteria import Criteria, CriteriaError
+from galaius.agents.limits.providers import MEDIA_PROVIDERS
+from galaius.catalog.criteria import Criteria, CriteriaError
 from galaius.models import CircuitBreaker, Model, ModelRole
 
 DEFAULT_LIMIT = 50
@@ -174,7 +174,7 @@ class MessageSignal(BaseModel):
 
 
 class TurnReview(BaseModel):
-    """One review the runtime asks of a coordinator's answer to the person (`galaius.agents.turn_reviews`): an instance
+    """One review the runtime asks of a coordinator's answer to the person (`galaius.agents.turns.reviews`): an instance
     of `role` in its conversation, asked `ask` (`{signal}`: what in his message called for it), after every answer, or
     only after one to a message `signal` matches."""
 
@@ -234,7 +234,7 @@ class RecordRecall(BaseModel):
 
 
 class TurnFacts(BaseModel):
-    """What a coordinator's card states as read at the turn the person's words start (`galaius.agents.turn_facts`): the
+    """What a coordinator's card states as read at the turn the person's words start (`galaius.agents.turns.facts`): the
     build the app runs and this PC's own state, each read within `seconds`, a value not read in time said so, never a
     remembered one shown as current. 2026-10-22: three answers in a row quoted a PC's state from memory."""
 
@@ -360,11 +360,11 @@ class Config(BaseSettings):
     # Every agent galaius starts, with everything it runs (MCP servers, browsers, test workers,
     # dev servers), shares ONE systemd user slice capped at these shares of the machine, so agents
     # together can never starve the desktop, and each run sits in its own scope under its own cap,
-    # so one run's memory cannot kill another (`galaius.agents.ceiling`). Linux with a systemd user
+    # so one run's memory cannot kill another (`galaius.agents.limits.ceiling`). Linux with a systemd user
     # manager; elsewhere the agent runs uncapped. Percent of physical RAM / of all CPU cores.
     agent_ceiling: bool = True
     # A run at work whose vendor wrote nothing for this many seconds is silent: the run waiting on it names it so
-    # (`agents wait`), and the run that asked it is told once per silence (`galaius.agents.handback.SilenceWatch`).
+    # (`agents wait`), and the run that asked it is told once per silence (`galaius.agents.turns.handback.SilenceWatch`).
     silent_seconds: Annotated[float, Field(gt=0)] = 600.0
     # How long each agent turn waits for its MCP servers to connect (galaius's own tools among them) before it starts
     # without the ones still connecting; 0: it never waits (`AgentProvider.mcp_wait_variable`). Every turn pays it while a
@@ -382,19 +382,19 @@ class Config(BaseSettings):
     # Seconds between two such waits of a run within which the second carries on the first's start (a loop of short waits).
     agent_waiting_gap_seconds: Annotated[float, Field(ge=0)] = 60.0
     # How many rounds a critic role may take on one maker's work before an agent asking for another is refused
-    # (`galaius.agents.critic_rounds`). The person is never refused.
+    # (`galaius.agents.turns.critic_rounds`). The person is never refused.
     agent_critic_cap: CriticCap = Field(default_factory=lambda: CriticCap())
-    # The reviews asked after a coordinator answered the person (`galaius.agents.turn_reviews`).
+    # The reviews asked after a coordinator answered the person (`galaius.agents.turns.reviews`).
     agent_turn_reviews: TurnReviews = Field(default_factory=lambda: TurnReviews())
-    # What a coordinator's card recalls of what the person said before (`galaius.agents.record_recall`).
+    # What a coordinator's card recalls of what the person said before (`galaius.agents.turns.record_recall`).
     agent_record_recall: RecordRecall = Field(default_factory=lambda: RecordRecall())
-    # What a coordinator's card reads at the turn his words start (`galaius.agents.turn_facts`).
+    # What a coordinator's card reads at the turn his words start (`galaius.agents.turns.facts`).
     agent_turn_facts: TurnFacts = Field(default_factory=lambda: TurnFacts())
     agent_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 45
     agent_run_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 20
     # The agents' soft memory limit, a share of that slice's cap: past it no agent turn starts here (a spawn, a resumed
-    # turn) until the slice is back under the release share (`galaius.agents.admission.SoftMemory`). Never a kernel
-    # MemoryHigh: that throttle stalls every agent on reclaim (`galaius.agents.ceiling`).
+    # turn) until the slice is back under the release share (`galaius.agents.limits.admission.SoftMemory`). Never a kernel
+    # MemoryHigh: that throttle stalls every agent on reclaim (`galaius.agents.limits.ceiling`).
     agent_memory_soft_percent: Annotated[int, Field(ge=1, le=100)] = 85
     agent_memory_release_percent: Annotated[int, Field(ge=1, le=100)] = 80
     # systemd-oomd acts on the agents' slice when it stalls this share of the time on memory.

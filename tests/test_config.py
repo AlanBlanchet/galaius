@@ -237,7 +237,7 @@ async def test_tool_dumps_early_error_returns(tmp_path, monkeypatch):
     decorator never reads (or leaks into `os.environ`) the developer's real
     `~/.galaius/config.env`."""
     from galaius.runtime import _LiveConfig
-    from galaius.server.tools_vision import measure_ui
+    from galaius.server.tools.vision import measure_ui
 
     monkeypatch.setattr(_LiveConfig, "refresh", lambda self: self)
     out = await measure_ui(region="not,valid,ints")

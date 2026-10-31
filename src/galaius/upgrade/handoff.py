@@ -17,7 +17,7 @@ from typing import ClassVar, NoReturn
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
-from galaius.private_files import PRIVATE_FILES
+from galaius.host.private_files import PRIVATE_FILES
 from galaius.upgrade.store import EXIT_HANDOVER, Addressed, Runtime, RuntimeStore
 
 if sys.platform == "win32":

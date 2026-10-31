@@ -1,5 +1,5 @@
 """A coordinator's card states what is read at the turn his words start, never a remembered value
-(`galaius.agents.turn_facts`; 2026-10-22: three answers in a row quoted a PC's state from memory)."""
+(`galaius.agents.turns.facts`; 2026-10-22: three answers in a row quoted a PC's state from memory)."""
 
 import time
 import uuid
@@ -9,11 +9,11 @@ from types import SimpleNamespace
 import pytest
 from galaius_core import MachineSummary
 
-from galaius.account_login import AccountLogin
-from galaius.agents import turn_facts
-from galaius.agents.turn_facts import Readers
+from galaius.account.login import AccountLogin
+from galaius.agents.turns import facts as turn_facts
+from galaius.agents.turns.facts import Readers
 from galaius.config.settings import TurnFacts
-from galaius.machines import MachineRunner
+from galaius.machine.connection import MachineRunner
 
 HERE, OTHER = uuid.UUID(int=1), uuid.UUID(int=2)
 

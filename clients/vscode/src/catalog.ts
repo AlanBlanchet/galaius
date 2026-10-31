@@ -2,7 +2,7 @@
  *
  *  The extension used to read ./models.json — a file baked into the bundle by sync-data.js at
  *  BUILD time. It looked current and wasn't: prices and context windows aged with every release
- *  and nothing said so. This reads the catalog Python refreshes (galaius.model_catalog,
+ *  and nothing said so. This reads the catalog Python refreshes (galaius.catalog.models,
  *  ~/.galaius/out/model_catalog.json) and, when that's missing or stale, fetches OpenRouter's
  *  public endpoint directly — a plain unauthenticated GET, no key.
  *

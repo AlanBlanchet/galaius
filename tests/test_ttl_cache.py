@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from galaius.ttl_cache import TTLCache, age_of
+from galaius.catalog.ttl_cache import TTLCache, age_of
 
 
 def test_a_write_leaves_exactly_one_file_and_no_temp():

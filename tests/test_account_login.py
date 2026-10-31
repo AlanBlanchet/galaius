@@ -14,13 +14,13 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
-from galaius import account_login
-from galaius.account_login import AccountLogin, LoginError
+from galaius.account import login as account_login
+from galaius.account.login import AccountLogin, LoginError
 from galaius_core import DeviceLoginStarted
-from galaius.agents.catalog_connection import CatalogConnection
-from galaius.machine_service import MACHINE_SERVICE
-from galaius.error_reports import MachineErrorReports
-from galaius.machines import MachineRunner
+from galaius.agents.catalog.connection import CatalogConnection
+from galaius.machine.service import MACHINE_SERVICE
+from galaius.diagnostics.error_reports import MachineErrorReports
+from galaius.machine.connection import MachineRunner
 
 PUBLIC = "https://galaius.example.org"
 TUNNEL = "http://127.0.0.1:8817"
@@ -132,7 +132,7 @@ def test_not_online_says_why_here_and_on_its_page(joining: Path, monkeypatch: py
 
 def test_login_flags_parse(monkeypatch: pytest.MonkeyPatch) -> None:
     seen = {}
-    monkeypatch.setattr("galaius.cli.login_command.sign_in", lambda server, **options: seen.update(options))
+    monkeypatch.setattr("galaius.cli.commands.login.sign_in", lambda server, **options: seen.update(options))
     from galaius.cli.app import app
     with pytest.raises(SystemExit, match="0"):
         app(["login", "--server", "x.org", "--agent-folder", "dev", "--agent-folder", "work", "--no-agents",

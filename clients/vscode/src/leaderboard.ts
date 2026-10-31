@@ -2,7 +2,7 @@
  *
  *  The bundled benchmarks.json says WHICH benchmarks matter; it cannot carry SCORES, because
  *  AA's free tier is "internal use only, no redistribution" — so scores are fetched at runtime
- *  with the user's own key and cached under their home dir by galaius.benchmark_source.
+ *  with the user's own key and cached under their home dir by galaius.catalog.source.
  *
  *  Same invariant as the model catalog: the board carries its SOURCE and AGE, and isLive goes
  *  false once stale. Serving old numbers offline is fine; serving them as today's truth is not.

@@ -15,7 +15,7 @@ from galaius.actions import DoubleClickAction
 from galaius.actions.dispatch import _run_actions_browser
 from galaius.actions.models import BROWSER_ONLY_ACTIONS
 from galaius.desktop import DesktopWindow
-from galaius.desktop.element import DesktopElement
+from galaius.desktop.accessibility.element import DesktopElement
 from galaius.server import _run_actions_desktop
 
 

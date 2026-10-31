@@ -13,7 +13,7 @@ import pytest
 from galaius_core import ArtifactRef, TriggerInvocation, WorkflowEvent, WorkflowRevision, WorkflowRun
 from galaius_core.accounts import Account, Bootstrap, Workspace
 
-from galaius.agents.catalog_connection import CatalogConnection, CatalogConnectionError
+from galaius.agents.catalog.connection import CatalogConnection, CatalogConnectionError
 from galaius.cli.app import app as cli
 from galaius.client import AsyncClient, Client
 from galaius.config import UserConfig

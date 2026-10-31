@@ -236,7 +236,7 @@ class DesktopBackend(ABC):
     def pointer(self) -> tuple[int, int] | None:
         """Where the pointer is, in this desktop's input units — None when the OS will not say.
         Every capture API leaves the cursor out of the picture, so a watcher of this screen
-        (`galaius.desktop.screen`) draws it from here."""
+        (`galaius.desktop.screen.session`) draws it from here."""
         return None
 
     @abstractmethod

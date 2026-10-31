@@ -12,14 +12,15 @@ from typing import Annotated
 from cyclopts import App, Parameter
 import httpx
 
-from galaius import prompt_mirror, prompt_projection
-from galaius.agents.catalog import AgentCatalog
-from galaius.agents.catalog_connection import CatalogConnection, CatalogConnectionError
-from galaius.prompt_projection import compile_prompt_projection, install_prompt_projection
-from galaius.prompt_publisher import publish_projection
-from galaius.pinned_directory import PinnedDirectory
-from galaius.private_files import PRIVATE_FILES
-from galaius.server_prompts import MAX_EDITOR_BYTES, PromptConflictError, ServerPrompts
+from galaius.prompts import mirror as prompt_mirror
+from galaius.prompts import projection as prompt_projection
+from galaius.agents.catalog.entries import AgentCatalog
+from galaius.agents.catalog.connection import CatalogConnection, CatalogConnectionError
+from galaius.prompts.projection import compile_prompt_projection, install_prompt_projection
+from galaius.prompts.publisher import publish_projection
+from galaius.host.pinned_directory import PinnedDirectory
+from galaius.host.private_files import PRIVATE_FILES
+from galaius.prompts.heads import MAX_EDITOR_BYTES, PromptConflictError, ServerPrompts
 
 prompts_app = App(name="prompts", help="Edit server prompts when configured, or author through local Git.")
 _MAX_EDITOR_BYTES = MAX_EDITOR_BYTES

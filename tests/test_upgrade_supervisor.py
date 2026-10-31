@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from galaius.mcp_endpoint import SharedEndpoint
+from galaius.mcp.endpoint import SharedEndpoint
 from galaius import __version__
 from galaius.data import PackageData
 from galaius.upgrade.handoff import Handoff

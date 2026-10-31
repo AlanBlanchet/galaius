@@ -11,9 +11,9 @@ from uuid import uuid4
 import pytest
 from PIL import Image
 
-from galaius.agents.community import CommunityAgent
-from galaius.machine_tools import MachineTools
-from galaius.video import Scene
+from galaius.agents.catalog.community import CommunityAgent
+from galaius.machine.tools import MachineTools
+from galaius.media.video import Scene
 from tests.support import register_run
 
 

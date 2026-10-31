@@ -1,5 +1,5 @@
 """Stopping his own editor session from the web: the hook every Claude Code session runs ends a turn
-it was asked to stop (`galaius.session_stop_hook`), and the PC installs that hook without touching
+it was asked to stop (`galaius.hooks.session_stop`), and the PC installs that hook without touching
 anything else in his Claude Code settings (`SessionStops`)."""
 
 import json
@@ -14,8 +14,8 @@ from uuid import uuid4
 import pytest
 from galaius_core import StopActor
 
-from galaius import session_stop_hook
-from galaius.agents.session_stops import HOOK_MARK, SessionStops
+from galaius.hooks import session_stop as session_stop_hook
+from galaius.agents.turns.session_stops import HOOK_MARK, SessionStops
 
 SESSION_ID = uuid4()
 SESSION = str(SESSION_ID)

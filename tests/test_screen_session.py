@@ -1,4 +1,4 @@
-"""Watching this computer's screen from somewhere else (`galaius.desktop.screen`).
+"""Watching this computer's screen from somewhere else (`galaius.desktop.screen.session`).
 
 Owner 2026-10-23, dictated: « maybe we could access the PC from here? … we could have the screen,
 you know? … Like view the PC, like a TeamViewer or a Parsec from the Data tab. »
@@ -18,13 +18,13 @@ import pytest
 from galaius_core import ScreenAllowance, ScreenSpec
 from PIL import Image
 
-from galaius.desktop.screen import (
+from galaius.desktop.screen.session import (
     FrameGrabber,
     QualityLadder,
     ScreenSession,
     ScreenStreamer,
 )
-from galaius.desktop.screen_switch import ScreenSwitch
+from galaius.desktop.screen.switch import ScreenSwitch
 from tests.support.screen import FakeBackend, FakeGrabber, FakeMarker
 
 

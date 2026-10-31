@@ -1,8 +1,8 @@
 import pytest
 
-from galaius.agents.profiles import model_source_for, overlay_for
+from galaius.agents.catalog.profiles import model_source_for, overlay_for
 from galaius.agents.policy import Policy, PolicyError
-from galaius.agents.vocabulary import (
+from galaius.agents.catalog.vocabulary import (
     ApprovalIntent,
     ModelSource,
     ThinkingLevel,

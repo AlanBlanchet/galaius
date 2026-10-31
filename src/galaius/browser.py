@@ -17,7 +17,7 @@ from playwright.async_api import async_playwright, Browser, BrowserContext, Brow
 
 from galaius.config import LOG_MAXLEN, Config
 from galaius.state import InteractiveElement
-from galaius.windowless import console_python
+from galaius.host.windowless import console_python
 
 
 #: Setuid-root helpers of Chromium's SUID sandbox, the route Chromium takes when the kernel refuses this user new

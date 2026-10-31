@@ -10,14 +10,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from galaius.caller import Caller
+from galaius.account.caller import Caller
 from galaius.agents import registry as reg
 from galaius.agents import run as run_module
-from galaius.agents.providers import ClaudeCodeProvider, CodexProvider
+from galaius.agents.limits.providers import ClaudeCodeProvider, CodexProvider
 from tests.support.agents import use_policy
 from galaius.cli.app import app
 from galaius.cli import app_commands
-from galaius.server import tools_agents
+from galaius.server.tools import agents as tools_agents
 from galaius.config import UserConfig
 
 

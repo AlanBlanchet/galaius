@@ -11,7 +11,7 @@ import io
 
 from PIL import Image
 
-from galaius.vision_infer import _PREVIEW_MAX_BYTES, _PREVIEW_MAX_PIXELS, _bounded_thumbnail
+from galaius.inference.vision_infer import _PREVIEW_MAX_BYTES, _PREVIEW_MAX_PIXELS, _bounded_thumbnail
 
 
 def _decode(encoded: str) -> Image.Image:

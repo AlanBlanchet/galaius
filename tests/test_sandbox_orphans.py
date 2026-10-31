@@ -16,7 +16,7 @@ import pytest
 
 from galaius.desktop import orphans
 from galaius.desktop.backend import nested_server_command
-from galaius.server_registry import HARD_KILL
+from galaius.mcp.registry import HARD_KILL
 
 
 @pytest.fixture(autouse=True)

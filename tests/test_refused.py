@@ -7,10 +7,10 @@ from galaius_core import AgentRefusal, Refused, SubscriptionCap, SubscriptionRef
 from pydantic import ValidationError
 
 from galaius.agents.host import ConversationRefused
-from galaius.agents.subscriptions import SubscriptionCapped, SubscriptionRefused
-from galaius.machine_programs import ProgramFailed
+from galaius.agents.limits.subscriptions import SubscriptionCapped, SubscriptionRefused
+from galaius.machine.programs import ProgramFailed
 from galaius_core import AgentRefused
-from galaius.workspace_git import WorkspaceRefused
+from galaius.machine.workspace_git import WorkspaceRefused
 
 CAP = SubscriptionCap(window="five_hour", used_percent=81, cap_percent=80, at_cap="finish", resets_at=datetime(2026, 10, 26, 15, tzinfo=UTC))
 

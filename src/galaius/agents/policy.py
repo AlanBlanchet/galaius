@@ -31,12 +31,12 @@ from typing import Literal, get_args
 from galaius_core import AgentRevisionRef, CompactAt, ReasoningLevel
 from pydantic import TypeAdapter
 
-from galaius.agents.catalog import AgentCatalog
-from galaius.agents.catalog_connection import CatalogConnectionError
+from galaius.agents.catalog.entries import AgentCatalog
+from galaius.agents.catalog.connection import CatalogConnectionError
 from galaius.agents.tool_gateway import AgentToolList, ToolGateway
-from galaius.agents.vocabulary import TouchScope
+from galaius.agents.catalog.vocabulary import TouchScope
 from galaius.config import Config, UserConfig
-from galaius.criteria import ValueRule
+from galaius.catalog.criteria import ValueRule
 
 #: The two altitudes a paradigm can be projected at for one agent. Closed on purpose: a third
 #: spelling ("prompt", "sticky-note") is a typo, silent until spawn.

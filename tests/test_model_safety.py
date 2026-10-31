@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from galaius_core import UnsafeModelWeightsError
 
-from galaius.model_safety import assert_directory_safetensors_only, assert_safetensors_only, is_safetensors, looks_like_pickle
+from galaius.inference.weights import assert_directory_safetensors_only, assert_safetensors_only, is_safetensors, looks_like_pickle
 
 
 class _PopMarker:

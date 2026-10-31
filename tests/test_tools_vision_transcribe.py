@@ -9,7 +9,7 @@ a measurement: label the evidence basis, and never let a quality question pass u
 
 import pytest
 
-from galaius.server.tools_vision import _asks_about_sound_quality
+from galaius.server.tools.vision import _asks_about_sound_quality
 
 
 @pytest.mark.parametrize(

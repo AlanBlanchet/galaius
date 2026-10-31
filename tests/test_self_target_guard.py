@@ -12,7 +12,7 @@ the caller's own editor window is refused by default, with the reason and the es
 from pathlib import Path
 import pytest
 
-from galaius.caller import Caller
+from galaius.account.caller import Caller
 from galaius.desktop.selfguard import is_self_window, self_window_hints
 
 

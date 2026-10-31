@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from galaius.private_files import PRIVATE_FILES
+from galaius.host.private_files import PRIVATE_FILES
 
 
 def loosen(path: Path) -> None:

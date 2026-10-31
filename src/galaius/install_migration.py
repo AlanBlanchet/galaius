@@ -18,8 +18,8 @@ from typing import ClassVar, Literal
 from pydantic import BaseModel, Field
 
 from galaius.cli.clients import ClientTarget, MCPServer, Scope
-from galaius.machine_service import MACHINE_SERVICE, ServiceUnavailable, SystemdMachineService, WindowsMachineService
-from galaius.paths import UserPaths
+from galaius.machine.service import MACHINE_SERVICE, ServiceUnavailable, SystemdMachineService, WindowsMachineService
+from galaius.host.paths import UserPaths
 
 Outcome = Literal["done", "already", "absent", "conflict", "manual", "failed"]
 

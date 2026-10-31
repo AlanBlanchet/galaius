@@ -18,17 +18,17 @@ import pytest
 from galaius_core import AgentMoveRequest, MachineRef, SubscriptionAllowance, SubscriptionChoice, UsageWindow, SubscriptionChoices, SubscriptionLimits
 
 from galaius.agents import registry as reg
-from galaius.agents import admission, quota
-from galaius.agents.events import AgentEvent
-from galaius.agents.providers import PROVIDERS, ClaudeCodeProvider
+from galaius.agents.limits import admission, quota
+from galaius.agents.transport.events import AgentEvent
+from galaius.agents.limits.providers import PROVIDERS, ClaudeCodeProvider
 from galaius.agents import run as run_module
 from galaius.agents.run import run_agent
-from galaius.agents.subscription_watch import SubscriptionWatch
-from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionCapped, SubscriptionRefused
-from galaius.fence import FenceBind, FenceSpec
-from galaius.machine_programs import AgentPrograms
-from galaius import machine_agents
-from galaius.machine_agents import MachineAgents
+from galaius.agents.limits.subscription_watch import SubscriptionWatch
+from galaius.agents.limits.subscriptions import RunSubscription, Subscription, SubscriptionCapped, SubscriptionRefused
+from galaius.isolation.fence import FenceBind, FenceSpec
+from galaius.machine.programs import AgentPrograms
+from galaius.machine import agents as machine_agents
+from galaius.machine.agents import MachineAgents
 from galaius.cli.app_commands import agents_resume
 from tests.support.agents import ScriptedProvider, install_fake_cli, install_provider, use_policy
 

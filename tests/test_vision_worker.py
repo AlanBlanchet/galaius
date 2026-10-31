@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from galaius.vision_env import ModelWorker
+from galaius.inference.env import ModelWorker
 from tests.support.agents import install_fake_cli
 
 #: Answers like `vision_infer.serve`: the request file says what to do. Each start appends to `starts`

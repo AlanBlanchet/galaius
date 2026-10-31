@@ -16,10 +16,11 @@ import pytest
 from pydantic import SecretStr, ValidationError
 from galaius_core import AgentCatalogSnapshot, AgentRevision, AgentRevisionRef, PromptExecutionRef, PromptKey, PromptRevision
 
-from galaius.agents.catalog import AgentCatalog, AgentInstructionSet, CatalogSnapshot
-from galaius.agents import catalog_connection, codex_policy_hook
+from galaius.agents.catalog.entries import AgentCatalog, AgentInstructionSet, CatalogSnapshot
+from galaius.agents.catalog import connection as catalog_connection
+from galaius.hooks import codex_policy as codex_policy_hook
 from galaius.agents import registry as reg
-from galaius.agents.catalog_connection import (
+from galaius.agents.catalog.connection import (
     CatalogAuthenticationError,
     CatalogConnection,
     CatalogConnectionError,
@@ -27,11 +28,11 @@ from galaius.agents.catalog_connection import (
 )
 from galaius.agents.policy import Policy
 from galaius.agents.tool_gateway import CONVERSATION_TOOLS
-from galaius.agents.providers import AgentProvider, ClaudeCodeProvider, CodexProvider, UnsupportedToolPolicy
+from galaius.agents.limits.providers import AgentProvider, ClaudeCodeProvider, CodexProvider, UnsupportedToolPolicy
 from unittest.mock import AsyncMock
 from galaius.agents.run import ModelUnavailable, launch_continuation, run_agent
 from galaius.config import UserConfig
-from galaius.private_files import PRIVATE_FILES
+from galaius.host.private_files import PRIVATE_FILES
 from tests.support.private_files import loosen
 from galaius.cli.app import app
 from galaius.cli import app_commands
@@ -414,7 +415,7 @@ def test_a_linked_pc_reads_the_catalog_with_its_own_link_and_follows_a_relink(li
     names it reads with its link's company; one naming its link keeps the company chosen with
     `prompts use`. Either reads with the machine token, and a re-link (new token, new company) is
     followed with no step; an unlinked PC is told to link again, in words."""
-    from galaius.machines import MachineRunner
+    from galaius.machine.connection import MachineRunner
 
     chosen = uuid4()
     CatalogConnection(endpoint="http://127.0.0.1:8767", workspace_id=chosen, auth_mode=saved).save()
@@ -487,7 +488,7 @@ def test_a_linked_pc_keeps_no_catalog_file_so_nothing_rewrites_what_running_proc
     ("not json", "invalid catalog connection configuration"),
 ])
 def test_an_unreadable_catalog_file_names_why_and_never_breaks_local_settings(catalog_home, payload, said):
-    from galaius.server_tool_settings import ServerToolSettings
+    from galaius.account.tool_settings import ServerToolSettings
 
     PRIVATE_FILES.replace_text(CatalogConnection.path(), payload)
     with pytest.raises(CatalogConnectionError, match=said):
@@ -519,7 +520,7 @@ def machine_transport(value, token: str, status=200):
 @pytest.fixture
 def linked_pc(catalog_home, monkeypatch):
     """This PC linked to a server: its machine link carries server, company and machine token."""
-    from galaius.machines import MachineConfig, MachineRunner
+    from galaius.machine.connection import MachineConfig, MachineRunner
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(catalog_home / "xdg"))
     link = MachineConfig(server_url="http://127.0.0.1:8767", workspace_id=uuid4(), machine_id=uuid4(), token="iwm_" + "a" * 48,
@@ -1373,9 +1374,9 @@ import asyncio, json, sys
 from pathlib import Path
 from unittest.mock import patch
 from galaius_core import AgentRevisionRef
-from galaius.agents.catalog import AgentCatalog
+from galaius.agents.catalog.entries import AgentCatalog
 from galaius.agents import registry as reg
-from galaius.agents.providers import CodexProvider
+from galaius.agents.limits.providers import CodexProvider
 from galaius.agents.run import run_agent, launch_continuation
 
 lead = AgentRevisionRef(id=sys.argv[1], revision=sys.argv[2])

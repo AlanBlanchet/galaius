@@ -19,7 +19,7 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from galaius.private_files import PRIVATE_FILES
+from galaius.host.private_files import PRIVATE_FILES
 
 FindingClass = Literal[
     "private-key",

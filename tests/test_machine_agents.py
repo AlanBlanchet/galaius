@@ -19,31 +19,32 @@ import logging
 import time
 
 from galaius_core import refusal_of, MACHINE_AGENT_REQUESTS, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, AgentProviderState, AgentRefusal, Refused, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentSettings, MachineAgentSettingsUpdate, MachineWorkspaceJob, SubscriptionLimits, WebLoad, MachineRef, ScreenAssertion, ScreenOpenRequest, ScreenReadiness, ScreenStatusRequest
-from galaius.desktop.screen_desk import ScreenDesk
-from galaius.machine_programs import AgentPrograms
-from galaius.agents import agent_queue, messaging
+from galaius.desktop.screen.desk import ScreenDesk
+from galaius.machine.programs import AgentPrograms
+from galaius.agents import messaging
+from galaius.agents.limits import agent_queue
 from galaius.agents import registry as reg
 from galaius.agents.host import ConversationRefused
 from galaius.agents.run import ModelUnavailable
-from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionRefused
-from galaius.machine_agents import LogRing, MachineAgents, MachineSessions, WebRun, WebRuns, interaction_digest
-from galaius.redaction import redact
+from galaius.agents.limits.subscriptions import RunSubscription, Subscription, SubscriptionRefused
+from galaius.machine.agents import LogRing, MachineAgents, MachineSessions, WebRun, WebRuns, interaction_digest
+from galaius.host.redaction import redact
 from galaius_core import AgentRefused
-from galaius.fence import FenceSpec
+from galaius.isolation.fence import FenceSpec
 from galaius.config import UserConfig
-from galaius import machines
-from galaius.machines import MachineConfig, MachineRunner
-from galaius.agents import admission
+from galaius.machine import connection as machines
+from galaius.machine.connection import MachineConfig, MachineRunner
+from galaius.agents.limits import admission
 from galaius.agents.policy import PolicyError
-from galaius.agents.providers import UnsupportedToolPolicy
-from galaius.agents.subscriptions import SubscriptionCapped
-from galaius.machine_workspaces import KeptJob, MachineWorkspaces, WorkspaceJobs
-from galaius.workspace_git import CloneFailure, Git, WorkspaceRefused
-from galaius.workspace_copy import WorkspaceTransfers
-from galaius.agents.providers import PROJECT_SETTINGS_OFF, UNTRUSTED_FOLDERS, ClaudeCodeProvider
-from galaius.place_reviews import PlaceReviews
-from galaius.private_files import PRIVATE_FILES
-from galaius.project_secrets import MARKER, ProjectEnv
+from galaius.agents.limits.providers import UnsupportedToolPolicy
+from galaius.agents.limits.subscriptions import SubscriptionCapped
+from galaius.machine.workspaces import KeptJob, MachineWorkspaces, WorkspaceJobs
+from galaius.machine.workspace_git import CloneFailure, Git, WorkspaceRefused
+from galaius.machine.workspace_copy import WorkspaceTransfers
+from galaius.agents.limits.providers import PROJECT_SETTINGS_OFF, UNTRUSTED_FOLDERS, ClaudeCodeProvider
+from galaius.machine.place_reviews import PlaceReviews
+from galaius.host.private_files import PRIVATE_FILES
+from galaius.machine.project_secrets import MARKER, ProjectEnv
 from galaius_core.sealing import SecretsSeal
 
 
@@ -90,7 +91,7 @@ def _launches(monkeypatch: pytest.MonkeyPatch, run_id: UUID | None = None) -> li
         seen.append({"provider": provider, "task": task, "session": reg.resolve_session_id(), **options})
         return SimpleNamespace(run_id=str(run_id or uuid4()))
 
-    monkeypatch.setattr("galaius.machine_agents.run_agent", launch)
+    monkeypatch.setattr("galaius.machine.agents.run_agent", launch)
     return seen
 
 
@@ -157,7 +158,7 @@ def test_the_projects_folder_is_said_within_the_features_a_server_keeps() -> Non
 
 
 def test_with_the_fence_on_an_agent_writes_its_own_project_folder_only(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("galaius.machine_agents.available", lambda: (True, ""))
+    monkeypatch.setattr("galaius.machine.agents.available", lambda: (True, ""))
     seen = _launches(monkeypatch)
     for name in ("aino", "other"):
         (base / ".galaius-projets" / name).mkdir(parents=True)
@@ -209,7 +210,7 @@ def test_runs_say_which_ranked_candidates_were_passed_over_and_until_when(base: 
 def test_a_community_child_is_listed_with_its_entry_never_its_text(base: Path, tmp_path: Path) -> None:
     """The web's agents panel marks a community agent by its entry (owner 2026-10-27 « they should show up like so in the
     agents panel »): the run list carries its title, author, licence and source, never the entry's text or delimiter."""
-    from galaius.agents.community import CommunityAgent
+    from galaius.agents.catalog.community import CommunityAgent
     agents = _agents(base, tmp_path)
     mine, child = str(uuid4()), str(uuid4())
     started = CommunityAgent(entry=uuid4(), kind="skill", title="Frontend slides", author="someone/skills", licence="MIT",
@@ -329,7 +330,7 @@ def test_a_run_stays_on_its_subscription_and_a_lent_pc_lends_no_login(base: Path
     async def nothing_runs(provider, task, **options):
         raise RuntimeError("No candidate for 'tester' can start on this machine")
 
-    monkeypatch.setattr("galaius.machine_agents.run_agent", nothing_runs)
+    monkeypatch.setattr("galaius.machine.agents.run_agent", nothing_runs)
     for asked in ({"op": "start", "root": "project", "role": "tester"}, {"op": "start", "root": "project", "kind": "session"},
                   {"op": "continue", "session_id": str(uuid4())}):
         with pytest.raises(SubscriptionRefused, match="never lent"):
@@ -362,7 +363,7 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 32
 def test_a_run_image_is_served_only_when_its_own_step_names_a_plain_image(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str, served: str | None) -> None:
     """Deny by default: the web asks by key, never by path; the PC serves only an image file a tool step
     of THAT web run wrote down — with agents switched off too (reading what ran stays possible)."""
-    import galaius.machine_agents as machine_agents
+    import galaius.machine.agents as machine_agents
     from galaius_core import media_key
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr(machine_agents, "MACHINE_AGENT_MEDIA", 64)
@@ -594,8 +595,8 @@ def test_logs_and_run_output_never_show_credentials() -> None:
     assert not any(secret in shown for secret in ("hunter22", "abc.def", "0123456789abcdef", "ABCDEFGHIJKLMNOP", "MYSECRETVALUE"))
     ring = LogRing(keep=2)
     for index in range(3):
-        logging.getLogger("galaius.machines").addHandler(ring)
-        logging.getLogger("galaius.machines").warning("line %d with iwk_0123456789abcdef", index)
+        logging.getLogger("galaius.machine.connection").addHandler(ring)
+        logging.getLogger("galaius.machine.connection").warning("line %d with iwk_0123456789abcdef", index)
         logging.getLogger("websockets.client").warning("header Authorization: Bearer leaked")
     assert len(ring.lines) == 2 and all("0123456789abcdef" not in line and "leaked" not in line for line in ring.lines)
 
@@ -621,7 +622,7 @@ def test_editor_conversations_are_listed_only_inside_agent_roots_and_continue_as
     listed = _answer(agents, _request("sessions")).sessions
     assert [(item.session_id, item.root, item.path, item.title, item.last, item.live) for item in listed] == [(inside, "project", "src", "Fix the header", "Header fixed.", False)]
     turns = []
-    monkeypatch.setattr("galaius.machine_agents.launch_editor_turn", lambda provider, run, text, *, environment, fork_from=None: turns.append((run.cwd, text, fork_from, run.permission_mode)))
+    monkeypatch.setattr("galaius.machine.agents.launch_editor_turn", lambda provider, run, text, *, environment, fork_from=None: turns.append((run.cwd, text, fork_from, run.permission_mode)))
     started = _answer(agents, _request("continue", session_id=str(inside), text="- and the footer"))
     assert turns == [(str(base.resolve() / "project" / "src"), "- and the footer", str(inside), "workspace_write")]
     assert agents.runs.read()[-1].kind == "continued" and agents.runs.read()[-1].run_id == started.run_id
@@ -705,7 +706,7 @@ def test_a_message_to_a_session_on_its_turn_waits_for_the_turn_to_end(tmp_path: 
 def test_a_continued_copy_stops_taking_turns_once_the_opt_in_is_off(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     on = _agents(base, tmp_path, continue_conversations=True).model_copy(update={"editor_projects": tmp_path / "projects"})
     _, editor = _editor(tmp_path, base, base / "project")
-    monkeypatch.setattr("galaius.machine_agents.launch_editor_turn", lambda *args, **kwargs: None)
+    monkeypatch.setattr("galaius.machine.agents.launch_editor_turn", lambda *args, **kwargs: None)
     copy = _answer(on, _request("continue", session_id=str(editor), text="go"))
     reg.finish(str(copy.run_id), exit_code=0, first=0)
     off = on.model_copy(update={"continue_conversations": False})
@@ -718,7 +719,7 @@ def test_a_failed_first_turn_never_leaves_the_copy_running(base: Path, tmp_path:
     _, editor = _editor(tmp_path, base, base / "project")
     def refuse(*args, **kwargs):
         raise OSError("claude is not installed")
-    monkeypatch.setattr("galaius.machine_agents.launch_editor_turn", refuse)
+    monkeypatch.setattr("galaius.machine.agents.launch_editor_turn", refuse)
     with pytest.raises(OSError):
         _answer(agents, _request("continue", session_id=str(editor), text="go"))
     assert [run.status for run in _answer(agents, _request("runs")).runs] == ["failed"]
@@ -736,7 +737,7 @@ def test_questions_of_a_turn_that_ended_are_no_longer_waiting(monkeypatch: pytes
 def test_a_continued_copy_opens_with_the_editor_history(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     agents = _agents(base, tmp_path, continue_conversations=True).model_copy(update={"editor_projects": tmp_path / "projects"})
     _, editor = _editor(tmp_path, base, base / "project")
-    monkeypatch.setattr("galaius.machine_agents.launch_editor_turn", lambda *args, **kwargs: None)
+    monkeypatch.setattr("galaius.machine.agents.launch_editor_turn", lambda *args, **kwargs: None)
     copy = _answer(agents, _request("continue", session_id=str(editor), text="go"))
     lines = [json.loads(line) for line in _answer(agents, _request("tail", run_id=str(copy.run_id))).lines]
     assert [(line["kind"], line["text"]) for line in lines][:2] == [("prompt", "Fix the header"), ("text", "Header fixed.")]
@@ -891,7 +892,7 @@ def test_a_start_asked_again_under_its_id_is_never_a_second_agent(base: Path, tm
     launched (`outlived`, visual-critic launch r2: the PC frozen 170 s, past `START_SECONDS`): the one run that id started,
     its agent launched once."""
     if cut == "outlived":
-        monkeypatch.setattr("galaius.machine_agents.START_SECONDS", 0.05)
+        monkeypatch.setattr("galaius.machine.agents.START_SECONDS", 0.05)
     seen: list[str] = []
     run_id = uuid4()
 
@@ -900,7 +901,7 @@ def test_a_start_asked_again_under_its_id_is_never_a_second_agent(base: Path, tm
         await asyncio.sleep(0.3)
         return SimpleNamespace(run_id=str(run_id))
 
-    monkeypatch.setattr("galaius.machine_agents.run_agent", launch)
+    monkeypatch.setattr("galaius.machine.agents.run_agent", launch)
     request = _request("start", root="project", role="main", text="the footer")
 
     async def asked() -> tuple[MachineAgentAnswer, ...]:
@@ -912,7 +913,7 @@ def test_a_start_asked_again_under_its_id_is_never_a_second_agent(base: Path, tm
         if cut == "outlived":
             with pytest.raises(AgentRefused, match="still starting"):
                 await first
-            monkeypatch.setattr("galaius.machine_agents.START_SECONDS", 5.0)  # asked again while its agent still launches
+            monkeypatch.setattr("galaius.machine.agents.START_SECONDS", 5.0)  # asked again while its agent still launches
             return (await _agents(base, tmp_path).answer(request),)
         if cut == "joined":
             return tuple(await asyncio.gather(first, _agents(base, tmp_path).answer(request)))
@@ -1052,7 +1053,7 @@ def _fenced_agents(base: Path, tmp_path: Path, cli: tuple[str, ...], **levels) -
 
 
 def test_with_the_fence_on_a_web_start_carries_the_spec_its_turns_are_fenced_by(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("galaius.machine_agents.available", lambda: (True, ""))
+    monkeypatch.setattr("galaius.machine.agents.available", lambda: (True, ""))
     seen = _launches(monkeypatch)
     agents = _fenced_agents(base, tmp_path, ("false",), project="write", other="read")
     answer = _answer(agents, _request("start", root="project", role="app-engineer", text="tidy"))
@@ -1065,14 +1066,14 @@ def test_with_the_fence_on_a_web_start_carries_the_spec_its_turns_are_fenced_by(
 
 def test_with_the_fence_on_an_agent_folder_never_opens_on_its_own(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The agent folder gets no level the owner did not set (it used to open as Write)."""
-    monkeypatch.setattr("galaius.machine_agents.available", lambda: (True, ""))
+    monkeypatch.setattr("galaius.machine.agents.available", lambda: (True, ""))
     agents = _fenced_agents(base, tmp_path, ("false",), other="read")
     with pytest.raises(PermissionError, match="no level opens project"):
         _answer(agents, _request("start", root="project", role="app-engineer", text="tidy"))
 
 
 def test_with_the_fence_on_an_agent_never_starts_unfenced(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("galaius.machine_agents.available", lambda: (False, "bubblewrap (bwrap) is not installed"))
+    monkeypatch.setattr("galaius.machine.agents.available", lambda: (False, "bubblewrap (bwrap) is not installed"))
     agents = _fenced_agents(base, tmp_path, ("false",))
     with pytest.raises(PermissionError, match="cannot be built: bubblewrap"):
         _answer(agents, _request("start", root="project", role="app-engineer", text="tidy"))
@@ -1082,7 +1083,7 @@ def test_with_the_fence_on_an_agent_never_starts_unfenced(base: Path, tmp_path: 
 
 
 def test_in_a_write_after_review_folder_the_agent_works_in_a_staging_copy(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("galaius.machine_agents.available", lambda: (True, ""))
+    monkeypatch.setattr("galaius.machine.agents.available", lambda: (True, ""))
     run_id = uuid4()
     seen = _launches(monkeypatch, run_id)
     agents = _fenced_agents(base, tmp_path, ("false",), project="write_on_review")
@@ -1356,7 +1357,7 @@ def test_a_tree_any_cut_stopped_resumes_whole_by_itself_deepest_first_once(base:
         _cut(run_id, cut, pid=pid, at=500.0 if run_id == "tree-old" else day_ago)
     signed_in = {"claude": False}
     sent: list[tuple[str, str, str]] = []
-    monkeypatch.setattr("galaius.machine_agents.deliver_message", lambda run_id, text, *, sender, environment: sent.append((run_id, text, sender)) or SimpleNamespace(state="queued", text=""))
+    monkeypatch.setattr("galaius.machine.agents.deliver_message", lambda run_id, text, *, sender, environment: sent.append((run_id, text, sender)) or SimpleNamespace(state="queued", text=""))
     agents = _agents(base, tmp_path).model_copy(update={"programs": SimpleNamespace(signed_in=lambda provider, subscription: signed_in[provider])})
     if resumes == "sign_in":
         assert asyncio.run(agents.resume_paused()) == [] and sent == []
@@ -1382,7 +1383,7 @@ def test_a_run_its_limit_refused_before_it_did_anything_starts_again_on_the_next
     """Owner 2026-10-20 « we're still waisting time / inference / usage on stupid things »: its brief starts again
     as a new run of its role, its asks moved to it, on any model but the refused one; the new run says what it relaunched,
     the refused one what took its brief, and a wait on the refused run reports the one that took over, saying so."""
-    from galaius.agents import handback
+    from galaius.agents.turns import handback
     from galaius.agents.spawn_line import SpawnLine
 
     reg.cut_resume_since(now=1000.0)
@@ -1398,7 +1399,7 @@ def test_a_run_its_limit_refused_before_it_did_anything_starts_again_on_the_next
                      cwd=kwargs["cwd"], parent_run_id=kwargs["parent_run_id"], task=task)
         return SimpleNamespace(run_id=run_id)
 
-    monkeypatch.setattr("galaius.machine_agents.run_agent", runner)
+    monkeypatch.setattr("galaius.machine.agents.run_agent", runner)
     assert handback.wait(["relaunch-old"], timeout=0, interval=0).reports[0].pending, "its failure read before its relaunch"
 
     assert asyncio.run(_agents(base, tmp_path).resume_paused()) == ["relaunch-old"]
@@ -1427,7 +1428,7 @@ def test_a_run_its_limit_refused_before_it_did_anything_starts_again_on_the_next
     async def nothing_left(provider, task, **kwargs):
         raise ModelUnavailable("No candidate for 'app-engineer' can start on this machine")
 
-    monkeypatch.setattr("galaius.machine_agents.run_agent", nothing_left)
+    monkeypatch.setattr("galaius.machine.agents.run_agent", nothing_left)
     assert asyncio.run(_agents(base, tmp_path).resume_paused()) == []
     [report] = handback.wait([second], timeout=0, interval=0).reports
     assert report.run_id == second and "could not be relaunched on another model: No candidate" in report.section()
@@ -1448,7 +1449,7 @@ def test_a_pasted_code_reaches_its_sign_in_through_the_web_request(base: Path, t
 # 2026-10-23 16:29: his new conversation was sent to this PC and the server recorded
 # `held_code=start_unanswered` — « n'a pas confirmé le lancement ». The PC had answered nothing
 # because `run_agent` raised `admission.Paused` (« en pause : limite d'usage claude jusqu'à 17:21 »)
-# and that class derived from bare `Exception`, outside the refusals `machines.py` turns into an
+# and that class derived from bare `Exception`, outside the refusals `machine/connection.py` turns into an
 # answer. An unanswered start is the worst of the two: the server cannot tell a refusal from a
 # frozen PC, and he is told to look at the list instead of being told why.
 
@@ -1474,7 +1475,7 @@ def test_every_cut_has_a_resume_sender_and_words():
     because its sibling (`machines.ANSWERED_REFUSALS`) failed exactly that way."""
     from typing import get_args
 
-    from galaius.machine_agents import _RESUMED_AFTER
+    from galaius.machine.agents import _RESUMED_AFTER
 
     assert set(_RESUMED_AFTER) == set(get_args(reg.CutCause))
     assert all(sender in reg.SYSTEM_SENDERS and words for sender, words in _RESUMED_AFTER.values())
@@ -1507,7 +1508,7 @@ def test_his_editor_session_is_stopped_through_its_hook_never_typed_into(base: P
                                                                          installed: bool, opened: str, refused: str | None) -> None:
     """The web's stop for one of HIS editor sessions (a session galaius did not start, so not a run of the web's): the
     PC leaves the stop for the hook every Claude Code session runs (`SessionStops`) — it never types into his session."""
-    from galaius.agents.session_stops import SessionStops
+    from galaius.agents.turns.session_stops import SessionStops
 
     agents = _agents(base, tmp_path)
     session = uuid4()

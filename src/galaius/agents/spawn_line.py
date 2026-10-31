@@ -1,7 +1,7 @@
 """The line agent runs wait in on this computer once as many work here as it allows (`Config.agent_runs_max`).
 
 Agents fan out: three conversations each starting their own team put 20+ runs at work at once
-(2026-10-13), the agents' shared memory cap (`galaius.agents.ceiling`) was reached and the kernel
+(2026-10-13), the agents' shared memory cap (`galaius.agents.limits.ceiling`) was reached and the kernel
 killed builds, browsers and whole runs. A spawn (`galaius agents spawn`, the `agent_spawn` tool) is
 never refused: past the limit its run id is handed back at once and it waits, in the order asked,
 held by a detached waiter (`main`) in a scope of its own, so it outlives the process that asked. A
@@ -40,24 +40,26 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import ClassVar, Literal, Self, TypeVar
 
-from galaius.caller import Caller
+from galaius.account.caller import Caller
 from galaius_core import AgentRevisionRef
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from galaius.agents import agent_queue, messaging, relations
-from galaius.agents.critic_rounds import CriticRounds, turn_of
-from galaius.agents.admission import Hold, Paused, SoftMemory, turn_hold
+from galaius.agents import messaging
+from galaius.agents.limits import agent_queue
+from galaius.agents.catalog import relations
+from galaius.agents.turns.critic_rounds import CriticRounds, turn_of
+from galaius.agents.limits.admission import Hold, Paused, SoftMemory, turn_hold
 from galaius.agents import registry as reg
-from galaius.agents.community import CommunityAgent
+from galaius.agents.catalog.community import CommunityAgent
 from galaius.agents.policy import Policy, PolicyError
-from galaius.agents.providers import provider_for
-from galaius.agents.vocabulary import TouchScope
+from galaius.agents.limits.providers import provider_for
+from galaius.agents.catalog.vocabulary import TouchScope
 from galaius.agents.run import ModelUnavailable, RunHandle, effective_permission_mode, load_policy, resolve_role, run_agent
 from galaius.config import Config
-from galaius.fence import FenceSpec
-from galaius.machine_agents import WebRuns
-from galaius.paths import UserPaths
-from galaius.processes import process_exited, process_started
+from galaius.isolation.fence import FenceSpec
+from galaius.machine.agents import WebRuns
+from galaius.host.paths import UserPaths
+from galaius.host.processes import process_exited, process_started
 from galaius.upgrade.store import Runtime, RuntimeStore
 
 #: How often a waiter, or a resume, looks whether its turn came.

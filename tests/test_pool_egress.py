@@ -11,7 +11,7 @@ from uuid import uuid4
 import pytest
 from galaius_core import EgressAllowEntry, EgressPolicy
 
-from galaius.sandbox import gvisor_available, run_pooled
+from galaius.isolation.sandbox import gvisor_available, run_pooled
 
 _METADATA_IP = "169.254.169.254"
 _ALLOWED_IP = "1.1.1.1"    # Cloudflare's own resolver — always up, used only as a reachability probe.

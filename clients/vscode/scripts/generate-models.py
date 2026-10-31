@@ -372,7 +372,7 @@ def _compute_recommendations(
     aa_scores: dict[str, float],
 ) -> dict[str, list[str]]:
     """Compute top model recommendations per task with min-max normalized scoring."""
-    from galaius.benchmarks.published import PublishedTable  # noqa: PLC0415
+    from galaius.catalog.published import PublishedTable  # noqa: PLC0415
 
     # Collect raw dimensions for all models
     raw: list[tuple[str, float, float, bool, dict]] = []
@@ -600,7 +600,7 @@ recommendations = _compute_recommendations(providers, aa_scores)
 
 # Append per-benchmark best published model (lookup-only — no eval runs).
 # Keys: "screenspot", "screenspot_pro" — values: list[model_id] for shape parity.
-from galaius.benchmarks.published import PublishedTable  # noqa: E402
+from galaius.catalog.published import PublishedTable  # noqa: E402
 from galaius.models import Model  # noqa: E402
 
 Model.load_registry()

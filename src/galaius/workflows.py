@@ -22,7 +22,7 @@ import httpx
 from galaius_core import ArtifactRef, TriggerInvocation, WorkflowEvent, WorkflowRevision, WorkflowRevisionRef, WorkflowRun
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from galaius.server_workspace import ServerWorkspace, WorkflowRunRequest, WorkflowRunUncertain
+from galaius.account.workspace import ServerWorkspace, WorkflowRunRequest, WorkflowRunUncertain
 
 #: A run in one of these statuses has reached its outcome; nothing about it changes any more.
 TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled", "interrupted"})

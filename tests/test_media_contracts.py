@@ -9,8 +9,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from galaius.agents.providers import ClaudeCodeProvider, CodexProvider
-from galaius.server import tools_desktop, vlm
+from galaius.agents.limits.providers import ClaudeCodeProvider, CodexProvider
+from galaius.server import vlm
+from galaius.server.tools import desktop as tools_desktop
 from galaius.server.core import mcp
 from galaius.vision.types import MediaAnalysis, RecordingCapture, RecordingResult, VLMResult
 from galaius.vision.usage_records import UsageEntry

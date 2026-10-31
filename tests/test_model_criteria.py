@@ -16,8 +16,8 @@ from datetime import date, timedelta
 import pytest
 
 from galaius.models import Benchmark, Model, ModelCapability
-from galaius.criteria import Criteria, CriteriaError, Variables
-from galaius.agents.protocol import ConversationRoute, ModelSelection
+from galaius.catalog.criteria import Criteria, CriteriaError, Variables
+from galaius.agents.transport.protocol import ConversationRoute, ModelSelection
 
 from tests.support.models import catalog_of
 
@@ -104,7 +104,7 @@ def test_it_selects_the_cheapest_model_that_clears_the_bar(registry):
 
 
 def test_bare_intelligence_excludes_snapshot_scores_outside_the_current_board(monkeypatch):
-    from galaius import model_catalog
+    from galaius.catalog import models as model_catalog
 
     monkeypatch.setattr(model_catalog, "live_scores", lambda: {"current": 40.0})
     with catalog_of(
@@ -293,7 +293,7 @@ def test_a_criterion_only_picks_what_the_vendor_cli_can_run(monkeypatch):
     unrunnable. The pool a vendor CLI chooses from is what THAT CLI can be pointed at: its own
     vendor's models through its own login, or a model galaius can route it to (ollama, when its
     key or daemon is there) — never a cheaper model from a provider it cannot reach."""
-    from galaius.agents.providers import provider_for
+    from galaius.agents.limits.providers import provider_for
     from galaius.agents.run import ModelUnavailable, resolve_model
 
     claude, codex = provider_for("claude"), provider_for("codex")
@@ -437,7 +437,7 @@ def test_nonnegative_price_guards_do_not_hide_a_scored_unpriced_model(registry, 
     new provider has already published both prices. Explicit upper bounds still reject unknown
     prices; only the zero lower-bound guard is open-ended."""
     monkeypatch.setattr(
-        "galaius.criteria.model_catalog.live_scores",
+        "galaius.catalog.criteria.model_catalog.live_scores",
         lambda: {"priced": 10.0, "new-and-unpriced": 90.0},
     )
     with catalog_of(
@@ -458,7 +458,7 @@ def test_pricing_the_ranked_models_is_cached_so_no_command_pays_for_litellm(monk
     catalog and a tool that got slower for everyone who never asked."""
     import sys
 
-    from galaius import model_catalog as mcat
+    from galaius.catalog import models as mcat
 
     board = tmp_path / "board.json"
     board.write_text(json.dumps({"scores": [
@@ -501,7 +501,7 @@ def test_a_percentile_is_read_against_the_variable_s_OWN_source(monkeypatch, tmp
     which is the same "two sources, one number" bug that put two tabs of one window into open
     disagreement about which model leads.
     """
-    from galaius import model_catalog as mcat
+    from galaius.catalog import models as mcat
 
     board = tmp_path / "board.json"
     board.write_text(json.dumps({"scores": [
@@ -532,8 +532,8 @@ def test_every_variable_reads_its_percentile_against_its_own_leaderboard(registr
     SAME table the score is read from, or `90%` is the 90th percentile of a board nobody was
     scored on.
     """
-    from galaius import benchmark_tables
-    from galaius.benchmarks.published import PublishedEntry, PublishedTable
+    from galaius.catalog import tables as benchmark_tables
+    from galaius.catalog.published import PublishedEntry, PublishedTable
 
     # No live table: the bundled snapshot IS this fixture's board, so the assertion cannot depend
     # on whatever this machine last fetched.
@@ -613,7 +613,7 @@ def test_the_measure_names_its_source_from_the_registry(registry):
     `competence()` held `source = "Artificial Analysis"` inline, so a second board supplying the
     same field would still have been announced as the first one's.
     """
-    from galaius.criteria import Variables
+    from galaius.catalog.criteria import Variables
 
     variable = Variables.by_name("aa.intelligence")
     assert variable is not None and variable.source, "the registry owns the source name"

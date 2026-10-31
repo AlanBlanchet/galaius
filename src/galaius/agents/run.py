@@ -27,37 +27,39 @@ import subprocess
 import tempfile
 from collections.abc import Callable, Iterable
 from typing import BinaryIO, ClassVar, Mapping, Sequence
-from galaius.caller import Caller
+from galaius.account.caller import Caller
 from galaius.config import Config
 from galaius_core import IMAGE_TYPES, AgentRefusal, AgentRefusalCode, AgentRevisionRef, Coded, LaunchSkipReason, PassedOverCandidate, ReasoningLevel, SubscriptionCap, SubscriptionChoices
 from pydantic import BaseModel, ConfigDict
 
-from galaius.agents import admission, agent_queue
+from galaius.agents.limits import admission
+from galaius.agents.limits import agent_queue
 from galaius.agents import registry as reg
-from galaius.agents import quota, relations
+from galaius.agents.limits import quota
+from galaius.agents.catalog import relations
 from galaius.agents import run_folder
-from galaius.agents.catalog import AgentCatalog
-from galaius.agents.catalog_connection import RoleAbsent
-from galaius.agents import community as community_agents
-from galaius.agents.community import CommunityAgent
-from galaius.agents.ceiling import contained
-from galaius.agents.events import model_spoke, stream_lines
-from galaius.fence import FenceSpec, fenced
-from galaius.processes import process_group_options, spawnable
+from galaius.agents.catalog.entries import AgentCatalog
+from galaius.agents.catalog.connection import RoleAbsent
+from galaius.agents.catalog import community as community_agents
+from galaius.agents.catalog.community import CommunityAgent
+from galaius.agents.limits.ceiling import contained
+from galaius.agents.transport.events import model_spoke, stream_lines
+from galaius.isolation.fence import FenceSpec, fenced
+from galaius.host.processes import process_group_options, spawnable
 from galaius.agents.policy import Policy, policy_path
-from galaius.agents.profiles import overlay_for, profiles_from
-from galaius.agents.providers import PROVIDERS, AgentProvider, ClaudeTurnSettings, UnsupportedToolPolicy, fits_argv, validate_denied_tools, _safe_process_detail
-from galaius.agents.vocabulary import TouchScope
-from galaius.agents.subscriptions import RunSubscription, Subscription, SubscriptionCapped, SubscriptionRefused
-from galaius.agents.warm import WarmStart
-from galaius.agents.server_ranking import ServerRanking, ServerRankingUnavailable
-from galaius.criteria import Criteria, CriteriaError, Dropped, Variables
-from galaius.model_catalog import live_scores
+from galaius.agents.catalog.profiles import overlay_for, profiles_from
+from galaius.agents.limits.providers import PROVIDERS, AgentProvider, ClaudeTurnSettings, UnsupportedToolPolicy, fits_argv, validate_denied_tools, _safe_process_detail
+from galaius.agents.catalog.vocabulary import TouchScope
+from galaius.agents.limits.subscriptions import RunSubscription, Subscription, SubscriptionCapped, SubscriptionRefused
+from galaius.agents.limits.warm import WarmStart
+from galaius.agents.catalog.server_ranking import ServerRanking, ServerRankingUnavailable
+from galaius.catalog.criteria import Criteria, CriteriaError, Dropped, Variables
+from galaius.catalog.models import live_scores
 from galaius.models import Model, ModelCapability
-from galaius.prompt_projection import coordinator_instructions
+from galaius.prompts.projection import coordinator_instructions
 from galaius.runtime import config
-from galaius.windowless import console_python
-from galaius.mcp_announcement import GatewayServed
+from galaius.host.windowless import console_python
+from galaius.mcp.announcement import GatewayServed
 
 
 log = logging.getLogger(__name__)
@@ -1442,7 +1444,7 @@ async def run_agent(
 
     ``profile`` names one of the OPERATOR's own profiles (``GALAIUS_PROFILE_*`` in config),
     deciding what this agent runs on — so the critic can sit on a local model while the reviewer
-    stays frontier. Resolves through :mod:`galaius.agents.profiles` to a fixed, allow-listed
+    stays frontier. Resolves through :mod:`galaius.agents.catalog.profiles` to a fixed, allow-listed
     overlay; a caller cannot hand over an environment, because a model that can set
     ``LD_PRELOAD`` or ``PATH`` on the process it spawns has escaped every other guard here.
 
@@ -1450,7 +1452,7 @@ async def run_agent(
     (credentials, the folder-settings switch, a parent run's tag); this process's own when None.
     A long-lived caller serving others (the machine runner) passes the scrubbed one it owns.
 
-    ``community`` starts a community agent (`galaius.agents.community`) as the child of the run asking: as that run's role,
+    ``community`` starts a community agent (`galaius.agents.catalog.community`) as the child of the run asking: as that run's role,
     revision, permission mode and denied tools (plus `community.DENIED_TOOLS`), with no MCP server, inside its own fence
     working in its own folder, its prompt the entry's delimited text, named after the entry. Refused for a caller that is
     not an agent run playing a role, and where this PC cannot build the fence.
@@ -1461,7 +1463,7 @@ async def run_agent(
     ``asked_by`` and ``inherited_asks`` are recorded as it starts (`AgentRun`): the card its brief carries
     (`relations.card`) names every run it works for, a maker a critic is spawned for and a hand-off's askers included.
 
-    ``fence`` starts every turn of the run inside the OS fence that spec builds (:mod:`galaius.fence`),
+    ``fence`` starts every turn of the run inside the OS fence that spec builds (:mod:`galaius.isolation.fence`),
     recorded on the run and built again at each turn from the machine's levels as they are then.
 
     ``parent_run_id`` defaults to ``GALAIUS_PARENT_RUN_ID`` — set on a spawned agent's own MCP

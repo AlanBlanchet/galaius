@@ -440,7 +440,7 @@ def test_desktop_scenario_full_e2e() -> None:
     enable with GALAIUS_DESKTOP_E2E=1. Runs in the nested sandbox."""
     import asyncio
 
-    from galaius.probe import DesktopScenario
+    from galaius.diagnostics.probe import DesktopScenario
 
     run = DesktopScenario.build(model=None, all_providers=False, session_ts="e2e", target="nested")
     asyncio.run(run.run())  # asserts via its own per-step reports; smoke that it completes

@@ -2,9 +2,9 @@
 
 Every agent CLI used to start its own `galaius mcp`: a whole server per client (hundreds of
 megabytes each, several dozen on a busy computer). Now `galaius mcp` is a small relay
-(`galaius.mcp_relay`) and this module is the one server behind it: it listens on a socket private to
+(`galaius.mcp.relay`) and this module is the one server behind it: it listens on a socket private to
 this user (`endpoint`: one per runtime and agents folder) and serves each relay's connection as its
-own MCP session, bound to the caller the relay's hello names (`galaius.caller.Caller`): its
+own MCP session, bound to the caller the relay's hello names (`galaius.account.caller.Caller`): its
 environment, folder and process identify it, never this server's.
 
 A connection's browser session (the one minted for it) is closed when it ends; named sessions and
@@ -28,11 +28,11 @@ from mcp import types
 from mcp.shared.message import SessionMessage
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from galaius.caller import Caller
+from galaius.account.caller import Caller
 from galaius.config import UserConfig
-from galaius.mcp_endpoint import SharedEndpoint
-from galaius.mcp_relay import HELLO, SWITCH, Endpoint
-from galaius.processes import share_malloc_arenas
+from galaius.mcp.endpoint import SharedEndpoint
+from galaius.mcp.relay import HELLO, SWITCH, Endpoint
+from galaius.host.processes import share_malloc_arenas
 from galaius.server import sandbox
 from galaius.server.core import CONNECTION, _auto_session_names, _lifespan, _sessions, mcp
 from galaius.upgrade.store import Runtime, RuntimeStore
@@ -165,7 +165,7 @@ class SharedServer:
 
     @classmethod
     def main(cls, argv: list[str]) -> None:
-        """Started by a relay in its allowlisted environment (`galaius.mcp_relay.STARTER`), it takes its settings and keys
+        """Started by a relay in its allowlisted environment (`galaius.mcp.relay.STARTER`), it takes its settings and keys
         from the user's config (`UserConfig.apply`), never from a client."""
         UserConfig.apply(portable=False)
         share_malloc_arenas()  # tool calls of every client run in worker threads

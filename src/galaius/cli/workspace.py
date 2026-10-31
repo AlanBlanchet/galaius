@@ -8,8 +8,8 @@ import httpx
 from cyclopts import App
 from pydantic import ValidationError
 
-from galaius.agents.catalog_connection import CatalogAuthenticationError, CatalogConnection, CatalogConnectionError
-from galaius.server_workspace import AgentEdit, ServerWorkspace, WorkflowConflictError, WorkflowRunRejected, WorkflowRunRequest, WorkflowRunUncertain, WorkspaceConflictError
+from galaius.agents.catalog.connection import CatalogAuthenticationError, CatalogConnection, CatalogConnectionError
+from galaius.account.workspace import AgentEdit, ServerWorkspace, WorkflowConflictError, WorkflowRunRejected, WorkflowRunRequest, WorkflowRunUncertain, WorkspaceConflictError
 
 workspace_app = App(name="workspace", help="Inspect and edit the connected server workspace.")
 

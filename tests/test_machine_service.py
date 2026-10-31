@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from galaius.machine_service import DetachedMachineService, LaunchdMachineService, ServiceUnavailable
-from galaius.processes import process_exited
+from galaius.machine.service import DetachedMachineService, LaunchdMachineService, ServiceUnavailable
+from galaius.host.processes import process_exited
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="the macOS agent's POSIX paths (Windows' home ignores HOME)")
 

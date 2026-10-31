@@ -12,10 +12,10 @@ import pytest
 from galaius_core.accounts import Account, Bootstrap, Workspace
 from galaius_core.prompts import PromptCreateRequest, PromptKey, PromptRevision
 
-from galaius.agents.catalog_connection import CatalogConnection
+from galaius.agents.catalog.connection import CatalogConnection
 from galaius.cli import prompts
 from galaius.config import UserConfig
-from galaius.server_prompts import MAX_EDITOR_BYTES, ServerPrompts
+from galaius.prompts.heads import MAX_EDITOR_BYTES, ServerPrompts
 
 
 @pytest.fixture

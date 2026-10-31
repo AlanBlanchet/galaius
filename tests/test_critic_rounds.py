@@ -1,6 +1,6 @@
 """A critic role takes at most `Config.agent_critic_rounds_max` rounds on one maker's work, counted across fresh
 instances and hand-offs; an agent asking for one more is refused in one line, the person never is
-(`galaius.agents.critic_rounds`). A week to 2026-10-20: 274 visual-critic runs in 71 subjects reviewed again and again."""
+(`galaius.agents.turns.critic_rounds`). A week to 2026-10-20: 274 visual-critic runs in 71 subjects reviewed again and again."""
 
 import asyncio
 import os
@@ -8,8 +8,10 @@ import uuid
 
 import pytest
 
-from galaius.agents import agent_queue, messaging, relations
-from galaius.agents.critic_rounds import CriticRounds
+from galaius.agents import messaging
+from galaius.agents.limits import agent_queue
+from galaius.agents.catalog import relations
+from galaius.agents.turns.critic_rounds import CriticRounds
 from galaius.agents import registry as reg
 from galaius.agents.spawn_line import Spawn
 from tests.support import register_run

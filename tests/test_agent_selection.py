@@ -17,9 +17,9 @@ from types import SimpleNamespace
 import pytest
 
 from galaius.agents import registry as reg
-from galaius.agents.providers import PROVIDERS, PermissionMode, UnsupportedToolPolicy
+from galaius.agents.limits.providers import PROVIDERS, PermissionMode, UnsupportedToolPolicy
 from tests.support.agents import ScriptedProvider, register_run, use_policy
-from galaius.agents import quota
+from galaius.agents.limits import quota
 from galaius.agents.run import (
     ModelUnavailable,
     _quota_probe as quota_probe,
@@ -30,9 +30,9 @@ from galaius.agents.run import (
     rank_candidates,
     run_agent,
 )
-from galaius.criteria import ValueRule
+from galaius.catalog.criteria import ValueRule
 from galaius.models import Benchmark
-import galaius.server.tools_agents as tools_agents
+import galaius.server.tools.agents as tools_agents
 from galaius.cli import app_commands as cli
 from tests.support.models import catalog_of, model
 
@@ -92,7 +92,7 @@ def team(monkeypatch, tmp_path):
         cls.logged_in = True
         cls.probes = 0
         cls.last_timeout = None
-    monkeypatch.setattr("galaius.agents.providers.PROVIDERS", {"alpha": alpha, "beta": beta})
+    monkeypatch.setattr("galaius.agents.limits.providers.PROVIDERS", {"alpha": alpha, "beta": beta})
     monkeypatch.setattr("galaius.agents.run.PROVIDERS", {"alpha": alpha, "beta": beta})
     monkeypatch.setattr(reg, "PROVIDERS", {"alpha": alpha, "beta": beta})
     use_policy(monkeypatch, agents={"tester": CRITERION}, reasoning={"tester": "medium"})
@@ -354,7 +354,7 @@ async def test_a_quota_refusal_falls_through_to_the_next_candidate(team, tmp_pat
     alpha, beta = team
     refusing = _QuotaRefusing()
     monkeypatch.setattr("galaius.agents.run.PROVIDERS", {"alpha": alpha, "beta": refusing})
-    monkeypatch.setattr("galaius.agents.providers.PROVIDERS", {"alpha": alpha, "beta": refusing})
+    monkeypatch.setattr("galaius.agents.limits.providers.PROVIDERS", {"alpha": alpha, "beta": refusing})
     monkeypatch.setattr(reg, "PROVIDERS", {"alpha": alpha, "beta": refusing})
     run = await run_agent(None, "t", agent="tester", cwd=str(tmp_path), mesh=False)
     await asyncio.wait_for(run.wait(), 30)
@@ -522,7 +522,7 @@ async def test_a_second_candidate_of_the_same_vendor_gets_its_own_session_id(tea
     vendor = _ClaudeNamed()
     _ClaudeNamed.sessions = []
     monkeypatch.setattr("galaius.agents.run.PROVIDERS", {"claude": vendor})
-    monkeypatch.setattr("galaius.agents.providers.PROVIDERS", {"claude": vendor})
+    monkeypatch.setattr("galaius.agents.limits.providers.PROVIDERS", {"claude": vendor})
     monkeypatch.setattr(reg, "PROVIDERS", {"claude": vendor})
     run = await run_agent(None, "t", agent="tester", cwd=str(tmp_path), mesh=False)
     await asyncio.wait_for(run.wait(), 30)

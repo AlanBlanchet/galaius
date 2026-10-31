@@ -1,4 +1,4 @@
-"""The agent fence (`galaius.fence`): an agent CLI started from this PC's levels sees only the
+"""The agent fence (`galaius.isolation.fence`): an agent CLI started from this PC's levels sees only the
 folders set to read or later, gets a private copy of its tool state, reaches only its model API
 through the runner's egress proxy, and cannot leave anything that runs later outside the fence
 (its run record, the owner's tool config, git hooks, editor / Claude settings). Every level is
@@ -17,13 +17,13 @@ from pathlib import Path
 
 import pytest
 
-from galaius.agents import providers
-from galaius.agents.providers import CodexProvider
+from galaius.agents.limits import providers
+from galaius.agents.limits.providers import CodexProvider
 from galaius_core import MachineFence
 from galaius_core.wire import fitted
 
-from galaius import fence
-from galaius.fence import EGRESS, Confinement, EgressProxy, FenceSpec, available, confinement_refusal, fenced, userns_refusal
+from galaius.isolation import fence
+from galaius.isolation.fence import EGRESS, Confinement, EgressProxy, FenceSpec, available, confinement_refusal, fenced, userns_refusal
 
 AGENT_HOSTS = ("api.anthropic.com",)
 
@@ -114,7 +114,7 @@ def test_the_desktop_and_session_sockets_are_unset_inside(home: Path, tmp_path: 
     command = _spec(home, tmp_path).build().command(["true"])
     for name in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR"):
         assert command[command.index(name) - 1] == "--unsetenv"
-    assert command[:4] == [sys.executable, "-m", "galaius.fence", "outer"] and "--unshare-net" in command
+    assert command[:4] == [sys.executable, "-m", "galaius.isolation.fence", "outer"] and "--unshare-net" in command
 
 
 def test_each_turn_reads_the_levels_as_they_are_now(home: Path, tmp_path: Path) -> None:
@@ -257,7 +257,7 @@ def test_a_fenced_agent_cannot_leave_anything_that_runs_after_it(home: Path, tmp
     # Steering files it created at the top of a writable folder or repository left the folder
     # for a review the owner reads on the PC.
     assert not any((home / name).exists() for name in ("work/CLAUDE.md", "work/.mcp.json", "work/app/.claude"))
-    from galaius.place_reviews import PlaceReviews
+    from galaius.machine.place_reviews import PlaceReviews
     held = {item.path for review in PlaceReviews(root=tmp_path / "reviews").list() for item in review.files}
     assert {"CLAUDE.md", ".mcp.json", "app/.claude/settings.json", "app/src/deep/CLAUDE.md"} <= held
     assert not (home / "work/app/src/deep/CLAUDE.md").exists()
@@ -284,7 +284,7 @@ async def test_a_fenced_launch_starts_inside_the_fence_and_its_run_keeps_the_spe
     spec = FenceSpec(working_directory=tmp_path, levels={"work": "write"}, start=tmp_path / "work", state=tmp_path / "state")
     run = await run_module.run_agent(_FakeProvider(), "t", agent="tester", name="w", cwd=str(tmp_path / "work"), fence=spec)
     await asyncio.wait_for(run.wait(), timeout=30)
-    assert started[0][:4] == [sys.executable, "-m", "galaius.fence", "outer"]
+    assert started[0][:4] == [sys.executable, "-m", "galaius.isolation.fence", "outer"]
     assert reg.get_run(run.run_id).fence == spec
 
 
@@ -320,7 +320,7 @@ def test_codex_runs_in_galaius_confinement_where_its_own_sandbox_cannot_start(tm
         assert f'sandbox_mode="{mode}"' in resumed  # never the danger-full-access a confined first turn saved
         return
     for started_argv, inner_mode in ((argv, ["--sandbox", "danger-full-access"]), (resumed, ["-c", 'sandbox_mode="danger-full-access"'])):
-        assert started_argv[:4] == [sys.executable, "-m", "galaius.fence", "confine"] and started_argv[5:7] == ["--", "/opt/codex/bin/codex"]
+        assert started_argv[:4] == [sys.executable, "-m", "galaius.isolation.fence", "confine"] and started_argv[5:7] == ["--", "/opt/codex/bin/codex"]
         confinement = Confinement.model_validate_json(started_argv[4])
         assert confinement.write_start is (mode == "workspace-write") and confinement.relayed.argv == ("galaius", "mcp")
         inner = started_argv[6:]
@@ -396,7 +396,7 @@ def test_a_runtime_whose_python_links_through_a_folder_link_starts_inside_and_st
     build = f"""
 import json, os, subprocess, sys
 from pathlib import Path
-from galaius.fence import FenceSpec, available
+from galaius.isolation.fence import FenceSpec, available
 spec = FenceSpec(working_directory=Path({str(home)!r}), levels={{"work": "write"}}, start=Path({str(home / "work")!r}), state=Path({str(tmp_path / "state")!r}))
 fence = spec.build()
 probe = "import json, os, sys; print(json.dumps([sys.prefix, os.path.exists({str(other)!r}), os.path.exists({str(runtimes.parent / 'machine.json')!r}), os.access({str(runtime)!r}, os.W_OK)]))"

@@ -1,4 +1,4 @@
-"""This computer's screen over its machine link (`galaius.desktop.screen_desk`), played end to end
+"""This computer's screen over its machine link (`galaius.desktop.screen.desk`), played end to end
 against the browser's half (`tests.support.screen.Viewer`) with the server as a dumb relay.
 
 Owner 2026-10-23: « maybe we could access the PC from here? … view the PC, like a TeamViewer or a
@@ -24,10 +24,10 @@ from galaius_core import (
     ScreenStatusRequest,
 )
 
-from galaius.desktop.screen import ScreenSession
-from galaius.desktop.screen_desk import ScreenDesk
-from galaius.desktop.screen_switch import ScreenSwitch
-from galaius.desktop.screen_trust import ScreenEnd, ScreenIdentity, ScreenRefused, ScreenTrustFile
+from galaius.desktop.screen.session import ScreenSession
+from galaius.desktop.screen.desk import ScreenDesk
+from galaius.desktop.screen.switch import ScreenSwitch
+from galaius.desktop.screen.trust import ScreenEnd, ScreenIdentity, ScreenRefused, ScreenTrustFile
 from tests.support.screen import (
     MACHINE,
     ORIGIN,

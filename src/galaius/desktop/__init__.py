@@ -39,7 +39,7 @@ from galaius.desktop.nested import NestedBackend  # noqa: F401
 from galaius.desktop.cursor import Cursor, _XFixesCursorImage  # noqa: F401
 from galaius.desktop.coords import CoordTransform  # noqa: F401
 from galaius.desktop.motion import Motion  # noqa: F401
-from galaius.desktop.element import (  # noqa: F401
+from galaius.desktop.accessibility.element import (  # noqa: F401
     Box,
     DesktopElement,
     _IOU_OVERLAP_THRESHOLD,
@@ -59,4 +59,4 @@ from galaius.desktop.window import (  # noqa: F401
     gpu_surface_error,
     unreadable_window_error,
 )
-from galaius.desktop.atspi import AtSpi  # noqa: F401
+from galaius.desktop.accessibility.atspi import AtSpi  # noqa: F401

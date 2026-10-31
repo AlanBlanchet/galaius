@@ -11,7 +11,7 @@ from uuid import uuid4
 import pytest
 from galaius_core import MachineDataRequest, MachineRef
 
-from galaius.machines import MachineConfig, MachineDataFiles
+from galaius.machine.connection import MachineConfig, MachineDataFiles
 
 pytestmark = pytest.mark.usefixtures("directory_backend")
 

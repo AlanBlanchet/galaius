@@ -8,7 +8,7 @@ import logging
 
 from galaius.config import DEFAULT_LIMIT, QUALITY_TIERS
 from galaius.vision.critique import format_grounding
-from galaius.debug_utils import Debug
+from galaius.diagnostics.debug_output import Debug
 from galaius.desktop import DesktopElement, DesktopWindow
 from galaius.desktop.frames import Framing
 from galaius.vision.detect import _desktop_context, _detect_desktop_elements

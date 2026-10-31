@@ -9,7 +9,7 @@ and the conversation answered nothing for 45 minutes."""
 import contextlib
 import time
 
-from galaius.agents import relations
+from galaius.agents.catalog import relations
 from galaius.agents import registry as reg
 from tests.support import register_run
 

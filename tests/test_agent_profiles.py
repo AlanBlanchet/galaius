@@ -16,7 +16,7 @@ import json
 
 import pytest
 
-from galaius.agents.profiles import (
+from galaius.agents.catalog.profiles import (
     ALLOWED_ENV, PROFILE_PREFIX, overlay_for, profiles_from,
 )
 
@@ -95,7 +95,7 @@ async def test_the_spawn_tool_refuses_a_profile_nobody_defined(monkeypatch, name
     and quietly used the wrong model. Refuse, and say which profiles exist."""
     import galaius.server as srv
 
-    monkeypatch.setattr("galaius.agents.providers.ClaudeCodeProvider.available", lambda self: True)
+    monkeypatch.setattr("galaius.agents.limits.providers.ClaudeCodeProvider.available", lambda self: True)
 
     monkeypatch.delenv("GALAIUS_PROFILE_CHEAP", raising=False)
     out = await srv.agent_spawn("do a thing", agent=named_profile_role, profile="does-not-exist")
@@ -107,7 +107,7 @@ async def test_the_spawn_tool_refuses_a_profile_nobody_defined(monkeypatch, name
 async def test_a_known_profile_cannot_override_a_named_roles_policy(monkeypatch, named_profile_role):
     import galaius.server as srv
 
-    monkeypatch.setattr("galaius.agents.providers.ClaudeCodeProvider.available", lambda self: True)
+    monkeypatch.setattr("galaius.agents.limits.providers.ClaudeCodeProvider.available", lambda self: True)
     monkeypatch.setenv("GALAIUS_PROFILE_CHEAP", "ollama/fixture-model")
     out = await srv.agent_spawn("do a thing", agent=named_profile_role, profile="cheap")
     assert out.startswith("ERROR:"), out
@@ -121,7 +121,7 @@ async def test_a_defined_profile_reaches_the_spawn(monkeypatch):
     import galaius.server as srv
     from galaius.agents import run as run_mod
 
-    monkeypatch.setattr("galaius.agents.providers.ClaudeCodeProvider.available", lambda self: True)
+    monkeypatch.setattr("galaius.agents.limits.providers.ClaudeCodeProvider.available", lambda self: True)
 
     monkeypatch.setenv("GALAIUS_PROFILE_CHEAP", "ollama/deepseek-v4-flash")
     seen: dict = {}

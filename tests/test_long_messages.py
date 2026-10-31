@@ -8,7 +8,8 @@ import uuid
 
 import pytest
 
-from galaius.agents import agent_queue, messaging
+from galaius.agents import messaging
+from galaius.agents.limits import agent_queue
 from galaius.agents import registry as reg
 from tests.support import register_run
 
@@ -47,7 +48,7 @@ def test_a_message_past_what_one_turn_takes_in_reaches_the_agent_as_a_file_it_re
 def test_a_turn_too_long_for_a_command_line_reaches_its_cli_whole(coordinator, provider):
     """70,000 accented characters are 140 KB: past what one command-line argument carries (E2BIG on Linux). Claude reads
     the turn as its stdin message; Codex reads it on its stdin behind `-`."""
-    from galaius.agents.providers import PROVIDERS, fits_argv
+    from galaius.agents.limits.providers import PROVIDERS, fits_argv
     from galaius.agents.run import carried
 
     text = "é" * 70_000
@@ -65,7 +66,7 @@ def test_a_turn_too_long_for_a_command_line_reaches_its_cli_whole(coordinator, p
 def test_codex_reads_a_long_brief_on_its_stdin(turn):
     """Codex's own command lines, its first turn (the brief its role definition is baked into) and a resumed one: the
     text past one argument is read behind `-`, after `--`."""
-    from galaius.agents.providers import CodexProvider, fits_argv
+    from galaius.agents.limits.providers import CodexProvider, fits_argv
 
     codex, text = CodexProvider(), "é" * 70_000
     line = codex.command(text, cwd=".", model=None, mcp_config=None, run_id="run") if turn == "first" else codex.resume_command("session", text)

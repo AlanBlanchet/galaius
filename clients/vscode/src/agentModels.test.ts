@@ -353,7 +353,7 @@ test("a board name reduces the same way on both sides of the panel", () => {
   // Round 28, blocking: the Benchmarks tab counted 433 models where the picker counted 450, from
   // the same 633-row file, because this side re-normalised board NAMES with the id normalizer.
   // That manufactured keys like "deepseek" and "grok" which merge genuinely different models.
-  // The Python twin is `_leaderboard_key` in `src/galaius/model_catalog.py`.
+  // The Python twin is `_leaderboard_key` in `src/galaius/catalog/models.py`.
   assert.equal(leaderboardKey("GPT-5.5 (xhigh)"), "gpt-5-5");
   assert.equal(leaderboardKey("Claude Fable 5.1 (Adaptive Reasoning, Max Effort)"), "claude-fable-5-1");
   assert.equal(leaderboardKey("Claude Opus 4.7"), "claude-opus-4-7");

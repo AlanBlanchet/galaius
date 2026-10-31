@@ -6,7 +6,7 @@ import pytest
 
 from galaius.models import Model
 
-from .harness import (
+from e2e.harness import (
     ResultCollector,
     cheapest_grounding_model,
     ensure_registry_loaded,

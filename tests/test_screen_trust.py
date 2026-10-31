@@ -1,4 +1,4 @@
-"""Who may watch this computer, decided on it (`galaius.desktop.screen_trust`).
+"""Who may watch this computer, decided on it (`galaius.desktop.screen.trust`).
 
 Threat review 2026-10-23 (binding): « Each session = an offer signed by that passkey … The runner
 checks the signature itself and ignores the server's say-so. » These pin it with a software
@@ -24,7 +24,7 @@ from galaius_core import (
     unb64url,
 )
 
-from galaius.desktop.screen_trust import (
+from galaius.desktop.screen.trust import (
     ScreenEnd,
     ScreenGate,
     ScreenIdentity,

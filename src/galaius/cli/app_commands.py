@@ -18,21 +18,27 @@ from uuid import UUID
 from cyclopts import App, Parameter
 from pydantic import ValidationError
 
-from galaius import feedback, live_sources, model_catalog, ollama
+from galaius.diagnostics import feedback
+from galaius.catalog import live_sources
+from galaius.catalog import models as model_catalog
+from galaius.inference import ollama
 from galaius_core import refusal_of, AGENT_TOUCH_SCOPES, ASKED_BY_MAX, IMAGE_TYPES, Coded, CommunityKind, MachineRefusal, RefusedLine
 
-from galaius.agents import agent_queue, handback, messaging, relations
-from galaius.agents import providers as agent_providers
+from galaius.agents import messaging
+from galaius.agents.limits import agent_queue
+from galaius.agents.turns import handback
+from galaius.agents.catalog import relations
+from galaius.agents.limits import providers as agent_providers
 from galaius.agents import registry as reg
-from galaius.agents import community as community_agents
-from galaius.agents.community import CommunityAgent
+from galaius.agents.catalog import community as community_agents
+from galaius.agents.catalog.community import CommunityAgent
 from galaius.agents.conversations import ConversationAnswers
-from galaius.agents.catalog import AgentCatalog
-from galaius.agents.catalog_connection import CatalogConnection, CatalogConnectionError
-from galaius.fence import FenceSpec
+from galaius.agents.catalog.entries import AgentCatalog
+from galaius.agents.catalog.connection import CatalogConnection, CatalogConnectionError
+from galaius.isolation.fence import FenceSpec
 from galaius.agents.host import run_console
 from galaius.agents.policy import ParadigmProjection, Policy, PolicyError, policy_path
-from galaius.agents.providers import (
+from galaius.agents.limits.providers import (
     MEDIA_PROVIDERS,
     PROVIDERS,
     available_providers,
@@ -46,18 +52,18 @@ from galaius.cli.command_bootstrap import Config, UserConfig
 from galaius.cli.render import CliRenderer
 from galaius.cli.usage import UsageReport, default_log_path
 from galaius.cli.view import View
-from galaius.criteria import Criteria, CriteriaError, Variables
+from galaius.catalog.criteria import Criteria, CriteriaError, Variables
 from galaius.desktop import backend as desktop_backend
 from galaius.desktop import orphans
-from galaius.extension_status import deliver_extension, extension_status
+from galaius.diagnostics.extension_status import deliver_extension, extension_status
 # Shared normalizer: the registry needs it too, to meet a leaderboard NAME with a catalog ID —
 # lives beside the catalog, not this command surface.
-from galaius.model_catalog import bare_model_name as _bare_model_name
+from galaius.catalog.models import bare_model_name as _bare_model_name
 from galaius.models import Model, ModelCapability, _ordinal
 from galaius.runtime import _LiveConfig, config
-from galaius.server_registry import kill_stale_servers, latest_version, stale_servers
-from galaius.server_tool_settings import PORTABLE_ENV, MachineNotice, ServerToolSettings, ToolSettingsConflict
-from galaius.server_workspace import ServerWorkspace
+from galaius.mcp.registry import kill_stale_servers, latest_version, stale_servers
+from galaius.account.tool_settings import PORTABLE_ENV, MachineNotice, ServerToolSettings, ToolSettingsConflict
+from galaius.account.workspace import ServerWorkspace
 from galaius.cli.workspace import WorkspaceCLI
 
 
@@ -842,7 +848,7 @@ def agents_sync(
 @agents_app.command(name="policy-hook")
 def agents_policy_hook() -> None:
     """Apply the shared agent policy to Codex lifecycle events on stdin; no model call."""
-    from galaius.agents.codex_policy_hook import main
+    from galaius.hooks.codex_policy import main
 
     raise SystemExit(main())
 
@@ -1695,7 +1701,7 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
     --quota-window is how many seconds the new child is watched for a vendor quota refusal
     before the id is printed (a refusal inside it falls through to the next candidate); a
     supervisor that shows the run at once passes a short one.
-    --fence names a file holding what the run's OS fence is built from (`galaius.fence.FenceSpec`
+    --fence names a file holding what the run's OS fence is built from (`galaius.isolation.fence.FenceSpec`
     JSON); every turn builds it again from the machine's levels. The machine runner writes it.
     An agent of the same role already in this conversation, between turns, takes the task as its
     next turn (its context intact) and its id is printed, unless its context is near full; --fresh starts a new one

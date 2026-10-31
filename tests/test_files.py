@@ -12,8 +12,8 @@ import pytest
 from galaius_core import CREATE_FILE_TYPES, FILE_CONTENT_TYPES
 
 from galaius.agents import registry as reg
-from galaius.fence import FenceSpec
-from galaius.files import FileFormat, FileSpec, write
+from galaius.isolation.fence import FenceSpec
+from galaius.media.files import FileFormat, FileSpec, write
 from tests.support import register_run
 
 
@@ -193,7 +193,7 @@ def test_a_community_agent_s_deck_reaches_the_chat_unread_by_the_run_that_starte
     without entering the coordinator's context, and only from the folder of a community agent that run started."""
     from uuid import uuid4
 
-    from galaius.agents.community import CommunityAgent
+    from galaius.agents.catalog.community import CommunityAgent
     work, other = tmp_path / "community" / "child", tmp_path / "community" / "stranger"
     work.mkdir(parents=True)
     other.mkdir()

@@ -97,7 +97,7 @@ class UserConfig:
     @classmethod
     def server(cls):
         # Circular dependency: the adapter validates Config, whose package exports UserConfig.
-        from galaius.server_tool_settings import ServerToolSettings
+        from galaius.account.tool_settings import ServerToolSettings
 
         return ServerToolSettings.configured()
 
@@ -106,7 +106,7 @@ class UserConfig:
         data = cls.read_local()
         server = cls.server()
         if server is not None:
-            from galaius.server_tool_settings import PORTABLE_ENV  # circular Config/UserConfig wiring
+            from galaius.account.tool_settings import PORTABLE_ENV  # circular Config/UserConfig wiring
 
             data = {name: value for name, value in data.items() if name not in PORTABLE_ENV}
             data.update(server.read().env)
@@ -115,7 +115,7 @@ class UserConfig:
     @classmethod
     def update(cls, changes: dict[str, str | None], *, base=None):
         """One server CAS for portable edits; local edits never serialize effective settings."""
-        from galaius.server_tool_settings import PORTABLE_ENV, MachineNotice, ToolSettingsConflict  # circular Config/UserConfig wiring
+        from galaius.account.tool_settings import PORTABLE_ENV, MachineNotice, ToolSettingsConflict  # circular Config/UserConfig wiring
 
         changes = {cls.normalize_key(key): value for key, value in changes.items()}
         server = cls.server()
@@ -152,7 +152,7 @@ class UserConfig:
 
     @classmethod
     def get(cls, key: str) -> str | None:
-        from galaius.server_tool_settings import PORTABLE_ENV  # circular Config/UserConfig wiring
+        from galaius.account.tool_settings import PORTABLE_ENV  # circular Config/UserConfig wiring
 
         env = cls.normalize_key(key)
         return (cls.read() if env in PORTABLE_ENV else cls.read_local()).get(env)
@@ -167,7 +167,7 @@ class UserConfig:
     def unset(cls, key: str) -> bool:
         env = cls.normalize_key(key)
         # A local key can be removed even while portable settings are unavailable.
-        from galaius.server_tool_settings import PORTABLE_ENV  # circular Config/UserConfig wiring
+        from galaius.account.tool_settings import PORTABLE_ENV  # circular Config/UserConfig wiring
 
         data = cls.read() if env in PORTABLE_ENV and cls.server() else cls.read_local()
         existed = env in data
@@ -189,7 +189,7 @@ class UserConfig:
         """`environment` with the persisted settings added as `apply` adds them to this process's
         own (live values win; a server-connected install takes its portable ones from the server),
         never touching ``os.environ``: what a galaius command started in `environment` runs with."""
-        from galaius.server_tool_settings import PORTABLE_ENV  # circular Config/UserConfig wiring
+        from galaius.account.tool_settings import PORTABLE_ENV  # circular Config/UserConfig wiring
 
         result = dict(environment)
         connected = cls.server() is not None

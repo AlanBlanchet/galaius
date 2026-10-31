@@ -8,7 +8,7 @@ from galaius.config import Config, UserConfig
 from galaius.data import PackageData
 from galaius.formats import CoordFormat
 from galaius.models import CircuitBreaker, Model
-from galaius.server_tool_settings import PORTABLE_ENV
+from galaius.account.tool_settings import PORTABLE_ENV
 
 
 class _LiveConfig:

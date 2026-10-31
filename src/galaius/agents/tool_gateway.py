@@ -24,10 +24,10 @@ from mcp import types
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from galaius.caller import Caller
-from galaius.agents.catalog_connection import CatalogConnection, CatalogConnectionError
-from galaius.mcp_announcement import GatewayServed, GatewayToolName, GatewayToolWire, McpAnnouncement
-from galaius.private_files import PRIVATE_FILES
+from galaius.account.caller import Caller
+from galaius.agents.catalog.connection import CatalogConnection, CatalogConnectionError
+from galaius.mcp.announcement import GatewayServed, GatewayToolName, GatewayToolWire, McpAnnouncement
+from galaius.host.private_files import PRIVATE_FILES
 
 logger = logging.getLogger(__name__)
 

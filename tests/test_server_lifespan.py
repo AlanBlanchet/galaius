@@ -17,7 +17,7 @@ from galaius.server import core, sandbox
 @pytest.fixture
 def quiet_lifespan(monkeypatch):
     """Everything the lifespan starts BESIDE the mirror, silenced — no network, no signals."""
-    monkeypatch.setattr("galaius.live_sources.refresh_in_background", lambda: None)
+    monkeypatch.setattr("galaius.catalog.live_sources.refresh_in_background", lambda: None)
     monkeypatch.setattr(sandbox, "install_teardown_handlers", lambda: None)
 
     async def idle(*_args, **_kwargs):

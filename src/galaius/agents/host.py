@@ -19,8 +19,8 @@ from galaius_core import PromptExecutionRef, Refused
 
 from galaius.agents import registry as reg
 from galaius.agents.assembly import _TransportRegistry, build_transport_registry
-from galaius.agents.events import AgentEvent
-from galaius.agents.protocol import (
+from galaius.agents.transport.events import AgentEvent
+from galaius.agents.transport.protocol import (
     CancelCommand,
     CatalogCommand,
     CatalogResponse,
@@ -42,12 +42,12 @@ from galaius.agents.protocol import (
     SendCommand,
     StartCommand,
 )
-from galaius.agents.transport import CompactionUnsupported, _ConversationTransport
-from galaius.criteria import Variables
+from galaius.agents.transport.base import CompactionUnsupported, _ConversationTransport
+from galaius.catalog.criteria import Variables
 from galaius.config import Config
-from galaius.prompt_cache import _PromptCache
-from galaius.prompt_client import _PromptClient
-from galaius.private_files import PRIVATE_FILES
+from galaius.prompts.cache import _PromptCache
+from galaius.prompts.client import _PromptClient
+from galaius.host.private_files import PRIVATE_FILES
 from galaius.upgrade.quiet import QuietPoint
 
 _INPUT_LIMIT = 128 * 1024
@@ -333,7 +333,7 @@ class _ConversationHost(BaseModel):
         `_start`, never `run.model` replayed verbatim. `route.id` is deterministic from
         provider+connection (`f"{provider}:{connection}"`, `assembly.py`), so the run's own
         stored fields find it in a FRESH catalog without a separately persisted route id.
-        Returns the resolved `Model` (`galaius.agents.protocol` owns that import — the host
+        Returns the resolved `Model` (`galaius.agents.transport.protocol` owns that import — the host
         stays free of concrete provider/model imports, an architecture invariant this module is
         checked against).
         """

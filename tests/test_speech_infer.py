@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from galaius.speech_infer import Place, fold, heard_as, misheard, spelled, spoken_language
+from galaius.inference.speech_infer import Place, fold, heard_as, misheard, spelled, spoken_language
 
 
 @pytest.mark.parametrize(("probabilities", "expected"), [
