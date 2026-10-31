@@ -18,7 +18,7 @@ import hmac
 import logging
 import time
 
-from galaius_core import refusal_of, MACHINE_AGENT_REQUESTS, PROJECTS_ROOT, PROJECTS_ROOT_FEATURE, AgentProviderState, AgentRefusal, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentSettingsUpdate, MachineWorkspaceJob, SubscriptionLimits, WebLoad, MachineRef, ScreenAssertion, ScreenOpenRequest, ScreenReadiness, ScreenStatusRequest
+from galaius_core import refusal_of, MACHINE_AGENT_REQUESTS, PcFeatures, PROJECTS_ROOT, AgentProviderState, AgentRefusal, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentSettingsUpdate, MachineWorkspaceJob, SubscriptionLimits, WebLoad, MachineRef, ScreenAssertion, ScreenOpenRequest, ScreenReadiness, ScreenStatusRequest
 from galaius.desktop.screen.desk import ScreenDesk
 from galaius.machine.programs import AgentPrograms
 from galaius.agents import messaging
@@ -152,8 +152,9 @@ def test_the_projects_folder_never_reaches_the_runners_own(base: Path, tmp_path:
         agents.folder(".galaius/subscriptions" if plant == "web_named" else PROJECTS_ROOT, path)
 
 
-def test_the_projects_folder_is_said_within_the_features_a_server_keeps() -> None:
-    assert PROJECTS_ROOT_FEATURE in MachineRunner.features()[:32]   # the server keeps the first 32
+def test_every_feature_a_runner_names_is_read_by_the_server() -> None:
+    said = MachineRunner.features()
+    assert PcFeatures.of(said).said() == said   # nothing it names is dropped as unknown
 
 
 def test_with_the_fence_on_an_agent_writes_its_own_project_folder_only(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
