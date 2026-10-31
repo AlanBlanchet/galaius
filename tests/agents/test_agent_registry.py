@@ -700,7 +700,7 @@ def test_stop_rejects_a_stale_lifecycle_token():
 
 
 def test_stop_fails_closed_when_queue_cancellation_cannot_persist(monkeypatch):
-    from galaius.agents.limits import agent_queue
+    from galaius.agents import agent_queue
 
     register_run(pid=None)
     monkeypatch.setattr(
@@ -874,7 +874,7 @@ _WORKING = {"type": "assistant", "session_id": "s", "message": {"role": "assista
 def test_a_stop_after_its_answer_leaves_the_run_finished(monkeypatch, lines, turn, alive, exit_code, expected):
     """A run whose own stream ended on its answer, no turn claimed since, is done whoever stops it after; only a run cut
     mid-work reads stopped (and offers Continue)."""
-    from galaius.agents.limits import agent_queue
+    from galaius.agents import agent_queue
 
     reg.register(run_id="r1", name="tester", provider="claude", task="t", pid=1)
     register_run("boss", pid=2, agent="main")

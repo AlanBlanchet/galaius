@@ -2,8 +2,8 @@
 `compact`): it hands the agent the task its run was launched with, as galaius recorded it, since the
 summary that replaced the conversation keeps only the CLI's own condensed account of it.
 
-Called as `python -m galaius.hooks.brief RECORD_FILE` (the run's record, `registry.brief_hook`), with
-the hook's event on stdin. Standard library only, like `galaius.hooks.inbox`. A run with no task adds
+Called as `python -m galaius.brief_hook RECORD_FILE` (the run's record, `registry.brief_hook`), with
+the hook's event on stdin. Standard library only, like `galaius.inbox_hook`. A run with no task adds
 nothing; a record it cannot read says why on stderr and exits 1, which the CLI records and goes on
 with the summary alone."""
 

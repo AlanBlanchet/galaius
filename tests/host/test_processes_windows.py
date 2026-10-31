@@ -65,7 +65,7 @@ def test_a_program_run_from_a_terminal_is_left_alone(monkeypatch: pytest.MonkeyP
 def test_every_entry_point_has_it_from_the_package_import(tmp_path: Path) -> None:
     """pythonw (no console window), any entry point: `import galaius` alone installs it."""
     pythonw, said = Path(sys.executable).with_name("pythonw.exe"), tmp_path / "said.txt"
-    subprocess.run([str(pythonw), "-c", "import sys, subprocess, galaius.agents.limits.agent_queue; "
+    subprocess.run([str(pythonw), "-c", "import sys, subprocess, galaius.agents.agent_queue; "
                     "open(sys.argv[1], 'w').write(str(getattr(subprocess.Popen.__init__, 'hides_consoles', False)))", str(said)], check=True, timeout=120)
     assert said.read_text() == "True"
 

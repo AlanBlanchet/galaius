@@ -450,7 +450,7 @@ def test_the_run_that_takes_a_spawns_task_records_THAT_task(at_work, monkeypatch
     record saying what it was FIRST launched with — weeks ago, for a long-lived coordinator or
     librarian. Everything that reads a run's task then reads the wrong one: its row on the web
     (`machine_agents`), the card its own children start on (`relations`), and the brief a compaction
-    hands its agent back as « the task your run was launched with » (`galaius.hooks.brief`).
+    hands its agent back as « the task your run was launched with » (`galaius.brief_hook`).
     2026-10-23: a spawn's task went to the librarian of the conversation and its recorded task was
     still a brief it had finished on 2026-10-06."""
     from galaius_core import AgentRevisionRef

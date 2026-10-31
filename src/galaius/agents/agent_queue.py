@@ -36,7 +36,7 @@ from galaius.account.caller import RUN_VARIABLES, Caller
 from galaius.agents.transport.events import AgentEvent, MessageFields
 from galaius.agents.providers import AgentProvider, _safe_process_detail, provider_for
 from galaius.agents.catalog.relations import card, heading
-from galaius.hooks.inbox import HEADING, OPERATOR
+from galaius.inbox_hook import HEADING, OPERATOR
 from galaius.host.processes import process_started, share_malloc_arenas
 from galaius.upgrade.store import Runtime, RuntimeStore, active_interpreter
 
@@ -614,7 +614,7 @@ def ensure_dispatcher_locked(run_id: str, *, cwd: str = ".", environment: Mappin
             interpreter = active_interpreter()
             # In a scope of its own, naming no run: it serves every run of this PC, never the one whose message started it.
             served = {name: value for name, value in (environment or os.environ).items() if name not in RUN_VARIABLES}
-            process = reg.start_participant("galaius.agents.limits.agent_queue", "--serve", token, cwd=cwd, environment=served, contain=True)
+            process = reg.start_participant("galaius.agents.agent_queue", "--serve", token, cwd=cwd, environment=served, contain=True)
             hub = Hub(pid=process.pid, started=process_started(process.pid), token=token, interpreter=interpreter)
         handed = hubs.runs.get(hub.token, ())
         return hubs.model_copy(update={"current": hub, "runs": {**hubs.runs, hub.token: handed if run_id in handed else (*handed, run_id)}})
@@ -687,11 +687,11 @@ def ensure_dispatcher(run_id: str, *, cwd: str = ".") -> int:
 
 
 def inbox_hook(run_id: str) -> str:
-    """The command a turn of `run_id` runs after each of its tool calls (`galaius.hooks.inbox`): it
+    """The command a turn of `run_id` runs after each of its tool calls (`galaius.inbox_hook`): it
     hands the turn every message sent to it meanwhile (`inject`). It runs after EVERY tool call, so
     where a POSIX shell runs it, the shell itself looks for a pending item in the queue file and
     starts Python only when there is one: nothing waiting costs a `grep`, never an interpreter."""
-    command = reg.hook_command("galaius.hooks.inbox", run_id, str(path(run_id)))
+    command = reg.hook_command("galaius.inbox_hook", run_id, str(path(run_id)))
     if sys.platform == "win32":
         return command
     return f"if grep -qs {shlex.quote(PENDING_MARK)} {shlex.quote(str(path(run_id)))}; then exec {command}; fi"
@@ -1076,7 +1076,7 @@ def main() -> None:
         if said := inject(sys.argv[2]):
             print(json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "\n\n---\n\n".join(said)}}))
         return
-    raise SystemExit("usage: python -m galaius.agents.limits.agent_queue --serve TOKEN | --dispatch RUN_ID [TOKEN] | --inject RUN_ID")
+    raise SystemExit("usage: python -m galaius.agents.agent_queue --serve TOKEN | --dispatch RUN_ID [TOKEN] | --inject RUN_ID")
 
 
 if __name__ == "__main__":

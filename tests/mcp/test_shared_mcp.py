@@ -1,4 +1,4 @@
-"""One galaius MCP server per computer: relays (`galaius.mcp.relay`) of different callers share it,
+"""One galaius MCP server per computer: relays (`galaius.mcp_relay`) of different callers share it,
 each served as its own caller; a relay outlives its server; a server of an older runtime leaves."""
 
 import json
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-import galaius.mcp.relay as relay_module
+import galaius.mcp_relay as relay_module
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="shared MCP server: Unix sockets")
 

@@ -45,7 +45,7 @@ from galaius_core import AgentRevisionRef
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from galaius.agents import messaging
-from galaius.agents.limits import agent_queue
+from galaius.agents import agent_queue
 from galaius.agents.catalog import relations
 from galaius.agents.turns.critic_rounds import CriticRounds, turn_of
 from galaius.agents.limits.admission import Hold, Paused, SoftMemory, turn_hold

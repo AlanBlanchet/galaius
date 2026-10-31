@@ -33,7 +33,7 @@ from galaius_core import IMAGE_TYPES, AgentRefusal, AgentRefusalCode, AgentRevis
 from pydantic import BaseModel, ConfigDict
 
 from galaius.agents.limits import admission
-from galaius.agents.limits import agent_queue
+from galaius.agents import agent_queue
 from galaius.agents import registry as reg
 from galaius.agents.limits import quota
 from galaius.agents.catalog import relations

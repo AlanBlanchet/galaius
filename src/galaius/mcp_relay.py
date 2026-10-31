@@ -1,6 +1,6 @@
 """`galaius mcp` as a client runs it: a relay between the client's stdio and the one galaius MCP
 server of this computer (`galaius.server.shared`), standard library only, so a client costs a few
-megabytes instead of a whole server. Run as a file (`python -I -S relay.py ENDPOINT`): no
+megabytes instead of a whole server. Run as a file (`python -I -S mcp_relay.py ENDPOINT`): no
 galaius, pydantic or mcp import is on its path.
 
 It opens a connection to the server named by its endpoint (started detached when nothing listens,

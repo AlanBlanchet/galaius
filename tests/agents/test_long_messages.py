@@ -9,7 +9,7 @@ import uuid
 import pytest
 
 from galaius.agents import messaging
-from galaius.agents.limits import agent_queue
+from galaius.agents import agent_queue
 from galaius.agents import registry as reg
 from tests.support import register_run
 

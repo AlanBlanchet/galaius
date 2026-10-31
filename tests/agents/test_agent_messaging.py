@@ -14,7 +14,7 @@ import threading
 import pytest
 
 from galaius.agents import messaging
-from galaius.agents.limits import agent_queue
+from galaius.agents import agent_queue
 from galaius.agents import registry as reg
 from galaius.agents.providers import PermissionMode
 from tests.support import ScriptedProvider, install_provider, register_run, use_policy
@@ -215,7 +215,7 @@ def _resume_policy(monkeypatch):
 
 
 def test_delivery_queues_against_vendor_session_not_galaius_id(monkeypatch):
-    from galaius.agents.limits import agent_queue
+    from galaius.agents import agent_queue
     provider = _continuation_policy(monkeypatch)
     register_run("galaius-run", name="reviewer", provider="fake", task="t", pid=1234, agent="tester", provider_session_id="vendor-thread")
     monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
@@ -230,7 +230,7 @@ def test_delivery_queues_against_vendor_session_not_galaius_id(monkeypatch):
 def test_a_message_its_dispatcher_refused_is_cancelled_never_left_to_run_later(monkeypatch):
     """The caller is told it failed: a pending item would still run once any dispatcher starts (a spawn
     falling through to a new run would then do the task twice)."""
-    from galaius.agents.limits import agent_queue
+    from galaius.agents import agent_queue
     _continuation_policy(monkeypatch)
     register_run("galaius-run", name="reviewer", provider="fake", task="t", pid=1234, agent="tester", provider_session_id="vendor-thread")
     monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("no scope")))
@@ -242,7 +242,7 @@ def test_a_message_its_dispatcher_refused_is_cancelled_never_left_to_run_later(m
 
 
 def test_a_message_only_for_an_idle_run_is_refused_when_one_waits_already(monkeypatch):
-    from galaius.agents.limits import agent_queue
+    from galaius.agents import agent_queue
     _continuation_policy(monkeypatch)
     register_run("galaius-run", name="reviewer", provider="fake", task="t", pid=1234, agent="tester", provider_session_id="vendor-thread")
     monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
@@ -277,7 +277,7 @@ def test_peer_message_carries_registry_model_context_without_inventing_capabilit
 
 
 def test_stopped_delivery_resumes_with_fresh_policy_and_tracks_new_pid(monkeypatch):
-    from galaius.agents.limits import agent_queue
+    from galaius.agents import agent_queue
     provider = _continuation_policy(monkeypatch)
     register_run("galaius-run", name="reviewer", provider="fake", task="t", pid=1234, agent="tester", provider_session_id="vendor-thread")
     monkeypatch.setattr(reg, "_alive", lambda pid: False)
@@ -304,7 +304,7 @@ def test_stopped_delivery_resumes_with_fresh_policy_and_tracks_new_pid(monkeypat
 
 @pytest.mark.parametrize("recorded_status,exit_code", [("running", None), ("done", 0), ("crashed", None)])
 def test_a_crashed_or_finished_run_resumes_with_full_context(monkeypatch, recorded_status, exit_code):
-    from galaius.agents.limits import agent_queue
+    from galaius.agents import agent_queue
     provider = _ResumeProvider()
     _resume_policy(monkeypatch)
     monkeypatch.setattr(messaging, "provider_for", lambda _: provider)
@@ -329,7 +329,7 @@ def test_a_crashed_or_finished_run_resumes_with_full_context(monkeypatch, record
 def test_a_vendor_session_that_no_longer_exists_fails_with_its_own_message_not_silently(monkeypatch):
     """The provider's own refusal (an expired/deleted vendor session, an unknown id) must reach
     the caller as a named failure — never swallowed, never reported as a successful reply."""
-    from galaius.agents.limits import agent_queue
+    from galaius.agents import agent_queue
     provider = _ResumeProvider()
     provider.script = "import sys; sys.stderr.write('Error: no conversation found for that id\\n'); sys.exit(1)"
     _resume_policy(monkeypatch)
@@ -371,7 +371,7 @@ def _cooldown_policy(monkeypatch):
 
 
 def test_a_resumed_turn_skips_a_cooled_model_and_uses_the_next_ranked_one(monkeypatch):
-    from galaius.agents.limits import agent_queue
+    from galaius.agents import agent_queue
     from galaius.agents.limits import quota
     from galaius.models.capability import ModelCapability
     from tests.support import catalog_of, model as fixture_model
@@ -413,7 +413,7 @@ def test_a_resumed_turn_refuses_when_every_candidate_for_its_provider_is_cooled(
     naming what the user can do — never spawn on a model that already refused for quota once
     (the exact bug), and never silently pick a different provider (a vendor session cannot
     switch CLI mid-conversation; that would abandon the conversation history)."""
-    from galaius.agents.limits import agent_queue
+    from galaius.agents import agent_queue
     from galaius.agents.limits import quota
     from galaius.models.capability import ModelCapability
     from tests.support import catalog_of, model as fixture_model
@@ -459,7 +459,7 @@ def test_delivery_is_a_validated_model_not_a_dataclass():
 
 
 def test_concurrent_resumes_have_one_writer_and_one_busy_result(monkeypatch):
-    from galaius.agents.limits import agent_queue
+    from galaius.agents import agent_queue
     provider = _ResumeProvider()
     provider.script = "import time; time.sleep(1)\n" + provider.script
     monkeypatch.setattr(messaging, "provider_for", lambda _: provider)
@@ -487,7 +487,7 @@ def test_concurrent_resumes_have_one_writer_and_one_busy_result(monkeypatch):
 
 
 def test_wait_records_nonzero_exit_and_bounded_redacted_stderr(monkeypatch):
-    from galaius.agents.limits import agent_queue
+    from galaius.agents import agent_queue
     provider = _ResumeProvider()
     provider.script = "import sys; sys.stderr.write('api_key=test-secret-value\\n'); sys.exit(7)"
     _resume_policy(monkeypatch)
@@ -507,7 +507,7 @@ def test_wait_records_nonzero_exit_and_bounded_redacted_stderr(monkeypatch):
 
 
 def test_wait_rejects_a_clean_process_that_emits_no_resume_event(monkeypatch):
-    from galaius.agents.limits import agent_queue
+    from galaius.agents import agent_queue
     provider = _ResumeProvider()
     provider.script = "pass"
     _resume_policy(monkeypatch)
@@ -528,7 +528,7 @@ def test_wait_rejects_a_clean_process_that_emits_no_resume_event(monkeypatch):
 
 
 def test_wait_false_still_reaps_and_records_the_resumed_process(monkeypatch):
-    from galaius.agents.limits import agent_queue
+    from galaius.agents import agent_queue
     provider = _ResumeProvider()
     provider.script = "import time; time.sleep(0.05)"
     _resume_policy(monkeypatch)
@@ -546,7 +546,7 @@ def test_wait_false_still_reaps_and_records_the_resumed_process(monkeypatch):
 
 
 def test_queued_reply_lookup_uses_persisted_attempt_anchor(monkeypatch):
-    from galaius.agents.limits import agent_queue
+    from galaius.agents import agent_queue
 
     provider = _ResumeProvider()
     _resume_policy(monkeypatch)
@@ -565,7 +565,7 @@ def test_queued_reply_lookup_uses_persisted_attempt_anchor(monkeypatch):
 
 
 def test_queue_preserves_effective_policy_and_records_fresh_policy_separately(monkeypatch):
-    from galaius.agents.limits import agent_queue
+    from galaius.agents import agent_queue
     install_provider(monkeypatch, _DeliveryProvider())
     use_policy(monkeypatch, messaging, agents={"tester": "fresh-model"},
                reasoning={"tester": "high"}, providers={"fake": True})
@@ -788,7 +788,7 @@ def _cut_run_on(monkeypatch, provider, model: str):
 def test_a_resumed_turn_never_moves_its_conversation_to_a_smaller_model(monkeypatch):
     """Its own model cooled and only a SMALLER one live: refuse and say so, never hand the session to a
     model that cannot hold it."""
-    from galaius.agents.limits import agent_queue
+    from galaius.agents import agent_queue
     from galaius.agents.limits import quota
 
     provider = _FixtureCatalogProvider()
@@ -812,7 +812,7 @@ def test_a_resumed_turn_never_moves_its_conversation_to_a_smaller_model(monkeypa
 
 def test_a_resumed_turn_may_still_move_its_conversation_to_a_bigger_model(monkeypatch):
     """The floor is one-way: a run cut on the small model takes the big one when the criterion prefers it."""
-    from galaius.agents.limits import agent_queue
+    from galaius.agents import agent_queue
 
     provider = _FixtureCatalogProvider()
     provider.calls = []
@@ -839,7 +839,7 @@ def test_a_resumed_turn_may_still_move_its_conversation_to_a_bigger_model(monkey
 def test_his_message_to_a_cut_run_asks_the_vendor_again(monkeypatch):
     """A person's message to a run that is no longer running is his « Continuer »: the vendor answers
     the turn itself, instead of this PC's memory of an earlier refusal answering for it."""
-    from galaius.agents.limits import agent_queue
+    from galaius.agents import agent_queue
     from galaius.agents.limits import quota
 
     provider = _FixtureCatalogProvider()
@@ -863,7 +863,7 @@ def test_his_message_to_a_cut_run_asks_the_vendor_again(monkeypatch):
 def test_an_agents_message_to_a_cut_run_asks_nothing_again(monkeypatch):
     """Only a PERSON's message is his « Continuer ». An agent's would make a run whose model the vendor
     just refused ask it again on every message it is sent."""
-    from galaius.agents.limits import agent_queue
+    from galaius.agents import agent_queue
     from galaius.agents.limits import quota
 
     provider = _FixtureCatalogProvider()

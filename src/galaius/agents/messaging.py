@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict
 from galaius.account.caller import Caller
 from galaius_core import refusal_of, Coded, MachineRefusal, ReadsAt
 
-from galaius.agents.limits import agent_queue
+from galaius.agents import agent_queue
 from galaius.agents.catalog import community
 from galaius.agents.catalog import relations
 from galaius.agents.turns.critic_rounds import CriticRounds, turn_of

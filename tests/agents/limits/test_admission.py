@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from galaius.agents.limits import agent_queue
+from galaius.agents import agent_queue
 from galaius.agents.limits import quota
 from galaius.agents import registry as reg
 from galaius.agents.limits.admission import Hold, Paused, SoftMemory

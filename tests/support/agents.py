@@ -15,7 +15,7 @@ from pathlib import Path
 
 from galaius.agents import messaging
 from galaius.agents import registry as reg
-from galaius.agents.limits import agent_queue
+from galaius.agents import agent_queue
 from galaius.agents import run as _run_module
 from galaius.agents.policy import Policy
 from galaius.agents.providers import AgentProvider, ClaudeCodeProvider

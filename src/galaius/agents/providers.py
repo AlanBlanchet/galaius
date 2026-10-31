@@ -43,9 +43,9 @@ from galaius.agents.transport.events import TOKEN_FIELDS, AgentEvent, Compaction
 from galaius.agents.limits.quota import REFUSAL
 from galaius.agents.catalog.profiles import overlay_for
 from galaius.agents.catalog.vocabulary import ApprovalIntent, TouchScope, ThinkingLevel, vocabulary_for
-from galaius.hooks.brief import NOTE as BRIEF_NOTE
+from galaius.brief_hook import NOTE as BRIEF_NOTE
 from galaius.isolation.fence import COMPAT_KEY, KEYS, RELAY, RELAY_PORT, Confinement, RelayedServer, SignIn, confinement_refusal, userns_refusal
-from galaius.hooks.inbox import NOTE as INBOX_NOTE
+from galaius.inbox_hook import NOTE as INBOX_NOTE
 from galaius.models.registry import Model
 from galaius.host.processes import ask_process, run_isolated_process, shell_entries
 from galaius.mcp.announcement import GatewayServed
@@ -962,10 +962,10 @@ class ClaudeTurnSettings(BaseModel):
     #: file the agent is pointed at.
     bash_output_chars: int
     #: Run after each of the turn's own tool calls (`PostToolUse`; what it prints as `additionalContext` the model reads
-    #: before its next step), with the note telling the agent which of that context is the person's (`galaius.hooks.inbox.NOTE`).
+    #: before its next step), with the note telling the agent which of that context is the person's (`galaius.inbox_hook.NOTE`).
     inbox_hook: str | None = None
-    #: Run once a compaction replaced the conversation (`SessionStart`, source `compact`: `galaius.hooks.brief`), with the
-    #: note telling the agent what that context is (`galaius.hooks.brief.NOTE`).
+    #: Run once a compaction replaced the conversation (`SessionStart`, source `compact`: `galaius.brief_hook`), with the
+    #: note telling the agent what that context is (`galaius.brief_hook.NOTE`).
     brief_hook: str | None = None
     #: The name a peer session's SendMessage addresses it by (`-n`): `<role>-<short run id>`. Unnamed, the CLI names a session
     #: after its folder (`<folder>-<2 hex>`) and a resume without `-n` drops the name: no peer finds a run by its role.

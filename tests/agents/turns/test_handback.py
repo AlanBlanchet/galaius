@@ -10,7 +10,7 @@ import uuid
 
 import pytest
 
-from galaius.agents.limits import agent_queue
+from galaius.agents import agent_queue
 from galaius.agents.turns import handback
 from galaius.agents.catalog import relations
 from galaius.agents import registry as reg

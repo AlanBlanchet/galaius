@@ -11,10 +11,10 @@ import uuid
 import pytest
 from galaius_core import ASKED_BY_MAX, AgentMedia
 
-from galaius.hooks import brief as brief_hook
-from galaius.hooks import inbox as inbox_hook
+from galaius import brief_hook
+from galaius import inbox_hook
 from galaius.agents import messaging
-from galaius.agents.limits import agent_queue
+from galaius.agents import agent_queue
 from galaius.agents import run as agent_run
 from galaius.agents import registry as reg
 from galaius.agents.catalog.connection import CatalogAuthenticationError, CatalogConnectionError
@@ -235,7 +235,7 @@ def test_separate_process_enqueue_calls_are_serialized(monkeypatch, tmp_path):
     setup_queue(monkeypatch)
     script = (
         "import sys; "
-        "from galaius.agents.limits import agent_queue; "
+        "from galaius.agents import agent_queue; "
         "item=agent_queue.enqueue('r1', message_id=sys.argv[1], sender='operator'); "
         "raise SystemExit(0 if item else 1)"
     )
@@ -490,7 +490,7 @@ def test_two_runs_queued_at_once_are_drained_by_one_dispatcher_process(monkeypat
     deliveries = [messaging.deliver_message(run_id, f"for {run_id}", sender="operator") for run_id in ("r1", "r2")]
     [(module, verb, token)] = started
     hub = {agent_queue._state(run_id)["dispatcher_pid"] for run_id in ("r1", "r2")}
-    assert (module, verb, len(hub)) == ("galaius.agents.limits.agent_queue", "--serve", 1)
+    assert (module, verb, len(hub)) == ("galaius.agents.agent_queue", "--serve", 1)
     assert how[0]["contain"] and "GALAIUS_RUN_ID" not in how[0]["environment"]
 
     drained = []

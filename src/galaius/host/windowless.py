@@ -4,7 +4,7 @@ starts none either. Without it each console child (an agent CLI turn, a script s
 `schtasks`, git) opens a black window on the person's desktop.
 
 Installed once, when the `galaius` package is imported, so every entry point (the `galaius`
-program, `python -m galaius`, `python -m galaius.agents.limits.agent_queue`, the hooks) has it before
+program, `python -m galaius`, `python -m galaius.agents.agent_queue`, the hooks) has it before
 it starts anything; at the one place every spawn goes through, `subprocess.Popen` (asyncio's and
 the libraries' spawns included). A Python child is started with the console interpreter
 (`console_python`), never `pythonw`: its hidden console is then shared by everything IT starts (a

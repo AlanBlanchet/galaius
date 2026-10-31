@@ -24,7 +24,7 @@ from weakref import WeakKeyDictionary
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
-from galaius.agents.limits import agent_queue
+from galaius.agents import agent_queue
 from galaius.agents import registry as reg
 from galaius.agents.transport.events import stream_lines
 from galaius.agents.messaging import Delivery, policy_for_continuation, queue_message, start_dispatcher

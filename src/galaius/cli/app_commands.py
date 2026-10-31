@@ -25,7 +25,7 @@ from galaius.inference import ollama
 from galaius_core import refusal_of, AGENT_TOUCH_SCOPES, ASKED_BY_MAX, IMAGE_TYPES, Coded, CommunityKind, MachineRefusal, RefusedLine
 
 from galaius.agents import messaging
-from galaius.agents.limits import agent_queue
+from galaius.agents import agent_queue
 from galaius.agents.turns import handback
 from galaius.agents.catalog import relations
 from galaius.agents import providers as agent_providers

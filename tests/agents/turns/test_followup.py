@@ -10,7 +10,7 @@ import sys
 import pytest
 
 from galaius.agents import messaging
-from galaius.agents.limits import agent_queue
+from galaius.agents import agent_queue
 from galaius.agents import registry as reg
 from galaius.agents.turns import followup as followup_module
 from galaius.agents import run as run_module

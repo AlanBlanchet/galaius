@@ -1,8 +1,8 @@
 """The hook a Claude agent turn runs after each of its own tool calls: it hands the turn the
-messages sent to its run meanwhile (`galaius.agents.limits.agent_queue.inject`), as the editor does with a
+messages sent to its run meanwhile (`galaius.agents.agent_queue.inject`), as the editor does with a
 message typed while it works.
 
-Called as `python -m galaius.hooks.inbox RUN_ID QUEUE_FILE`, with the hook's event on stdin. It
+Called as `python -m galaius.inbox_hook RUN_ID QUEUE_FILE`, with the hook's event on stdin. It
 runs after EVERY tool call: on POSIX the shell starts it only when the queue file holds a pending
 item (`agent_queue.inbox_hook`); where no shell checks first (Windows), this module's own check
 costs one small file read and imports nothing of the launcher. Only a waiting message starts the
@@ -48,7 +48,7 @@ def main() -> None:
     except OSError:
         return
     if waiting:
-        raise SystemExit(subprocess.call([console_python(), "-P", "-m", "galaius.agents.limits.agent_queue", "--inject", run_id], stdin=subprocess.DEVNULL))
+        raise SystemExit(subprocess.call([console_python(), "-P", "-m", "galaius.agents.agent_queue", "--inject", run_id], stdin=subprocess.DEVNULL))
 
 
 if __name__ == "__main__":

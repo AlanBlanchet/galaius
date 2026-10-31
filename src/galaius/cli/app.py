@@ -132,7 +132,7 @@ def version() -> None:
 
 def main() -> None:
     """Every command continues in the active runtime (`Handoff`). `mcp` then becomes a relay to this
-    computer's shared MCP server (`galaius.mcp.relay`, where a Unix socket exists); another
+    computer's shared MCP server (`galaius.mcp_relay`, where a Unix socket exists); another
     long-lived one (`machine connect`, the TUI) starts as its supervisor, which runs it again as a
     worker; a worker at its quiet point exits `EXIT_UPGRADE` for the supervisor to start the new runtime."""
     force_utf8_io()

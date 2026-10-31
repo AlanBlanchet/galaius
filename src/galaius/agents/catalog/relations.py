@@ -20,10 +20,10 @@ from galaius.agents.turns import review_marks as turn_review_marks
 from galaius.agents import registry as reg
 from galaius.config.settings import Config
 from galaius.agents.transport.events import AgentEvent, Relation
-from galaius.hooks.inbox import HEADING, OPERATOR
+from galaius.inbox_hook import HEADING, OPERATOR
 
 if TYPE_CHECKING:
-    from galaius.agents.limits.agent_queue import QueueItem
+    from galaius.agents.agent_queue import QueueItem
 
 #: Share of its context window a compaction may leave a run at, past which it hands its work to the first run of its role
 #: it spawns (`outgrown`).
@@ -346,7 +346,7 @@ def _turn_records(run_id: str) -> _TurnRecords:
     """Run `run_id`'s `_TurnRecords`, read once per decision (`one_read`)."""
     if (read := _TURNS_READ.get()) is not None and run_id in read:
         return read[run_id]
-    from galaius.agents.limits import agent_queue
+    from galaius.agents import agent_queue
     records = _TurnRecords(
         events=tuple(reg.read_events(run_id)),
         items=tuple(sorted(((item.raw_index, item) for item in agent_queue.items_seen(run_id) if item.raw_index is not None),
@@ -499,7 +499,7 @@ def handback_since(*, now: float | None = None) -> float:
 def ask_lines(run: reg.AgentRun) -> list[tuple[int, str]]:
     """Each ask of `run` its turns read, as (raw stream line its turn started at, its message): its queue items carrying a
     message that asks (not a one-way note, a hand-back or this computer's own resume), oldest first."""
-    from galaius.agents.limits import agent_queue
+    from galaius.agents import agent_queue
     asks = {event.event_id for event in reg.read_messages(run.run_id)
             if event.to_run == run.run_id and event.event_id and not event.fyi and not event.reports
             and event.from_run not in reg.SYSTEM_SENDERS and event.text != reg.RESUME_BRIEF}

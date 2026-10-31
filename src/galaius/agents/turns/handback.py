@@ -17,7 +17,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, computed_field
 
 from galaius.agents import messaging
-from galaius.agents.limits import agent_queue
+from galaius.agents import agent_queue
 from galaius.agents.catalog import relations
 from galaius.agents.transport.events import AgentEvent
 from galaius.agents import registry as reg

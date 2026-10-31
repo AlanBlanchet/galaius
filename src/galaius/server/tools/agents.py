@@ -13,7 +13,7 @@ from galaius.account.caller import Caller
 from galaius_core import AgentRevisionRef, CommunityKind
 
 from galaius.agents import messaging, registry as reg
-from galaius.agents.limits import agent_queue
+from galaius.agents import agent_queue
 from galaius.agents.turns import handback
 from galaius.agents.catalog import community as community_agents
 from galaius.agents.catalog.community import CommunityAgent

@@ -21,7 +21,7 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from galaius.agents.limits import agent_queue
+from galaius.agents import agent_queue
 from galaius.agents.catalog import relations
 from galaius.agents import registry as reg
 from galaius.config.settings import Config

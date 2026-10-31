@@ -15,7 +15,7 @@ from galaius.agents.catalog import relations
 from galaius.agents import registry as reg
 from galaius.agents.spawn_line import Spawn
 from galaius.agents.transport.events import AgentEvent, Relation
-from galaius.hooks.inbox import HEADING, OPERATOR
+from galaius.inbox_hook import HEADING, OPERATOR
 from tests.support import register_run
 
 NAMES = ("lead", "eng", "coordinator", "stranger", "rev", "old", "new", "helper")

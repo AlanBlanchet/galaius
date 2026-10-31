@@ -1,5 +1,5 @@
 """Where this computer's shared galaius MCP server of a runtime listens, and how a relay starts it
-(`galaius.mcp.relay.Endpoint`): what `galaius mcp` hands its relay, and what an older server names when
+(`galaius.mcp_relay.Endpoint`): what `galaius mcp` hands its relay, and what an older server names when
 it tells a relay to move. Kept apart from the server so `galaius mcp` computes it without importing one."""
 
 import hashlib
@@ -10,11 +10,11 @@ import sys
 from pathlib import Path
 from typing import NoReturn
 
-from galaius.mcp import relay as mcp_relay
+from galaius import mcp_relay
 
 from galaius.agents.limits.ceiling import contained
 from galaius.mcp.announcement import McpAnnouncement
-from galaius.mcp.relay import Endpoint
+from galaius.mcp_relay import Endpoint
 from galaius.host.paths import UserPaths
 from galaius.host.private_files import PRIVATE_FILES
 from galaius.upgrade.store import Runtime, RuntimeStore
@@ -22,7 +22,7 @@ from galaius.upgrade.supervisor import RelayHandover
 
 
 class SharedEndpoint:
-    """Where a runtime's shared server listens and how a relay starts it (`galaius.mcp.relay.Endpoint`)."""
+    """Where a runtime's shared server listens and how a relay starts it (`galaius.mcp_relay.Endpoint`)."""
 
     @staticmethod
     def of(runtime: Runtime) -> Endpoint:

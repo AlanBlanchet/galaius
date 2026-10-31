@@ -22,7 +22,7 @@ from galaius_core import refusal_of, MACHINE_AGENT_REQUESTS, PROJECTS_ROOT, PROJ
 from galaius.desktop.screen.desk import ScreenDesk
 from galaius.machine.programs import AgentPrograms
 from galaius.agents import messaging
-from galaius.agents.limits import agent_queue
+from galaius.agents import agent_queue
 from galaius.agents import registry as reg
 from galaius.agents.host import ConversationRefused
 from galaius.agents.run import ModelUnavailable

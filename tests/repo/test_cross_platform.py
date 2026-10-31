@@ -13,11 +13,11 @@ from pathlib import Path
 import pytest
 
 from galaius.desktop import backend as db
-from galaius.mcp.relay import locked
+from galaius.mcp_relay import locked
 from tests.support import browser_manager
 
 #: Standard modules Windows does not ship. Each import of one sits under `sys.platform` or in a `try`, never at a
-#: module's top level: 2026-10-23 `galaius/mcp/relay.py` imported `fcntl` there, and the owner's Windows PC could
+#: module's top level: 2026-10-23 `galaius/mcp_relay.py` imported `fcntl` there, and the owner's Windows PC could
 #: not run `galaius install` at all (« ModuleNotFoundError: No module named 'fcntl' » out of `galaius.cli.app`).
 UNIX_ONLY = ("fcntl", "termios", "pwd", "grp", "resource", "tty", "pty", "syslog")
 
@@ -42,7 +42,7 @@ def test_the_relay_imports_where_fcntl_does_not_exist():
         "        return None\n"
         "sys.meta_path.insert(0, Absent())\n"
         "sys.modules.pop('fcntl', None)\n"
-        "import galaius.mcp.relay as relay\n"
+        "import galaius.mcp_relay as relay\n"
         "print('relay imported', relay.HELLO)\n"
     )
     done = subprocess.run([sys.executable, "-c", program], capture_output=True, text=True)
@@ -126,7 +126,7 @@ def test_the_relay_lock_lets_one_process_at_a_time_through(tmp_path):
     """`mcp_relay.locked`, the relay's own stdlib-only lock (it runs under `python -I -S`: no pydantic, no pywin32,
     so `galaius.host.file_lock` cannot serve it). Here: a held lock makes the next taker wait."""
     path = str(tmp_path / "endpoint.lock")
-    program = f"import sys; sys.path.insert(0, {str(Path(importlib.import_module('galaius').__file__).parents[1])!r});\nfrom galaius.mcp.relay import locked\nimport time\nwith locked({path!r}):\n    time.sleep(1.5)\n"
+    program = f"import sys; sys.path.insert(0, {str(Path(importlib.import_module('galaius').__file__).parents[1])!r});\nfrom galaius.mcp_relay import locked\nimport time\nwith locked({path!r}):\n    time.sleep(1.5)\n"
     holder = subprocess.Popen([sys.executable, "-c", program])
     time.sleep(0.4)
     started = time.monotonic()

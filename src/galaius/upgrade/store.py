@@ -39,6 +39,12 @@ EXIT_UPGRADE = 75
 EXIT_HANDOVER = 76
 
 
+#: What `probe` imports from every new release before activating it. An installed computer runs its
+#: own copy of this list against each release it is offered, so these modules never move: a release
+#: that moves one is refused on every computer still running an older build.
+PROBED_MODULES: tuple[str, ...] = ("galaius", "galaius_core", "galaius.cli.app", "galaius.mcp_relay", "galaius.server.shared")
+
+
 class Addressed:
     """Variables a process sets for the ONE process it starts, each declared where its contract lives
     (`name`). The addressee moves them out of its environment (`take` at the CLI's start, or the first
@@ -417,9 +423,9 @@ class RuntimeStore(BaseModel):
     @staticmethod
     def probe(runtime: Runtime) -> dict[str, str]:
         """Both packages, the command entry (supervisor, handoff) and the MCP relay and shared server every
-        client reaches (`galaius.mcp.relay`, `galaius.server.shared`) import inside `runtime`, from `runtime`
+        client reaches (`galaius.mcp_relay`, `galaius.server.shared`) import inside `runtime`, from `runtime`
         (never a stray path): a runtime that cannot start a command or serve its clients is never activated."""
-        script = ("import json, galaius, galaius_core, galaius.cli.app, galaius.mcp.relay, galaius.server.shared; "
+        script = (f"import json, {', '.join(PROBED_MODULES)}; "
                   "from importlib.metadata import version; "
                   "print(json.dumps({'galaius': version('galaius'), 'galaius-core': version('galaius-core'), "
                   "'sources': [galaius.__file__, galaius_core.__file__]}))")

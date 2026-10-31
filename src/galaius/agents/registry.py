@@ -69,7 +69,7 @@ OwnLogin = Literal["own_login"]
 OWN_LOGIN: OwnLogin = "own_login"
 
 if TYPE_CHECKING:
-    from galaius.agents.limits.agent_queue import QueueItem  # imports this module at run time
+    from galaius.agents.agent_queue import QueueItem  # imports this module at run time
 
 RunStatus = Literal[
     "starting", "running", "waiting", "done", "failed", "cancelled", "interrupted", "stopped",
@@ -961,9 +961,9 @@ def hook_command(module: str, *arguments: str) -> str:
 
 
 def brief_hook(run_id: str) -> str:
-    """The command a turn of `run_id` runs once its conversation was compacted (`galaius.hooks.brief`):
+    """The command a turn of `run_id` runs once its conversation was compacted (`galaius.brief_hook`):
     it hands the agent back the task recorded here."""
-    return hook_command("galaius.hooks.brief", str(_record_path(run_id)))
+    return hook_command("galaius.brief_hook", str(_record_path(run_id)))
 
 class RunMedia:
     """The images a run was shown (attached to its brief, pasted in a message), each kept beside the run's other files
@@ -1355,7 +1355,7 @@ def task_taken(run_id: str, task: str) -> AgentRun | None:
     """`run_id` took `task` as its next turn (`spawn_line.Spawn.hand_over`): from now on its record says THAT
     task, never only the one it was first launched with. Everything that reads a run's task reads the current
     one — its row on the web (`machine_agents`), the card its own children start on (`relations.card`), the
-    brief a compaction hands its agent back (`galaius.hooks.brief`), and a relaunch of its brief elsewhere
+    brief a compaction hands its agent back (`galaius.brief_hook`), and a relaunch of its brief elsewhere
     (`spawn_line.Spawn.of_run`). Returns the record as it now stands, None when there is none.
     """
     with record_lock(run_id):
@@ -1478,7 +1478,7 @@ def finish(
         # SIGTERM's code (-15, or 143 through a shell) and its reaper must not turn it "failed".
         if stored.status == "stopped":
             exit_code = stored.exit_code
-        from galaius.agents.limits import agent_queue
+        from galaius.agents import agent_queue
         # Ended by SIGTERM after its answer (a parent's stop, its unit stopped): it had finished, a clean end.
         idle = (stored.status != "stopped" and exit_code in (-signal.SIGTERM, 128 + signal.SIGTERM)
                 and _cuts_nothing(answered, agent_queue.items_locked(run_id)))
@@ -1595,7 +1595,7 @@ def stop(run_id: str, *, by: StopActor | None, expected_lifecycle_token: str | N
             return False
         # Cancel first. A failed queue write must not leave a stopped run resumable with old work.
         try:
-            from galaius.agents.limits import agent_queue
+            from galaius.agents import agent_queue
             idle = _cuts_nothing(answered, agent_queue.items_locked(run_id))
             agent_queue.cancel_pending_locked(run_id)
         except (ImportError, OSError, ValueError, RuntimeError):
@@ -2649,7 +2649,7 @@ def _resuming(run: AgentRun, *, now: float | None = None) -> bool:
 
 def _in_flight(run: AgentRun) -> bool:
     """A message to `run` is still being delivered by a live dispatcher of this PC (`agent_queue.resuming`)."""
-    from galaius.agents.limits import agent_queue
+    from galaius.agents import agent_queue
     return run.kind == "process" and agent_queue.resuming(run.run_id)
 
 
