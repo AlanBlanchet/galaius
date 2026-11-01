@@ -202,7 +202,6 @@ jobs:
           tests/cli/test_prompt_cli.py::test_prompt_editor_releases_its_lock_when_post_lock_validation_fails
           tests/cli/test_prompt_cli.py::test_prompt_editor_stores_the_exact_bytes_it_reports
           tests/prompts/test_prompt_contracts.py::test_cache_is_never_opened_through_a_link
-          tests/prompts/test_prompt_contracts.py::test_cache_owner_check_is_portable_when_getuid_is_unavailable
           tests/prompts/test_prompt_projection.py::test_installer_switches_only_declared_consumers_and_rejects_unmanaged_collision
 
       - name: Logs

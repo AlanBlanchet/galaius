@@ -23,8 +23,10 @@ import sys
 import threading
 import time
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -2123,8 +2125,10 @@ def test_a_turn_that_ends_records_the_session_its_own_lines_name(monkeypatch):
 
 
 # A run a provider usage limit stopped resumes by itself at the reset the provider named (owner
-# 2026-10-09: five builder runs stayed « failed » after their « resets 5:20pm » had passed).
-_SESSION_LIMIT = "You've hit your session limit · resets 5:20pm (Europe/Paris)"
+# 2026-10-09: five builder runs stayed « failed » after their « resets 5:20pm » had passed). The reset named is three
+# hours ahead of the run: a fixed « 5:20pm » made these tests fail for the minutes after 17:20 in Paris (2026-11-01 CI).
+_RESET = datetime.now(ZoneInfo("Europe/Paris")) + timedelta(hours=3)
+_SESSION_LIMIT = f"You've hit your session limit · resets {_RESET.hour % 12 or 12}:{_RESET.minute:02d}{'pm' if _RESET.hour >= 12 else 'am'} (Europe/Paris)"
 #: A line its model wrote: the run did something before its limit refused it.
 _SPOKE = json.dumps({"type": "assistant", "session_id": "SID", "message": {"model": "claude-opus-5-5", "content": [{"type": "text", "text": "on it"}]}}) + "\n"
 

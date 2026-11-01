@@ -6,6 +6,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -14,6 +15,15 @@ import pytest
 import galaius.mcp_relay as relay_module
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="shared MCP server: Unix sockets")
+
+
+@pytest.fixture
+def tmp_path():
+    """A short folder under /tmp: a Unix socket's path holds 104 bytes on macOS, which pytest's own folder there
+    (/private/var/folders/…/pytest-of-runner/…) already passes (2026-11-01 runner: « AF_UNIX path too long »). The
+    product's own socket (`Endpoint.of`) is ~/.galaius/run/mcp-<16 hex>.sock."""
+    with tempfile.TemporaryDirectory(prefix="galaius-", dir="/tmp") as folder:
+        yield Path(folder).resolve()
 
 
 class Client:

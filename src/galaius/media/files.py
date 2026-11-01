@@ -353,7 +353,7 @@ class Pptx(FileFormat):
 
 class Pdf(FileFormat):
     """Typst markup compiled here, a table after it when `rows` are given. Compiled apart (`COMPILE`): in a process of
-    its own that bounds its own memory, stopped after `SECONDS`, from an empty folder (`#read` and `#image` reach no
+    its own that bounds its own memory (on Linux), stopped after `SECONDS`, from an empty folder (`#read` and `#image` reach no
     file of his), with no package and no network: every proxy points nowhere, which is what stops a package fetch
     (`@preview/…`); the `"@` check before only says so in plain words."""
 
@@ -363,7 +363,9 @@ class Pdf(FileFormat):
     #: no compiler here (never the markup's fault).
     COMPILE: ClassVar[str] = (
         "import sys\n"
-        "try:\n    import resource\n    resource.setrlimit(resource.RLIMIT_AS, (int(sys.argv[3]),) * 2)\nexcept ImportError:\n    pass\n"
+        # Linux alone enforces an address-space bound: Windows has no `resource`, macOS refuses the call (2026-11-01
+        # runner: « current limit exceeds maximum limit »), so the bound there is the timeout alone.
+        "if sys.platform.startswith('linux'):\n    import resource\n    resource.setrlimit(resource.RLIMIT_AS, (int(sys.argv[3]),) * 2)\n"
         "try:\n    import typst\nexcept ImportError:\n    sys.exit(3)\n"
         "sys.stdout.buffer.write(typst.compile(sys.argv[1], root=sys.argv[2], package_path=sys.argv[2], package_cache_path=sys.argv[2]))\n")
     SECONDS: ClassVar[float] = 60.0
