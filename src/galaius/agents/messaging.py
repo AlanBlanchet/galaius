@@ -90,8 +90,9 @@ class Delivery(BaseModel):
         return cls.queued(run, item, repeated=True)
 
 
-def check_deliverable(run_id: str, *, sender: str | None = None):
-    """Return the owned recipient or a refusal with its safe alternative.
+def check_deliverable(run_id: str, *, sender: str | None = None, policed: bool = True):
+    """Return the owned recipient or a refusal with its safe alternative; `policed`: the turn resumes under the run's
+    role policy, so the run must name a role (`QueuedTurn.policed`).
 
     ``sender`` is the addressing run's own id. An OPERATOR (CLI/panel, no recorded run of their
     own) is never scoped — a human already sees every run it names, the same as `agent_list
@@ -123,7 +124,7 @@ def check_deliverable(run_id: str, *, sender: str | None = None):
     if not provider.can_resume:
         return None, (f"ERROR: the {run.provider!r} CLI cannot continue a session, so a message "
                       "would arrive with no context. Spawn a new agent with agent_spawn instead.")
-    if not run.agent:
+    if policed and not run.agent:
         return None, "ERROR: this run has no named agent role; it cannot receive a policy-safe continuation."
     if not _session_id(run):
         return None, (f"ERROR: {run.name!r} has no provider session id yet; wait for its first "
@@ -249,7 +250,7 @@ def _queue_message(
         run_id = relations.live(named)  # a run handed off: its successor reads it
         if run_id == speaker != named:
             return Delivery(state="error", text=f"ERROR: {named[:8]} handed its work to you: you are the run it would reach.", run_id=named)
-    run, error = check_deliverable(run_id, sender=speaker)
+    run, error = check_deliverable(run_id, sender=speaker, policed=turn.policed)
     if error:
         return Delivery(state="error", text=error, run_id=run_id)
     assert run is not None
@@ -273,7 +274,8 @@ def _queue_message(
             # was the only one that dropped the memory; his message was refused « … is in quota cooldown »).
             if reg.get_run(speaker) is None:
                 run.prepare_continue()
-            _, criterion, model, reasoning = policy_for_continuation(run, provider, environment)
+            # A turn resumed as it was begun (`QueuedTurn.policed` False: an editor conversation's) has no policy to read.
+            _, criterion, model, reasoning = policy_for_continuation(run, provider, environment) if turn.policed else (None, None, None, None)
         except Coded as policy_error:
             return Delivery(state="error", text=f"ERROR: {policy_error}", run_id=run.run_id, refusal=refusal_of(policy_error))
         except CatalogOffline:

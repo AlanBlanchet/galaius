@@ -631,9 +631,10 @@ def test_editor_conversations_are_listed_only_inside_agent_roots_and_continue_as
 
 
 
-def test_a_message_sent_while_a_continued_conversation_answers_opens_its_next_turn_once_that_one_ends(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_message_sent_while_a_continued_conversation_answers_waits_in_its_queue_for_the_next_turn(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """2026-10-30 « stop placing hard rules »: a message to a continued conversation still answering was refused (« send this
-    once it has finished »); it now waits, in its order, and opens the next turn when that one ends, one turn at a time."""
+    once it has finished »); it is now queued durably, in its order, for the run's dispatcher to open once that turn ends
+    (`test_messages_to_a_continued_editor_conversation_wait_in_its_queue_and_open_its_turns_in_order`)."""
     agents = _agents(base, tmp_path, continue_conversations=True).model_copy(update={"editor_projects": tmp_path / "projects"})
     _, inside = _editor(tmp_path, base, base / "project" / "src")
     turns: list[str] = []
@@ -642,35 +643,25 @@ def test_a_message_sent_while_a_continued_conversation_answers_opens_its_next_tu
         turns.append(text)
         reg.begin_turn(run.run_id, pid=os.getpid())
 
-    def ended(run_id: str, count: int) -> None:
-        reg.finish(run_id, exit_code=0, first=reg.raw_line_count(run_id))
-        deadline = time.monotonic() + 5
-        while len(turns) < count and time.monotonic() < deadline:
-            time.sleep(0.01)
-
     monkeypatch.setattr("galaius.machine.agents.launch_editor_turn", launched)
-    monkeypatch.setattr(MachineAgents, "TURN_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
     started = _answer(agents, _request("continue", session_id=str(inside), text="first"))
     run = reg.get_run(str(started.run_id))
     assert run is not None
     answers = [agents.continue_turn(run, text, request_id=uuid4()) for text in ("second", "third")]
     assert [answer.reads_at for answer in answers] == ["turn_end", "turn_end"] and turns == ["first"]
-    ended(run.run_id, 2)
-    time.sleep(0.1)
-    assert turns == ["first", "second"]
-    ended(run.run_id, 3)
-    assert turns == ["first", "second", "third"]
+    assert [(item.turn.kind, item.state) for item in agent_queue.items(run.run_id)] == [("editor", "pending")] * 2
+    assert [event.text for event in reg.read_messages(run.run_id)] == ["first", "second", "third"]
 
 
 @pytest.mark.parametrize(("pinned", "asked", "allowed"), [
     (None, 95, None),
     ({}, 95, None),
-    ({"capped": {"window": "weekly", "used_percent": 81, "cap_percent": 80, "at_cap": "finish"}}, 70, None),
-    ({"allowance": {"window": "weekly", "up_to_percent": 90}}, 95, 95),
-], ids=["no-subscription", "no-cap", "at-or-below-cap", "raised-again"])
-def test_an_allowance_with_nothing_to_go_past_changes_nothing_and_one_already_given_is_raised(base: Path, tmp_path: Path, pinned: dict | None, asked: int, allowed: int | None) -> None:
-    """2026-10-30 « stop placing hard rules »: an allowance on a run no cap holds was refused (« no cap holds this run »),
-    one at or below the cap too; it changes nothing and says so, and a run already allowed past its cap is allowed further."""
+    ({"capped": {"window": "weekly", "used_percent": 81, "cap_percent": 80, "at_cap": "finish"}}, 95, 95),
+], ids=["no-subscription", "no-cap", "past-its-cap"])
+def test_an_allowance_for_a_run_no_cap_holds_changes_nothing_and_one_past_its_cap_is_given(base: Path, tmp_path: Path, pinned: dict | None, asked: int, allowed: int | None) -> None:
+    """2026-10-30 « stop placing hard rules »: an allowance on a run no cap holds (released since the server read it) was
+    refused (« no cap holds this run »); it changes nothing and says so. The share past the cap is the server's rule."""
     agents = _agents(base, tmp_path)
     run_id = str(uuid4())
     subscription = None if pinned is None else RunSubscription.model_validate({"subscription_id": str(UUID(int=7)), "limits": {}, **pinned})

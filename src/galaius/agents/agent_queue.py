@@ -23,9 +23,9 @@ import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Annotated, ClassVar, Literal, Self
+from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Self
 
-from galaius_core import AGENT_IMAGES_MAX, MEDIA_KEY, AgentRevisionRef, Refused
+from galaius_core import AGENT_IMAGES_MAX, MEDIA_KEY, AgentRefused, AgentRevisionRef, Refused
 from galaius_core.wire import readable
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -39,6 +39,9 @@ from galaius.agents.catalog.relations import card, heading
 from galaius.inbox_hook import HEADING, OPERATOR
 from galaius.host.processes import process_started, share_malloc_arenas
 from galaius.upgrade.store import Runtime, RuntimeStore, active_interpreter
+
+if TYPE_CHECKING:
+    from galaius.agents.run import ContinuationHandle
 
 MAX_PENDING = 128
 #: How long a message to an ended run waits before each further try at its turn, when the last one did not start
@@ -78,6 +81,8 @@ class QueuedTurn(BaseModel, ABC):
     mid_turn: ClassVar[bool]
     #: Its attempt's error when its turn ended without an event accepting it (`accepts`).
     unaccepted: ClassVar[str]
+    #: Its turn resumes under its run's role policy (`launch`), so only a run naming a role receives it (`check_deliverable`).
+    policed: ClassVar[bool] = True
 
     @abstractmethod
     def refusal(self, text: str, provider: AgentProvider) -> str | None:
@@ -116,6 +121,15 @@ class QueuedTurn(BaseModel, ABC):
     @abstractmethod
     def accepts(self, event: AgentEvent) -> bool:
         """Whether `event`, of its attempt, accepts it."""
+
+    def launch(self, run: reg.AgentRun, prompt: str, *, raw_index: int) -> ContinuationHandle:
+        """Its turn of `run`, started on `prompt` while the caller holds `record_lock`: the run's session resumed under
+        the policy read now (`CatalogOffline`: that policy cannot be read JUST NOW)."""
+        provider, criterion, model, reasoning = _fresh_policy(run)
+        # Circular layers: run imports this module (its turns' inbox hook).
+        from galaius.agents.run import launch_continuation
+        return launch_continuation(provider, run, run.provider_session_id or run.run_id, prompt, model=model, criterion=criterion,
+                                   reasoning=reasoning, raw_index=raw_index, record_locked=True)
 
 
 #: How much of a hand-back's reports its message carries (`handback`: each report's share; the full ones stay readable).
@@ -235,7 +249,32 @@ class CompactionTurn(QueuedTurn):
         return event.kind == "compacted"
 
 
-QueuedTurnValue = Annotated[MessageTurn | CompactionTurn, Field(discriminator="kind")]
+class EditorTurn(MessageTurn):
+    """A message to a conversation the owner began in his editor and continues from the web (`launch_editor_turn`): a
+    turn of its own once the one before it ended, his words as he wrote them, the copy resumed as it was begun (no
+    role, so no policy); refused once this PC's owner turned continuing off (`galaius machine agents --continue off`)."""
+
+    kind: Literal["editor"] = "editor"  # pyright: ignore[reportIncompatibleVariableOverride]
+    mid_turn = False
+    policed = False
+
+    def prompt(self, run: reg.AgentRun, message_id: str, *, native_images: bool = False, mid_turn: bool = False) -> str | None:
+        message = reg.message_for(run.run_id, message_id)
+        if message is None:
+            return None
+        return self._inline(run, message.text if native_images else reg.RunMedia.mentioned(message.text, self.shown(run)))
+
+    def launch(self, run: reg.AgentRun, prompt: str, *, raw_index: int) -> ContinuationHandle:
+        # Circular layers: machine and run import this module.
+        from galaius.agents.run import launch_editor_turn
+        from galaius.machine.connection import MachineRunner
+        if not MachineRunner().load().continue_conversations:
+            raise AgentRefused("continue_off", "continuing your editor conversations from the web was turned off on this computer "
+                                               "before this message's turn; its owner turns it on there with `galaius machine agents --continue on`")
+        return launch_editor_turn(provider_for(run.provider), run, prompt, environment=Caller.environ(), raw_index=raw_index, record_locked=True)
+
+
+QueuedTurnValue = Annotated[MessageTurn | EditorTurn | CompactionTurn, Field(discriminator="kind")]
 
 
 class QueueItem(BaseModel):
@@ -820,7 +859,7 @@ def _again_locked(run_id: str, item: QueueItem, why: str) -> bool:
         return False
     pause = RESUME_BACKOFF[item.attempts]
     _replace_item_locked(run_id, item.id, state="pending", started_at=None, raw_index=None, attempt_token=None, error="",
-                         attempts=item.attempts + 1, not_before=time.time() + pause)
+                         attempts=item.attempts + 1, not_before=time.time() + pause, waiting=None, waiting_since=None)
     reg.begin_resume_locked(run_id)
     log.warning("agent queue %s: item %s tried again in %g s (try %d of %d): %s", path(run_id), item.id, pause,
                 item.attempts + 2, len(RESUME_BACKOFF) + 1, why)
@@ -931,17 +970,9 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                             else:
                                 try:
                                     run = item.turn.begin_locked(run)
-                                    provider, criterion, model, reasoning = _fresh_policy(run)
-                                    if item.waiting is not None:   # it waited for the service: its turn starts now
+                                    lifecycle = item.turn.launch(run, prompt, raw_index=item.raw_index or 0)
+                                    if item.waiting is not None:   # it waited for the service: its turn started now
                                         item = _replace_item_locked(run_id, item.id, waiting=None, waiting_since=None) or item
-                                    # Circular layers: run imports this module (its turns' inbox hook).
-                                    from galaius.agents.run import launch_continuation
-                                    lifecycle = launch_continuation(
-                                        provider, run, run.provider_session_id or run.run_id,
-                                        prompt, model=model, criterion=criterion,
-                                        reasoning=reasoning, raw_index=item.raw_index or 0,
-                                        record_locked=True,
-                                    )
                                 except CatalogOffline as offline:
                                     # This computer's link to the Galaius service is down, so the run's pinned revision
                                     # cannot be read JUST NOW: his message keeps its place and this dispatcher tries it
@@ -969,7 +1000,7 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                                     if _permanent(error) or not _again_locked(run_id, item, f"resume refused: {detail}"):
                                         _replace_item_locked(
                                             run_id, item.id, state="failed", finished_at=time.time(),
-                                            error=detail,
+                                            error=detail, waiting=None, waiting_since=None,
                                         )
                                         reg.fail_turn_locked(run_id, f"resume refused: {detail}")
                                     item = None

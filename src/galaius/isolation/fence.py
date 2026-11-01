@@ -341,7 +341,7 @@ class FenceSpec(BaseModel):
         try:
             start_parts = self.start.resolve().relative_to(base).parts
         except ValueError:
-            raise AgentRefused("fence_closed", f"{self.start} is outside this PC's working directory") from None
+            raise PermissionError(f"{self.start} is outside this PC's working directory") from None
         opened = sorted(places.in_force("read").items(), key=lambda item: len(split(item[0])))
         if self.project is not None:
             facts = self.project.lstat()

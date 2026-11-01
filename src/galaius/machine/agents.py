@@ -274,8 +274,6 @@ class MachineAgents(BaseModel):
     session: str
     #: How a web launcher session's id starts.
     web_prefix: ClassVar[str] = "web-"
-    #: How often a message waiting for a continued conversation's turn to end looks again (`_next_turns`).
-    TURN_POLL_SECONDS: ClassVar[float] = 0.5
     #: The starts launching in this process now, by request id (`_start`): a repeat joins its first, whichever answerer it reaches.
     _starting: ClassVar[dict[UUID, asyncio.Future[MachineAgentAnswer]]] = {}
 
@@ -882,7 +880,7 @@ class MachineAgents(BaseModel):
         if root == PROJECTS_ROOT:   # one project folder written, no level (`FenceSpec.project`)
             inside = folder.relative_to(self.roots[root]).parts
             if not inside:
-                raise AgentRefused("fence_closed", "with the fence on, an agent starts inside one project folder, never in the projects folder itself")
+                raise PermissionError("with the fence on, an agent starts inside one project folder, never in the projects folder itself")
             project = self.roots[root] / inside[0]
         elif LEVEL_RANK[places.reach(parts)] < LEVEL_RANK["read"]:
             raise AgentRefused("fence_closed", f"no level opens {'/'.join(parts)} to agents; with the fence on, its owner sets one there first (`galaius machine places {root} write`)")
@@ -1002,17 +1000,14 @@ class MachineAgents(BaseModel):
 
     async def _allow(self, request: AgentAllowanceRequest) -> MachineAgentAnswer:
         """`RunAllowance`: the run may go on its subscription up to `up_to_percent` of the window it is
-        held or cut at, or the one it was already allowed past; one held between turns gets its next turn now (as
-        « Reprendre » does). An allowance with nothing to go past (no subscription, no cap holding it, a share at or
-        below the cap) changes nothing and says so."""
+        held or cut at; one held between turns gets its next turn now (as « Reprendre » does). The server asks only for a
+        run its cap holds, past that cap (`subscription_routes`); one no cap holds by now (released meanwhile, on no
+        subscription) changes nothing and says so."""
         run = await asyncio.to_thread(self._require_run, request.run_id)
-        subscription = run.subscription if run.subscription is not None and run.subscription.subscription_id is not None else None
-        capped = subscription.capped if subscription is not None else None
-        given = subscription.allowance if subscription is not None else None
-        window = capped.window if capped is not None else given.window if given is not None else None
-        if window is None or (capped is not None and request.up_to_percent <= capped.cap_percent):
-            return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="nothing to allow: no cap holds this run below that share")
-        allowance = SubscriptionAllowance(window=window, up_to_percent=request.up_to_percent)
+        capped = run.subscription.capped if run.subscription is not None and run.subscription.subscription_id is not None else None
+        if capped is None:
+            return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="nothing to allow: no cap holds this run now")
+        allowance = SubscriptionAllowance(window=capped.window, up_to_percent=request.up_to_percent)
         run = await asyncio.to_thread(reg.merge_subscription, run.run_id, allowance=allowance.model_dump(mode="json"), capped=None) or run
         if run.status in {"running", "waiting"}:
             return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=f"allowed up to {request.up_to_percent}%")
@@ -1254,7 +1249,7 @@ class MachineAgents(BaseModel):
         if route is None:
             raise AgentRefused("sessions_unavailable", reason)
         if request.model is not None and request.model not in models:
-            raise AgentRefused("model_unavailable", f"{request.model} is not a model sessions can use here")
+            raise AgentRefused("not_here", f"{request.model} is no longer a model sessions can use here")
         refresh = await asyncio.to_thread(self._refresh, folder)
         try:
             with self.staged(request.images) as images:
@@ -1308,60 +1303,29 @@ class MachineAgents(BaseModel):
             raise AgentRefused("continue_off", "continuing your editor conversations from the web is off on this computer; its owner turns it on there with `galaius machine agents --continue on`")
 
     def continue_turn(self, run: reg.AgentRun, text: str, *, request_id: UUID, fork_from: str | None = None, media: tuple[str, ...] = ()) -> MachineAgentAnswer:
-        """One turn of a continued conversation: the opt-in is checked on EVERY turn (turning it off
-        stops the copies too), and one turn at a time (checked and started under the run's lock). A message sent while a
-        turn still answers is kept in its order and opens the next turn once that one ends (`turn_end`), as a session's
-        does. The images it shows (`media`, the run's own) are named to it by their files: its turn takes its message on
-        the command line."""
+        """One turn of a continued conversation, the opt-in checked on EVERY turn (turning it off stops the copies too).
+        Its first copies the editor's session `fork_from` at once, one start per request (under the run's lock); every
+        later one is queued durably under the request's id (`EditorTurn`) and started by the run's dispatcher once the
+        turn before it ended, one at a time, in the order sent: a message sent while it answers waits (`turn_end`), as a
+        session's does. The images it shows (`media`, the run's own) are named to it by their files."""
         self._require_continue()
+        if fork_from is None:
+            delivery = deliver_message(run.run_id, text, sender=reg.PERSON_SENDER, environment=self.environment_in(Path(run.cwd)),
+                                       message_id=str(request_id), turn=agent_queue.EditorTurn(media=media))
+            delivery.taken("not delivered")
+            return MachineAgentAnswer(request_id=request_id, run_id=UUID(run.run_id), detail=delivery.text, reads_at=delivery.reads_at)
         with _TURN_LOCKS.setdefault(run.run_id, threading.Lock()):
-            if reg.message_for(run.run_id, str(request_id)) is not None:  # the same request again: recorded already
-                return MachineAgentAnswer(request_id=request_id, run_id=UUID(run.run_id), detail="sent", reads_at="turn_end" if run.run_id in _WAITING else "now")
+            if reg.message_for(run.run_id, str(request_id)) is not None:  # the same request again: its turn opened already
+                return MachineAgentAnswer(request_id=request_id, run_id=UUID(run.run_id), detail="sent", reads_at="now")
+            current = reg.get_run(run.run_id) or run
             reg.record_message_event(from_run=reg.PERSON_SENDER, to_run=run.run_id, text=text, event_id=str(request_id), media=media)
             said = reg.RunMedia.mentioned(text, (reg.RunMedia.path(run.run_id, name) for name in media))
-            if fork_from is None and (run.run_id in _WAITING or _answering(run.run_id)):
-                if (waiting := _WAITING.get(run.run_id)) is None:
-                    _WAITING[run.run_id] = waiting = deque()
-                    threading.Thread(target=self._next_turns, args=(run.run_id,), name=f"turns-{run.run_id[:8]}", daemon=True).start()
-                waiting.append(said)
-                return MachineAgentAnswer(request_id=request_id, run_id=UUID(run.run_id), detail="sent", reads_at="turn_end")
-            self._turn(run, said, fork_from=fork_from)
+            try:
+                launch_editor_turn(PROVIDERS[current.provider], current, said, environment=self.environment_in(Path(current.cwd)), fork_from=fork_from)
+            except BaseException:
+                reg.finish(run.run_id, exit_code=1, first=reg.raw_line_count(run.run_id))  # never left "running" by a turn that did not start
+                raise
         return MachineAgentAnswer(request_id=request_id, run_id=UUID(run.run_id), detail="sent", reads_at="now")
-
-    def _turn(self, run: reg.AgentRun, said: str, *, fork_from: str | None = None) -> None:
-        """One turn of `run` started on `said`, under its lock; a turn that did not start never leaves it « running »."""
-        current = reg.get_run(run.run_id) or run
-        try:
-            launch_editor_turn(PROVIDERS[current.provider], current, said, environment=self.environment_in(Path(current.cwd)), fork_from=fork_from)
-        except BaseException:
-            reg.finish(run.run_id, exit_code=1, first=reg.raw_line_count(run.run_id))
-            raise
-
-    def _next_turns(self, run_id: str) -> None:
-        """The messages sent to `run_id` while it answered, each opening its next turn once the one before ends, in the
-        order they came; the opt-in is checked again before each. A turn that cannot start ends the wait: its messages
-        stay in the conversation, recorded."""
-        lock = _TURN_LOCKS[run_id]
-        while True:
-            while _answering(run_id):
-                time.sleep(self.TURN_POLL_SECONDS)
-            with lock:
-                if _answering(run_id):
-                    continue
-                waiting = _WAITING[run_id]
-                said = waiting.popleft()
-                try:
-                    self._require_continue()
-                    if (run := reg.get_run(run_id)) is None:
-                        raise LookupError(f"run {run_id} is gone")
-                    self._turn(run, said)
-                except Exception:
-                    logger.warning("the next turn of continued conversation %s did not start", run_id, exc_info=True)
-                    del _WAITING[run_id]
-                    return
-                if not waiting:  # under the lock: a message sent from now on starts the next wait
-                    del _WAITING[run_id]
-                    return
 
     # ---- logs ------------------------------------------------------------------------------------
 
@@ -1377,12 +1341,5 @@ class MachineAgents(BaseModel):
 
 #: One turn at a time per continued conversation (`continue_turn`).
 _TURN_LOCKS: dict[str, threading.Lock] = {}
-#: What was sent to a continued conversation while it answered, in order, each its next turn (`_next_turns`).
-_WAITING: dict[str, deque[str]] = {}
-
-
-def _answering(run_id: str) -> bool:
-    """A turn of `run_id` still runs (or waits on what it asked)."""
-    return reg.trees(frozenset({run_id}))[0].status in {"running", "waiting"}
 #: (when, models) — `MachineAgents.models`' one-minute cache.
 _MODELS: tuple[float, tuple[MachineAgentModel, ...]] | None = None

@@ -33,6 +33,7 @@ from galaius_core import (
     AgentProvider,
     AgentProviderState,
     AgentSignIn,
+    AgentSignOutRequest,
     PasteSignIn,
     UsageWindow,
 )
@@ -83,8 +84,6 @@ class AgentPrograms(BaseModel):
     ANSI: ClassVar[re.Pattern[str]] = re.compile(r"\x1b\[[0-9;]*m")
     #: The steps a job is under way in: asked again, it is not started twice (threat M6).
     RUNNING: ClassVar[frozenset[str]] = frozenset({"installing", "signing_in"})
-    #: How long a sign-out waits for its program's install, or its sign-in's start, to end first.
-    SETTLE_SECONDS: ClassVar[float] = 60
 
     #: Each job by its program and login (a subscription's id; None: the default login).
     _jobs: dict[tuple[str, UUID | None], AgentProviderState] = PrivateAttr(default_factory=dict)
@@ -179,24 +178,22 @@ class AgentPrograms(BaseModel):
         if subscription.provider != name:
             raise PermissionError(f"subscription {subscription_id} is a {subscription.provider} login, not {name}")
         key = self._key(subscription.program, subscription)
-        settled = time.monotonic() + self.SETTLE_SECONDS
-        while True:  # an install or a sign-in still starting in its folder is waited for, never refused at once
+
+        def settling() -> bool:  # an install, or a sign-in not yet started, in its folder
             with self._lock:
                 job = self._jobs.get(key)
-                login = self._logins.get(key, (None, None, None))[0] if job is not None and job.step == "signing_in" else None
-                settling = job is not None and (job.step == "installing" or (job.step == "signing_in" and login is None))
-            if not settling:
-                break
-            if time.monotonic() > settled:
-                raise SubscriptionRefused("sign_in_busy", f"{name} is still installing or starting its sign-in here after {self.SETTLE_SECONDS:.0f}s; sign out once it is ready")
-            time.sleep(0.05)
+                return job is not None and (job.step == "installing" or (job.step == "signing_in" and self._logins.get(key, (None, None, None))[0] is None))
+
+        if not _until(lambda: not settling(), AgentSignOutRequest.settle_seconds):
+            raise SubscriptionRefused("sign_in_busy", f"{name} is still installing or starting its sign-in here after "
+                                                      f"{AgentSignOutRequest.settle_seconds:.0f}s; sign out once it is ready")
+        with self._lock:
+            job = self._jobs.get(key)
+            login = self._logins.get(key, (None, None, None))[0] if job is not None and job.step == "signing_in" else None
         if login is not None:  # a sign-in under way in its folder: ended first, it is what he undoes
             end_process_tree(login.pid)
-            deadline = time.monotonic() + 2 * self.poll_seconds + 10
-            while (job := self._jobs.get(key)) is not None and job.step in self.RUNNING:
-                if time.monotonic() > deadline:
-                    raise SubscriptionRefused("sign_in_busy", f"its {name} sign-in did not stop; sign out again")
-                time.sleep(0.05)
+            if not _until(lambda: (job := self._jobs.get(key)) is None or job.step not in self.RUNNING, AgentSignOutRequest.stop_seconds):
+                raise SubscriptionRefused("sign_in_busy", f"its {name} sign-in did not stop; sign out again")
         state = self._base(subscription.program, subscription)
         self._logout(subscription)
         with self._lock:
@@ -404,7 +401,7 @@ class AgentPrograms(BaseModel):
         if subscription.program.logout_arguments and subscription.program.available():
             try:
                 done = subprocess.run([subscription.program.executable(), *subscription.program.logout_arguments], env=self._environment(subscription),
-                                      stdin=subprocess.DEVNULL, capture_output=True, text=True, errors="replace", timeout=60)
+                                      stdin=subprocess.DEVNULL, capture_output=True, text=True, errors="replace", timeout=AgentSignOutRequest.logout_seconds)
             except (OSError, subprocess.TimeoutExpired) as error:
                 raise PermissionError(f"{subscription.provider}'s sign-out did not complete ({type(error).__name__}); the subscription stays, sign out again") from error
             if done.returncode != 0:
@@ -448,3 +445,13 @@ class AgentPrograms(BaseModel):
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         with self.log_path.open("a", encoding="utf-8") as log:
             log.write(f"--- {datetime.now(UTC).isoformat()} {provider.name} install\n{output[-20_000:]}\n")
+
+
+def _until(done: Callable[[], bool], seconds: float) -> bool:
+    """Whether `done` held within `seconds`, looked at every 50 ms."""
+    deadline = time.monotonic() + seconds
+    while not done():
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.05)
+    return True

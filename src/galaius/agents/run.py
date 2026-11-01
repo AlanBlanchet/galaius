@@ -1172,13 +1172,15 @@ def carried(provider: AgentProvider, message: str, on_line: Callable[[str], list
 
 def launch_editor_turn(
     provider: AgentProvider, run: reg.AgentRun, message: str, *, environment: Mapping[str, str], fork_from: str | None = None,
+    raw_index: int | None = None, record_locked: bool = False,
 ) -> ContinuationHandle:
     """One turn of a conversation the owner began in his editor, continued elsewhere (the machine
     serving the web): its FIRST turn copies the editor's session `fork_from` into this run's own id
     (the editor's session is never written), later turns resume the copy. No role, so no peer name (`AheadLaunch.turn_arguments`): the session
     keeps the model and instructions it was begun with; the permission is the run's recorded one,
-    the environment exactly `environment` (never this process's)."""
-    restore_folder(run, provider, fork_from or run.run_id, environment)
+    the environment exactly `environment` (never this process's). `raw_index`: where its attempt's events begin (its queue
+    item's, `EditorTurn`), the stream's end when None; `record_locked`: the caller holds `record_lock`."""
+    restore_folder(run, provider, fork_from or run.run_id, environment, record_locked=record_locked)
     decides = fence_decides(provider, run.fence, run.permission_mode)
     session, options = fork_from or run.run_id, {"permission_mode": run.permission_mode, "fork_to": run.run_id if fork_from else None,
                                                  "fence_decides": decides,
@@ -1186,7 +1188,8 @@ def launch_editor_turn(
                                                  **({"mcp_config": mesh_config(run_id=run.run_id, role=run.agent, fence=run.fence)} if decides and run.mesh_enabled else {})}
     argv, stdin = carried(provider, message, lambda text: provider.resume_command(session, text, **options), lambda: provider.resume_ahead_command(session, **options))
     env = {**GatewayServed.environment(environment, run.agent), "GALAIUS_RUN_ID": run.run_id}
-    return _spawn_turn(provider, argv, run, env=env, raw_index=reg.raw_line_count(run.run_id), model=run.model, criterion=None, reasoning=None, stdin=stdin)
+    return _spawn_turn(provider, argv, run, env=env, raw_index=reg.raw_line_count(run.run_id) if raw_index is None else raw_index, model=run.model,
+                       criterion=None, reasoning=None, record_locked=record_locked, stdin=stdin)
 
 
 def _spawn_turn(

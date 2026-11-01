@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from galaius_core import ASKED_BY_MAX, AgentMedia
@@ -22,6 +23,7 @@ from galaius.agents.policy import Policy
 from galaius.agents.providers import ClaudeCodeProvider, ClaudeTurnSettings
 from galaius.cli.app_commands import agents_work_for
 from galaius.isolation.fence import FenceSpec
+from galaius.machine.connection import MachineRunner
 from galaius.agents.catalog.relations import CARD_HEADING
 from tests.support.agents import QueueProvider, said, setup_queue
 
@@ -55,6 +57,29 @@ def test_ordered_items_run_once_in_real_subprocesses(monkeypatch):
     assert provider.messages == ["one", "two"]
     # A turn that started (here: already replied) is no refusal for the sender to report.
     assert messaging.wait_for_start(first, timeout=1) is None
+
+
+@pytest.mark.parametrize("on", [True, False], ids=["continuing-on", "turned-off-before-its-turn"])
+def test_messages_to_a_continued_editor_conversation_wait_in_its_queue_and_open_its_turns_in_order(monkeypatch, on):
+    """2026-10-30 « stop placing hard rules »: a message to a continued editor conversation still answering was refused
+    (« send this once it has finished »); it now waits in the run's queue (kept across a restart), each opening the next
+    turn once the one before ended, his words as he wrote them; continuing turned off before its turn fails it with why,
+    never left « sent »."""
+    provider = setup_queue(monkeypatch)
+    run = reg.get_run("r1")
+    assert run is not None
+    reg.save_run(run.model_copy(update={"agent": None, "pid": os.getpid()}))  # its first turn still answers
+    monkeypatch.setattr(MachineRunner, "load", lambda self: SimpleNamespace(continue_conversations=on))
+    sent = [messaging.deliver_message("r1", text, sender=reg.PERSON_SENDER, turn=agent_queue.EditorTurn()) for text in ("second", "third")]
+    assert [delivery.reads_at for delivery in sent] == ["turn_end", "turn_end"]
+    reg.save_run(run.model_copy(update={"agent": None, "pid": 999999}))  # that turn ended
+
+    agent_queue.dispatch("r1")
+
+    items = agent_queue.items("r1")
+    assert [item.state for item in items] == (["replied", "replied"] if on else ["failed", "failed"])
+    assert provider.messages == (["second", "third"] if on else [])
+    assert all("turned off" in item.error for item in items) != on
 
 
 def test_a_message_showing_an_image_keeps_it_records_it_and_hands_it_over(monkeypatch):
