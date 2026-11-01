@@ -23,7 +23,8 @@ from galaius_core import MachineFence
 from galaius_core.wire import fitted
 
 from galaius.isolation import fence
-from galaius.isolation.fence import EGRESS, Confinement, EgressProxy, FenceSpec, available, confinement_refusal, fenced, userns_refusal
+from galaius.agents.providers import PROVIDERS
+from galaius.isolation.fence import Confinement, EgressProxy, FenceSpec, available, confinement_refusal, fenced, userns_refusal
 
 AGENT_HOSTS = ("api.anthropic.com",)
 
@@ -438,12 +439,12 @@ def test_a_turn_is_fenced_for_its_own_cli_alone(home: Path, tmp_path: Path, cli:
     for folder in (".claude", ".codex"):
         (home / folder).mkdir(exist_ok=True)
     spec = _spec(home, tmp_path, providers=("claude", "codex"), programs=(Path("/usr/bin/claude"), Path("/usr/bin/codex"), Path("/usr/bin/galaius")),
-                 egress=(*EGRESS["claude"], *EGRESS["codex"], "galaius.ai"))
+                 egress=(*PROVIDERS["claude"].fenced.egress, *PROVIDERS["codex"].fenced.egress, "galaius.ai"))
     own = spec.only(cli)
     other = "codex" if cli == "claude" else "claude"
     assert own.providers == (cli,)
     assert [program.name for program in own.programs] == [cli, "galaius"]
-    assert set(own.egress) == {*EGRESS[cli], "galaius.ai"}
+    assert set(own.egress) == {*PROVIDERS[cli].fenced.egress, "galaius.ai"}
     assert spec.providers == ("claude", "codex")   # the recorded spec is unchanged: a later turn may run the other CLI
     with pytest.raises(ValueError, match="not a CLI this run's fence was built for"):
         spec.only("gemini")

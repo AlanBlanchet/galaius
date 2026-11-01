@@ -22,7 +22,7 @@ from galaius.diagnostics import feedback
 from galaius.catalog import live_sources
 from galaius.catalog import models as model_catalog
 from galaius.inference import ollama
-from galaius_core import refusal_of, AGENT_TOUCH_SCOPES, ASKED_BY_MAX, IMAGE_TYPES, Coded, CommunityKind, MachineRefusal, RefusedLine
+from galaius_core import refusal_of, DEFAULT_PROGRAM, AGENT_TOUCH_SCOPES, ASKED_BY_MAX, IMAGE_TYPES, Coded, CommunityKind, MachineRefusal, RefusedLine
 
 from galaius.agents import messaging
 from galaius.agents import agent_queue
@@ -412,9 +412,8 @@ def install(
     print(f"Docs: {target.doc_url}")
     if target.note and result.action in ("wrote", "ran"):
         print(f"Note: {target.note}")
-    if target.id == "codex" and result.action in ("wrote", "ran", "skipped"):
-        print("Start a fresh Codex session, or restart the Codex IDE extension, then verify:")
-        print("  codex mcp get galaius")
+    if target.verify and result.action in ("wrote", "ran", "skipped"):
+        print(target.verify)
 
 
 def providers() -> None:
@@ -1621,7 +1620,7 @@ def agents_discovered() -> None:
 
 
 @agents_app.command(name="modes")
-def agents_modes(provider: str = "claude") -> None:
+def agents_modes(provider: str = DEFAULT_PROGRAM) -> None:
     """Print the shared permission intents this CLI accepts, one tab-separated row per intent.
 
     ``id<TAB>label<TAB>what it lets the agent do<TAB>yes|no`` — last column is whether the intent

@@ -15,12 +15,12 @@ from uuid import UUID, uuid4
 from types import SimpleNamespace
 
 import pytest
-from galaius_core import AgentMoveRequest, MachineRef, SubscriptionAllowance, SubscriptionChoice, UsageWindow, SubscriptionChoices, SubscriptionLimits
+from galaius_core import AGENT_PROGRAMS, AgentMoveRequest, MachineRef, SubscriptionAllowance, SubscriptionChoice, UsageWindow, SubscriptionChoices, SubscriptionLimits
 
 from galaius.agents import registry as reg
 from galaius.agents.limits import admission, quota
 from galaius.agents.transport.events import AgentEvent
-from galaius.agents.providers import PROVIDERS, ClaudeCodeProvider
+from galaius.agents.providers import PROVIDERS, ClaudeCodeProvider, program_providers
 from galaius.agents import run as run_module
 from galaius.agents.run import run_agent
 from galaius.agents.limits.subscription_watch import SubscriptionWatch
@@ -115,6 +115,7 @@ class _Codex(ScriptedProvider):
 
     name = "codex"
     auth_home_env = ("CODEX_HOME",)
+    first_files = PROVIDERS["codex"].first_files
     script = (
         'import json,os\n'
         'print(json.dumps({"type":"assistant","message":{"content":[{"type":"text","text":os.environ.get("CODEX_HOME","")}]}}), flush=True)\n'
@@ -188,7 +189,7 @@ async def test_each_candidate_runs_on_its_own_providers_subscription_and_the_run
     assert ([event.text for event in reg.read_events(handle.run_id) if event.kind == "text"], record.subscription_id) == ([str(spare.folder)], spare.id)
     with pytest.raises(SubscriptionRefused) as elsewhere:  # a subscription offered as another provider's login is never run as this one
         await launch((SubscriptionChoice(provider="claude", subscription_id=codex.id, limits=SubscriptionLimits()),))
-    assert elsewhere.value.refusal.reason == "not_signed_in" and "codex login here, never claude" in str(elsewhere.value)
+    assert elsewhere.value.refusal.reason == "not_signed_in" and "codex login, never claude" in str(elsewhere.value)
     with pytest.raises(SubscriptionRefused) as missing:  # its only provider's subscription is not on this PC: said so, typed
         await launch((SubscriptionChoice(provider="claude", subscription_id=uuid4(), limits=SubscriptionLimits()),))
     assert missing.value.refusal.reason == "not_signed_in"
@@ -547,3 +548,43 @@ def test_each_login_here_says_its_own_usage_and_a_subscriptions_never_mixes_with
     (Path.home() / "signed_out").touch()
     asyncio.run(watch.ask(environment))
     assert (watch.login_usage("claude"), subscription.usage()) == ((), ())
+
+
+@pytest.mark.parametrize("entry", ["create", "bound", "launch", "movable"])
+def test_a_login_runs_only_its_own_cli_at_every_entry_of_a_subscription(entry: str, tmp_path: Path) -> None:
+    """The one CLI check kept (owner 2026-10-30 « stop making hard rules »): a login holds its CLI's sessions in that CLI's own
+    format, so a conversation never moves between CLIs. ONE check (`Subscription.runs`) that making its folder, binding a
+    launch's environment, a pinned launch (`run_agent`) and moving a run all make, the same refusal at each; its own CLI passes."""
+    codex = Subscription.create(uuid4(), "codex")
+    pinned = RunSubscription(subscription_id=codex.id, limits=SubscriptionLimits())
+    run = lambda provider: reg.AgentRun(run_id=str(uuid4()), provider=provider, name="r", cwd=str(tmp_path), started_at=1.0)  # noqa: E731
+    act = {"create": lambda provider: Subscription.create(codex.id, provider),
+           "bound": lambda provider: pinned.bound({}, provider),
+           "launch": lambda provider: Subscription.of(codex.id).runs(provider),
+           "movable": lambda provider: reg.movable(run(provider), pinned)}[entry]
+    act("codex")
+    with pytest.raises(SubscriptionRefused, match="codex login, never claude") as refused:
+        act("claude")
+    assert refused.value.refusal.reason == "pinned_elsewhere"
+
+
+def test_a_cli_writing_no_usage_record_never_reads_its_subscription_folder(tmp_path: Path) -> None:
+    """Only a CLI that writes its usage windows into its login's sessions (`usage_records`: Codex) is looked up there: a
+    pinned Claude run whose subscription left this PC mid-run reads nothing and refuses nothing, the pass goes on."""
+    gone = reg.AgentRun(run_id=str(uuid4()), provider="claude", name="r", cwd=str(tmp_path), started_at=1.0, provider_session_id=str(uuid4()),
+                        subscription=RunSubscription(subscription_id=uuid4(), limits=SubscriptionLimits()))
+    assert SubscriptionWatch()._session_record(gone) is None
+
+
+def test_a_cli_signs_in_the_way_its_program_says() -> None:
+    """A provider naming its program takes the program's name, and its sign-in is the program's: a link answered with a code
+    pasted back (`paste_link`) only for `paste_code`."""
+    assert [(provider.name, provider.paste_link is not None) for provider in PROVIDERS.values()] == [("claude", True), ("codex", False)]
+    with pytest.raises(TypeError, match="disagree"):
+        type("Mismatched", (ClaudeCodeProvider,), {"program": PROVIDERS["codex"].program})
+
+
+def test_every_agent_program_is_one_cli_in_its_order() -> None:
+    """One provider per agent program, in `AGENT_PROGRAMS` order (`program_providers` reads them so), each named by it."""
+    assert tuple(PROVIDERS) == tuple(AGENT_PROGRAMS)
+    assert [(provider.name, provider.program) for provider in program_providers()] == list(AGENT_PROGRAMS.items())

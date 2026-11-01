@@ -44,7 +44,7 @@ import threading
 import tomllib
 from collections.abc import Iterable
 from pathlib import Path
-from typing import ClassVar, Self
+from typing import ClassVar, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -56,20 +56,49 @@ from galaius_core import AgentRefused
 from galaius.machine.places.levels import DEPENDENCY_FOLDERS, LEVEL_RANK, NEVER_GRANTABLE, PlaceMap, split
 from galaius.upgrade.store import active_interpreter
 
-#: Per CLI: its state folder under home, what of it the agent reads (sign-in, settings, the
-#: owner's instructions: read-only), the folders it keeps sessions in (a private per-run folder:
-#: a resumed turn finds its own session, never anyone else's), and files it rewrites at start (a
-#: private copy, never written back).
-TOOLS: dict[str, dict[str, tuple[str, ...]]] = {
-    "claude": {"folder": (".claude",), "read": (".credentials.json", "settings.json", "CLAUDE.md", "agents", "rules", "skills", "commands", "hooks", "plugins"),
-               "sessions": ("projects",), "copies": (".claude.json",)},
-    "codex": {"folder": (".codex",), "read": ("auth.json", "config.toml", "AGENTS.md", "prompts", "rules"), "sessions": ("sessions",), "copies": ()},
-}
-#: The hosts each CLI reaches its model through (HTTPS only).
-EGRESS: dict[str, tuple[str, ...]] = {
-    "claude": ("api.anthropic.com", "console.anthropic.com", "claude.ai", "statsig.anthropic.com"),
-    "codex": ("api.openai.com", "chatgpt.com", "auth.openai.com"),
-}
+class FencedCli(BaseModel):
+    """One agent CLI as the fence runs it, declared by its provider (`AgentProvider.fenced`): its state folder under home,
+    what of it the agent reads (sign-in, settings, the owner's instructions: read-only), the folders it keeps sessions in
+    (a private per-run folder: a resumed turn finds its own session, never anyone else's), the files it rewrites at start
+    (a private copy, never written back), the hosts it reaches its model through (HTTPS only) and the variables holding
+    its own key (the only secrets from the environment it keeps; every other one that looks like a secret,
+    `SECRET_SUFFIXES`, is unset inside)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    folder: str
+    read: tuple[str, ...]
+    sessions: tuple[str, ...]
+    copies: tuple[str, ...] = ()
+    egress: tuple[str, ...]
+    keys: tuple[str, ...]
+
+    #: Every CLI's, by its name: each provider declaring one registers it (`AgentProvider.__init_subclass__`); the fence,
+    #: a layer below the providers, reads them by the names a spec records (`of`).
+    ALL: ClassVar[dict[str, "FencedCli"]] = {}
+
+    @classmethod
+    def of(cls, name: str) -> "FencedCli":
+        """The CLI `name` as the fence runs it; ValueError for a name no provider declared one for (a spec only ever
+        records declared ones, `FenceSpec.for_clis`)."""
+        if name not in cls.ALL:
+            raise ValueError(f"{name} is no CLI the fence runs ({', '.join(cls.ALL) or 'none'})")
+        return cls.ALL[name]
+
+    @classmethod
+    def hosts(cls, names: Iterable[str]) -> set[str]:
+        """The model hosts of the CLIs `names`."""
+        return {host for name in names for host in cls.of(name).egress}
+
+
+class FencedProgram(Protocol):
+    """A CLI as a fence is built for it (`FenceSpec.for_clis`): an `AgentProvider`, seen from this layer below it."""
+
+    name: str
+    binary: str
+    fenced: FencedCli | None
+
+
 #: Names at the top of a Write folder or a git repository that an editor, git or an agent CLI
 #: obeys or runs later: never created or changed there by a fenced agent.
 STEERING = frozenset({".claude", ".mcp.json", ".vscode", ".envrc", ".githooks", ".husky", ".cursor", ".idea", ".devcontainer", ".gitmodules",
@@ -77,12 +106,8 @@ STEERING = frozenset({".claude", ".mcp.json", ".vscode", ".envrc", ".githooks", 
 #: Instruction files an agent CLI or direnv reads in whichever folder it works in: read-only at
 #: any depth of a writable folder, and one created there is held for review when the turn ends.
 INSTRUCTIONS = frozenset({"claude.md", "claude.local.md", "agents.md", "gemini.md", ".envrc"})
-#: Per CLI: the variables holding its own key (the only secrets from the environment it keeps);
-#: every other variable that looks like a secret (`SECRET_SUFFIXES`) is unset inside.
 #: The one variable galaius hands Codex the token of a self-hosted model it routes it to in (`agents.profiles`): its own key.
 COMPAT_KEY = "GALAIUS_OPENAI_COMPAT_KEY"
-KEYS: dict[str, tuple[str, ...]] = {"claude": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
-                                    "codex": ("OPENAI_API_KEY", "CODEX_API_KEY", COMPAT_KEY)}
 SECRET_SUFFIXES = ("_API_KEY", "_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_PASS", "_CREDENTIALS")
 SCAN_DEPTH, SCAN_ENTRIES = 8, 200_000
 #: Variables that point at the desktop or the user's session: gone inside (their sockets are too).
@@ -253,7 +278,7 @@ class FenceSpec(BaseModel):
     project: Path | None = None
     #: `write_on_review` folder -> its staging copy for this run.
     staging: dict[str, Path] = Field(default_factory=dict)
-    #: The CLIs whose state the run gets a private copy of (`TOOLS`).
+    #: The CLIs whose state the run gets a private copy of (`FencedCli`).
     providers: tuple[str, ...] = ()
     #: Per CLI, the folder its login lives in for this run when not its default under home: a
     #: subscription's own folder (`AgentProvider.auth_home`), its credential bound from there.
@@ -325,11 +350,21 @@ class FenceSpec(BaseModel):
                        if not any(link.is_relative_to(folder) or folder.is_relative_to(link) for folder in shown)}.items())
         return Fence(home=home, cwd=self.start.resolve(), binds=tuple(binds), emptied=tuple(emptied), blanked=tuple(blanked), links=links, egress=self.egress,
                      guards=tuple(guards), reviews=self.reviews,
-                     keys=tuple(sorted({name for provider in self.providers for name in KEYS.get(provider, ())})))
+                     keys=tuple(sorted({name for provider in self.providers for name in FencedCli.of(provider).keys})))
+
+    @classmethod
+    def for_clis(cls, clis: Iterable[FencedProgram], *, egress: Iterable[str] = (), programs: Iterable[Path | str] = (), **fields: object) -> Self:
+        """A fence each of `clis` the fence runs (`fenced`) may take a turn in: their state (`FencedCli`), their programs as
+        found on this PC's PATH and `programs`, their model hosts then `egress`; `fields` the rest of the spec. A CLI the
+        fence does not run carries nothing into it."""
+        fenced = tuple(cli for cli in clis if cli.fenced is not None)
+        found = (*(shutil.which(cli.binary) for cli in fenced), *programs)
+        return cls(providers=tuple(cli.name for cli in fenced), programs=tuple(Path(program) for program in found if program),
+                   egress=(*sorted(FencedCli.hosts(cli.name for cli in fenced)), *egress), **fields)
 
     def only(self, provider: str) -> Self:
-        """This fence for one turn of `provider`'s CLI: its own keys, login and tool state (`KEYS`, `TOOLS`, `homes`), its
-        own program and its model's hosts (`EGRESS`) — none of another CLI's. The spec a run records names every CLI it
+        """This fence for one turn of `provider`'s CLI: its own keys, login and tool state (`FencedCli`, `homes`), its
+        own program and its model's hosts — none of another CLI's. The spec a run records names every CLI it
         may fall through to (a quota refusal moves a start from claude to codex), so each turn narrows it here; a claude
         turn kept codex's OPENAI_API_KEY, its ~/.codex and api.openai.com, and the other way round (2026-10-26)."""
         if not self.providers:
@@ -337,7 +372,7 @@ class FenceSpec(BaseModel):
         if provider not in self.providers:  # an empty fence would fail as a sign-in error, far from its cause
             raise ValueError(f"{provider} is not a CLI this run's fence was built for ({', '.join(self.providers) or 'none'})")
         others = {name for name in self.providers if name != provider}
-        hosts = {host for name in others for host in EGRESS.get(name, ())} - set(EGRESS.get(provider, ()))
+        hosts = FencedCli.hosts(others) - FencedCli.hosts((provider,))
         return self.model_copy(update={"providers": (provider,),
                                        # by stem: an npm entry `codex.js` is codex's program too
                                        "programs": tuple(program for program in self.programs if program.name.split(".")[0] not in others),
@@ -346,34 +381,34 @@ class FenceSpec(BaseModel):
 
     def rehomed(self, homes: dict[str, Path]) -> Self:
         """This fence on other login folders (a run moved to another subscription, contract A9): the private copies a CLI
-        rewrites (`TOOLS` copies, Claude's `.claude.json`: its account) of every CLI whose folder changed are dropped, so
+        rewrites (`FencedCli.copies`, Claude's `.claude.json`: its account) of every CLI whose folder changed are dropped, so
         the next turn copies them from the new folder, never carrying the old login's over."""
         for provider in self.providers:
             if homes.get(provider) != self.homes.get(provider):
-                for name in TOOLS[provider]["copies"]:
+                for name in FencedCli.of(provider).copies:
                     (self.state / provider / name).unlink(missing_ok=True)
         return self.model_copy(update={"homes": homes})
 
     def sessions(self, provider: str) -> tuple[Path, ...]:
         """Where a fenced run of `provider` keeps its sessions on the PC: this run's private folders,
         never its login folder's (a Codex session record, with its usage, is there)."""
-        return tuple(self.state / provider / name for name in TOOLS[provider]["sessions"])
+        return tuple(self.state / provider / name for name in FencedCli.of(provider).sessions)
 
     def _tool_state(self, home: Path) -> list[FenceBind]:
         """Each CLI's state as a private copy: an empty folder, its sign-in / settings / owner
         instructions read-only, its sessions in this run's own folder, its rewritten files copied."""
         binds = []
         for provider in self.providers:
-            tool = TOOLS[provider]
+            tool = FencedCli.of(provider)
             # A login folder of its own (a subscription's) keeps the files Claude Code otherwise
             # keeps in home (`.claude.json`) inside it.
-            folder = self.homes.get(provider) or home / tool["folder"][0]
+            folder = self.homes.get(provider) or home / tool.folder
             beside = folder if provider in self.homes else home
             private = self.state / provider
             binds.append(FenceBind(source=_private(private / "home"), target=folder, writable=True))
-            binds += [FenceBind(source=folder / name, target=folder / name, writable=False) for name in tool["read"] if (folder / name).exists()]
+            binds += [FenceBind(source=folder / name, target=folder / name, writable=False) for name in tool.read if (folder / name).exists()]
             binds += [FenceBind(source=_private(session), target=folder / session.name, writable=True) for session in self.sessions(provider)]
-            for name in tool["copies"]:
+            for name in tool.copies:
                 copy = private / name
                 if not copy.exists() and (beside / name).is_file():
                     shutil.copy2(beside / name, copy)

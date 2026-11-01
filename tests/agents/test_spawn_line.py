@@ -19,7 +19,7 @@ from galaius.agents import spawn_line
 from galaius.agents.run import run_agent
 from galaius.agents.spawn_line import ASIDE, STUCK, Admission, Load, Spawn, SpawnLine
 from galaius.cli.app_commands import agents_spawn
-from galaius.machine.agents import WebRun, WebRuns
+from galaius.machine.web_runs import WebRun, WebRuns
 from galaius.host.paths import UserPaths
 from tests.support import register_run
 

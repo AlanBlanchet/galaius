@@ -15,7 +15,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 import yaml
-from galaius_core import PromptExecutionRef, PromptKey
+from galaius_core import AGENT_PROGRAMS, PromptExecutionRef, PromptKey
 
 from galaius.agents.limits.subscriptions import Subscription
 from galaius.agents.catalog.entries import AgentCatalog, AgentInstructionSet, CatalogSnapshot, role_identifier, skill_file
@@ -303,8 +303,8 @@ def _server_outputs(catalog: AgentCatalog, home: Path, projection: Path, gateway
         outputs[relative] = "---\n" + yaml.safe_dump(header, sort_keys=False, allow_unicode=True) + "---\n\n" + AgentInstructionSet.instruction_body(prompt) + "\n"
     for consumer in INSTRUCTIONS_CONSUMERS.values():
         outputs[consumer.output] = main_instructions(snapshot, consumer, projection)
-    providers = {name: {"label": label, "binary": name, "env": shutil.which(name) is not None}
-                 for name, label in (("claude", "Claude Code"), ("codex", "Codex"))}
+    providers = {name: {"label": program.name, "binary": name, "env": shutil.which(name) is not None}
+                 for name, program in AGENT_PROGRAMS.items()}
     outputs["org.json"] = json.dumps({
         "coordinator": {"id": identifiers[main.id], "title": main.name}, "providers": providers,
         "departments": [{"id": name} for name in sorted({agent.department for agent in roles if agent.department})],

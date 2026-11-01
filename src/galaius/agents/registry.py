@@ -1677,8 +1677,7 @@ def movable(run: AgentRun, pinned: RunSubscription | None) -> AgentProvider:
         raise SubscriptionRefused("pinned_elsewhere", f"a {run.provider} run runs on no CLI login: it has none to move to")
     if pinned is not None:
         pinned.check()
-        if (target := Subscription.of(pinned.subscription_id)).provider != run.provider:
-            raise SubscriptionRefused("pinned_elsewhere", f"subscription {target.id} is a {target.provider} login, not {run.provider}: a session never moves between them")
+        Subscription.of(pinned.subscription_id).runs(run.provider)
     return program
 
 

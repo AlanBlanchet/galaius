@@ -35,16 +35,16 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, model_validator
 
 from galaius.account.caller import Caller
-from galaius_core import AgentMedia, ContextGauge, LoginIdentity, UsageWindow, UsageWindowName
+from galaius_core import AGENT_PROGRAMS, AgentMedia, AgentProgram, ContextGauge, LoginIdentity, UsageWindow, UsageWindowName
 
 from galaius import installed_version
 from galaius.agents.catalog.entries import AgentCatalog
 from galaius.agents.transport.events import TOKEN_FIELDS, AgentEvent, CompactionTrigger, RunCut, TokenUsage, UsageLedger, instant, stream_lines
 from galaius.agents.limits.quota import REFUSAL
 from galaius.agents.catalog.profiles import overlay_for
-from galaius.agents.catalog.vocabulary import ApprovalIntent, TouchScope, ThinkingLevel, vocabulary_for
+from galaius.agents.catalog.vocabulary import CLAUDE_VOCABULARY, CODEX_VOCABULARY, ApprovalIntent, HarnessVocabulary, TouchScope, ThinkingLevel
 from galaius.brief_hook import NOTE as BRIEF_NOTE
-from galaius.isolation.fence import COMPAT_KEY, KEYS, RELAY, RELAY_PORT, Confinement, RelayedServer, SignIn, confinement_refusal, userns_refusal
+from galaius.isolation.fence import COMPAT_KEY, RELAY, FencedCli, RELAY_PORT, Confinement, RelayedServer, SignIn, confinement_refusal, userns_refusal
 from galaius.inbox_hook import NOTE as INBOX_NOTE
 from galaius.models.registry import Model
 from galaius.host.processes import ask_process, run_isolated_process, shell_entries
@@ -260,7 +260,15 @@ MODEL_API_KEY = re.compile(r"[A-Za-z0-9_]+_API_KEY")
 class AgentProvider(ABC):
     """How to launch one vendor's agent CLI and read what it emits."""
 
+    #: This CLI as the server and the app know it (`AGENT_PROGRAMS`); its `name` is the program's. None: a CLI only this
+    #: PC knows (a test double naming itself).
+    program: ClassVar[AgentProgram | None] = None
     name: ClassVar[str]
+    #: Its state, keys and model hosts inside a fence (`FencedCli`, registered under `name`); None: a CLI never fenced.
+    fenced: ClassVar[FencedCli | None] = None
+    #: Written into a new login folder of it (`Subscription.create`): Codex keeps its login in a file there, never in the
+    #: system keyring, which a second login would share.
+    first_files: ClassVar[Mapping[str, str]] = {}
     binary: ClassVar[str]
     #: Can a finished/running session be CONTINUED with a new message? This is what makes
     #: agent-to-agent messaging possible without inventing a mailbox: the recipient keeps its
@@ -274,7 +282,6 @@ class AgentProvider(ABC):
     #: The variables naming the folder this CLI keeps its login, settings and sessions in (the first
     #: one decides), and that folder's name under the user's home when none is set (`auth_home`).
     auth_home_env: ClassVar[tuple[str, ...]] = ()
-    home_folder: ClassVar[str] = ""
     #: Its user settings file in that folder, when it has one a subscription folder takes keys of
     #: (`Subscription.adopt`).
     settings_file: ClassVar[str | None] = None
@@ -300,6 +307,74 @@ class AgentProvider(ABC):
     #: The turn that makes this CLI compact its conversation (replace it with its own summary), sent
     #: as a resumed turn's whole prompt; None: it has none, a compaction is refused (`compact_turn`).
     compact_prompt: ClassVar[str | None] = None
+    #: Whether its session id is the run id galaius hands it at a start: a run's conversation is found under the
+    #: run's own id before the CLI said one.
+    session_is_run: ClassVar[bool] = False
+    #: The variable it reads its effort level from, outranking a session's or a definition's own; None: it has none.
+    effort_env: ClassVar[str | None] = None
+    #: Whether a start runs a definition file this CLI reads itself (`definition_path`): with no catalog, an agent it
+    #: holds no file for does not exist here.
+    runs_definitions: ClassVar[bool] = False
+    #: Switches off each denied built-in tool by name and every MCP server for one run: what a community agent runs on
+    #: (Codex's shell, web search and MCP servers cannot be switched off one by one).
+    confines_tools: ClassVar[bool] = False
+    #: Its own words for each shared intent (touch scope, approval, thinking: `HarnessVocabulary`); None: it translates none.
+    vocabulary: ClassVar[HarnessVocabulary | None] = None
+    #: Its user config below the home folder that can register galaius as an MCP server already (`meshed`); None: a
+    #: run's mesh is always its own (Codex lays it over its entry as `-c mcp_servers.galaius.*`).
+    mcp_config: ClassVar[str | None] = None
+    #: The records in a login's sessions folder it writes a session's usage windows to, `{session}` its id
+    #: (`usage_record`); None: it writes none there.
+    usage_records: ClassVar[str | None] = None
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        """A subclass naming its `program` takes the program's name and registers its `fenced` state under it; its sign-in
+        is the program's (a link its page answers with a code to paste back, `paste_link`, only for `paste_code`)."""
+        super().__init_subclass__(**kwargs)
+        if "program" in cls.__dict__ and cls.program is not None:
+            if "name" in cls.__dict__ and cls.name != cls.program.provider:
+                raise TypeError(f"{cls.__name__}: named {cls.name!r}, its program is {cls.program.provider!r}")
+            cls.name = cls.program.provider
+        if cls.program is not None and (cls.paste_link is not None) != (cls.program.sign_in.flow == "paste_code"):
+            raise TypeError(f"{cls.__name__}: its paste_link and its program's sign_in {cls.program.sign_in.flow!r} disagree")
+        if "fenced" in cls.__dict__ and cls.fenced is not None:
+            FencedCli.ALL[cls.name] = cls.fenced
+
+    @property
+    def home_folder(self) -> str:
+        """Its state folder's name under the user's home (`fenced.folder`); empty for a CLI never fenced."""
+        return self.fenced.folder if self.fenced is not None else ""
+
+    def session_named(self, run_id: str) -> str | None:
+        """The session id a run `run_id` of this CLI has before the CLI says one: the run's own when it starts it under that
+        id (`session_is_run`), else none yet."""
+        return run_id if self.session_is_run else None
+
+    def effort_environment(self, effort: str | None) -> dict[str, str]:
+        """The variable setting `effort` for one turn (`effort_env`, in this CLI's own level words), outranking a
+        session's or a definition's own; empty when it reads none or no effort is asked."""
+        if self.effort_env is None or effort is None:
+            return {}
+        return {self.effort_env: self.provider_thinking_level(effort) or effort}
+
+    def meshed(self) -> bool:
+        """Whether this CLI's own config already registers galaius as an MCP server: a spawned child then gets no second
+        registration (`galaius install` set it up; attribution rides GALAIUS_PARENT_RUN_ID in the child's env). A config
+        it cannot read is not registered: a doubled server is annoying, a refused spawn worse."""
+        if self.mcp_config is None:
+            return False
+        try:
+            servers = json.loads((Path.home() / self.mcp_config).read_text()).get("mcpServers")
+        except (OSError, ValueError, AttributeError):
+            return False
+        return isinstance(servers, dict) and "galaius" in servers
+
+    def usage_record(self, sessions: Path, session: str) -> Path | None:
+        """The record in a login's `sessions` folder this CLI writes `session`'s usage windows to (`usage_records`); None
+        when it writes none there (or not yet)."""
+        if self.usage_records is None or not sessions.is_dir():
+            return None
+        return next(iter(sorted(sessions.rglob(self.usage_records.format(session=session)))), None)
 
     def session_files(self, home: Path, cwd: Path, session: str) -> tuple[Path, ...]:
         """The files holding session `session` (started in `cwd`) inside login folder `home`, the ones its resume reads:
@@ -363,8 +438,8 @@ class AgentProvider(ABC):
     paste_code: ClassVar[re.Pattern[str] | None] = None
 
     def login_keys(self, environment: Mapping[str, str]) -> frozenset[str]:
-        """The key variables this CLI's own login reads in `environment` (`fence.KEYS`)."""
-        return frozenset(KEYS.get(self.name, ()))
+        """The key variables this CLI's own login reads in `environment` (`fenced.keys`)."""
+        return frozenset(self.fenced.keys if self.fenced is not None else ())
 
     #: The variable making this CLI's turn wait (milliseconds) for its MCP servers to connect before it starts; none: it
     #: waits by itself or not at all.
@@ -717,15 +792,15 @@ class AgentProvider(ABC):
         except ValueError:
             touch = None
         if touch is not None:
-            return vocabulary_for(self.name).translate("touch", touch).native
+            return self.words().translate("touch", touch).native
         for mode in self.permission_modes():
             if mode.id == intent:
                 # Permission modes are a compatibility surface for old callers. New provider
                 # mappings come from the standard axes: Codex exposes touch and approval
                 # separately; Claude combines them into one native permission mode.
                 if mode.touch is not None:
-                    vocabulary = vocabulary_for(self.name)
-                    if self.name == "codex" or mode.touch in (TouchScope.READ_ONLY, TouchScope.FULL_ACCESS):
+                    vocabulary = self.words()
+                    if vocabulary.touch_apart or mode.touch in (TouchScope.READ_ONLY, TouchScope.FULL_ACCESS):
                         return vocabulary.translate("touch", mode.touch).native
                     if mode.approval is not None:
                         return vocabulary.translate("approval", mode.approval).native
@@ -734,6 +809,12 @@ class AgentProvider(ABC):
         raise ValueError(
             f"{intent!r} is not a permission intent {self.name!r} accepts (known: {known})"
         )
+
+    def words(self) -> HarnessVocabulary:
+        """Its `vocabulary`; ValueError for a CLI that translates no shared intent."""
+        if self.vocabulary is None:
+            raise ValueError(f"{self.name} translates no shared intent")
+        return self.vocabulary
 
     def touch_of(self, intent: str | None) -> TouchScope | None:
         """Where a run given `intent` may change files (a shared touch intent, or one of this CLI's modes); None when
@@ -759,7 +840,7 @@ class AgentProvider(ABC):
             return None
         # ``None`` is meaningful here: some vendors have no flag for their safe default. Do not
         # turn a conceptual value such as `on-request` into an invented CLI argument.
-        translation = vocabulary_for(self.name).approval[mode.approval]
+        translation = self.words().approval[mode.approval]
         return translation.native
 
     def provider_thinking_level(self, reasoning: str | None) -> str | None:
@@ -770,7 +851,7 @@ class AgentProvider(ABC):
             level = ThinkingLevel(reasoning)
         except ValueError as exc:
             raise ValueError(f"{reasoning!r} is not a standard thinking intent") from exc
-        return vocabulary_for(self.name).translate("thinking", level).native
+        return self.words().translate("thinking", level).native
 
     def validate_permission_mode(self, mode: str | None) -> None:
         """Validate a shared caller intent before policy or command construction."""
@@ -992,7 +1073,17 @@ class ClaudeCodeProvider(AgentProvider):
     `--verbose`; without it the CLI refuses and the run emits nothing parseable.
     """
 
-    name = "claude"
+    program = AGENT_PROGRAMS["claude"]
+    fenced = FencedCli(folder=".claude", read=(".credentials.json", "settings.json", "CLAUDE.md", "agents", "rules", "skills", "commands", "hooks", "plugins"),
+                       sessions=("projects",), copies=(".claude.json",),
+                       egress=("api.anthropic.com", "console.anthropic.com", "claude.ai", "statsig.anthropic.com"),
+                       keys=("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"))
+    session_is_run = True
+    effort_env = "CLAUDE_CODE_EFFORT_LEVEL"
+    runs_definitions = True
+    confines_tools = True
+    vocabulary = CLAUDE_VOCABULARY
+    mcp_config = ".claude.json"
     folder_settings_off = ("--setting-sources", "user")
     reads_mid_turn = True
     takes_turn_settings = True
@@ -1004,7 +1095,6 @@ class ClaudeCodeProvider(AgentProvider):
     native_providers = frozenset({"anthropic"})
     media_model_field = "claude_media_criteria"
     auth_home_env = ("CLAUDE_CONFIG_DIR",)
-    home_folder = ".claude"
     # 2.1.288 headless (read from its own code, undocumented: check again on a CLI upgrade): unset, a turn starts before a
     # server still connecting answers (its init reads it `pending`, its tools absent from that turn); set above 0, the
     # turn holds until each server connected or the time passed.
@@ -1945,7 +2035,14 @@ class CodexProvider(AgentProvider):
     accepts the coarser (workspace-write) substitute (`Policy.accepts_coarse_tool_policy`).
     """
 
-    name = "codex"
+    program = AGENT_PROGRAMS["codex"]
+    fenced = FencedCli(folder=".codex", read=("auth.json", "config.toml", "AGENTS.md", "prompts", "rules"), sessions=("sessions",),
+                       egress=("api.openai.com", "chatgpt.com", "auth.openai.com"), keys=("OPENAI_API_KEY", "CODEX_API_KEY", COMPAT_KEY))
+    first_files = {"config.toml": 'cli_auth_credentials_store = "file"\n'}
+    #: `sessions/**/rollout-*-<thread>.jsonl`, where Codex writes its `rate_limits`.
+    usage_records = "rollout-*-{session}.jsonl"
+    vocabulary = CODEX_VOCABULARY
+
     #: codex-cli 0.155.1 `exec --help`: « If not provided as an argument (or if `-` is used), instructions are read from
     #: stdin »; `exec resume --help`: « If `-` is used, read from stdin ».
     stdin_prompt = "-"
@@ -1961,7 +2058,6 @@ class CodexProvider(AgentProvider):
     login_arguments = ("login", "--device-auth")
     logout_arguments = ("logout",)
     auth_home_env = ("CODEX_HOME",)
-    home_folder = ".codex"
     settings_file = "hooks.json"
     transcript_glob = "sessions/**/rollout-*.jsonl"
     #: Text Codex itself puts in a user turn (its environment and instructions), never the person's.
@@ -2602,6 +2698,12 @@ class _MediaSessionProvider(Protocol):
 _claude = ClaudeCodeProvider()
 PROVIDERS: dict[str, AgentProvider] = {p.name: p for p in (_claude, CodexProvider())}
 MEDIA_PROVIDERS: dict[str, _MediaSessionProvider] = {_claude.name: _claude}
+
+
+def program_providers() -> tuple[AgentProvider, ...]:
+    """Every agent program's CLI on this PC, in `AGENT_PROGRAMS` order: `PROVIDERS` holds one per program in that order
+    (test-guarded), and may hold others beside them (a test double)."""
+    return tuple(PROVIDERS[name] for name in AGENT_PROGRAMS)
 
 
 def provider_for(name: str) -> AgentProvider:

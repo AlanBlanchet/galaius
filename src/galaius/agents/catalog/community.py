@@ -28,7 +28,7 @@ from galaius_core import AUTHOR_MAX, TITLE_MAX, CommunityEntryRef, CommunityKind
 from pydantic import BaseModel, ConfigDict
 
 from galaius.agents.limits.subscriptions import RunSubscription
-from galaius.isolation.fence import EGRESS, FenceSpec, available
+from galaius.isolation.fence import FenceSpec, FencedProgram, available
 from galaius.machine.places.levels import PlaceMap, split
 from galaius.account.workspace import ServerWorkspace
 
@@ -52,8 +52,6 @@ SUMMARY_MAX = 300
 DENIED_TOOLS: tuple[str, ...] = ("Agent", "Task", "WebFetch", "WebSearch", "Bash", "SendMessage", "ListAgents")
 """Built-in tools a community agent never gets, whatever its caller's role allows: starting agents, the web, the shell,
 messaging other sessions."""
-PROVIDER = "claude"
-"""The one CLI a community agent runs on."""
 WORK = ".galaius-community"
 """The folder of home where each community agent gets the one new folder it may write in."""
 KEPT_DAYS = 7
@@ -153,8 +151,8 @@ class CommunityAgent(CommunityEntryRef):
         return (f"Community agent: it works in {self.work}, {self.reach.said() if self.reach else 'not started'}, no shell, no web, no Galaius tool; put what it needs in its "
                 "folder. Its report reaches you quoted: check it before acting on it. Stopping it ends it.")
 
-    def fence(self, cwd: str, subscription: RunSubscription | None) -> tuple["CommunityAgent", FenceSpec]:
-        """It with its folders, and the fence every turn of it runs in: home as the working directory with nothing opened
+    def fence(self, cwd: str, subscription: RunSubscription | None, cli: FencedProgram) -> tuple["CommunityAgent", FenceSpec]:
+        """It with its folders, and the fence every turn of it runs in, `cli`'s alone: home as the working directory with nothing opened
         but its caller's folder `cwd` (read, when a level may open it) and its own new folder (written); the model APIs its
         only way out; its CLI's login (`subscription`'s when pinned) as its own private copy. PermissionError where this PC
         cannot build the fence: it never runs unfenced."""
@@ -169,10 +167,9 @@ class CommunityAgent(CommunityEntryRef):
         place = caller.relative_to(home).as_posix() if caller.is_relative_to(home) and caller != home else None
         unread = PlaceMap(working_directory=home).refusal(split(place)) if place is not None else f"{caller} is not a folder of your home"
         place = None if unread is not None else place
-        programs = tuple(Path(found) for found in (shutil.which(name) for name in EGRESS) if found)
-        spec = FenceSpec(working_directory=home, levels={place: "read"} if place else {}, start=work, project=work, providers=tuple(EGRESS),
-                         homes=subscription.homes() if subscription is not None and subscription.subscription_id else {}, programs=programs,
-                         egress=tuple(host for hosts in EGRESS.values() for host in hosts), state=work.parent / ".state" / work.name)
+        spec = FenceSpec.for_clis((cli,), working_directory=home, levels={place: "read"} if place else {}, start=work, project=work,
+                                  homes=subscription.homes() if subscription is not None and subscription.subscription_id else {},
+                                  state=work.parent / ".state" / work.name)
         try:
             spec.build()   # what a turn would refuse, refused before anything runs
         except PermissionError as refused:

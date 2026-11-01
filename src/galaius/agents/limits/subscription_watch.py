@@ -122,13 +122,13 @@ class SubscriptionWatch(BaseModel):
                     "reported": login.windows, "reported_identity": LoginIdentity(account=login.account, login=login.login), "reported_at": now})
 
     def _session_record(self, run: reg.AgentRun) -> Path | None:
-        """A Codex run's session record in its subscription's folder (`sessions/**/rollout-*-<thread>.jsonl`),
-        where Codex writes its `rate_limits`; None for another CLI or before Codex wrote it."""
-        if run.provider != "codex" or not run.provider_session_id:
+        """The record in its subscription's folder where run `run`'s CLI writes its usage windows (`usage_record`); None
+        for a CLI that writes none there, or before it wrote it."""
+        if (provider := PROVIDERS.get(run.provider)) is None or provider.usage_records is None or not run.provider_session_id:
             return None
         if run.run_id not in self._records:
-            folder = run.fence.sessions("codex")[0] if run.fence is not None else Subscription.of(run.subscription_id).folder / "sessions"
-            found = next(iter(sorted(folder.rglob(f"rollout-*-{run.provider_session_id}.jsonl"))), None) if folder.is_dir() else None
+            folder = run.fence.sessions(run.provider)[0] if run.fence is not None else Subscription.of(run.subscription_id).folder / "sessions"
+            found = provider.usage_record(folder, run.provider_session_id)
             if found is None:
                 return None
             self._records[run.run_id] = found

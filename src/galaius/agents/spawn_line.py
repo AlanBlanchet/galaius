@@ -57,7 +57,7 @@ from galaius.agents.catalog.vocabulary import TouchScope
 from galaius.agents.run import ModelUnavailable, RunHandle, effective_permission_mode, load_policy, resolve_role, run_agent
 from galaius.config.settings import Config
 from galaius.isolation.fence import FenceSpec
-from galaius.machine.agents import WebRuns
+from galaius.machine.web_runs import WebRuns
 from galaius.host.paths import UserPaths
 from galaius.host.processes import process_exited, process_started
 from galaius.upgrade.store import Runtime, RuntimeStore

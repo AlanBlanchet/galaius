@@ -15,7 +15,8 @@ from uuid import uuid4
 import pytest
 
 from galaius_core import refusal_of, MACHINE_AGENT_REQUESTS, PROJECT_TEXT_MAX, MachineAgentAnswer, ProjectFileRefusal, Refused
-from galaius.machine.agents import MachineAgents, WebRuns
+from galaius.machine.agents import MachineAgents
+from galaius.machine.web_runs import WebRuns
 from galaius.host.pinned_directory import PinnedDirectory
 from galaius.machine.projects.project_files import ProjectFolder
 from galaius.machine.places.levels import PlaceMap

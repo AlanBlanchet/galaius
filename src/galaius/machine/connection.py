@@ -48,7 +48,8 @@ from galaius.account.tls import server_tls
 from galaius.account.address import ServerAddress
 from galaius.diagnostics.error_reports import MachineErrorReports
 from galaius.machine.places.places import PlaceDesk
-from galaius.machine.agents import AgentSpawns, LogRing, MachineAgents, MachineSessions, WebRuns
+from galaius.machine.agents import AgentSpawns, LogRing, MachineAgents, MachineSessions
+from galaius.machine.web_runs import WebRuns
 from galaius.diagnostics.redaction import redact, secret_values
 from galaius.machine.programs import AgentPrograms
 from galaius.machine.projects.workspaces import MachineWorkspaces, WorkspaceJobs
@@ -75,7 +76,7 @@ from galaius.host.paths import UserPaths
 from galaius.upgrade.quiet import QuietPoint, UpgradeReady
 from galaius.upgrade.store import RuntimeStore
 from galaius.host.pinned_directory import PinnedDirectory
-from galaius.isolation.fence import EGRESS, FenceSpec, available
+from galaius.isolation.fence import FenceSpec, available
 from galaius.machine.places.levels import BrowseBudget, IN_PLACE_WRITES, INSTRUCTION_NAMES, LEVEL_RANK, PlaceMap, split
 from galaius.machine.places.place_reviews import PlaceReviews, write_plain
 from galaius.machine.projects.workspace_copy import WorkspaceTransfers
@@ -2127,11 +2128,10 @@ class MachineRunner:
         ready, reason = available()
         if not ready:
             raise PermissionError(f"the agent fence is on here but cannot be built: {reason}; its owner switches it off there with `galaius machine fence off`")
-        places, providers = config.place_map(), ("claude", "codex")
-        programs = tuple(Path(found) for found in (shutil.which(name) for name in providers) if found)
-        spec = FenceSpec(working_directory=config.working_directory, levels_file=self.config_path, levels=places.levels, internal=places.internal,
-                         start=config.working_directory, providers=providers, programs=programs, state=self.reviews.root.parent / "fence-state" / str(uuid4()), reviews=self.reviews.root,
-                         egress=(*(host for provider in providers for host in EGRESS[provider]), urlsplit(config.server_url).hostname or ""))
+        places = config.place_map()
+        spec = FenceSpec.for_clis(agent_providers.program_providers(), egress=(urlsplit(config.server_url).hostname or "",), working_directory=config.working_directory,
+                                  levels_file=self.config_path, levels=places.levels, internal=places.internal, start=config.working_directory,
+                                  state=self.reviews.root.parent / "fence-state" / str(uuid4()), reviews=self.reviews.root)
         spec.build()
         return spec
 
@@ -2165,7 +2165,7 @@ class MachineRunner:
         """The agent CLIs the server may place agent steps on: none while agent steps are off here."""
         if not config.run_agents:
             return []
-        return [MachineRuntime(provider=provider.name).model_dump(mode="json", exclude_none=True) for provider in agent_providers.PROVIDERS.values() if provider.name in {"claude", "codex"} and provider.available()]
+        return [MachineRuntime(provider=provider.name).model_dump(mode="json", exclude_none=True) for provider in agent_providers.program_providers() if provider.available()]
 
     @staticmethod
     def _resources(working_directory: Path | None = None) -> dict[str, int]:

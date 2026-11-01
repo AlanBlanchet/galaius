@@ -36,11 +36,10 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from galaius_core import (
-    listed_role,
     MODEL_ID_MAX,
     PROJECTS_ROOT, AGENT_TOUCH_SCOPES, AgentCompactRequest, ContextGauge, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, AgentFile, media_kind, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
     AgentAllowanceRequest, AgentMoveRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentToolInstallRequest, AgentToolsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
-    MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, WebLimited, WebLoad, media_key, media_paths, MachineAgentSession, MachineFileEntry, StopActor, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest, ProjectFilesBase, ProjectFilePart,
+    MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, media_key, media_paths, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest, ProjectFilesBase, ProjectFilePart,
 )
 from galaius.agents import agent_queue
 from galaius.agents.limits import quota
@@ -50,13 +49,14 @@ from galaius.agents.host import ConversationHost, ConversationRefused
 from galaius.agents.turns.session_stops import SessionStops
 from galaius.agents.turns.followup import FollowUps
 from galaius.agents.messaging import deliver_message
-from galaius.agents.providers import PROJECT_SETTINGS_OFF, PROVIDERS, UNTRUSTED_FOLDERS, provider_for
+from galaius.agents.providers import PROJECT_SETTINGS_OFF, PROVIDERS, UNTRUSTED_FOLDERS, program_providers, provider_for
 from galaius.agents.limits.subscriptions import RunSubscription, Subscription, SubscriptionRefused
-from galaius.agents.run import LAUNCH_STAMP, launch_editor_turn, load_policy, rank_candidates, run_agent
+from galaius.agents.run import launch_editor_turn, load_policy, rank_candidates, run_agent
 from galaius.agents.limits.warm import WarmStart
 from galaius.config.user import UserConfig
-from galaius.isolation.fence import EGRESS, FenceSpec, available
-from galaius.host.file_lock import exclusive
+from galaius.isolation.fence import FenceSpec, available
+from galaius.machine.editors import EDITOR_SESSIONS_MAX, EditorConversations
+from galaius.machine.web_runs import WebRun, WebRuns
 from galaius.machine.programs import AgentPrograms
 from galaius.machine.tools import MachineTools
 from galaius.machine.places.places import LOG as PLACES_LOG
@@ -65,7 +65,7 @@ from galaius.host.pinned_directory import PinnedDirectory
 from galaius.machine.projects.project_files import ProjectFolder
 from galaius.diagnostics.redaction import mask, redact, secret_values
 from galaius.machine.projects.workspace_copy import WorkspaceRefused
-from galaius_core import AgentRefusal, AgentRefused
+from galaius_core import AgentRefused
 from galaius.machine.places.place_reviews import PlaceReviews
 from galaius.machine.places.levels import LEVEL_RANK, PlaceMap, split
 from galaius.machine.projects.project_secrets import ProjectEnv
@@ -76,8 +76,6 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-#: A run's statuses while it works (`waiting` for its owner is not working).
-WORKING = frozenset({"starting", "running"})
 #: Seconds a start request waits for its agent to be running; the start itself goes on past it.
 START_SECONDS = 120.0
 #: What a cold `tail` (no cursor) reads back from the end of a run's stream.
@@ -86,9 +84,6 @@ COLD_TAIL = 48 * 1024
 TAIL_LINES = 4000
 #: A message id as the web gives it (`AgentSendRequest.id`, a UUID in its usual spelling).
 _WEB_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-#: The CLIs agents run on here, and the ranking the model list follows: every benchmarked model,
-#: most capable first (the order a role's own criterion walks).
-AGENT_PROVIDERS = ("claude", "codex")
 #: Why a member's run on a lent PC found nothing to run on (`SubscriptionUse.lent`); the server words it for him.
 LENT_REFUSAL = "subscriptions are never lent: a member's run on a lent PC uses none of its CLI logins; run it on your own PC or with an API key"
 MODEL_RANKING = "aa.intelligence and price.in >= 0"
@@ -106,10 +101,6 @@ _RESUMED_AFTER: dict[reg.CutCause, tuple[str, str]] = {
     "process_gone": (reg.CUT_RESUME_SENDER, "its process went away"),
     "killed": (reg.CUT_RESUME_SENDER, "its process was killed"),
 }
-#: Editor conversations offered for continuing: written in the last two weeks, newest first.
-EDITOR_SESSIONS_DAYS, EDITOR_SESSIONS_MAX = 14, 40
-#: An editor conversation written this recently is open in the editor right now.
-EDITOR_LIVE_SECONDS = 120
 
 
 class LogRing(logging.Handler):
@@ -132,104 +123,6 @@ def interaction_digest(interaction: dict) -> str:
     """sha256 of an approval request as the machine holds it (its JSON, without its own digest)."""
     unsigned = {key: item for key, item in interaction.items() if key != "digest"}
     return hashlib.sha256(json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
-
-class WebRun(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    run_id: UUID
-    root: str
-    path: str = ""
-    kind: AgentRunKind = "agent"
-    #: A continued copy: the editor conversation it copies (its history opens the copy's transcript).
-    source: UUID | None = None
-    #: Started inside the machine's OS fence (`galaius.isolation.fence`).
-    fenced: bool = False
-    #: The start request that launched it (`AgentStartRequest.idempotent_feature`): asked again, it answers this run.
-    request_id: UUID | None = None
-
-
-
-
-class WebRuns(BaseModel):
-    """The runs this computer started for the web, kept in one 0600 file beside the machine config:
-    the only runs (with what they launched) a web request may read, message or stop."""
-
-    model_config = ConfigDict(frozen=True)
-    path: Path
-    KEEP: ClassVar[int] = 500
-
-    @classmethod
-    def in_folder(cls, folder: Path) -> "WebRuns":
-        """The file the runner whose machine file is in `folder` keeps them in."""
-        return cls(path=folder / "machine-agent-runs.json")
-
-    def read(self) -> tuple[WebRun, ...]:
-        try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return ()
-        return tuple(WebRun.model_validate(item) for item in raw)
-
-    def started_by(self, request_id: UUID) -> WebRun | None:
-        """The run start request `request_id` launched here, if any."""
-        return next((run for run in self.read() if run.request_id == request_id), None)
-
-    def add(self, run: WebRun) -> None:
-        descriptor = os.open(self.path.with_suffix(".lock"), os.O_RDWR | os.O_CREAT, 0o600)
-        with exclusive(descriptor):
-            kept = (*self.read(), run)[-self.KEEP:]
-            temporary = self.path.with_suffix(".tmp")
-            handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(handle, "w", encoding="utf-8") as stream:
-                json.dump([item.model_dump(mode="json") for item in kept], stream)
-            os.replace(temporary, self.path)
-
-    def runs(self) -> list[reg.AgentRun]:
-        """These runs and every run they launched, as the launcher's registry has them now."""
-        return reg.trees(frozenset(str(item.run_id) for item in self.read()))
-
-    def live(self) -> int:
-        """The conversations started from the web that work now (one of their runs starting or running): one counts
-        ONCE, whatever agents it launched (owner 2026-10-10: two conversations and their five sub-agents refused his
-        third); one waiting for its owner, with nothing of it working, does not count; nor a run of a tool of the web's own
-        UI (`UI_ROLES`: a question to the blob), which is none of his conversations."""
-        return sum(1 for root, runs in reg.forest(frozenset(str(item.run_id) for item in self.read())).items()
-                   if any(run.status in WORKING for run in runs) and listed_role(next((run.agent for run in runs if run.run_id == root), None)))
-
-    def load(self, request: WebLimited) -> WebLoad:
-        """The conversations started from the web working here against how many may at once, as `request` carries it
-        from the web (`WebLimited.web_conversations`, each with whatever agents it launched; the web reads it)."""
-        return WebLoad(working=self.live(), limit=request.web_conversations)
-
-    def refuse_full(self, request: WebLimited) -> None:
-        """Refuses one more start while as many conversations started from the web as `request` allows work here; never a
-        run of a tool of the web's own UI (a question to the blob: no conversation of his, `UI_ROLES`). Nothing here caps how
-        many of those start at once but the web's start rate limit: the blob role has no tools and runs read_only."""
-        if listed_role(request.role if isinstance(request, AgentStartRequest) else None) and (load := self.load(request)).full:
-            raise AgentRefused(AgentRefusal(reason="web_full", web=load), f"{load.working} conversations started from the web are already working on this computer (at most {load.limit}); stop one first")
-
-    def working(self) -> bool:
-        """One of these runs, or a run it launched, is starting or running now (waiting for its owner is not working)."""
-        return any(run.status in WORKING for run in self.runs())
-
-    def stop_live(self) -> tuple[int, int]:
-        """Stops every one still working (agents switched off here): (how many stopped, how many
-        could not be - each failure logged, never stopping the rest)."""
-        stopped = failed = 0
-        try:
-            runs = self.runs()
-        except (OSError, ValueError) as error:
-            logger.warning("web runs unreadable; none stopped: %s", error)
-            return 0, 1
-        for run in runs:
-            if run.status not in {"running", "waiting"}:
-                continue
-            try:
-                stopped += bool(reg.stop(run.run_id, by=StopActor(kind="pc_switch")))
-            except (OSError, RuntimeError, ValueError) as error:
-                failed += 1
-                logger.warning("could not stop run %s: %s", run.run_id[:8], error)
-        return stopped, failed
 
 
 class AgentSpawns:
@@ -476,13 +369,15 @@ class MachineAgents(BaseModel):
             case AgentAnswerRequest():
                 raise PermissionError("only a session asks before acting; this run is not one")
             case AgentSessionsRequest():
-                claude = await asyncio.to_thread(self._editor_sessions, request)
-                codex = await self._codex_conversations()
-                return claude.model_copy(update={"sessions": tuple(sorted((*claude.sessions, *codex), key=lambda item: item.updated_at, reverse=True))[:EDITOR_SESSIONS_MAX]})
-            case AgentContinueRequest() if not await asyncio.to_thread(self._is_claude_conversation, request.session_id):
-                return await self._continue_codex(request)
+                self._require_continue()
+                found = [session for editor in EditorConversations.every(self) for session in await editor.listed()]
+                return MachineAgentAnswer(request_id=request.id, sessions=tuple(sorted(found, key=lambda item: item.updated_at, reverse=True))[:EDITOR_SESSIONS_MAX])
             case AgentContinueRequest():
-                return await asyncio.to_thread(self._continue, request)
+                self._require_continue()
+                for editor in EditorConversations.every(self):
+                    if (continued := await editor.continued(request)) is not None:
+                        return continued
+                raise PermissionError("this conversation is not one this computer offers to continue")
             case AgentLogsRequest():
                 return await asyncio.to_thread(self._logs, request)
             case AgentSettingsRequest():
@@ -638,7 +533,7 @@ class MachineAgents(BaseModel):
         found, secrets = [], self.secrets
         for run in runs[:200]:
             placed = started.get(run.run_id)
-            root, path = (placed.root, placed.path) if placed else self._place(run.cwd)
+            root, path = (placed.root, placed.path) if placed else self.place(run.cwd)
             kind = placed.kind if placed else "agent"
             found.append(MachineAgentRun(
                 run_id=UUID(run.run_id), name=run.name[:120], role=(run.agent or None) and run.agent[:80], provider=run.provider[:40],
@@ -666,7 +561,7 @@ class MachineAgents(BaseModel):
             return None if _TransportRegistry.transport_type(run).compacts else "this conversation's provider cannot compact it"
         return agent_queue.CompactionTurn.refused_for(run.provider)
 
-    def _place(self, cwd: str) -> tuple[str, str]:
+    def place(self, cwd: str) -> tuple[str, str]:
         """(agent root, path beneath it) of a folder a launched child works in; ("", "") elsewhere."""
         try:
             folder = Path(cwd).resolve()
@@ -739,7 +634,7 @@ class MachineAgents(BaseModel):
         tokens = Subscription.tokens()
         lines = tuple(mask(line.decode("utf-8", "replace"), tokens) for line in data[:whole].split(b"\n") if line)
         if cursor is None and (placed := next((item for item in self.runs.read() if item.run_id == request.run_id and item.source), None)):
-            lines = (*self._editor_history(placed.source), *lines)[-TAIL_LINES:]
+            lines = (*next((said for editor in EditorConversations.every(self) if (said := editor.history(placed.source))), ()), *lines)[-TAIL_LINES:]
         return MachineAgentAnswer(request_id=request.id, lines=lines, cursor=start + whole, truncated=skipped, read_messages=self._read_messages(request.run_id))
 
     def _read_messages(self, run_id: UUID) -> tuple[UUID, ...]:
@@ -834,38 +729,6 @@ class MachineAgents(BaseModel):
             for path, image in zip(paths, images):
                 path.write_bytes(image.content)
             yield paths
-
-    def _editor_history(self, session_id: UUID, keep: int = 40) -> tuple[str, ...]:
-        """The editor conversation a copy continues, as stream lines the transcript reads (what the
-        owner typed, what it answered): the copy opens where the editor left off."""
-        try:
-            path = self._editor_file(session_id)
-        except PermissionError:
-            return ()
-        size = path.stat().st_size
-        with path.open("rb") as handle:
-            handle.seek(max(0, size - 1024 * 1024))
-            tail = handle.read()
-        said: list[str] = []
-        for line in tail.splitlines():
-            try:
-                value = json.loads(line)
-            except ValueError:
-                continue
-            kind, message = value.get("type"), value.get("message") or {}
-            text = redact(self._said_text(message.get("content")).strip(), self.secrets)
-            if not text or value.get("isMeta") or (kind == "user" and text.startswith("<")):
-                continue
-            at = value.get("timestamp")
-            try:
-                moment = time.mktime(time.strptime(str(at)[:19], "%Y-%m-%dT%H:%M:%S")) if at else 0.0
-            except ValueError:
-                moment = 0.0
-            if kind == "user":
-                said.append(json.dumps({"kind": "prompt", "text": text[:8000], "at": moment}))
-            elif kind == "assistant":
-                said.append(json.dumps({"kind": "text", "text": text[:20000], "at": moment}))
-        return tuple(said[-keep:])
 
     def _run_cli(self, *arguments: str, timeout: float, environment: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
         """The CLI's own exit and output. Output goes to files, never pipes: the agent it starts
@@ -1025,10 +888,9 @@ class MachineAgents(BaseModel):
             place, _ = places.place_of(parts)
             review, staging[place] = self.reviews.stage_copy(place, base.joinpath(*split(place)), origin="agent", run_id=None)
         try:
-            programs = tuple(Path(found) for found in (*(shutil.which(name) for name in AGENT_PROVIDERS), *self.cli) if found)
-            spec = FenceSpec(working_directory=places.working_directory, levels_file=self.levels_file, levels=places.levels, internal=places.internal, start=folder, project=project,
-                             staging=staging, providers=AGENT_PROVIDERS, homes=homes, programs=programs, state=self.reviews.root.parent / "fence-state" / str(uuid4()), reviews=self.reviews.root,
-                             egress=(*(host for provider in AGENT_PROVIDERS for host in EGRESS[provider]), *self.egress))
+            spec = FenceSpec.for_clis(program_providers(), egress=self.egress, programs=self.cli, working_directory=places.working_directory,
+                                      levels_file=self.levels_file, levels=places.levels, internal=places.internal, start=folder, project=project, staging=staging,
+                                      homes=homes, state=self.reviews.root.parent / "fence-state" / str(uuid4()), reviews=self.reviews.root)
             spec.build()
             return spec, review
         except BaseException:
@@ -1042,7 +904,7 @@ class MachineAgents(BaseModel):
             raise PermissionError("an editor conversation runs at the effort its editor sets; only an agent's is set here")
         media = await asyncio.to_thread(reg.RunMedia.keep, run.run_id, request.images)
         if self._kind(request.run_id) == "continued":
-            return await asyncio.to_thread(self._continue_turn, run, request.text, request_id=request.id, media=media)
+            return await asyncio.to_thread(self.continue_turn, run, request.text, request_id=request.id, media=media)
         if request.text == reg.RESUME_BRIEF:  # his « Continuer »; a message he types waits for the turn it starts
             run.prepare_continue()
         run = await asyncio.to_thread(reg.carry_held, run.run_id) or run  # a move held for it, its turn ended: made first
@@ -1292,7 +1154,7 @@ class MachineAgents(BaseModel):
             return _MODELS[1]
         try:
             policy = load_policy()
-            providers = [PROVIDERS[name] for name in AGENT_PROVIDERS if name in PROVIDERS and policy.provider_active(name) and PROVIDERS[name].available()]
+            providers = [provider for provider in program_providers() if policy.provider_active(provider.name) and provider.available()]
             ranked = rank_candidates(MODEL_RANKING, dict(self.environment), providers=providers) if providers else ()
         except (OSError, ValueError, RuntimeError) as error:
             logger.warning("agent models unavailable: %s", error)
@@ -1316,7 +1178,7 @@ class MachineAgents(BaseModel):
         try:
             policy = load_policy()
             criterion = policy.criterion_for(role)
-            providers = [PROVIDERS[name] for name in AGENT_PROVIDERS if name in PROVIDERS and policy.provider_active(name) and PROVIDERS[name].available()]
+            providers = [provider for provider in program_providers() if policy.provider_active(provider.name) and provider.available()]
             if not criterion or not providers:
                 return ()
             best = []
@@ -1351,8 +1213,8 @@ class MachineAgents(BaseModel):
     @staticmethod
     def providers() -> tuple[AgentProviderState, ...]:
         policy = load_policy()
-        return tuple(AgentProviderState(provider=name, active=policy.provider_active(name), available=PROVIDERS[name].available())
-                     for name in AGENT_PROVIDERS if name in PROVIDERS)
+        return tuple(AgentProviderState(provider=provider.name, active=policy.provider_active(provider.name), available=provider.available())
+                     for provider in program_providers())
 
     def _settings(self, request: AgentSettingsRequest) -> MachineAgentAnswer:
         """The CLIs agents may run through here, and what each tool's rule resolves to here, asked
@@ -1441,157 +1303,7 @@ class MachineAgents(BaseModel):
         if not self.continue_conversations:
             raise AgentRefused("continue_off", "continuing your editor conversations from the web is off on this computer; its owner turns it on there with `galaius machine agents --continue on`")
 
-    def _is_claude_conversation(self, session_id: UUID) -> bool:
-        return any(path.is_file() for path in self.editor_projects.glob(f"*/{session_id}.jsonl"))
-
-    async def _codex_conversations(self) -> tuple[MachineAgentSession, ...]:
-        """The owner's own Codex conversations inside an agent root (never ones galaius made).
-        Continuing one opens a session (a copy that asks before acting), so both opt-ins apply;
-        without them, or with Codex unavailable here, there are none to offer."""
-        if not (self.continue_conversations and self.answer_approvals and self.sessions is not None):
-            return ()
-        route, _, _ = await self.sessions.route()
-        if route is None:
-            return ()
-        try:
-            rows = await (await self.sessions.host()).threads(route)
-        except (ConversationRefused, ConnectionError, ValueError) as error:
-            logger.warning("codex conversations unavailable: %s", error)
-            return ()
-        launched = await asyncio.to_thread(reg.session_ids)
-        found = []
-        for row in rows:
-            root, where = self._place(str(row.get("cwd") or ""))
-            try:
-                thread_id = UUID(str(row["id"]))
-            except ValueError:
-                continue
-            if not root or row.get("originator") == "galaius" or str(thread_id) in launched:
-                continue
-            found.append(MachineAgentSession(session_id=thread_id, provider="codex", title=redact(str(row.get("preview") or ""), self.secrets)[:400], root=root, path=where,
-                                             updated_at=float(row.get("updatedAt") or 0), live=time.time() - float(row.get("updatedAt") or 0) < EDITOR_LIVE_SECONDS))
-        return tuple(found)
-
-    async def _continue_codex(self, request: AgentContinueRequest) -> MachineAgentAnswer:
-        """A COPY of the owner's Codex conversation continues here as a session (`thread/fork`): it
-        keeps the conversation's history, asks before acting like any session, and the original is
-        never written. Its folder is read HERE from Codex's own record, inside an agent root."""
-        self._require_continue()
-        found = next((item for item in await self._codex_conversations() if item.session_id == request.session_id), None)
-        if found is None:
-            raise PermissionError("this conversation is not one this computer offers to continue (a Codex copy needs the approvals setting on too)")
-        assert self.sessions is not None
-        folder = await asyncio.to_thread(self.folder, found.root, found.path)
-        await asyncio.to_thread(self.runs.refuse_full, request)
-        route, _, reason = await self.sessions.route()
-        if route is None:
-            raise PermissionError(reason)
-        try:
-            with self.staged(request.images) as images:
-                run = await (await self.sessions.host()).fork(str(request.session_id), request.text, folder, route_id=route, model=None, media=images)
-        except ConversationRefused as error:
-            raise RuntimeError(str(error)) from error
-        await asyncio.to_thread(self.runs.add, WebRun(run_id=UUID(run.run_id), root=found.root, path=found.path, kind="session"))
-        return MachineAgentAnswer(request_id=request.id, run_id=UUID(run.run_id))
-
-    def _editor_file(self, session_id: UUID) -> Path:
-        found = [path for path in self.editor_projects.glob(f"*/{session_id}.jsonl") if path.is_file() and not path.is_symlink()]
-        if len(found) != 1:
-            raise PermissionError("this conversation is not on this computer")
-        return found[0]
-
-    @staticmethod
-    def _said_text(value: object) -> str:
-        """The plain text of a Claude transcript message's `content` (a string, or text blocks)."""
-        if isinstance(value, str):
-            return value
-        if isinstance(value, list):
-            return " ".join(str(block.get("text") or "") for block in value if isinstance(block, dict) and block.get("type") == "text")
-        return ""
-
-    def _read_editor(self, path: Path) -> tuple[str, str, str, str]:
-        """(its folder, its title — Claude's own, else its first prompt — its first prompt, its last
-        reply) from the conversation file's two ends."""
-        size = path.stat().st_size
-        with path.open("rb") as handle:
-            head = handle.read(256 * 1024)
-            handle.seek(max(0, size - 256 * 1024))
-            tail = handle.read()
-        cwd, first, last, titled = "", "", "", ""
-        for line in head.splitlines():
-            try:
-                value = json.loads(line)
-            except ValueError:
-                continue
-            titled = titled or (str(value.get("aiTitle") or "") if value.get("type") == "ai-title" else "")
-            cwd = cwd or str(value.get("cwd") or "")
-            message = value.get("message") or {}
-            text = self._said_text(message.get("content")) if value.get("type") == "user" and not value.get("isMeta") else ""
-            if not first and text.strip() and not text.lstrip().startswith("<"):
-                first = text.strip()
-            if cwd and first and titled:
-                break
-        for line in reversed(tail.splitlines()):
-            try:
-                value = json.loads(line)
-            except ValueError:
-                continue
-            if value.get("type") == "assistant" and (text := self._said_text((value.get("message") or {}).get("content")).strip()):
-                last = text
-                break
-        return cwd, titled or first, first, last
-
-    def _editor_sessions(self, request: AgentSessionsRequest) -> MachineAgentAnswer:
-        """The owner's editor conversations written in the last two weeks whose folder lies inside
-        an agent root, newest first; none that galaius itself started."""
-        self._require_continue()
-        since = time.time() - EDITOR_SESSIONS_DAYS * 86400
-        files = []
-        for path in self.editor_projects.glob("*/*.jsonl"):
-            try:
-                facts = path.lstat()
-            except OSError:
-                continue
-            if stat.S_ISREG(facts.st_mode) and facts.st_mtime >= since:
-                files.append((facts.st_mtime, path))
-        found = []
-        launched = reg.session_ids()
-        for updated, path in sorted(files, reverse=True):
-            try:
-                session_id = UUID(path.stem)
-            except ValueError:
-                continue
-            if path.stem in launched:
-                continue  # a session galaius launched (an agent run, a continued copy), not the owner's
-            cwd, title, first, last = self._read_editor(path)
-            root, where = self._place(cwd)
-            if not root or first.startswith(LAUNCH_STAMP):
-                continue
-            found.append(MachineAgentSession(session_id=session_id, provider="claude", title=redact(title, self.secrets)[:400], last=redact(last, self.secrets)[:400],
-                                             root=root, path=where, updated_at=updated, live=time.time() - updated < EDITOR_LIVE_SECONDS))
-            if len(found) >= EDITOR_SESSIONS_MAX:
-                break
-        return MachineAgentAnswer(request_id=request.id, sessions=tuple(found))
-
-    def _continue(self, request: AgentContinueRequest) -> MachineAgentAnswer:
-        """A COPY of the editor conversation `session_id` continues here with `text` (Claude's own
-        fork: the editor's conversation is never written), in the conversation's own folder — read
-        HERE from its file, and only when it lies inside an agent root."""
-        self._require_continue()
-        self.runs.refuse_full(request)
-        cwd, first, _, _ = self._read_editor(self._editor_file(request.session_id))
-        root, where = self._place(cwd)
-        if not root:
-            raise AgentRefused("folder_closed", "this conversation's folder is not one this computer opens to agents")
-        folder = self.folder(root, where)
-        run = reg.AgentRun(run_id=str(uuid4()), provider="claude", name="Editor conversation", task=redact(first, self.secrets)[:500] or request.text[:500],
-                           cwd=str(folder), project=reg.project_for(str(folder)), permission_mode=self.permission, session_id=self.session, started_at=time.time(), status="running")
-        reg.save_run(run)
-        self.runs.add(WebRun(run_id=UUID(run.run_id), root=root, path=where, kind="continued", source=request.session_id))
-        self._continue_turn(run, request.text, request_id=request.id, fork_from=str(request.session_id), media=reg.RunMedia.keep(run.run_id, request.images))
-        return MachineAgentAnswer(request_id=request.id, run_id=UUID(run.run_id))
-
-    def _continue_turn(self, run: reg.AgentRun, text: str, *, request_id: UUID, fork_from: str | None = None, media: tuple[str, ...] = ()) -> MachineAgentAnswer:
+    def continue_turn(self, run: reg.AgentRun, text: str, *, request_id: UUID, fork_from: str | None = None, media: tuple[str, ...] = ()) -> MachineAgentAnswer:
         """One turn of a continued conversation: the opt-in is checked on EVERY turn (turning it off
         stops the copies too), and one turn at a time (checked and started under the run's lock). The images it shows
         (`media`, the run's own) are named to it by their files: its turn takes its message on the command line."""
@@ -1605,7 +1317,7 @@ class MachineAgents(BaseModel):
             reg.record_message_event(from_run=reg.PERSON_SENDER, to_run=run.run_id, text=text, event_id=str(request_id), media=media)
             said = reg.RunMedia.mentioned(text, (reg.RunMedia.path(run.run_id, name) for name in media))
             try:
-                launch_editor_turn(PROVIDERS["claude"], current, said, environment=self.environment_in(Path(current.cwd)), fork_from=fork_from)
+                launch_editor_turn(PROVIDERS[current.provider], current, said, environment=self.environment_in(Path(current.cwd)), fork_from=fork_from)
             except BaseException:
                 reg.finish(run.run_id, exit_code=1, first=reg.raw_line_count(run.run_id))  # never left "running" by a turn that did not start
                 raise
@@ -1623,7 +1335,7 @@ class MachineAgents(BaseModel):
         return MachineAgentAnswer(request_id=request.id, lines=tuple(redact(line, self.secrets) for line in self.logs.lines) if self.logs is not None else ())
 
 
-#: One turn at a time per continued conversation (`_continue_turn`).
+#: One turn at a time per continued conversation (`continue_turn`).
 _TURN_LOCKS: dict[str, threading.Lock] = {}
 #: (when, models) — `MachineAgents.models`' one-minute cache.
 _MODELS: tuple[float, tuple[MachineAgentModel, ...]] | None = None

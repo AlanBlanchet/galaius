@@ -138,6 +138,8 @@ class ClientTarget(BaseModel):
     user_path: Path | None = None  # absolute (``~`` allowed); None ⇒ no user scope
     project_path: str | None = None  # relative to the project root; None ⇒ no project scope
     note: str = ""
+    #: How to check the install took effect, said after it wrote, ran or found it there already; empty: nothing to check.
+    verify: str = ""
 
     _registry: ClassVar[dict[str, "ClientTarget"]] = {}
     # In VS Code the MCP host is GitHub Copilot, so "github"/"copilot" both resolve to the vscode target.
@@ -488,6 +490,7 @@ TomlClient(
     id="codex", label="OpenAI Codex CLI", doc_url="https://developers.openai.com/codex/mcp",
     user_path=Path("~/.codex/config.toml"), project_path=".codex/config.toml",
     note="User scope uses `codex mcp add`; project scope loads only in a trusted project.",
+    verify="Start a fresh Codex session, or restart the Codex IDE extension, then verify:\n  codex mcp get galaius",
 )
 VSCodeClient(
     id="vscode", label="VS Code / GitHub Copilot",

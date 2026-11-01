@@ -3,42 +3,33 @@ import pytest
 from galaius.agents.catalog.profiles import model_source_for, overlay_for
 from galaius.agents.policy import Policy, PolicyError
 from galaius.agents.catalog.vocabulary import (
-    ApprovalIntent,
     ModelSource,
     ThinkingLevel,
     TouchScope,
-    UnsupportedIntent,
-    vocabulary_for,
 )
+from galaius.agents.providers import PROVIDERS
 
 
-@pytest.mark.parametrize("harness", ["codex", "claude", "ollama", "cursor"])
+@pytest.mark.parametrize("harness", list(PROVIDERS))
 @pytest.mark.parametrize("scope", list(TouchScope))
 def test_every_touch_intent_has_a_safe_translation_or_named_refusal(harness, scope):
-    translation = vocabulary_for(harness).touch[scope]
+    translation = PROVIDERS[harness].words().touch[scope]
     if translation.native is None:
         assert scope.value in translation.detail or "file" in translation.detail.lower()
 
 
-@pytest.mark.parametrize("harness", ["codex", "claude", "ollama", "cursor"])
+@pytest.mark.parametrize("harness", list(PROVIDERS))
 @pytest.mark.parametrize("level", list(ThinkingLevel))
 def test_every_thinking_intent_is_explicit(harness, level):
-    translation = vocabulary_for(harness).thinking[level]
+    translation = PROVIDERS[harness].words().thinking[level]
     if translation.native is None:
         assert "effort" in translation.detail.lower() or "harness" in translation.detail.lower()
 
 
 def test_unsafe_full_access_never_becomes_unsandboxed_codex():
-    translation = vocabulary_for("codex").translate("touch", TouchScope.FULL_ACCESS)
+    translation = PROVIDERS["codex"].words().translate("touch", TouchScope.FULL_ACCESS)
     assert translation.native == "workspace-write"
     assert translation.exact is False
-
-
-def test_ollama_refuses_agent_permissions_in_its_own_vocabulary():
-    with pytest.raises(UnsupportedIntent, match="touch intent"):
-        vocabulary_for("ollama").translate("touch", TouchScope.WORKSPACE_WRITE)
-    with pytest.raises(UnsupportedIntent, match="approval intent"):
-        vocabulary_for("ollama").translate("approval", ApprovalIntent.ASK)
 
 
 def test_model_source_maps_local_and_cloud_without_vendor_flag_guessing():

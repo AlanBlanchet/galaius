@@ -261,32 +261,34 @@ def test_a_child_is_not_handed_galaius_twice(tmp_path, monkeypatch):
     does not need the duplicate: GALAIUS_PARENT_RUN_ID travels in the child's process
     environment, which the globally-configured server inherits.
     """
-    from galaius.agents.run import already_meshed
+    from galaius.agents.providers import PROVIDERS
 
     cfg = tmp_path / ".claude.json"
     cfg.write_text('{"mcpServers": {"galaius": {"command": "/usr/local/bin/galaius"}}}')
-    assert already_meshed("claude") is True
+    assert PROVIDERS["claude"].meshed() is True
 
 
 def test_a_machine_without_galaius_registered_still_gets_the_mesh(tmp_path, monkeypatch):
     """The mesh exists for exactly this case: a provider with no galaius of its own."""
-    from galaius.agents.run import already_meshed
+    from galaius.agents.providers import PROVIDERS
 
-    assert already_meshed("claude") is False
+    assert PROVIDERS["claude"].meshed() is False
     (tmp_path / ".claude.json").write_text('{"mcpServers": {}}')
-    assert already_meshed("claude") is False
+    assert PROVIDERS["claude"].meshed() is False
 
 
 def test_a_broken_provider_config_never_blocks_the_spawn(tmp_path, monkeypatch):
     """A corrupt ~/.claude.json must degrade to 'not registered' — doubling a server is annoying,
     a spawn that refuses to start is worse."""
-    from galaius.agents.run import already_meshed
+    from galaius.agents.providers import PROVIDERS
 
     (tmp_path / ".claude.json").write_text("{ not json")
-    assert already_meshed("claude") is False
+    assert PROVIDERS["claude"].meshed() is False
 
 
-def test_an_unknown_provider_is_assumed_unmeshed():
-    from galaius.agents.run import already_meshed
+def test_a_cli_whose_mesh_is_always_its_own_is_never_meshed_already(tmp_path, monkeypatch):
+    """Codex lays its mesh over its own entry (`-c mcp_servers.galaius.*`): another CLI's registration never counts."""
+    from galaius.agents.providers import PROVIDERS
 
-    assert already_meshed("fixture-unknown-provider") is False
+    (tmp_path / ".claude.json").write_text('{"mcpServers": {"galaius": {"command": "/usr/local/bin/galaius"}}}')
+    assert (PROVIDERS["claude"].meshed(), PROVIDERS["codex"].meshed()) == (True, False)

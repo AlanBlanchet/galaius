@@ -48,7 +48,7 @@ from galaius.isolation.fence import FenceSpec, fenced
 from galaius.host.processes import process_group_options, spawnable
 from galaius.agents.policy import Policy, policy_path
 from galaius.agents.catalog.profiles import overlay_for, profiles_from
-from galaius.agents.providers import PROVIDERS, AgentProvider, ClaudeTurnSettings, UnsupportedToolPolicy, fits_argv, validate_denied_tools, _safe_process_detail
+from galaius.agents.providers import PROVIDERS, AgentProvider, program_providers, ClaudeTurnSettings, UnsupportedToolPolicy, fits_argv, validate_denied_tools, _safe_process_detail
 from galaius.agents.catalog.vocabulary import TouchScope
 from galaius.agents.limits.subscriptions import RunSubscription, Subscription, SubscriptionCapped, SubscriptionRefused
 from galaius.agents.limits.warm import WarmStart
@@ -714,37 +714,6 @@ def _galaius_command() -> tuple[str, list[str]]:
     return console_python(), ["-m", "galaius", "mcp"]
 
 
-def already_meshed(provider: str) -> bool:
-    """Whether this provider's OWN configuration already registers galaius as an MCP server.
-
-    "activate the agents for the provider, but once (and not twice)... no conflicts." `galaius
-    install` registers galaius in the provider's user-scope config, so handing a spawned child
-    `--mcp-config` with a second registration doubles the server in that session. Mesh exists for
-    machines where the provider has NO galaius of its own; where it does, attribution still
-    flows — GALAIUS_PARENT_RUN_ID rides the child's process env, the globally-configured server
-    inherits it.
-
-    Never for Codex: its mesh is `-c mcp_servers.galaius.*` values laid over its own entry (one
-    server, the owner's `enabled` kept), and only they carry the tool approval a run needs and the
-    relay its `Confinement` serves the server through.
-    """
-    if provider == "codex":
-        return False
-    checks = {
-        "claude": Path.home() / ".claude.json",
-        "cursor": Path.home() / ".cursor" / "mcp.json",
-    }
-    path = checks.get(provider)
-    if path is None:
-        return False
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return False
-    servers = data.get("mcpServers")
-    return isinstance(servers, dict) and "galaius" in servers
-
-
 #: How every brief the launcher hands a role begins: a session that opens with it is agent work
 #: the launcher started, whatever registry still records it.
 LAUNCH_STAMP = "Launch policy: role="
@@ -984,13 +953,12 @@ class ResumeLaunch(AheadLaunch):
             allowed_tools=policy.tools_for(run.agent), denied_tools=run.denied_tools,
             agent_prompt=(run.community.prompt(run.agent, run.parent_run_id or "") if run.community is not None
                           else _role_prompt(catalog, run.agent, provider, env) if catalog is not None else None),
-            mcp_config=mesh_config(run_id=run.run_id, role=run.agent) if run.mesh_enabled and not already_meshed(provider.name) else None,
+            mcp_config=mesh_config(run_id=run.run_id, role=run.agent) if run.mesh_enabled and not provider.meshed() else None,
             coarse_accepted=coarse_accepted, base_url=routed.get("OPENAI_BASE_URL"),
             **AheadLaunch.turn_arguments(provider, run.run_id, run.fence, role=run.agent, compact_at=policy.compact_at_for(run.agent),
                                          isolated=run.community is not None),
         )
-        if provider.name == "claude" and reasoning is not None:
-            env["CLAUDE_CODE_EFFORT_LEVEL"] = reasoning
+        env.update(provider.effort_environment(reasoning))
         return cls(provider=provider, run_id=run.run_id, session_id=session_id, cwd=run.cwd or ".", env=env, arguments=arguments,
                    model=model, criterion=criterion, reasoning=reasoning, fence=run.fence)
 
@@ -1509,21 +1477,21 @@ async def run_agent(
     if pinned is not None:
         environment = pinned.bound(environment)
         if pinned.subscription_id is not None:
-            program = Subscription.of(pinned.subscription_id).program
-            if provider is not None and provider.name != program.name:
-                raise SubscriptionRefused("pinned_elsewhere", f"this subscription is a {program.name} login; it never runs {provider.name}")
-            provider = program
+            held = Subscription.of(pinned.subscription_id)
+            provider = (held.runs(provider.name) if provider is not None else held).program
     if community is not None:
         if parent_run is None or not parent_run.agent:
             raise ModelUnavailable("A community agent works for the agent run that starts it: start it from an agent run playing a role")
-        if provider is not None and provider.name != community_agents.PROVIDER:
-            raise ModelUnavailable(f"A community agent runs on {community_agents.PROVIDER} only: {provider.name} cannot switch off its shell, web search and MCP servers")
-        provider = PROVIDERS[community_agents.PROVIDER]
+        if provider is not None and not provider.confines_tools:
+            raise ModelUnavailable(f"A community agent runs only on a CLI that switches off its tools one by one: {provider.name} cannot switch off its shell, web search and MCP servers")
+        provider = provider or next((cli for cli in program_providers() if cli.confines_tools), None)
+        if provider is None:
+            raise ModelUnavailable("A community agent runs only on a CLI that switches off its tools one by one, and none is on this PC")
         # Less than its caller: its role, revision and permission mode, its denials and ours, no MCP server (`isolated`), in
         # the community fence (`CommunityAgent.fence`), working in its own folder.
         agent, agent_ref, delegate, mesh, name = parent_run.agent, parent_run.agent_ref, None, False, community.label()
         permission_mode, denied_tools = parent_run.permission_mode, tuple(dict.fromkeys((*parent_run.denied_tools, *denied_tools, *community_agents.DENIED_TOOLS)))
-        community, fence = community.fence(cwd, pinned)
+        community, fence = community.fence(cwd, pinned, provider)
         cwd = str(community.work)
     validated_images = validate_image_paths(image_paths)
     validate_denied_tools(denied_tools)
@@ -1723,10 +1691,8 @@ async def run_agent(
         env = {**candidate_env, **candidate_routed}
         if validated_images:
             _require_vlm_model(candidate_model)
-        if candidate_provider.name == "claude":
-            # This takes precedence over a session or agent-file effort setting.
-            env["CLAUDE_CODE_EFFORT_LEVEL"] = candidate_provider.provider_thinking_level(candidate_effort) or candidate_effort
-        if candidate_provider.name == "claude" and policy.catalog is None:
+        env.update(candidate_provider.effort_environment(candidate_effort))
+        if candidate_provider.runs_definitions and policy.catalog is None:
             definition = candidate_provider.definition_path(agent)
             if definition is None:
                 raise RoleAbsent(f"No installed definition for {agent!r}")
@@ -1764,7 +1730,7 @@ async def run_agent(
         # argv built AFTER the model is decided: used to build first with raw text, so a criterion,
         # a `@profile` or a routed `ollama/x` id reached the binary unresolved while the resolved
         # name went only into the env and run record.
-        if candidate_provider.name == "claude":
+        if candidate_provider.session_is_run:
             vendor_session = run_id if vendor_sessions == 0 else str(uuid.uuid4())
             vendor_sessions += 1
         else:
@@ -1789,7 +1755,7 @@ async def run_agent(
             provider=candidate_provider, cwd=cwd, environment=env, arguments=command_kwargs,
             # Once, never twice: skip the mesh when the provider's own config already registers
             # galaius — else the child would carry two registrations of the same server.
-            meshed=mesh and not already_meshed(candidate_provider.name), fence=candidate_fence, role=None if community else agent,
+            meshed=mesh and not candidate_provider.meshed(), fence=candidate_fence, role=None if community else agent,
             compact_at=policy.compact_at_for(agent), isolated=community is not None,
         )
         # A child started ahead for this very launch skips its CLI's own startup. Its run id is the
@@ -1821,7 +1787,7 @@ async def run_agent(
             permission_mode=candidate_permission_mode, requested_criterion=required_model,
             mesh_enabled=mesh, reasoning=candidate_effort, reasoning_set=reasoning,
             candidates=candidates, skipped=tuple(skipped), denied_tools=denied_tools,
-            provider_session_id=vendor_session if candidate_provider.name == "claude" else None,
+            provider_session_id=vendor_session if candidate_provider.session_is_run else None,
             agent_ref=selected_ref, definition_path=definition_path, fence=candidate_fence, subscription=candidate_pin, media=shown,
             login=login, asked_by=asked_by, inherited_asks=inherited_asks, community=community,
         )
@@ -1903,7 +1869,7 @@ async def run_agent(
         mesh_enabled=mesh,
         reasoning=effort, reasoning_set=reasoning,
         candidates=candidates, skipped=tuple(skipped), denied_tools=denied_tools,
-        provider_session_id=run_id if provider.name == "claude" else None,
+        provider_session_id=provider.session_named(run_id),
         agent_ref=selected_ref, definition_path=definition_path, fence=fence, subscription=pinned, media=shown,
         login=chosen_login, asked_by=asked_by, inherited_asks=inherited_asks, community=community,
     )

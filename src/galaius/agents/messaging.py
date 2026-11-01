@@ -21,7 +21,7 @@ from galaius.agents import registry as reg
 from galaius.agents.catalog.connection import CatalogOffline
 from galaius.agents.transport.events import Relation
 from galaius.agents.policy import PolicyError
-from galaius.agents.providers import AgentProvider, provider_for
+from galaius.agents.providers import PROVIDERS, AgentProvider, provider_for
 from galaius.agents.run import ModelUnavailable, load_policy, resolve_continuable_model
 from galaius.agents.catalog.connection import RoleAbsent
 
@@ -172,7 +172,7 @@ def policy_for_continuation(run, provider: AgentProvider, environment: Mapping[s
 
 
 def _session_id(run) -> str | None:
-    return run.provider_session_id or (run.run_id if run.provider == "claude" else None)
+    return run.provider_session_id or (provider.session_named(run.run_id) if (provider := PROVIDERS.get(run.provider)) is not None else None)
 
 def deliver_message(
     run_id: str, message: str, *, sender: str | None = None, environment: Mapping[str, str] | None = None, message_id: str | None = None,

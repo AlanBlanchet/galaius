@@ -72,9 +72,6 @@ class Subscription(BaseModel):
     #: The files a CLI keeps its tokens in, inside its home: their values are redacted wherever a run's
     #: output goes (`credentials`).
     CREDENTIALS: ClassVar[tuple[str, ...]] = (".credentials.json", "auth.json")
-    #: Written into a new folder, per provider: Codex keeps its login in a file there, never in the
-    #: system keyring, which a second login would share.
-    FIRST_FILES: ClassVar[dict[str, dict[str, str]]] = {"codex": {"config.toml": 'cli_auth_credentials_store = "file"\n'}}
     #: The user settings keys a subscription folder takes from the default login's at each launch
     #: (`adopt`): what its runs may do and the hooks that run, never `env`, `apiKeyHelper` or another key.
     ADOPTED_SETTINGS: ClassVar[tuple[str, ...]] = ("hooks", "permissions")
@@ -92,11 +89,11 @@ class Subscription(BaseModel):
     def create(cls, subscription_id: UUID, provider: ProviderName) -> Self:
         """The folder of `subscription_id` for `provider`, made (0700) when new; a folder of another provider is refused."""
         made = cls(id=subscription_id, provider=provider)
-        if made.state_path.exists() and made.state().provider != provider:
-            raise SubscriptionRefused("pinned_elsewhere", f"subscription {subscription_id} is a {made.state().provider} login on this PC, not {provider}")
+        if made.state_path.exists():
+            cls.of(subscription_id).runs(provider)
         cls._private(cls.root())
         cls._private(made.folder)
-        for name, text in cls.FIRST_FILES.get(provider, {}).items():
+        for name, text in made.program.first_files.items():
             if not (made.folder / name).exists():
                 (made.folder / name).write_text(text, encoding="utf-8")
         if not made.state_path.exists():
@@ -166,6 +163,14 @@ class Subscription(BaseModel):
     @property
     def program(self) -> AgentProvider:
         return PROVIDERS[self.provider]
+
+    def runs(self, provider: ProviderName) -> Self:
+        """This login, refused when it is another CLI's: the ONE check every start, move and folder of a subscription
+        makes. A login holds one CLI's sessions, in that CLI's own format: a conversation never moves between CLIs."""
+        if provider != self.provider:
+            raise SubscriptionRefused("pinned_elsewhere", f"subscription {self.id} is a {self.provider} login, never {provider}: "
+                                      "a conversation stays with its CLI (each keeps its sessions in its own format)")
+        return self
 
     def adopt(self, environment: Mapping[str, str]) -> None:
         """The owner's own config, as his default login of this CLI has it now, written into this
@@ -420,8 +425,8 @@ class RunSubscription(WireRunSubscription):
         """`environment` for one launch or turn on it (of `provider`'s CLI, refused when its subscription is another's
         login): its caps checked (refused at one), the owner's config adopted into its folder (`Subscription.adopt`),
         every CLI's login variable at its folder or a closed one (`overlay`)."""
-        if self.subscription_id is not None and provider is not None and (held := Subscription.of(self.subscription_id)).provider != provider:
-            raise SubscriptionRefused("pinned_elsewhere", f"subscription {self.subscription_id} is a {held.provider} login here, never {provider}")
+        if self.subscription_id is not None and provider is not None:
+            Subscription.of(self.subscription_id).runs(provider)
         self.check()
         if self.subscription_id is not None:
             Subscription.of(self.subscription_id).adopt(environment)

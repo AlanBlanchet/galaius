@@ -27,9 +27,11 @@ from galaius.agents import registry as reg
 from galaius.agents.host import ConversationRefused
 from galaius.agents.run import ModelUnavailable
 from galaius.agents.limits.subscriptions import RunSubscription, Subscription, SubscriptionRefused
-from galaius.machine.agents import LogRing, MachineAgents, MachineSessions, WebRun, WebRuns, interaction_digest
+from galaius.machine.agents import LogRing, MachineAgents, MachineSessions, interaction_digest
+from galaius.machine.editors import EditorConversations
+from galaius.machine.web_runs import WebRun, WebRuns
 from galaius.diagnostics.redaction import redact
-from galaius_core import AgentRefused
+from galaius_core import AGENT_PROGRAMS, AgentRefused
 from galaius.config.user import UserConfig
 from galaius.machine import connection as machines
 from galaius.machine.connection import MachineConfig, MachineRunner
@@ -1527,3 +1529,11 @@ def test_his_editor_session_is_stopped_through_its_hook_never_typed_into(base: P
         return
     assert _answer(agents, stop).detail == "stopping"
     assert json.loads((stops.folder / f"{session}.json").read_text())["by"]["name"] == "Alan"
+
+
+def test_each_cli_offers_its_editor_conversations_once_in_its_program_order(base: Path, tmp_path: Path) -> None:
+    """Every CLI with editor conversations is asked by one kind of its own (`EditorConversations`), in its program's order
+    (`AGENT_PROGRAMS`), each naming its conversations by its own provider."""
+    named = [kind.provider.name for kind in EditorConversations.every(_agents(base, tmp_path))]
+    assert named == [program for program in AGENT_PROGRAMS if program in named]  # a CLI with none stays legal
+    assert set(named) == {"claude", "codex"}
