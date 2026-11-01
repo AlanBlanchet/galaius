@@ -888,7 +888,7 @@ class MachineAgents(BaseModel):
             place, _ = places.place_of(parts)
             review, staging[place] = self.reviews.stage_copy(place, base.joinpath(*split(place)), origin="agent", run_id=None)
         try:
-            spec = FenceSpec.for_clis(program_providers(), egress=self.egress, programs=self.cli, working_directory=places.working_directory,
+            spec = FenceSpec.for_clis(program_providers(), egress=self.egress, working_directory=places.working_directory,
                                       levels_file=self.levels_file, levels=places.levels, internal=places.internal, start=folder, project=project, staging=staging,
                                       homes=homes, state=self.reviews.root.parent / "fence-state" / str(uuid4()), reviews=self.reviews.root)
             spec.build()

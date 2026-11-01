@@ -299,7 +299,8 @@ class Scan(BaseModel):
 
 class FenceSpec(BaseModel):
     """What a run's fence is built from — recorded on the run (in the runner's own store, never
-    inside a fence) and built again at each turn from the levels as they are then."""
+    inside a fence) and built again at each turn from the levels as they are then, with the programs
+    that turn starts (`turn`)."""
 
     model_config = ConfigDict(frozen=True)
     working_directory: Path
@@ -319,7 +320,6 @@ class FenceSpec(BaseModel):
     #: Per CLI, the folder its login lives in for this run when not its default under home: a
     #: subscription's own folder (`AgentProvider.auth_home`), its credential bound from there.
     homes: dict[str, Path] = Field(default_factory=dict)
-    programs: tuple[Path, ...] = ()
     egress: tuple[str, ...] = ()
     #: Runner-owned folder holding this run's private tool state (never shared with another run).
     state: Path
@@ -334,7 +334,8 @@ class FenceSpec(BaseModel):
             levels = json.loads(self.levels_file.read_text(encoding="utf-8")).get("places", {})
         return PlaceMap(working_directory=self.working_directory, levels=levels, internal=self.internal)
 
-    def build(self) -> Fence:
+    def build(self, programs: Iterable[Path] = ()) -> Fence:
+        """The fence as the levels are now, `programs` (and the interpreters of their `#!` lines) seen inside, read-only."""
         places = self.places()
         base, home = places.base, Path.home().resolve()
         try:
@@ -378,7 +379,8 @@ class FenceSpec(BaseModel):
         # Read-only: a run's galaius server launches the browsers this PC installed, never installs one (no egress, no write).
         if (browsers := playwright_browsers()) is not None and browsers.is_dir():
             binds.append(FenceBind(source=browsers, target=browsers, writable=False))
-        reached, roots = list(self.programs), [_install_root(program.resolve()) for program in self.programs]
+        programs = tuple(dict.fromkeys((*programs, *filter(None, map(_interpreter, programs)))))
+        reached, roots = list(programs), [_install_root(program.resolve()) for program in programs]
         for python in _interpreters():
             paths, folders = _runs_from(python)
             reached += paths
@@ -396,25 +398,22 @@ class FenceSpec(BaseModel):
                      keys=tuple(sorted({name for provider in self.providers for name in FencedCli.of(provider).keys})))
 
     @classmethod
-    def for_clis(cls, clis: Iterable[FencedProgram], *, egress: Iterable[str] = (), programs: Iterable[Path | str] = (), **fields: object) -> Self:
-        """A fence each of `clis` the fence runs (`fenced`) may take a turn in: their state (`FencedCli`), their programs
-        where the run starts them (`located`: never this process's PATH alone, which a dispatcher the service manager started
-        lacks nvm's codex on) and `programs`, their model hosts then `egress`; `fields` the rest of the spec. A CLI the
-        fence does not run carries nothing into it."""
+    def for_clis(cls, clis: Iterable[FencedProgram], *, egress: Iterable[str] = (), **fields: object) -> Self:
+        """A fence each of `clis` the fence runs (`fenced`) may take a turn in: their state (`FencedCli`), their model
+        hosts then `egress`; `fields` the rest of the spec. A CLI the fence does not run carries nothing into it."""
         fenced = tuple(cli for cli in clis if cli.fenced is not None)
-        found = [Path(program) for program in (*(cli.located() for cli in fenced), *programs) if program]
-        return cls(providers=tuple(cli.name for cli in fenced), programs=tuple(dict.fromkeys((*found, *filter(None, map(_interpreter, found))))),
+        return cls(providers=tuple(cli.name for cli in fenced),
                    egress=(*sorted(FencedCli.hosts(cli.name for cli in fenced)), *egress), **fields)
 
     @classmethod
-    def reading(cls, clis: Iterable[FencedProgram], start: Path, *, scratch: Path, state: Path, programs: Iterable[Path | str] = ()) -> Self:
+    def reading(cls, clis: Iterable[FencedProgram], start: Path, *, scratch: Path, state: Path) -> Self:
         """A read-only run's fence: `start` (a folder of the home folder) read, nothing else of home seen, its
         outputs written in `scratch` alone. Refused (ValueError / PermissionError) where it cannot be built: `start`
         outside home or the home itself, a hidden (dot) folder, more entries than `Scan` checks."""
         home, start = Path.home().resolve(), start.resolve()
         if start == home or not start.is_relative_to(home):
             raise ValueError(f"{start} is not a folder of the home folder")
-        spec = cls.for_clis(clis, programs=programs, working_directory=home, levels={start.relative_to(home).as_posix(): "read"},
+        spec = cls.for_clis(clis, working_directory=home, levels={start.relative_to(home).as_posix(): "read"},
                             start=start, scratch=scratch, state=state)
         spec.build()
         return spec
@@ -425,8 +424,8 @@ class FenceSpec(BaseModel):
         return self.project is None and not self.staging and all(level == "read" for _, level in self.places().in_force("read").values())
 
     def only(self, provider: str) -> Self:
-        """This fence for one turn of `provider`'s CLI: its own keys, login and tool state (`FencedCli`, `homes`), its
-        own program and its model's hosts — none of another CLI's. The spec a run records names every CLI it
+        """This fence for one turn of `provider`'s CLI: its own keys, login and tool state (`FencedCli`, `homes`) and
+        its model's hosts — none of another CLI's. The spec a run records names every CLI it
         may fall through to (a quota refusal moves a start from claude to codex), so each turn narrows it here; a claude
         turn kept codex's OPENAI_API_KEY, its ~/.codex and api.openai.com, and the other way round (2026-10-26)."""
         if not self.providers:
@@ -436,10 +435,21 @@ class FenceSpec(BaseModel):
         others = {name for name in self.providers if name != provider}
         hosts = FencedCli.hosts(others) - FencedCli.hosts((provider,))
         return self.model_copy(update={"providers": (provider,),
-                                       # by stem: an npm entry `codex.js` is codex's program too
-                                       "programs": tuple(program for program in self.programs if program.name.split(".")[0] not in others),
                                        "egress": tuple(host for host in self.egress if host not in hosts),
                                        "homes": {name: folder for name, folder in self.homes.items() if name not in others}})
+
+    def turn(self, cli: FencedProgram, programs: Iterable[Path | str] = ()) -> Fence:
+        """The fence one turn of `cli` starts in, built now: `cli`'s own state alone (`only`), its program where that turn
+        finds it (`located`: never this process's PATH alone, which a dispatcher the service manager started lacks nvm's
+        codex on) and `programs`, the ones it starts beside it (its galaius server's launcher). Never recorded: a turn
+        the installed service continued after the runtime of the run's first turn was removed started a launcher bound
+        nowhere (ENOENT, its galaius tools gone, 2026-11-01). FileNotFoundError when `cli` is found nowhere."""
+        own = self.only(cli.name)
+        if not own.providers:
+            return own.build(Path(program) for program in programs)  # a fence naming no CLI carries none of them
+        if (found := cli.located()) is None:
+            raise FileNotFoundError(f"{cli.name} is not installed on this PC any more: this run's turn cannot start")
+        return own.build((Path(found), *map(Path, programs)))
 
     def rehomed(self, homes: dict[str, Path]) -> Self:
         """This fence on other login folders (a run moved to another subscription, contract A9): the private copies a CLI
@@ -578,10 +588,10 @@ def _prefix(executable: Path) -> Path:
     return executable.parent.parent if executable.parent.name == "bin" else executable.parent
 
 
-def fenced(argv: list[str], fence: FenceSpec | None, provider: str) -> list[str]:
-    """`argv`, a turn of `provider`'s CLI, inside the fence `fence` builds now for that CLI alone (`FenceSpec.only`,
-    from the current levels), or unchanged."""
-    return argv if fence is None else fence.only(provider).build().command(argv)
+def fenced(argv: list[str], fence: FenceSpec | None, cli: FencedProgram, programs: Iterable[Path | str] = ()) -> list[str]:
+    """`argv`, a turn of `cli` starting `programs` beside it, inside the fence `fence` builds now for that turn
+    (`FenceSpec.turn`, from the current levels), or unchanged."""
+    return argv if fence is None else fence.turn(cli, programs).command(argv)
 
 
 class EgressProxy(BaseModel):

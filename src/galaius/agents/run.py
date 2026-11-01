@@ -712,6 +712,12 @@ def _galaius_command() -> tuple[str, list[str]]:
     return console_python(), ["-m", "galaius", "mcp"]
 
 
+def _fenced(argv: list[str], fence: FenceSpec | None, provider: AgentProvider) -> list[str]:
+    """`argv`, a turn of `provider`, inside `fence` with the galaius its server starts (`mesh_config`, or its CLI's own
+    entry) as this process finds it now (`fenced`)."""
+    return fenced(argv, fence, provider, (_galaius_command()[0],))
+
+
 #: How every brief the launcher hands a role begins: a session that opens with it is agent work
 #: the launcher started, whatever registry still records it.
 LAUNCH_STAMP = "Launch policy: role="
@@ -759,10 +765,9 @@ def read_only_fence(cwd: str, run_id: str) -> FenceSpec | None:
     runs on its CLI's own read-only mode, which reads the whole PC, and the log says why."""
     ready, reason = available()
     if ready:
-        launcher = shutil.which("galaius")
         try:
             return FenceSpec.reading(program_providers(), Path(cwd), scratch=reg.agents_dir() / f"{run_id}.scratch",
-                                     state=reg.agents_dir() / f"{run_id}.fence", programs=(launcher,) if launcher else ())
+                                     state=reg.agents_dir() / f"{run_id}.fence")
         except (ValueError, OSError) as refused:  # OSError: a folder gone or unreadable while it is scanned
             reason = str(refused)
     log.warning("read-only run %s is not fenced (its CLI's read-only mode reads the whole PC): %s", run_id, reason)
@@ -832,7 +837,7 @@ class AheadLaunch(BaseModel):
         stderr = stderr if later else reg.open_stderr(run_id, append=False)
         try:
             return await asyncio.create_subprocess_exec(
-                *contained(fenced(spawnable(argv, env), self.fence, self.provider.name), run_id=run_id), cwd=self.cwd, env=env,
+                *contained(_fenced(spawnable(argv, env), self.fence, self.provider), run_id=run_id), cwd=self.cwd, env=env,
                 # Never the launcher's own stdin: Claude Code waits 3 s for input on one that is no
                 # terminal, and an MCP server's stdin carries its protocol.
                 stdin=asyncio.subprocess.PIPE if ahead else asyncio.subprocess.DEVNULL,
@@ -1197,7 +1202,7 @@ def _spawn_turn(
     stderr_file = tempfile.TemporaryFile()
     try:
         process = subprocess.Popen(
-            contained(fenced(spawnable(argv, env), run.fence, provider.name), run_id=run.run_id), cwd=run.cwd or ".", env=env,
+            contained(_fenced(spawnable(argv, env), run.fence, provider), run_id=run.run_id), cwd=run.cwd or ".", env=env,
             stdin=subprocess.DEVNULL if stdin is None else subprocess.PIPE, stdout=sink, stderr=stderr_file,  # never the launcher's stdin (`AheadLaunch.start`)
             **process_group_options(),
         )

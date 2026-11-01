@@ -9,6 +9,7 @@ import asyncio
 import errno
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -20,6 +21,7 @@ import pytest
 
 from galaius.agents import providers
 from galaius.agents.providers import CodexProvider
+from galaius.agents.run import _fenced, _galaius_command
 from galaius_core import MachineFence
 from galaius_core.wire import fitted
 from mcp.server.fastmcp.exceptions import ToolError
@@ -453,12 +455,11 @@ def test_a_turn_is_fenced_for_its_own_cli_alone(home: Path, tmp_path: Path, cli:
     CLI's (a claude turn kept codex's OPENAI_API_KEY, its ~/.codex and api.openai.com, and the other way round)."""
     for folder in (".claude", ".codex"):
         (home / folder).mkdir(exist_ok=True)
-    spec = _spec(home, tmp_path, providers=("claude", "codex"), programs=(Path("/usr/bin/claude"), Path("/usr/bin/codex"), Path("/usr/bin/galaius")),
+    spec = _spec(home, tmp_path, providers=("claude", "codex"),
                  egress=(*PROVIDERS["claude"].fenced.egress, *PROVIDERS["codex"].fenced.egress, "galaius.ai"))
     own = spec.only(cli)
     other = "codex" if cli == "claude" else "claude"
     assert own.providers == (cli,)
-    assert [program.name for program in own.programs] == [cli, "galaius"]
     assert set(own.egress) == {*PROVIDERS[cli].fenced.egress, "galaius.ai"}
     assert spec.providers == ("claude", "codex")   # the recorded spec is unchanged: a later turn may run the other CLI
     with pytest.raises(ValueError, match="not a CLI this run's fence was built for"):
@@ -466,7 +467,7 @@ def test_a_turn_is_fenced_for_its_own_cli_alone(home: Path, tmp_path: Path, cli:
     if not available()[0]:
         pytest.skip(f"no fence on this PC to start it in: {available()[1]}")
     probe = f"import json, os; print(json.dumps([os.environ.get(name, '') for name in {(kept, dropped)!r}] + [os.path.isdir(os.path.expanduser('~/.{other}'))]))"
-    done = subprocess.run(fenced([sys.executable, "-c", probe], spec, cli), cwd=own.build().cwd, capture_output=True, text=True, timeout=60,
+    done = subprocess.run(fenced([sys.executable, "-c", probe], spec, _Installed(cli, Path(sys.executable))), cwd=own.build().cwd, capture_output=True, text=True, timeout=60,
                           env={**os.environ, kept: "own-key", dropped: "other-key"})
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout) == ["own-key", "", False]
@@ -503,8 +504,8 @@ def test_a_read_only_run_drives_apps_and_writes_only_in_its_scratch(home: Path, 
     npm.mkdir(parents=True)
     (npm / "node").write_bytes(b"\x7fELF")
     (npm / "tool").write_text("#!/usr/bin/env -S node --no-warnings\n")
-    spec = FenceSpec.reading((provider,), home / "docs", scratch=scratch, state=tmp_path / "state", programs=(npm / "tool",))
-    assert {npm / "tool", npm / "node"} <= set(spec.programs)
+    spec = FenceSpec.reading((provider,), home / "docs", scratch=scratch, state=tmp_path / "state")
+    assert FenceBind(source=npm, target=npm, writable=False) in spec.turn(_Installed(cli, npm / "tool")).binds
     assert spec.writes_nothing() and fence_decides(provider, spec, "read_only")
     assert not fence_decides(provider, _spec(home, tmp_path), "read_only")  # a fence that writes somewhere leaves the CLI's own mode on
     monkeypatch.setattr(type(provider), "available", lambda self: True)
@@ -565,7 +566,52 @@ def test_a_fence_holds_the_cli_its_run_starts_where_only_the_shell_finds_it(home
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.setattr(providers, "shell_entries", lambda: (str(nvm),))
     spec = FenceSpec.reading((PROVIDERS["codex"],), home / "docs", scratch=tmp_path / "scratch", state=tmp_path / "state")
-    assert {nvm / "codex", nvm / "node"} <= set(spec.programs)
+    assert {FenceBind(source=folder, target=folder, writable=False) for folder in (package, nvm)} <= set(spec.turn(PROVIDERS["codex"]).binds)
+
+
+class _Installed:
+    """The CLI `name` (its fence state, `FencedCli`) installed at `program`; None: installed nowhere."""
+
+    def __init__(self, name: str, program: Path | None) -> None:
+        self.name, self.binary, self.fenced, self.program = name, name, PROVIDERS[name].fenced, program
+
+    def located(self) -> str | None:
+        return None if self.program is None else str(self.program)
+
+
+def _runtime(folder: Path) -> Path:
+    """A galaius runtime's launcher in `folder`: a script its interpreter starts, as an installed runtime's is."""
+    folder.mkdir(parents=True)
+    (folder / "python").symlink_to(sys.executable)
+    (folder / "galaius").write_text(f"#!{folder / 'python'}\nprint('served from {folder.parent.name}')\n")
+    (folder / "galaius").chmod(0o755)
+    return folder / "galaius"
+
+
+def test_a_continued_turn_starts_the_galaius_its_runner_finds_now_never_the_removed_one_its_first_turn_found(
+        home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run's next turn, continued by a runner whose PATH finds another galaius after its first turn's runtime was removed,
+    starts that one inside its fence: a record that named the first one's programs (`programs`, written before they were
+    found at each turn) bound only those, and its galaius server exited ENOENT, its tools gone (2026-11-01)."""
+    first = _runtime(tmp_path / "probe-rt/bin")
+    spec = FenceSpec.reading((PROVIDERS["claude"],), home / "docs", scratch=tmp_path / "scratch", state=tmp_path / "state")
+    recorded = FenceSpec.model_validate({**spec.model_dump(mode="json"), "programs": [str(first), str(first.parent / "python")]})
+    shutil.rmtree(first.parent.parent)
+    now = _runtime(tmp_path / "installed-rt/bin")
+    monkeypatch.setenv("PATH", f"{now.parent}:/usr/bin:/bin")
+    claude = _Installed("claude", Path(sys.executable))
+    assert _galaius_command()[0] == str(now)  # what its server starts, `_fenced` binds
+    if not available()[0]:
+        pytest.skip(f"no fence on this PC to start it in: {available()[1]}")
+    done = subprocess.run(_fenced([str(now)], recorded, claude), cwd=recorded.start, capture_output=True, text=True, timeout=60)
+    assert (done.returncode, done.stdout.strip()) == (0, "served from installed-rt"), done.stderr
+
+
+def test_a_turn_whose_cli_is_installed_nowhere_is_refused_naming_it(home: Path, tmp_path: Path) -> None:
+    """A run continued after its CLI was removed from this PC says so, never a bubblewrap `execvp` error."""
+    spec = FenceSpec.reading((PROVIDERS["claude"],), home / "docs", scratch=tmp_path / "scratch", state=tmp_path / "state")
+    with pytest.raises(FileNotFoundError, match="claude is not installed on this PC any more"):
+        fenced(["claude"], spec, _Installed("claude", None))
 
 
 @pytest.mark.parametrize("named", [False, True])
