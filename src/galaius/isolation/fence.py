@@ -98,6 +98,10 @@ class FencedProgram(Protocol):
     binary: str
     fenced: FencedCli | None
 
+    def located(self) -> str | None:
+        """Where its program is, as the run that starts it finds it (its search path, the shell's entries included)."""
+        ...
+
 
 #: Names at the top of a Write folder or a git repository that an editor, git or an agent CLI
 #: obeys or runs later: never created or changed there by a fenced agent.
@@ -370,11 +374,12 @@ class FenceSpec(BaseModel):
 
     @classmethod
     def for_clis(cls, clis: Iterable[FencedProgram], *, egress: Iterable[str] = (), programs: Iterable[Path | str] = (), **fields: object) -> Self:
-        """A fence each of `clis` the fence runs (`fenced`) may take a turn in: their state (`FencedCli`), their programs as
-        found on this PC's PATH and `programs`, their model hosts then `egress`; `fields` the rest of the spec. A CLI the
+        """A fence each of `clis` the fence runs (`fenced`) may take a turn in: their state (`FencedCli`), their programs
+        where the run starts them (`located`: never this process's PATH alone, which a dispatcher the service manager started
+        lacks nvm's codex on) and `programs`, their model hosts then `egress`; `fields` the rest of the spec. A CLI the
         fence does not run carries nothing into it."""
         fenced = tuple(cli for cli in clis if cli.fenced is not None)
-        found = [Path(program) for program in (*(shutil.which(cli.binary) for cli in fenced), *programs) if program]
+        found = [Path(program) for program in (*(cli.located() for cli in fenced), *programs) if program]
         return cls(providers=tuple(cli.name for cli in fenced), programs=tuple(dict.fromkeys((*found, *filter(None, map(_interpreter, found))))),
                    egress=(*sorted(FencedCli.hosts(cli.name for cli in fenced)), *egress), **fields)
 

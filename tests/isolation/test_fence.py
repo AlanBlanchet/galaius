@@ -531,3 +531,23 @@ def test_a_read_only_run_drives_apps_and_writes_only_in_its_scratch(home: Path, 
         tried = _inside(spec, f"PLACES = {places!r}\n{READ_ONLY_PROBE}")
         assert tried == {"start": "Read-only file system", "scratch": "ok", "egress": "Read-only file system"}
         assert (scratch / "hi").read_text() == "hi" and not (home / "docs/hi").exists()
+
+
+def test_a_fence_holds_the_cli_its_run_starts_where_only_the_shell_finds_it(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A dispatcher the service manager started has no nvm on its PATH, yet its run starts nvm's codex (the shell's entries,
+    `AgentProvider.search_path`): the fence holds that codex and the node beside it, else codex exits 127 inside."""
+    from galaius.agents import providers
+
+    package, nvm = tmp_path / "nvm/lib/node_modules/@openai/codex", tmp_path / "nvm/bin"
+    (package / "bin").mkdir(parents=True)
+    (package / "package.json").write_text("{}")
+    (package / "bin/codex.js").write_text("#!/usr/bin/env node\n")
+    (package / "bin/codex.js").chmod(0o755)
+    nvm.mkdir(parents=True)
+    (nvm / "node").write_bytes(b"\x7fELF")
+    (nvm / "node").chmod(0o755)
+    (nvm / "codex").symlink_to("../lib/node_modules/@openai/codex/bin/codex.js")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(providers, "shell_entries", lambda: (str(nvm),))
+    spec = FenceSpec.reading((PROVIDERS["codex"],), home / "docs", scratch=tmp_path / "scratch", state=tmp_path / "state")
+    assert {nvm / "codex", nvm / "node"} <= set(spec.programs)
