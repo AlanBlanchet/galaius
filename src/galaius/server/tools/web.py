@@ -277,8 +277,7 @@ async def session(
             lines.append(f"(idle sessions auto-close after {ttl}s; set GALAIUS_SESSION_IDLE_TTL=0 to disable)")
         return "\n".join(lines)
     if action == "close":
-        closed = await core._sessions.close(name)
-        return _session_response(name, f"Session '{name}' closed." if closed else f"No session '{name}' is open here.")
+        return core._closed_response(name, await core._sessions.close(name))
     if not path:
         return f"ERROR: action={action!r} requires `path` (the session-state file)"
     dest = core._resolve_save_path(path)  # a path it may not use is refused before any browser starts

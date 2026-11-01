@@ -290,3 +290,17 @@ def test_drift_on_a_session_the_caller_never_named_still_suspects_another_caller
     out = core._session_response(session, "body")
     assert "another caller shares this session" in out.lower()
     assert remedy in out
+
+
+@pytest.mark.parametrize("closing", ["caller-other", "held", "default"])
+@pytest.mark.asyncio
+async def test_a_close_reply_names_the_callers_own_session_and_warns_of_no_sharing(monkeypatch, closing):
+    """Closing a session it never held, one it held, or the shared one: the prefix still names the
+    caller's own session, and no note warns of sharing a session the call just closed."""
+    _bind(monkeypatch, None)
+    _connect(monkeypatch, _Connection())
+    own = _session_of(await tools_web.get_logs(source="network"))
+    if closing == "held":
+        core._sessions.get(closing)
+    reply = await tools_web.session(action="close", name=closing)
+    assert _session_of(reply) == own and "shared" not in reply

@@ -332,7 +332,8 @@ def test_codex_runs_in_galaius_confinement_where_its_own_sandbox_cannot_start(tm
     argv = provider.command("task", cwd=str(tmp_path), model=None, mcp_config=mesh, run_id="r1", permission_mode=permission)
     resumed = provider.resume_command("thread", "next", permission_mode=permission, mcp_config=mesh)
     assert (provider.sandbox_refusal() is not None) is (started == "refused")
-    assert 'mcp_servers.galaius.default_tools_approval_mode="approve"' in argv
+    approval = "writes" if mode == "read-only" else "approve"  # a read-only run calls only its readOnlyHint tools
+    assert f'mcp_servers.galaius.default_tools_approval_mode="{approval}"' in argv
     if started != "confined":
         assert argv[0] == "codex" and argv[argv.index("--sandbox") + 1] == mode and 'mcp_servers.galaius.args=["mcp"]' in argv
         assert f'sandbox_mode="{mode}"' in resumed  # never the danger-full-access a confined first turn saved

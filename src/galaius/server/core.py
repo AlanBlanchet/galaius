@@ -276,6 +276,17 @@ def _session_response(session: str, body: str) -> str:
     return "\n".join([body, *metadata] if body.startswith("ERROR:") else [*metadata, body])
 
 
+def _closed_response(session: str, closed: bool) -> str:
+    """A close reply. Its prefix names the caller's OWN session, as every reply does — never the
+    closed name (gone, or never this caller's), and no note about sharing a session that is now
+    gone. The closed session leaves no baseline behind for a later session of that name to drift from."""
+    key = _caller_key(session)
+    _session_url_baseline.pop(key, None)
+    _session_drift_note.pop(key, None)
+    body = f"Session '{session}' closed." if closed else f"No session '{session}' is open here."
+    return f"[session: {_resolve_session(_AUTO_SESSION)}]\n{body}"
+
+
 def _not_found(what: str) -> str:
     return f"{what} not found — run get_interactive_elements first"
 
