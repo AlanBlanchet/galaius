@@ -58,7 +58,7 @@ from galaius.host.file_stamp import FileStamp
 from galaius.models.registry import TokenMix
 from galaius.host.pinned_directory import DescriptorDirectory, PinnedDirectory
 from galaius.host.private_files import PRIVATE_FILES
-from galaius.host.processes import detached_options, end_process_tree, process_ancestry, process_started, process_unit
+from galaius.host.processes import detached_options, end_process_tree, platform_signals, process_ancestry, process_started, process_unit
 from galaius.upgrade.store import active_interpreter
 from galaius.mcp.registry import (
     _alive,  # generic pid liveness (Windows-safe, no signal sent)
@@ -2938,7 +2938,7 @@ NETWORK_RESUME_BACKOFF: tuple[float, ...] = (5.0, 20.0, 60.0, 180.0)
 SELF_TIMED_CUTS: frozenset[CutCause] = frozenset({"usage_limit", "network_lost"})
 #: Exit codes of a signal sent from outside the program (SIGHUP, SIGKILL, SIGTERM; `-N` as the launcher records them,
 #: `128 + N` through a shell): a kill. Any other (SIGABRT, SIGSEGV…) is the program's own crash, never resumed by itself.
-_KILLED_EXITS = frozenset(code for sig in (signal.SIGHUP, signal.SIGKILL, signal.SIGTERM) for code in (-sig, 128 + sig))
+_KILLED_EXITS = frozenset(code for sig in platform_signals("SIGHUP", "SIGKILL", "SIGTERM") for code in (-sig, 128 + sig))
 #: Who an automatic resume is from, on its queue item and message event (`from_run`): never the person.
 LIMIT_RESUME_SENDER = "limit-resume"
 #: Who the resume of a run its lost login stopped is from, once that login is signed in again.

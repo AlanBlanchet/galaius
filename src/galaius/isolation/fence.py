@@ -52,6 +52,7 @@ from galaius_core import PlaceLevel
 
 from galaius.host.paths import UserPaths
 from galaius.host.pinned_directory import PinnedDirectory
+from galaius.host.processes import platform_signals
 from galaius_core import AgentRefused, TooLarge
 from galaius.machine.places.levels import DEPENDENCY_FOLDERS, LEVEL_RANK, NEVER_GRANTABLE, PlaceMap, split
 from galaius.upgrade.handoff import Children
@@ -773,7 +774,7 @@ class Outer(BaseModel):
                 threading.Thread(target=EgressProxy(hosts=self.hosts).serve, args=(os.path.join(folder, "egress.sock"),), daemon=True).start()
                 env = {name: value for name, value in os.environ.items() if name in self.keys or not name.upper().endswith(SECRET_SUFFIXES)}
                 child = subprocess.Popen([part.replace("{egress}", folder) for part in argv], env=env)
-                for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+                for number in platform_signals("SIGTERM", "SIGINT", "SIGHUP"):
                     signal.signal(number, lambda received, _frame: child.send_signal(received))
                 while True:
                     try:
@@ -1066,7 +1067,7 @@ class Confinement(BaseModel):
             writable += [private, *(login / name for name in self.sessions), *map(Path, self.TEMPORARY), *map(Path, self.DEVICES)]
             # No thread runs yet: the relay's starts after the child exists.
             child = subprocess.Popen(argv, env=env, preexec_fn=lambda: _confine_child(writable))
-            for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            for number in platform_signals("SIGTERM", "SIGINT", "SIGHUP"):
                 signal.signal(number, lambda received, _frame: child.send_signal(received))
             if listener is not None:
                 threading.Thread(target=self._serve, args=(listener, servers), daemon=True).start()

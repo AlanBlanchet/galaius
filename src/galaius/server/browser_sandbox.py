@@ -10,6 +10,7 @@ import signal
 from contextlib import suppress
 from dataclasses import dataclass
 
+from galaius.host.processes import platform_signals
 from galaius.server.core import _sessions, config
 
 _log = logging.getLogger("galaius")
@@ -121,10 +122,9 @@ def install_teardown_handlers() -> None:
     a `galaius agents list` should inherit just for importing this module.
     """
     atexit.register(_close_sandbox)  # the lifespan's `finally` covers a clean stop; this the rest
-    for sig in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGHUP", None)):
-        if sig is not None:
-            with suppress(OSError, ValueError):  # not the main thread, or no such signal here
-                signal.signal(sig, _close_sandbox_on_signal)
+    for sig in platform_signals("SIGTERM", "SIGHUP"):
+        with suppress(OSError, ValueError):  # not the main thread
+            signal.signal(sig, _close_sandbox_on_signal)
 
 
 def _reap_sandbox(ttl: int = 0) -> None:

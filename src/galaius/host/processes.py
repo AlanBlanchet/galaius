@@ -27,6 +27,18 @@ _TERM_GRACE = 0.75
 _PIPE_GRACE = 0.25
 
 
+def platform_signals(*names: str) -> tuple[signal.Signals, ...]:
+    """The signals among `names` this platform defines, in their order: the one place galaius asks. Windows has no
+    SIGHUP, SIGKILL, SIGQUIT…: 2026-11-01 a module-level `signal.SIGHUP` stopped `galaius` from starting on the owner's
+    Windows PC (« module 'signal' has no attribute 'SIGHUP' »)."""
+    return tuple(signal.Signals[name] for name in names if name in signal.Signals.__members__)
+
+
+
+#: The signal a process cannot ignore. Windows has no SIGKILL: there os.kill with SIGTERM is already TerminateProcess,
+#: the hard stop.
+HARD_KILL = platform_signals("SIGKILL", "SIGTERM")[0]
+
 #: What cmd.exe re-reads inside a batch file's `%*` (expansion, command separators, quoting,
 #: and a line break ending the command): an argument carrying one cannot reach a `.cmd` intact.
 _BATCH_UNSAFE = re.compile(r'[\r\n"%^&|<>]')

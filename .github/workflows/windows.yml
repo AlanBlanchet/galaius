@@ -91,6 +91,18 @@ jobs:
           foreach ($want in 'script:python', 'script:powershell', 'script:cmd') { if ($machine.features -notcontains $want) { throw "missing $want" } }
           if ($machine.features -contains 'script:shell') { throw 'announces shell, which Windows cannot run' }
 
+      # Owner 2026-11-01 on his Windows PC: « module 'signal' has no attribute 'SIGHUP' » at start.
+      # The commands he types, from the installed galaius.exe, after the login above.
+      - name: The commands he types start (galaius, galaius agents list)
+        timeout-minutes: 3
+        run: |
+          foreach ($arguments in @(@(), @('agents', 'list', '--all-sessions'))) {
+            $said = & galaius @arguments 2>&1 | Out-String
+            "> galaius $($arguments -join ' ') (exit $LASTEXITCODE)"
+            $said
+            if ($LASTEXITCODE -ne 0 -or $said -match 'Traceback|Error:') { throw "galaius $($arguments -join ' ') failed" }
+          }
+
       - name: Credentials are DPAPI-sealed and private to this user
         run: |
           $files = @("$HOME\.config\galaius\machine.json") + (Get-ChildItem "$HOME\.galaius\credentials\*.key").FullName

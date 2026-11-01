@@ -130,6 +130,8 @@ def contained(argv: Sequence[str], ceiling: Ceiling | None = None, *, run_id: st
 def slice_cgroup(root: Path = Path("/sys/fs/cgroup")) -> Path | None:
     """:data:`SLICE`'s cgroup folder under this user's manager (a dashed slice nests in its prefixes:
     ``galaius.slice/galaius-agents.slice``); None where it does not exist (no user manager, never started)."""
+    if sys.platform != "linux":
+        return None
     uid = os.getuid()
     parts = SLICE.removesuffix(".slice").split("-")
     folder = root / "user.slice" / f"user-{uid}.slice" / f"user@{uid}.service"

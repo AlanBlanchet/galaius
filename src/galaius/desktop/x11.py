@@ -44,8 +44,11 @@ class X11Display(DesktopBackend):
     def __init__(self, display: str):
         self.display = display
         self.env = {**os.environ, "DISPLAY": display}
-        #: Kept open for `pointer` only (see it); every other query opens its own. The lock: a
-        #: watched screen reads it from its grabbing thread while a viewer's acts move it from another.
+        self._init_pointer()
+
+    def _init_pointer(self) -> None:
+        """The display connection kept open for `pointer` only (see it); every other query opens its own. The lock: a
+        watched screen reads it from its grabbing thread while a viewer's acts move it from another."""
         self._pointer_display = None
         self._pointer_lock = threading.Lock()
 

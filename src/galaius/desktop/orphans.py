@@ -21,7 +21,8 @@ from dataclasses import dataclass
 
 from galaius.desktop.backend import SANDBOX_TITLE
 # Whether a pid is running, sending nothing (on Windows signal 0 would be Ctrl-C): one definition.
-from galaius.mcp.registry import HARD_KILL, _alive as process_alive
+from galaius.host.processes import HARD_KILL
+from galaius.mcp.registry import _alive as process_alive
 from pathlib import Path
 
 #: What one of OUR sandbox displays looks like. Re-states flags owned by

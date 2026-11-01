@@ -1,6 +1,5 @@
 """Private user-owned request workspace shared by every media transport."""
 
-import os
 import shutil
 import stat
 import tempfile
@@ -30,7 +29,7 @@ def _private_directory(parent: Path, name: str) -> Path:
         info = directory.lstat()
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         raise RuntimeError(f"private media directory {name!r} is a symlink or not a directory")
-    if hasattr(os, "geteuid") and info.st_uid != os.geteuid():
+    if not PRIVATE_FILES.owns(info):
         raise RuntimeError(f"private media directory {name!r} is owned by another user")
     if directory.resolve(strict=True).parent != parent.resolve(strict=True):
         raise RuntimeError(f"private media directory {name!r} escapes its workspace root")
@@ -48,7 +47,7 @@ def _workspace_root(config: Config) -> Path:
     existing = root
     while not existing.exists() and existing != existing.parent:
         existing = existing.parent
-    if hasattr(os, "geteuid") and existing.stat().st_uid != os.geteuid():
+    if not PRIVATE_FILES.owns(existing.stat()):
         raise RuntimeError("media workspace parent is owned by another user")
     return PRIVATE_FILES.directory(root)
 
@@ -62,7 +61,7 @@ def _prune(root: Path) -> None:
             info = candidate.lstat()
         except FileNotFoundError:
             continue
-        if info.st_mtime >= cutoff or (hasattr(os, "geteuid") and info.st_uid != os.geteuid()):
+        if info.st_mtime >= cutoff or not PRIVATE_FILES.owns(info):
             continue
         if stat.S_ISLNK(info.st_mode):
             candidate.unlink(missing_ok=True)

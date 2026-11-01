@@ -38,6 +38,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from galaius.mcp.announcement import McpAnnouncement
 from galaius.upgrade.handoff import Children, Handoff
 from galaius.host.private_files import PRIVATE_FILES
+from galaius.host.processes import platform_signals
 from galaius.upgrade.store import EXIT_UPGRADE, Addressed, Runtime, RuntimeStore
 
 class SupervisorSettings(BaseModel):
@@ -266,9 +267,8 @@ class Passthrough(Supervisor):
 
     def run(self) -> int:
         children, lifecycle, stop = Children(), Lifecycle(self), threading.Event()
-        for name in ("SIGTERM", "SIGHUP"):
-            if hasattr(signal, name):
-                signal.signal(getattr(signal, name), lambda *_: stop.set())
+        for number in platform_signals("SIGTERM", "SIGHUP"):
+            signal.signal(number, lambda *_: stop.set())
         previous_interrupt = signal.signal(signal.SIGINT, signal.SIG_IGN)  # the worker takes Ctrl-C
         generation, checker = 0, None
         arrived = self.store.arrived()  # this supervisor replaced an older one: its first worker is on probation

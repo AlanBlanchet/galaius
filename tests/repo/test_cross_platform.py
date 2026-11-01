@@ -4,6 +4,7 @@ leaking a cryptic evdev/maim error. These are pure (no display, no browser, no k
 the whole ubuntu/macos/windows CI matrix and keep the promise honest."""
 
 import importlib
+import json
 import os
 import subprocess
 import sys
@@ -47,6 +48,46 @@ def test_the_relay_imports_where_fcntl_does_not_exist():
     )
     done = subprocess.run([sys.executable, "-c", program], capture_output=True, text=True)
     assert done.returncode == 0 and "relay imported" in done.stdout, done.stderr[-1500:]
+
+
+#: The signals Windows defines (CPython `signal` on win32): every other `signal.SIG…` raises AttributeError there.
+#: What `signal` holds on Windows (https://docs.python.org/3/library/signal.html: `signal()` there takes only these seven
+#: signals; `alarm`, `setitimer`, `pthread_*`, `SIG_BLOCK`… are « Availability: Unix »).
+WINDOWS_SIGNAL = {"SIGABRT", "SIGBREAK", "SIGFPE", "SIGILL", "SIGINT", "SIGSEGV", "SIGTERM", "SIG_DFL", "SIG_IGN", "NSIG",
+                  "CTRL_C_EVENT", "CTRL_BREAK_EVENT", "Signals", "Handlers", "default_int_handler", "getsignal",
+                  "raise_signal", "set_wakeup_fd", "signal", "strsignal", "valid_signals"}
+
+
+def test_every_module_imports_where_only_windows_signals_exist():
+    """2026-11-01 the owner's Windows PC: `galaius` stopped at start with « module 'signal' has no attribute 'SIGHUP' »
+    (a module-level `signal.SIGHUP` in agents/registry.py). Every galaius module is imported here with `signal` cut down
+    to what Windows has; a module that imports fine with the full `signal` but not with that one is named with the line
+    that read the missing name. Signals go through `galaius.host.processes.platform_signals`."""
+    program = (
+        "import enum, importlib, importlib.util, json, pathlib, signal, traceback\n"
+        f"keep = {sorted(WINDOWS_SIGNAL)!r}\n"
+        "signals = {n: getattr(signal, n) for n in keep if n.startswith('SIG') and not n.startswith('SIG_') and hasattr(signal, n)}\n"
+        "for name in [n for n in dir(signal) if not n.startswith('_') and n not in keep]:\n"
+        "    delattr(signal, name)\n"
+        "signal.Signals = enum.IntEnum('Signals', signals)\n"
+        "root = pathlib.Path(importlib.util.find_spec('galaius').submodule_search_locations[0])\n"
+        "failed = {}\n"
+        "for path in sorted(root.rglob('*.py')):\n"
+        "    name = '.'.join(('galaius', *path.relative_to(root).with_suffix('').parts)).removesuffix('.__init__')\n"
+        "    if name == 'galaius.__main__':\n"
+        "        continue\n"
+        "    try:\n"
+        "        importlib.import_module(name)\n"
+        "    except Exception as error:  # `from signal import SIGHUP` is an ImportError; another failure is not this test's\n"
+        "        if \"'signal'\" in str(error):\n"
+        "            frame = traceback.extract_tb(error.__traceback__)[-1]\n"
+        "            failed[name] = f'{error} at {frame.filename}:{frame.lineno}'\n"
+        "print(json.dumps(failed))\n"
+    )
+    done = subprocess.run([sys.executable, "-c", program], capture_output=True, text=True, timeout=240)
+    assert done.returncode == 0, done.stderr[-1500:]
+    failed = json.loads(done.stdout.splitlines()[-1])
+    assert failed == {}, sorted(set(failed.values()))
 
 
 def test_no_module_imports_a_unix_only_module_at_its_top_level():

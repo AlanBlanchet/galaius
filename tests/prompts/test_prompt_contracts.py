@@ -164,14 +164,6 @@ def test_cache_rejects_path_substitution_before_sqlite_uses_the_file(
         _PromptCache(path)
 
 
-def test_cache_owner_check_is_portable_when_getuid_is_unavailable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, directory_backend,
-) -> None:
-    monkeypatch.delattr(os, "getuid", raising=False)
-    cache = _PromptCache(tmp_path / "prompts.sqlite3")
-    cache.close()
-
-
 def test_cache_is_never_opened_through_a_link(tmp_path: Path, directory_backend) -> None:
     foreign = tmp_path / "foreign.sqlite3"
     foreign.write_bytes(b"")

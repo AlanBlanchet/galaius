@@ -462,6 +462,7 @@ class _ClaudeNamed(_Cli):
     name = "claude"
     binary = "claude-cli"
     native_providers = frozenset({"vendor-a", "vendor-b"})
+    session_is_run = True  # a capability of its provider class (ClaudeProvider), never of its name
     sessions: list[str] = []
 
     def definition_path(self, agent):

@@ -25,6 +25,7 @@ from galaius.desktop.backend import (
 from galaius.desktop.geometry import HostWindow
 from galaius.desktop.video import _VideoSession, _ffmpeg_grab_args
 from galaius.desktop.x11 import X11Display
+from galaius.host.processes import HARD_KILL
 
 
 class KillReport(BaseModel):
@@ -83,6 +84,7 @@ class NestedBackend(X11Display):
         self.headless = headless
         width, height = size.split("x")
         self.screen_w, self.screen_h = int(width), int(height)
+        self._init_pointer()  # `X11Display.__init__` is not called (see the docstring)
         self._procs: list[subprocess.Popen] = []
         self._logs: dict[int, str] = {}  # pid -> temp logfile of a launched app's stdout/stderr
         self._cmds: dict[int, list[str]] = {}  # pid -> the argv it was launched with (#87 dedupe)
@@ -413,15 +415,12 @@ class NestedBackend(X11Display):
     def _signal_tree(proc: subprocess.Popen, hard: bool) -> None:
         """Signal a child's whole process group, or just the child where groups don't exist.
 
-        Every POSIX name here is looked up with ``getattr``: ``SIGKILL``, ``killpg`` and ``getpgid``
-        are all absent on Windows, and referencing them directly raised AttributeError there even
-        though the sandbox itself is Linux-only — the teardown ran during collection of tests that
-        merely construct the backend."""
-        sig = getattr(signal, "SIGKILL", signal.SIGTERM) if hard else signal.SIGTERM
-        killpg, getpgid = getattr(os, "killpg", None), getattr(os, "getpgid", None)
-        if killpg is not None and getpgid is not None:
+        ``SIGKILL``, ``killpg`` and ``getpgid`` are absent on Windows, where the teardown still runs
+        during collection of tests that merely construct the (Linux-only) backend."""
+        sig = HARD_KILL if hard else signal.SIGTERM
+        if os.name == "posix":
             try:
-                killpg(getpgid(proc.pid), sig)
+                os.killpg(os.getpgid(proc.pid), sig)
                 return
             except (ProcessLookupError, PermissionError, OSError):
                 pass  # group gone or not ours → fall through to the direct child

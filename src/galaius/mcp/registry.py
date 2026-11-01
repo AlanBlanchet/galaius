@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 from galaius import installed_version
-from galaius.host.processes import process_exited
+from galaius.host.processes import HARD_KILL, process_exited
 
 
 def _runtime_dir() -> Path:
@@ -84,11 +84,6 @@ def unregister_server(path: Path | None) -> None:
             path.unlink()
         except OSError:
             pass
-
-
-#: The signal a process cannot ignore. Windows has no SIGKILL: there os.kill with SIGTERM is
-#: already TerminateProcess, the hard stop.
-HARD_KILL = signal.SIGTERM if sys.platform == "win32" else signal.SIGKILL
 
 
 def _still_running(pid: int) -> bool:

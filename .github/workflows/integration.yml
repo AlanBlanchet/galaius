@@ -22,7 +22,7 @@ permissions:
 jobs:
   integration:
     name: integration (Linux · real browser + VLM)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # -latest (26.04) refuses Playwright's --with-deps: see ci.yml
     steps:
       - uses: actions/checkout@v4
 
