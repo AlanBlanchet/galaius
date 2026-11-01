@@ -147,17 +147,17 @@ def policy_for_continuation(run, provider: AgentProvider, environment: Mapping[s
         policy = load_policy()
         policy, _ = policy.for_launch(run.agent, reference=run.agent_ref)
         if not policy.provider_active(provider.name):
-            raise ModelUnavailable(f"Agent provider {provider.name!r} is disabled by policy")
+            raise ModelUnavailable(sentence=f"Agent provider {provider.name!r} is disabled by policy")
         criterion = policy.criterion_for(run.agent)
         if not criterion:
-            raise ModelUnavailable(f"No model criterion for {run.agent!r}; configure it in the agent policy UI")
+            raise ModelUnavailable(sentence=f"No model criterion for {run.agent!r}; configure it in the agent policy UI")
         if policy.catalog is None and not provider.valid_definition(run.agent):
-            raise RoleAbsent(f"No installed definition for {run.agent!r}")
+            raise RoleAbsent(sentence=f"No installed definition for {run.agent!r}")
         try:
             provider.validate_permission_mode(run.permission_mode)
         except ValueError as error:
             raise ModelUnavailable(
-                f"Recorded permission intent {run.permission_mode!r} is not accepted by "
+                sentence=f"Recorded permission intent {run.permission_mode!r} is not accepted by "
                 f"{provider.name!r}; refusing continuation"
             ) from error
         model = resolve_continuable_model(criterion, dict(Caller.environ(environment)), provider=provider, weights=policy.weights_for(run.agent), role=run.agent,
@@ -168,7 +168,7 @@ def policy_for_continuation(run, provider: AgentProvider, environment: Mapping[s
     except Coded:
         raise   # typed already (`ModelUnavailable`, `RoleAbsent`): its code stays
     except (PolicyError, ValueError) as error:
-        raise ModelUnavailable(str(error)) from error
+        raise ModelUnavailable(sentence=str(error)) from error
 
 
 def _session_id(run) -> str | None:

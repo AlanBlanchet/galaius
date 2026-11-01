@@ -115,7 +115,7 @@ def test_a_turn_handed_over_on_another_revision_starts_on_it_and_the_run_stays_t
 
     def fresh_policy(run):
         resolved.append(run.agent_ref)
-        raise agent_run.ModelUnavailable("stop at the launch")
+        raise agent_run.ModelUnavailable(sentence="stop at the launch")
 
     monkeypatch.setattr(agent_queue, "_fresh_policy", fresh_policy)
     messaging.deliver_message("r1", "the task", sender="operator", turn=agent_queue.MessageTurn(agent_ref=revision))
@@ -175,7 +175,7 @@ def _dispatched_here(run_id: str) -> None:
 
 @pytest.mark.parametrize(("error", "tries"), [
     (RuntimeError("the provider CLI could not be started: Resource temporarily unavailable"), 3),  # passing: tried 3 times
-    (agent_run.ModelUnavailable("catalog access refused (HTTP 401); cached access is disabled"), 1),  # waiting changes nothing
+    (agent_run.ModelUnavailable(sentence="catalog access refused (HTTP 401); cached access is disabled"), 1),  # waiting changes nothing
 ], ids=["passing", "permanent"])
 def test_a_resume_the_dispatcher_cannot_start_fails_the_run_once_after_its_last_try(monkeypatch, error, tries):
     """A message to an ENDED run used to be accepted while the dispatcher's policy / catalog / provider step failed in
@@ -883,13 +883,13 @@ def test_a_resume_stopped_in_its_pause_ends_there_and_never_reads_at_work(monkey
 
 def _wrapped(cause: Exception) -> Exception:
     """As `policy_for_continuation` raises a catalog or policy error: a `ModelUnavailable` caused by it."""
-    error = agent_run.ModelUnavailable(str(cause))
+    error = agent_run.ModelUnavailable(sentence=str(cause))
     error.__cause__ = cause
     return error
 
 
 @pytest.mark.parametrize(("error", "permanent"), [
-    (agent_run.ModelUnavailable("No model criterion for 'tester'"), True),
+    (agent_run.ModelUnavailable(sentence="No model criterion for 'tester'"), True),
     (_wrapped(CatalogAuthenticationError("catalog access refused (HTTP 401); cached access is disabled")), True),
     (_wrapped(CatalogConnectionError("catalog request failed (HTTP 500)")), False),
     (OSError("fork: Resource temporarily unavailable"), False),

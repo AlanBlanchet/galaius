@@ -18,7 +18,7 @@ import hmac
 import logging
 import time
 
-from galaius_core import refusal_of, MACHINE_AGENT_REQUESTS, PcFeatures, PROJECTS_ROOT, AgentProviderState, AgentRefusal, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentSettingsUpdate, MachineWorkspaceJob, SubscriptionLimits, WebLoad, MachineRef, ScreenAssertion, ScreenOpenRequest, ScreenReadiness, ScreenStatusRequest
+from galaius_core import refusal_of, MACHINE_AGENT_REQUESTS, PcFeatures, PROJECTS_ROOT, AgentDeclined, AgentProviderState, MachineAgentAnswer, WebFull, MachineAgentModel, MachineAgentRequest, MachineAgentSettingsUpdate, MachineWorkspaceJob, SubscriptionLimits, WebLoad, MachineRef, ScreenAssertion, ScreenOpenRequest, ScreenReadiness, ScreenStatusRequest
 from galaius.desktop.screen.desk import ScreenDesk
 from galaius.machine.programs import AgentPrograms
 from galaius.agents import messaging
@@ -1136,7 +1136,7 @@ def test_the_web_cap_counts_conversations_never_the_agents_they_launched(base: P
     started()
     with pytest.raises(AgentRefused, match=r"^4 conversations started from the web are already working on this computer \(at most 4\)") as refused:
         agents._prepare_start(start, None)
-    assert refusal_of(refused.value) == AgentRefusal(reason="web_full", web=WebLoad(working=4, limit=4))   # typed with its count: the web words it alone
+    assert refusal_of(refused.value) == WebFull(web=WebLoad(working=4, limit=4))   # typed with its count: the web words it alone
     with pytest.raises(AgentRefused) as refused:
         agents._prepare_start(start.model_copy(update={"web_limit": 4}), None)
     assert refused.value.refusal.reason == "web_full"
@@ -1427,7 +1427,7 @@ def test_a_run_its_limit_refused_before_it_did_anything_starts_again_on_the_next
     _cut(second, "usage_limit", pid=453, at=time.time() - 10)
 
     async def nothing_left(provider, task, **kwargs):
-        raise ModelUnavailable("No candidate for 'app-engineer' can start on this machine")
+        raise ModelUnavailable(sentence="No candidate for 'app-engineer' can start on this machine")
 
     monkeypatch.setattr("galaius.machine.agents.run_agent", nothing_left)
     assert asyncio.run(_agents(base, tmp_path).resume_paused()) == []
@@ -1525,7 +1525,7 @@ def test_his_editor_session_is_stopped_through_its_hook_never_typed_into(base: P
     if refused is not None:
         with pytest.raises(AgentRefused) as raised:
             _answer(agents, stop)
-        assert raised.value.refusal == AgentRefusal(reason=refused) and not (stops.folder / f"{session}.json").exists()
+        assert raised.value.refusal == AgentDeclined(reason=refused) and not (stops.folder / f"{session}.json").exists()
         return
     assert _answer(agents, stop).detail == "stopping"
     assert json.loads((stops.folder / f"{session}.json").read_text())["by"]["name"] == "Alan"

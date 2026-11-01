@@ -100,13 +100,13 @@ class CatalogSnapshot(AgentCatalogSnapshot):
         for agent in self.agents:
             if agent.role_key == key:
                 return agent
-        raise RoleAbsent(f"role {key!r} is absent from the active server catalog")
+        raise RoleAbsent(sentence=f"role {key!r} is absent from the active server catalog")
 
     def revision(self, reference: AgentRevisionRef) -> AgentRevision:
         for agent in self.agents:
             if agent.id == reference.id and agent.revision == reference.revision:
                 return agent
-        raise RoleAbsent("pinned agent revision is absent from this catalog")
+        raise RoleAbsent(sentence="pinned agent revision is absent from this catalog")
 
     def delegated(self, name: str) -> AgentRevisionRef:
         """The revision a delegate capability of this name launches, wherever this catalog declares it.

@@ -16,7 +16,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from galaius_core import MACHINE_AGENT_REQUESTS, AgentRefusal, MachineFence, OwnFault
+from galaius_core import MACHINE_AGENT_REQUESTS, MachineFence, NoCandidate, OwnFault
 from galaius_core.wire import internals
 from galaius.agents.run import ModelUnavailable
 from galaius.machine.connection import MachineConfig, MachineRunner, said_of
@@ -166,6 +166,6 @@ def test_a_fault_of_this_pcs_own_making_never_travels_to_the_web() -> None:
     assert timed_out == "a program this computer ran took longer than 5s" and "private-folder" not in timed_out
     # Typed first, whatever its words or kind (code-review r2 2026-10-30: a candidate named `NotImplementedError` turned a
     # typed `no_candidate` into an own fault), and an OS error with no words is typed too, never English alone.
-    typed = said_of(ModelUnavailable("claude: NotImplementedError in its probe", refusal=AgentRefusal(reason="no_candidate")))
-    assert (typed.refusal, typed.said) == (AgentRefusal(reason="no_candidate"), OwnFault(doing="answering_web", fault="code").said)
+    typed = said_of(ModelUnavailable(NoCandidate(), "claude: NotImplementedError in its probe"))
+    assert (typed.refusal, typed.said) == (NoCandidate(), OwnFault(doing="answering_web", fault="code").said)
     assert said_of(OSError()).refusal == OwnFault(doing="answering_web", fault="code")

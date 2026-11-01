@@ -17,7 +17,7 @@ from typing import ClassVar, Self
 from uuid import UUID, uuid4
 
 from galaius_core import AgentProvider as ProviderName, RunSubscription as WireRunSubscription, SubscriptionAllowance, SubscriptionCap, SubscriptionLimits
-from galaius_core import LoginIdentity, Refused, SubscriptionChoice, SubscriptionRefusal, SubscriptionUsage, SubscriptionUsageReport, UsageWindow
+from galaius_core import CapReached, LoginIdentity, Refused, SubscriptionChoice, SubscriptionRefusals, SubscriptionUsage, SubscriptionUsageReport, UsageWindow
 from pydantic import BaseModel, ConfigDict
 
 from galaius.agents.limits import quota
@@ -27,8 +27,8 @@ from galaius.host.paths import UserPaths
 logger = logging.getLogger(__name__)
 
 
-class SubscriptionRefused(Refused[SubscriptionRefusal]):
-    """A start, turn or child a subscription cannot take: its reason a `SubscriptionRefusalReason`."""
+class SubscriptionRefused(Refused[SubscriptionRefusals]):
+    """A start, turn or child a subscription cannot take: its reason one of `SubscriptionRefusals`."""
 
 
 class SubscriptionCapped(SubscriptionRefused):
@@ -36,8 +36,14 @@ class SubscriptionCapped(SubscriptionRefused):
 
     def __init__(self, cap: SubscriptionCap) -> None:
         reopens = f"; it reopens {cap.resets_at.isoformat(timespec='minutes')}" if cap.resets_at is not None else ""
-        super().__init__(SubscriptionRefusal(reason="capped", cap=cap),
+        super().__init__(CapReached(cap=cap),
                          f"this subscription is at {cap.used_percent:g}% of its {cap.window.replace('_', ' ')} window, its cap is {cap.cap_percent}%{reopens}")
+
+    @property
+    def cap(self) -> SubscriptionCap:
+        """The cap it reached, read off its refusal."""
+        assert isinstance(self.refusal, CapReached)  # built from one alone
+        return self.refusal.cap
 
 
 class SubscriptionState(BaseModel):
@@ -375,7 +381,7 @@ class RunSubscription(WireRunSubscription):
             try:
                 return option, option.bound(environment, provider), PassedOver(held=waiting)
             except SubscriptionCapped as capped:
-                caps.append(capped.refusal.cap)
+                caps.append(capped.cap)
                 said.append(str(capped))
             except SubscriptionRefused as refused:
                 said.append(str(refused))

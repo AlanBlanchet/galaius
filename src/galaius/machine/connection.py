@@ -1550,7 +1550,7 @@ class MachineRunner:
                         if not first.cancelled() or ((task := asyncio.current_task()) is not None and task.cancelling()):
                             raise
                     else:
-                        if not (isinstance(answer.refusal, AgentRefusal) and answer.refusal.reason == "under_way"):
+                        if not (isinstance(answer.refusal, AgentRefusal) and answer.refusal.pending):
                             await socket.send(json.dumps({"type": "agent_answer", "result": answer.model_dump(mode="json")}))
                             return
                         # The first answered while its act still worked here: this one delivers it again, which answers that act.

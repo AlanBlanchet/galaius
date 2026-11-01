@@ -3,7 +3,7 @@ a bare reason is validated into it at the raise, and the kinds a machine answer 
 from datetime import UTC, datetime
 
 import pytest
-from galaius_core import AgentRefusal, Refused, SubscriptionCap, SubscriptionRefusal, refusal_of
+from galaius_core import AgentDeclined, CapReached, Refused, WebFull, SubscriptionCap, SubscriptionDeclined, refusal_of
 from pydantic import ValidationError
 
 from galaius.agents.host import ConversationRefused
@@ -16,11 +16,11 @@ CAP = SubscriptionCap(window="five_hour", used_percent=81, cap_percent=80, at_ca
 
 
 @pytest.mark.parametrize(("raised", "answered"), [
-    (WorkspaceRefused("git_missing", "git is not installed on this PC"), AgentRefusal(reason="git_missing")),
-    (AgentRefused("web_full", "4 conversations started from the web are already working"), AgentRefusal(reason="web_full")),
-    (AgentRefused("under_way", "its first delivery is still under way"), AgentRefusal(reason="under_way")),
-    (SubscriptionRefused("lent", "a member's run here runs only inside its fence"), SubscriptionRefusal(reason="lent")),
-    (SubscriptionCapped(CAP), SubscriptionRefusal(reason="capped", cap=CAP)),
+    (WorkspaceRefused("git_missing", "git is not installed on this PC"), AgentDeclined(reason="git_missing")),
+    (AgentRefused("web_full", "4 conversations started from the web are already working"), WebFull()),
+    (AgentRefused("under_way", "its first delivery is still under way"), AgentDeclined(reason="under_way")),
+    (SubscriptionRefused("lent", "a member's run here runs only inside its fence"), SubscriptionDeclined(reason="lent")),
+    (SubscriptionCapped(CAP), CapReached(cap=CAP)),
     (ProgramFailed("download_failed", "too many redirects"), None),        # a program job's failure: never on an answer
     (ConversationRefused("conflict", "Conversation already has an active turn."), None),
 ])

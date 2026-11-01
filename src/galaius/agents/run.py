@@ -30,7 +30,7 @@ from collections.abc import Callable, Iterable
 from typing import BinaryIO, ClassVar, Mapping, Sequence
 from galaius.account.caller import Caller
 from galaius.config.settings import Config
-from galaius_core import IMAGE_TYPES, AgentRefusal, AgentRefusalCode, AgentRevisionRef, Coded, LaunchSkipReason, PassedOverCandidate, ReasoningLevel, SubscriptionCap, SubscriptionChoices
+from galaius_core import IMAGE_TYPES, AgentRefusals, AgentRevisionRef, Coded, LaunchSkipReason, NoCandidate, PassedOverCandidate, ReasoningLevel, SubscriptionCap, SubscriptionChoices
 from pydantic import BaseModel, ConfigDict
 
 from galaius.agents.limits import admission
@@ -221,7 +221,7 @@ def _switched_on(candidates: tuple[reg.LaunchCandidate, ...], policy: Policy, mo
     kept = tuple(c for c in candidates if policy.model_active(c.provider, c.model, c.catalog_id))
     if candidates and not kept:
         off = ", ".join(sorted({f"{c.provider}/{c.model}" for c in candidates}))
-        raise ModelUnavailable(f"every model {model!r} ranks is switched off on this machine ({off}); "
+        raise ModelUnavailable(sentence=f"every model {model!r} ranks is switched off on this machine ({off}); "
                                "turn one back on under `models` in ~/.galaius/agents.json")
     return kept
 
@@ -244,12 +244,12 @@ def _ranked_candidates(
         )
         if not candidates:
             names = ", ".join(sorted(allowed)) or "none"
-            raise ModelUnavailable(f"The {names} CLIs cannot run model {model!r}")
+            raise ModelUnavailable(sentence=f"The {names} CLIs cannot run model {model!r}")
         return candidates, {}, None
     try:
         criteria = Criteria.parse(model)
     except CriteriaError as err:
-        raise ModelUnavailable(f"{model!r} is not a usable model criterion: {err}") from err
+        raise ModelUnavailable(sentence=f"{model!r} is not a usable model criterion: {err}") from err
     pool = lambda m: any(p.can_run(m, env) for p in universe if p.name in allowed)
     # Unpruned here: what is worth running is judged over the pool that can run, further down.
     ranked = criteria.ranked(runnable=lambda m: any(p.can_run(m, env) for p in universe), weights=weights, value=None)
@@ -261,7 +261,7 @@ def _ranked_candidates(
         try:
             named = [Model.named(catalog_id) for catalog_id in (server.ranked(model, weights) if server is not None else ())]
         except ServerRankingUnavailable as error:
-            raise ModelUnavailable(f"no model the {', '.join(sorted(allowed)) or 'none'} CLIs can run clears {criteria} here: this PC has no "
+            raise ModelUnavailable(sentence=f"no model the {', '.join(sorted(allowed)) or 'none'} CLIs can run clears {criteria} here: this PC has no "
                                    f"benchmark board of its own, and {error}") from error
         served = tuple(
             reg.LaunchCandidate(provider=p.name, model=p.model_id_for(row), catalog_id=row.catalog_id, rank=rank)
@@ -278,7 +278,7 @@ def _ranked_candidates(
     if not candidates:
         names = ", ".join(sorted(allowed)) or "none"
         raise ModelUnavailable(
-            f"no model the {names} CLIs can run clears {criteria}:\n{criteria.explain(True, pool)}"
+            sentence=f"no model the {names} CLIs can run clears {criteria}:\n{criteria.explain(True, pool)}"
         )
     rows = {row.catalog_id: row for row in ranked}
     return _apply_provider_constraint(criteria, candidates), rows, criteria
@@ -307,11 +307,11 @@ def _apply_provider_constraint(
         available = ", ".join(sorted({c.provider for c in candidates})) or "none"
         if require is not None:
             raise ModelUnavailable(
-                f"{criteria} REQUIRE provider {require!r}, but no model clearing it runs there "
+                sentence=f"{criteria} REQUIRE provider {require!r}, but no model clearing it runs there "
                 f"— only {available} does"
             )
         raise ModelUnavailable(
-            f"{criteria} excludes {', '.join(sorted(exclude))}, leaving no candidate "
+            sentence=f"{criteria} excludes {', '.join(sorted(exclude))}, leaving no candidate "
             f"(only {available} cleared the criterion)"
         )
     if prefer is None:
@@ -379,7 +379,7 @@ def resolve_continuable_model(
     passed = (f"{', '.join(smaller)} passed over as smaller than the model this conversation runs on "
               f"({floor}): a conversation is never moved down") if smaller else ""
     raise ModelUnavailable(
-        f"{' — and '.join(part for part in (held, passed) if part)} — "
+        sentence=f"{' — and '.join(part for part in (held, passed) if part)} — "
         "wait for one to clear and resend, or start a fresh run with agent_spawn, which can pick "
         "a different provider"
     )
@@ -504,13 +504,10 @@ class TaskNotHanded(RuntimeError):
     """
 
 
-class ModelUnavailable(Coded[AgentRefusal], RuntimeError):
+class ModelUnavailable(Coded[AgentRefusals], RuntimeError, reason="model_unavailable"):
     """An agent this PC cannot run as asked: a criterion nothing currently clears (`model_unavailable`), or no candidate
-    of the ranked list could start (`no_candidate`, each one's reason in `AgentRefusal.skips`). Raised rather than falling
+    of the ranked list could start (`no_candidate`, each one's reason in `NoCandidate.skips`). Raised rather than falling
     back: silently resolving to some other model is worse than none — it looks like it worked."""
-
-    def __init__(self, sentence: str, *, refusal: AgentRefusal | AgentRefusalCode = "model_unavailable") -> None:
-        super().__init__(refusal, sentence)
 
 
 #: Raw stream lines in which the VENDOR speaks about the request itself. Everything else — the
@@ -643,16 +640,16 @@ def validate_image_paths(
 def _require_vlm_model(model: str | None) -> None:
     """Require catalog evidence that the resolved model accepts image input."""
     if not model:
-        raise ModelUnavailable("image attachments require a resolved model with cap.vlm")
+        raise ModelUnavailable(sentence="image attachments require a resolved model with cap.vlm")
     Model.catalog()
     candidate = Model.match_published(model)
     if candidate is None:
         raise ModelUnavailable(
-            f"model {model!r} is not known to the model catalog; image attachments require cap.vlm"
+            sentence=f"model {model!r} is not known to the model catalog; image attachments require cap.vlm"
         )
     if not candidate.can(ModelCapability.VLM):
         raise ModelUnavailable(
-            f"model {model!r} does not meet cap.vlm; image attachments were refused"
+            sentence=f"model {model!r} does not meet cap.vlm; image attachments were refused"
         )
 
 
@@ -695,13 +692,13 @@ def _resolve_criteria(
     try:
         criteria = Criteria.parse(model)
     except CriteriaError as err:
-        raise ModelUnavailable(f"{model!r} is not a usable model criterion: {err}") from err
+        raise ModelUnavailable(sentence=f"{model!r} is not a usable model criterion: {err}") from err
     runnable = (lambda m: provider.can_run(m, env or {})) if provider is not None else None
     chosen = criteria.choose(available_only=available_only, runnable=runnable, weights=weights)
     if chosen is None:
         who = f"model the {provider.name} CLI can run" if provider is not None else "configured model"
         raise ModelUnavailable(
-            f"no {who} clears {criteria}:\n{criteria.explain(available_only, runnable)}"
+            sentence=f"no {who} clears {criteria}:\n{criteria.explain(available_only, runnable)}"
         )
     return provider.model_id_for(chosen) if provider is not None else chosen.id
 
@@ -965,17 +962,17 @@ class ResumeLaunch(AheadLaunch):
         routed: dict[str, str] = {}
         if catalog is not None:
             if not run.agent:
-                raise ModelUnavailable("Server catalog continuation requires a named role")
+                raise ModelUnavailable(sentence="Server catalog continuation requires a named role")
             criterion = policy.criterion_for(run.agent)
             if not criterion:
-                raise ModelUnavailable(f"No model criterion for {run.agent!r}")
+                raise ModelUnavailable(sentence=f"No model criterion for {run.agent!r}")
             routed, model = resolve_continuable_model(criterion, environment, provider=provider, weights=policy.weights_for(run.agent), role=run.agent,
                                                       subscription=run.subscription_id, floor=run.model)
             reasoning = policy.effort_for(run.agent, f"{provider.name}/{model}" if model else None, chosen=run.reasoning_set)
         coarse_accepted = policy.accepts_coarse_tool_policy(run.agent, provider.name) if run.agent else False
         provider.validate_tool_policy(policy.tools_for(run.agent), run.denied_tools, coarse_accepted=coarse_accepted)
         if refusal := provider.sandbox_refusal():
-            raise ModelUnavailable(f"{provider.name} cannot continue this run on this PC: {refusal}")
+            raise ModelUnavailable(sentence=f"{provider.name} cannot continue this run on this PC: {refusal}")
         env = {**GatewayServed.environment(environment, None if run.community else run.agent), **routed, "GALAIUS_RUN_ID": run.run_id,
                "GALAIUS_PARENT_RUN_ID": run.run_id}
         decides = fence_decides(provider, run.fence, run.permission_mode)
@@ -1385,14 +1382,14 @@ def resolve_role(policy: Policy, agent: str | None, *, reference: AgentRevisionR
     if policy.catalog is not None and parent is not None and delegate is None:
         if parent_run is None:
             raise ModelUnavailable(
-                f"Parent run {parent} is not among this computer's run records ({reg.agents_dir()}); "
+                sentence=f"Parent run {parent} is not among this computer's run records ({reg.agents_dir()}); "
                 "name the delegate capability to launch, or start the parent again")
         if parent_run.agent_ref is None:
-            raise ModelUnavailable(f"Parent run {parent} ran without a server revision; start the parent again")
+            raise ModelUnavailable(sentence=f"Parent run {parent} ran without a server revision; start the parent again")
     policy, role = policy.for_launch(agent, reference=reference, parent=parent_run.agent_ref if parent_run is not None else None,
                                      capability=delegate)
     if not role:
-        raise ModelUnavailable("Choose a named agent role; anonymous delegation bypasses role criteria")
+        raise ModelUnavailable(sentence="Choose a named agent role; anonymous delegation bypasses role criteria")
     if policy.catalog is None:
         return policy, role, None
     selected = policy.catalog.role(role)
@@ -1517,12 +1514,12 @@ async def run_agent(
             provider = (held.runs(provider.name) if provider is not None else held).program
     if community is not None:
         if parent_run is None or not parent_run.agent:
-            raise ModelUnavailable("A community agent works for the agent run that starts it: start it from an agent run playing a role")
+            raise ModelUnavailable(sentence="A community agent works for the agent run that starts it: start it from an agent run playing a role")
         if provider is not None and not provider.confines_tools:
-            raise ModelUnavailable(f"A community agent runs only on a CLI that switches off its tools one by one: {provider.name} cannot switch off its shell, web search and MCP servers")
+            raise ModelUnavailable(sentence=f"A community agent runs only on a CLI that switches off its tools one by one: {provider.name} cannot switch off its shell, web search and MCP servers")
         provider = provider or next((cli for cli in program_providers() if cli.confines_tools), None)
         if provider is None:
-            raise ModelUnavailable("A community agent runs only on a CLI that switches off its tools one by one, and none is on this PC")
+            raise ModelUnavailable(sentence="A community agent runs only on a CLI that switches off its tools one by one, and none is on this PC")
         # Less than its caller: its role, revision and permission mode, its denials and ours, no MCP server (`isolated`), in
         # the community fence (`CommunityAgent.fence`), working in its own folder.
         agent, agent_ref, delegate, mesh, name = parent_run.agent, parent_run.agent_ref, None, False, community.label()
@@ -1556,7 +1553,7 @@ async def run_agent(
             )
     policy, agent, selected_ref = resolve_role(policy, agent, reference=agent_ref, parent=parent, delegate=delegate)
     if provider is not None and not policy.provider_active(provider.name):
-        raise ModelUnavailable(f"Agent provider {provider.name!r} is disabled by policy")
+        raise ModelUnavailable(sentence=f"Agent provider {provider.name!r} is disabled by policy")
     named = run_id is not None
     run_id = run_id or str(uuid.uuid4())
     # The brief's images are the run's own from here (`RunMedia`): what its agent is handed, what its record names.
@@ -1575,10 +1572,10 @@ async def run_agent(
                 f"known: {', '.join(sorted(known)) or 'none'}"
             )
     if not required_model:
-        raise ModelUnavailable(f"No model criterion for {agent!r}; configure it in the agent policy UI")
+        raise ModelUnavailable(sentence=f"No model criterion for {agent!r}; configure it in the agent policy UI")
     if required_model and profile:
         raise ModelUnavailable(
-            "A named agent's model policy cannot be bypassed with a provider profile. "
+            sentence="A named agent's model policy cannot be bypassed with a provider profile. "
             "Change the agent's rule in the policy UI instead."
         )
     model = required_model or model
@@ -1732,15 +1729,15 @@ async def run_agent(
         if candidate_provider.runs_definitions and policy.catalog is None:
             definition = candidate_provider.definition_path(agent)
             if definition is None:
-                raise RoleAbsent(f"No installed definition for {agent!r}")
+                raise RoleAbsent(sentence=f"No installed definition for {agent!r}")
             raw = definition.read_text(encoding="utf-8")
             if not raw.startswith("---\n") or "\n---" not in raw[4:]:
-                raise ModelUnavailable(f"Malformed agent definition for {agent!r}")
+                raise ModelUnavailable(sentence=f"Malformed agent definition for {agent!r}")
             frontmatter = raw[4:].split("\n---", 1)[0]
             pin = re.search(r"^model:\s*([^\n]+)$", frontmatter, re.MULTILINE)
             if pin and pin.group(1).strip().strip("\"'") not in {"inherit", candidate_model}:
                 raise ModelUnavailable(
-                    f"Agent definition {agent!r} has a model pin conflicting with its resolved policy; "
+                    sentence=f"Agent definition {agent!r} has a model pin conflicting with its resolved policy; "
                     "remove the source pin and regenerate instead of bypassing the criterion"
                 )
         # Said in the brief, never in the role prompt: a line that changes between starts there makes
@@ -1906,9 +1903,9 @@ async def run_agent(
             for s in skipped
         )
         raise ModelUnavailable(
+            NoCandidate(skips=tuple(PassedOverCandidate(provider=entry.candidate.provider, model=entry.candidate.model, reason=entry.reason, until=entry.until)
+                                    for entry in skipped)),
             f"No candidate for {agent!r} can start on this machine; the ranked list was:\n{walked}",
-            refusal=AgentRefusal(reason="no_candidate", skips=tuple(PassedOverCandidate(provider=entry.candidate.provider, model=entry.candidate.model,
-                                                                             reason=entry.reason, until=entry.until) for entry in skipped)),
         )
     provider = chosen_provider
     registered = reg.register(

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import ClassVar
 from uuid import UUID
 
-from galaius_core import AgentRefusal, AgentRefused, AgentRunKind, AgentStartRequest, StopActor, WebLimited, WebLoad, listed_role
+from galaius_core import AgentRefused, AgentRunKind, AgentStartRequest, StopActor, WebFull, WebLimited, WebLoad, listed_role
 from pydantic import BaseModel, ConfigDict
 
 from galaius.agents import registry as reg
@@ -90,7 +90,7 @@ class WebRuns(BaseModel):
         run of a tool of the web's own UI (a question to the blob: no conversation of his, `UI_ROLES`). Nothing here caps how
         many of those start at once but the web's start rate limit: the blob role has no tools and runs read_only."""
         if listed_role(request.role if isinstance(request, AgentStartRequest) else None) and (load := self.load(request)).full:
-            raise AgentRefused(AgentRefusal(reason="web_full", web=load), f"{load.working} conversations started from the web are already working on this computer (at most {load.limit}); stop one first")
+            raise AgentRefused(WebFull(web=load), f"{load.working} conversations started from the web are already working on this computer (at most {load.limit}); stop one first")
 
     def working(self) -> bool:
         """One of these runs, or a run it launched, is starting or running now (waiting for its owner is not working)."""
