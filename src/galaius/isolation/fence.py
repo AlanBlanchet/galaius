@@ -52,7 +52,7 @@ from galaius_core import PlaceLevel
 
 from galaius.host.paths import UserPaths
 from galaius.host.pinned_directory import PinnedDirectory
-from galaius_core import AgentRefused
+from galaius_core import AgentRefused, TooLarge
 from galaius.machine.places.levels import DEPENDENCY_FOLDERS, LEVEL_RANK, NEVER_GRANTABLE, PlaceMap, split
 from galaius.upgrade.handoff import Children
 from galaius.upgrade.store import active_interpreter
@@ -277,7 +277,7 @@ class Scan(BaseModel):
                 continue
             seen += len(entries)
             if seen > SCAN_ENTRIES:
-                raise AgentRefused("too_large", f"{folder} holds more than {SCAN_ENTRIES} entries: too many to check before an agent sees it; open a smaller folder")
+                raise AgentRefused(TooLarge(limit=SCAN_ENTRIES, unit="entries"), f"{folder} holds more than {SCAN_ENTRIES} entries: too many to check before an agent sees it; open a smaller folder")
             for entry in entries:
                 name = entry.name.casefold()
                 if entry.is_symlink():

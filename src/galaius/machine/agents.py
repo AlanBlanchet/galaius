@@ -65,7 +65,7 @@ from galaius.host.pinned_directory import PinnedDirectory
 from galaius.machine.projects.project_files import ProjectFolder
 from galaius.diagnostics.redaction import mask, redact, secret_values
 from galaius.machine.projects.workspace_copy import WorkspaceRefused
-from galaius_core import AgentRefused
+from galaius_core import AgentRefused, TooLarge
 from galaius.machine.places.place_reviews import PlaceReviews
 from galaius.machine.places.levels import LEVEL_RANK, PlaceMap, split
 from galaius.machine.projects.project_secrets import ProjectEnv
@@ -369,7 +369,7 @@ class MachineAgents(BaseModel):
             case AgentStopRequest():
                 return await asyncio.to_thread(self._stop, request)
             case AgentAnswerRequest():
-                raise AgentRefused("not_here", "only a session asks before acting; this run is not one")
+                raise PermissionError("only a session asks before acting; this run is not one")
             case AgentSessionsRequest():
                 self._require_continue()
                 found = [session for editor in EditorConversations.every(self) for session in await editor.listed()]
@@ -696,10 +696,10 @@ class MachineAgents(BaseModel):
                 handle.seek(offset)
                 return handle.read(MACHINE_AGENT_MEDIA), facts.st_size
             if facts.st_size > MACHINE_AGENT_MEDIA:
-                raise AgentRefused("too_large", f"that {what} is larger than {MACHINE_AGENT_MEDIA // (1024 * 1024)} MiB")
+                raise AgentRefused(TooLarge(limit=MACHINE_AGENT_MEDIA, unit="bytes"), f"that {what} is larger than {MACHINE_AGENT_MEDIA // (1024 * 1024)} MiB")
             data = handle.read(MACHINE_AGENT_MEDIA + 1)
         if len(data) > MACHINE_AGENT_MEDIA:
-            raise AgentRefused("too_large", f"that {what} is larger than {MACHINE_AGENT_MEDIA // (1024 * 1024)} MiB")
+            raise AgentRefused(TooLarge(limit=MACHINE_AGENT_MEDIA, unit="bytes"), f"that {what} is larger than {MACHINE_AGENT_MEDIA // (1024 * 1024)} MiB")
         return data, len(data)
 
     @staticmethod
@@ -1002,16 +1002,17 @@ class MachineAgents(BaseModel):
 
     async def _allow(self, request: AgentAllowanceRequest) -> MachineAgentAnswer:
         """`RunAllowance`: the run may go on its subscription up to `up_to_percent` of the window it is
-        held or cut at; one held between turns gets its next turn now (as « Reprendre » does)."""
+        held or cut at, or the one it was already allowed past; one held between turns gets its next turn now (as
+        « Reprendre » does). An allowance with nothing to go past (no subscription, no cap holding it, a share at or
+        below the cap) changes nothing and says so."""
         run = await asyncio.to_thread(self._require_run, request.run_id)
-        if run.subscription is None or run.subscription.subscription_id is None:
-            raise AgentRefused("not_here", "this run is on no subscription: it has no cap to go past")
-        capped = run.subscription.capped
-        if capped is None:
-            raise AgentRefused("not_here", "no cap holds this run: an allowance goes past the cap a run was held or cut at")
-        if request.up_to_percent <= capped.cap_percent:
-            raise PermissionError(f"an allowance goes past the cap ({capped.cap_percent}%): ask for more than that, up to 100%")
-        allowance = SubscriptionAllowance(window=capped.window, up_to_percent=request.up_to_percent)
+        subscription = run.subscription if run.subscription is not None and run.subscription.subscription_id is not None else None
+        capped = subscription.capped if subscription is not None else None
+        given = subscription.allowance if subscription is not None else None
+        window = capped.window if capped is not None else given.window if given is not None else None
+        if window is None or (capped is not None and request.up_to_percent <= capped.cap_percent):
+            return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="nothing to allow: no cap holds this run below that share")
+        allowance = SubscriptionAllowance(window=window, up_to_percent=request.up_to_percent)
         run = await asyncio.to_thread(reg.merge_subscription, run.run_id, allowance=allowance.model_dump(mode="json"), capped=None) or run
         if run.status in {"running", "waiting"}:
             return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=f"allowed up to {request.up_to_percent}%")

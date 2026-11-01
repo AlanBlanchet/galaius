@@ -662,6 +662,27 @@ def test_a_message_sent_while_a_continued_conversation_answers_opens_its_next_tu
     assert turns == ["first", "second", "third"]
 
 
+@pytest.mark.parametrize(("pinned", "asked", "allowed"), [
+    (None, 95, None),
+    ({}, 95, None),
+    ({"capped": {"window": "weekly", "used_percent": 81, "cap_percent": 80, "at_cap": "finish"}}, 70, None),
+    ({"allowance": {"window": "weekly", "up_to_percent": 90}}, 95, 95),
+], ids=["no-subscription", "no-cap", "at-or-below-cap", "raised-again"])
+def test_an_allowance_with_nothing_to_go_past_changes_nothing_and_one_already_given_is_raised(base: Path, tmp_path: Path, pinned: dict | None, asked: int, allowed: int | None) -> None:
+    """2026-10-30 « stop placing hard rules »: an allowance on a run no cap holds was refused (« no cap holds this run »),
+    one at or below the cap too; it changes nothing and says so, and a run already allowed past its cap is allowed further."""
+    agents = _agents(base, tmp_path)
+    run_id = str(uuid4())
+    subscription = None if pinned is None else RunSubscription.model_validate({"subscription_id": str(UUID(int=7)), "limits": {}, **pinned})
+    reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="r", cwd=str(base / "project"), started_at=1.0, pid=os.getpid(), status="running", subscription=subscription))
+    agents.runs.add(WebRun(run_id=UUID(run_id), root="project"))
+    answer = _answer(agents, _request("allowance", run_id=run_id, up_to_percent=asked))
+    stored = reg.get_run(run_id)
+    assert stored is not None
+    given = stored.subscription.allowance if stored.subscription is not None else None
+    assert (given.up_to_percent if given is not None else None, answer.detail.startswith("nothing to allow")) == (allowed, allowed is None)
+
+
 def test_editor_conversations_need_their_own_opt_in(base: Path, tmp_path: Path) -> None:
     with pytest.raises(PermissionError, match="continuing your editor conversations"):
         _answer(_agents(base, tmp_path), _request("sessions"))
