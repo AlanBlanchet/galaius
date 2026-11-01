@@ -337,7 +337,7 @@ class MachineAgents(BaseModel):
             if not self.roots:
                 raise AgentRefused("folder_closed", "no agent folders on this computer yet; its owner adds one on its page on the web, or there with `galaius machine agent-roots <folder>`")
         if self.fence_agents and isinstance(request, (AgentStartRequest, AgentContinueRequest)) and (request.kind == "session" if isinstance(request, AgentStartRequest) else True):
-            raise PermissionError("sessions and continued conversations are not fenced yet, and the agent fence is on here: start an agent (a role), "
+            raise AgentRefused("fence_agents_only", "sessions and continued conversations are not fenced yet, and the agent fence is on here: start an agent (a role), "
                                   "or its owner switches the fence off there with `galaius machine fence off`")
         if isinstance(request, AgentContinueRequest) or (isinstance(request, AgentStartRequest) and request.kind == "session"):
             self.default_login_only(request)
@@ -367,7 +367,7 @@ class MachineAgents(BaseModel):
             case AgentStopRequest():
                 return await asyncio.to_thread(self._stop, request)
             case AgentAnswerRequest():
-                raise PermissionError("only a session asks before acting; this run is not one")
+                raise AgentRefused("not_here", "only a session asks before acting; this run is not one")
             case AgentSessionsRequest():
                 self._require_continue()
                 found = [session for editor in EditorConversations.every(self) for session in await editor.listed()]
@@ -377,7 +377,7 @@ class MachineAgents(BaseModel):
                 for editor in EditorConversations.every(self):
                     if (continued := await editor.continued(request)) is not None:
                         return continued
-                raise PermissionError("this conversation is not one this computer offers to continue")
+                raise AgentRefused("not_here", "this conversation is not one this computer offers to continue")
             case AgentLogsRequest():
                 return await asyncio.to_thread(self._logs, request)
             case AgentSettingsRequest():
@@ -551,15 +551,16 @@ class MachineAgents(BaseModel):
         return MachineAgentAnswer(request_id=request.id, runs=tuple(found), web=self.runs.load(request))
 
     @staticmethod
-    def compact_refusal(run: reg.AgentRun, kind: AgentRunKind) -> str | None:
+    def compact_refusal(run: reg.AgentRun, kind: AgentRunKind) -> AgentRefused | None:
         """Why `run` cannot be compacted from the web; None when it can. Its row's `compacts` says it before any press,
         `_compact` refuses by it: a session through its transport (Codex's app-server compacts, a completion route
         cannot), a queued run through its CLI's own command (`CompactionTurn`), an editor's conversation in its editor."""
         if kind == "continued":
-            return "a continued editor conversation is compacted in its editor"
+            return AgentRefused("in_editor", "a continued editor conversation is compacted in its editor")
         if kind == "session":
-            return None if _TransportRegistry.transport_type(run).compacts else "this conversation's provider cannot compact it"
-        return agent_queue.CompactionTurn.refused_for(run.provider)
+            return None if _TransportRegistry.transport_type(run).compacts else AgentRefused("cannot_compact", "this conversation's provider cannot compact it")
+        refused = agent_queue.CompactionTurn.refused_for(run.provider)
+        return None if refused is None else AgentRefused("cannot_compact", refused)
 
     def place(self, cwd: str) -> tuple[str, str]:
         """(agent root, path beneath it) of a folder a launched child works in; ("", "") elsewhere."""
@@ -576,7 +577,7 @@ class MachineAgents(BaseModel):
         _, runs = self._allowed()
         run = next((item for item in runs if item.run_id == str(run_id)), None)
         if run is None:
-            raise PermissionError("this run was not started from the web on this computer")
+            raise AgentRefused("not_here", "this run was not started from the web on this computer")
         return run
 
     @property
@@ -665,7 +666,7 @@ class MachineAgents(BaseModel):
         if not path.is_file():
             written = self._named_image(run.run_id, request.name)
             if written is None or not written.startswith(("/", "~/")):
-                raise PermissionError("no step of this run names that image")
+                raise AgentRefused("not_here", "no step of this run names that image")
             path = Path.home() / written[2:] if written.startswith("~/") else Path(written)
         data, _size = self._plain_file(path, "image")
         content_type = image_type(data)
@@ -682,21 +683,21 @@ class MachineAgents(BaseModel):
         try:
             descriptor = os.open(path, flags)
         except OSError:
-            raise PermissionError(f"that {what} is no longer on this computer") from None
+            raise AgentRefused("not_here", f"that {what} is no longer on this computer") from None
         with os.fdopen(descriptor, "rb") as handle:
             facts = os.fstat(handle.fileno())
             if not stat.S_ISREG(facts.st_mode):
                 raise PermissionError(f"that {what} is not a plain file")
             if offset is not None:
                 if offset >= max(facts.st_size, 1):
-                    raise PermissionError(f"that {what} ends before byte {offset:,}")
+                    raise AgentRefused("not_here", f"that {what} ends before byte {offset:,}")
                 handle.seek(offset)
                 return handle.read(MACHINE_AGENT_MEDIA), facts.st_size
             if facts.st_size > MACHINE_AGENT_MEDIA:
-                raise PermissionError(f"that {what} is larger than {MACHINE_AGENT_MEDIA // (1024 * 1024)} MiB")
+                raise AgentRefused("too_large", f"that {what} is larger than {MACHINE_AGENT_MEDIA // (1024 * 1024)} MiB")
             data = handle.read(MACHINE_AGENT_MEDIA + 1)
         if len(data) > MACHINE_AGENT_MEDIA:
-            raise PermissionError(f"that {what} is larger than {MACHINE_AGENT_MEDIA // (1024 * 1024)} MiB")
+            raise AgentRefused("too_large", f"that {what} is larger than {MACHINE_AGENT_MEDIA // (1024 * 1024)} MiB")
         return data, len(data)
 
     @staticmethod
@@ -839,7 +840,7 @@ class MachineAgents(BaseModel):
         if request.model is not None:
             # The launcher runs a role on what its own rule picks (a per-run model is never
             # honoured): refused, never silently replaced.
-            raise PermissionError("an agent runs on the model its rule picks; change the rule on its Agents page, or start a session to choose the model")
+            raise AgentRefused("model_by_policy", "an agent runs on the model its rule picks; change the rule on its Agents page, or start a session to choose the model")
         written = self._project_env(request, folder)
         # A lent run binds only closed login folders; a start's candidates each get theirs in the walk (`run_agent`).
         homes = pinned.homes() if pinned is not None else {}
@@ -853,11 +854,11 @@ class MachineAgents(BaseModel):
         if request.secrets is None:
             return 0
         if self.seal is None or request.project != request.secrets.project:
-            raise PermissionError("this computer cannot take these project secrets")
+            raise AgentRefused("secrets_refused", "this computer cannot take these project secrets")
         try:
             values = self.seal.open(request.secrets, request=request.id)
         except (InvalidTag, ValueError):
-            raise PermissionError("the project's secrets could not be opened on this computer") from None
+            raise AgentRefused("secrets_refused", "the project's secrets could not be opened on this computer") from None
         ProjectEnv.locate(folder, self.roots[request.root], request.secrets.origin).write(values, project=request.secrets.project)
         if self.logs is not None:
             self.logs.secrets = (*self.logs.secrets, *(value for value in values.values() if len(value) >= 8))
@@ -879,7 +880,7 @@ class MachineAgents(BaseModel):
         if root == PROJECTS_ROOT:   # one project folder written, no level (`FenceSpec.project`)
             inside = folder.relative_to(self.roots[root]).parts
             if not inside:
-                raise PermissionError("with the fence on, an agent starts inside one project folder, never in the projects folder itself")
+                raise AgentRefused("fence_closed", "with the fence on, an agent starts inside one project folder, never in the projects folder itself")
             project = self.roots[root] / inside[0]
         elif LEVEL_RANK[places.reach(parts)] < LEVEL_RANK["read"]:
             raise AgentRefused("fence_closed", f"no level opens {'/'.join(parts)} to agents; with the fence on, its owner sets one there first (`galaius machine places {root} write`)")
@@ -901,7 +902,7 @@ class MachineAgents(BaseModel):
     async def _send(self, request: AgentSendRequest) -> MachineAgentAnswer:
         run = await asyncio.to_thread(self._pinned_run, request)
         if request.reasoning is not None and self._kind(request.run_id) != "agent":
-            raise PermissionError("an editor conversation runs at the effort its editor sets; only an agent's is set here")
+            raise AgentRefused("in_editor", "an editor conversation runs at the effort its editor sets; only an agent's is set here")
         media = await asyncio.to_thread(reg.RunMedia.keep, run.run_id, request.images)
         if self._kind(request.run_id) == "continued":
             return await asyncio.to_thread(self.continue_turn, run, request.text, request_id=request.id, media=media)
@@ -939,7 +940,7 @@ class MachineAgents(BaseModel):
         run = await asyncio.to_thread(self._require_run, request.run_id)
         kind = self._kind(request.run_id)
         if (refusal := self.compact_refusal(run, kind)) is not None:
-            raise PermissionError(refusal)
+            raise refusal
         if kind == "session":
             return await self._session_action(request)
         environment = await asyncio.to_thread(self.launcher_environment_in, Path(run.cwd))
@@ -1002,10 +1003,10 @@ class MachineAgents(BaseModel):
         held or cut at; one held between turns gets its next turn now (as « Reprendre » does)."""
         run = await asyncio.to_thread(self._require_run, request.run_id)
         if run.subscription is None or run.subscription.subscription_id is None:
-            raise PermissionError("this run is on no subscription: it has no cap to go past")
+            raise AgentRefused("not_here", "this run is on no subscription: it has no cap to go past")
         capped = run.subscription.capped
         if capped is None:
-            raise PermissionError("no cap holds this run: an allowance goes past the cap a run was held or cut at")
+            raise AgentRefused("not_here", "no cap holds this run: an allowance goes past the cap a run was held or cut at")
         if request.up_to_percent <= capped.cap_percent:
             raise PermissionError(f"an allowance goes past the cap ({capped.cap_percent}%): ask for more than that, up to 100%")
         allowance = SubscriptionAllowance(window=capped.window, up_to_percent=request.up_to_percent)
@@ -1250,7 +1251,7 @@ class MachineAgents(BaseModel):
         if route is None:
             raise PermissionError(reason)
         if request.model is not None and request.model not in models:
-            raise PermissionError(f"{request.model} is not a model sessions can use here")
+            raise AgentRefused("model_unavailable", f"{request.model} is not a model sessions can use here")
         refresh = await asyncio.to_thread(self._refresh, folder)
         try:
             with self.staged(request.images) as images:
@@ -1284,13 +1285,13 @@ class MachineAgents(BaseModel):
                         raise AgentRefused("approvals_off", "answering a session's approvals from the web is off on this computer")
                     asked = next((item for item in await asyncio.to_thread(self.pending, run.run_id) if item.id == request.interaction_id), None)
                     if asked is None or asked.digest != request.digest:
-                        raise PermissionError("this approval is no longer the one waiting on this computer; read it again")
+                        raise AgentRefused("not_here", "this approval is no longer the one waiting on this computer; read it again")
                     # An approval is answered accept / decline and nothing else (never "for the whole
                     # session", never a policy change); a file change is accepted where its diff shows.
                     if asked.kind != "user_input" and (set(request.values) != {"decision"} or request.values["decision"] not in {"accept", "decline"}):
                         raise PermissionError("an approval is answered accept or decline, nothing else")
                     if asked.kind == "file_change_approval" and request.values.get("decision") != "decline":
-                        raise PermissionError("a file change is accepted in the editor on this computer, where its diff shows; from here it can only be declined")
+                        raise AgentRefused("in_editor", "a file change is accepted in the editor on this computer, where its diff shows; from here it can only be declined")
                     await host.answer(run.run_id, request.interaction_id, request.values)
                     detail = str(request.values.get("decision") or "answered")
         except ConversationRefused as error:
@@ -1313,7 +1314,7 @@ class MachineAgents(BaseModel):
                 return MachineAgentAnswer(request_id=request_id, run_id=UUID(run.run_id), detail="sent", reads_at="now")
             current = reg.get_run(run.run_id) or run
             if fork_from is None and reg.trees(frozenset({run.run_id}))[0].status in {"running", "waiting"}:
-                raise PermissionError("it is still answering; send this once it has finished")
+                raise AgentRefused("answering", "it is still answering; send this once it has finished")
             reg.record_message_event(from_run=reg.PERSON_SENDER, to_run=run.run_id, text=text, event_id=str(request_id), media=media)
             said = reg.RunMedia.mentioned(text, (reg.RunMedia.path(run.run_id, name) for name in media))
             try:

@@ -654,10 +654,12 @@ def test_an_approval_answer_must_match_what_is_waiting(base: Path, tmp_path: Pat
     monkeypatch.setattr(MachineSessions, "host", host)
     pending = _answer(agents, _request("runs")).runs[0].pending
     assert [item.id for item in pending] == ["i1"] and pending[0].digest == interaction_digest(pending[0].model_dump(mode="json"))
-    with pytest.raises(PermissionError, match="no longer the one waiting"):
+    with pytest.raises(AgentRefused, match="no longer the one waiting") as refused:
         _answer(agents, _request("answer", run_id=run_id, interaction_id="i1", digest="0" * 64, values={"decision": "decline"}))
-    with pytest.raises(PermissionError, match="accepted in the editor"):
+    assert refused.value.refusal.reason == "not_here"
+    with pytest.raises(AgentRefused, match="accepted in the editor") as refused:
         _answer(agents, _request("answer", run_id=run_id, interaction_id="i1", digest=pending[0].digest, values={"decision": "accept"}))
+    assert refused.value.refusal.reason == "in_editor"
     _answer(agents, _request("answer", run_id=run_id, interaction_id="i1", digest=pending[0].digest, values={"decision": "decline"}))
     assert answered == [("i1", {"decision": "decline"})]
 
@@ -666,8 +668,9 @@ def test_sessions_and_unknown_models_are_refused_without_their_setting(base: Pat
     agents = _agents(base, tmp_path)
     with pytest.raises(PermissionError, match="approvals from the web is off"):
         _answer(agents, _request("start", root="project", kind="session", text="hi"))
-    with pytest.raises(PermissionError, match="runs on the model its rule picks"):
+    with pytest.raises(AgentRefused, match="runs on the model its rule picks") as refused:
         _answer(agents, _request("start", root="project", role="app-engineer", provider="claude", model="claude-sonnet-5", text="go"))
+    assert refused.value.refusal.reason == "model_by_policy"
 
 
 def test_a_message_to_a_session_on_its_turn_waits_for_the_turn_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1079,8 +1082,9 @@ def test_with_the_fence_on_an_agent_never_starts_unfenced(base: Path, tmp_path: 
     agents = _fenced_agents(base, tmp_path, ("false",))
     with pytest.raises(PermissionError, match="cannot be built: bubblewrap"):
         _answer(agents, _request("start", root="project", role="app-engineer", text="tidy"))
-    with pytest.raises(PermissionError, match="not fenced yet"):
+    with pytest.raises(AgentRefused, match="not fenced yet") as refused:
         _answer(agents, _request("start", root="project", kind="session", text="hello"))
+    assert refused.value.refusal.reason == "fence_agents_only"
     assert agents.runs.read() == ()
 
 

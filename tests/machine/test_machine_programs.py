@@ -15,6 +15,7 @@ import httpx
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 import pytest
+from galaius.agents.limits.subscriptions import SubscriptionRefused
 from galaius_core import AgentSignIn
 
 from galaius.agents.providers import PROVIDERS, AgentProvider, LoginStatus
@@ -161,17 +162,22 @@ def test_claude_signs_in_from_any_browser_with_the_code_its_page_shows(tmp_path:
     if pasted is not None:
         assert (state.sign_in.link, state.sign_in.paste.pasted) == (CLAUDE_PASTE, False)
         attempt, seal = state.sign_in.paste.attempt, sealer(state.sign_in.paste.seal_key)
-        with pytest.raises(PermissionError, match="no claude sign-in"):
+        with pytest.raises(SubscriptionRefused, match="no claude sign-in") as refused:
             jobs.paste("claude", UUID(int=7), attempt, seal(pasted))  # another login's: nothing waits there
-        with pytest.raises(PermissionError, match="no claude sign-in"):
+        assert refused.value.refusal.reason == "sign_in_over"
+        with pytest.raises(SubscriptionRefused, match="no claude sign-in") as refused:
             jobs.paste("claude", None, UUID(int=8), seal(pasted))  # another attempt's (an older link)
-        with pytest.raises(PermissionError, match="sealed to this"):
+        assert refused.value.refusal.reason == "sign_in_over"
+        with pytest.raises(SubscriptionRefused, match="sealed to this") as refused:
             jobs.paste("claude", None, attempt, sealer(OTHER_KEY)(pasted))  # sealed to another key: whoever carried it cannot swap it
-        with pytest.raises(PermissionError, match="not a claude"):
+        assert refused.value.refusal.reason == "code_invalid"
+        with pytest.raises(SubscriptionRefused, match="not a claude") as refused:
             jobs.paste("claude", None, attempt, seal(pasted + "\nsecond line"))
+        assert refused.value.refusal.reason == "code_invalid"
         assert jobs.paste("claude", None, attempt, seal(f" {pasted}\n")).sign_in.paste.pasted  # what a paste carries around it is trimmed
-        with pytest.raises(PermissionError, match="already"):
+        with pytest.raises(SubscriptionRefused, match="already") as refused:
             jobs.paste("claude", None, attempt, seal(pasted))
+        assert refused.value.refusal.reason == "sign_in_over"
     else:
         with pytest.raises(PermissionError):
             jobs.paste("claude", None, UUID(int=8), sealer(OTHER_KEY)(CODE))  # no address for any browser: no code is taken

@@ -148,17 +148,17 @@ class AgentPrograms(BaseModel):
             job, (login, waiting, private) = self._jobs.get(key), self._logins.get(key, (None, None, None))
             heard = None if job is None or job.step != "signing_in" or job.sign_in is None else job.sign_in.paste
             if heard is not None and heard.attempt == attempt and heard.pasted:  # a second press, its program done or not
-                raise PermissionError(f"a code was already handed to this {name} sign-in: start it again for another")
+                raise SubscriptionRefused("sign_in_over", f"a code was already handed to this {name} sign-in: start it again for another")
             if heard is None or heard.attempt != attempt or waiting != attempt or login is None or private is None or login.poll() is not None:
-                raise PermissionError(f"no {name} sign-in waits for this code here: start it again")
+                raise SubscriptionRefused("sign_in_over", f"no {name} sign-in waits for this code here: start it again")
             try:
                 code = private.decrypt(base64.b64decode(sealed, validate=True), self.SEAL).decode("utf-8").strip()
             except (ValueError, UnicodeError) as error:
-                raise PermissionError(f"not a {name} sign-in code sealed to this sign-in") from error
+                raise SubscriptionRefused("code_invalid", f"not a {name} sign-in code sealed to this sign-in") from error
             if not self.PASTED.fullmatch(code):  # one line, nothing a terminal would read as more input
-                raise PermissionError(f"not a {name} sign-in code")
+                raise SubscriptionRefused("code_invalid", f"not a {name} sign-in code")
             if (whole := PROVIDERS[name].paste_code) is not None and not whole.fullmatch(code):
-                raise PermissionError(f"not the whole code {name}'s page shows: it is still waiting for it")
+                raise SubscriptionRefused("code_invalid", f"not the whole code {name}'s page shows: it is still waiting for it")
             assert job is not None and job.sign_in is not None and login.stdin is not None
             unsent = job
             self._jobs[key] = job = job.model_copy(update={"sign_in": job.sign_in.model_copy(update={"paste": heard.model_copy(update={"pasted": True})}), "changed_at": datetime.now(UTC)})
@@ -167,7 +167,7 @@ class AgentPrograms(BaseModel):
                 login.stdin.close()
             except OSError as error:  # it ended between the check and the write: it ends « stopped », never « code refused »
                 self._jobs[key] = unsent
-                raise PermissionError(f"the {name} sign-in ended before its code: start it again") from error
+                raise SubscriptionRefused("sign_in_over", f"the {name} sign-in ended before its code: start it again") from error
         return job
 
     def sign_out(self, name: AgentProvider, subscription_id: UUID) -> AgentProviderState:
@@ -180,16 +180,16 @@ class AgentPrograms(BaseModel):
         with self._lock:
             job = self._jobs.get(key)
             if job is not None and job.step == "installing":
-                raise PermissionError(f"{name} is installing here; sign out once it is installed")
+                raise SubscriptionRefused("sign_in_busy", f"{name} is installing here; sign out once it is installed")
             login = self._logins.get(key, (None, None, None))[0] if job is not None and job.step == "signing_in" else None
             if job is not None and job.step == "signing_in" and login is None:
-                raise PermissionError(f"its {name} sign-in is starting; sign out again in a few seconds")
+                raise SubscriptionRefused("sign_in_busy", f"its {name} sign-in is starting; sign out again in a few seconds")
         if login is not None:  # a sign-in under way in its folder: ended first, it is what he undoes
             end_process_tree(login.pid)
             deadline = time.monotonic() + 2 * self.poll_seconds + 10
             while (job := self._jobs.get(key)) is not None and job.step in self.RUNNING:
                 if time.monotonic() > deadline:
-                    raise PermissionError(f"its {name} sign-in did not stop; sign out again")
+                    raise SubscriptionRefused("sign_in_busy", f"its {name} sign-in did not stop; sign out again")
                 time.sleep(0.05)
         state = self._base(subscription.program, subscription)
         self._logout(subscription)

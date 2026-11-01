@@ -277,7 +277,7 @@ class Scan(BaseModel):
                 continue
             seen += len(entries)
             if seen > SCAN_ENTRIES:
-                raise PermissionError(f"{folder} holds more than {SCAN_ENTRIES} entries: too many to check before an agent sees it; open a smaller folder")
+                raise AgentRefused("too_large", f"{folder} holds more than {SCAN_ENTRIES} entries: too many to check before an agent sees it; open a smaller folder")
             for entry in entries:
                 name = entry.name.casefold()
                 if entry.is_symlink():
@@ -341,12 +341,12 @@ class FenceSpec(BaseModel):
         try:
             start_parts = self.start.resolve().relative_to(base).parts
         except ValueError:
-            raise PermissionError(f"{self.start} is outside this PC's working directory") from None
+            raise AgentRefused("fence_closed", f"{self.start} is outside this PC's working directory") from None
         opened = sorted(places.in_force("read").items(), key=lambda item: len(split(item[0])))
         if self.project is not None:
             facts = self.project.lstat()
             if not stat.S_ISDIR(facts.st_mode) or PinnedDirectory.link_like(facts) or self.project.resolve() != self.project or self.project not in (self.start.resolve(), *self.start.resolve().parents):
-                raise PermissionError(f"{self.start} is not inside the plain project folder {self.project}")
+                raise AgentRefused("fence_closed", f"{self.start} is not inside the plain project folder {self.project}")
             opened.append((self.project.relative_to(base).as_posix(), (self.project, "write")))
         elif start_parts and LEVEL_RANK[places.reach(start_parts)] < LEVEL_RANK["read"]:
             raise AgentRefused("fence_closed", f"no level opens {'/'.join(start_parts)} to agents; its owner sets one on this PC with `galaius machine places`")
