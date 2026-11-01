@@ -5,6 +5,7 @@ through the runner's egress proxy, and cannot leave anything that runs later out
 read again at each turn. Live checks run where this PC can build the fence (Linux with
 bubblewrap and Landlock scopes); elsewhere the fence says why it is unavailable."""
 
+import asyncio
 import errno
 import json
 import os
@@ -21,8 +22,12 @@ from galaius.agents import providers
 from galaius.agents.providers import CodexProvider
 from galaius_core import MachineFence
 from galaius_core.wire import fitted
+from mcp.server.fastmcp.exceptions import ToolError
 
 from galaius.isolation import fence
+from galaius.data import PackageData
+from galaius.mcp.announcement import GatewayServed, McpAnnouncement
+from galaius.mcp.endpoint import SharedEndpoint
 from galaius.agents.providers import PROVIDERS
 from galaius.isolation.fence import Confinement, EgressProxy, FenceSpec, available, confinement_refusal, fenced, userns_refusal
 
@@ -455,3 +460,74 @@ def test_a_turn_is_fenced_for_its_own_cli_alone(home: Path, tmp_path: Path, cli:
                           env={**os.environ, kept: "own-key", dropped: "other-key"})
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout) == ["own-key", "", False]
+
+
+READ_ONLY_PROBE = r"""
+import json
+def attempt(path):
+    try:
+        with open(path, "w") as stream:
+            stream.write("hi")
+        return "ok"
+    except OSError as error:
+        return error.strerror
+print(json.dumps({place: attempt(folder + "/hi") for place, folder in PLACES.items()}))
+"""
+
+
+@pytest.mark.parametrize("cli, stands_down", [("claude", ["--permission-mode", "dontAsk", "--strict-mcp-config"]),
+                                               ("codex", ["--sandbox", "danger-full-access", 'default_tools_approval_mode="approve"'])])
+def test_a_read_only_run_drives_apps_and_writes_only_in_its_scratch(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                                    cli: str, stands_down: list[str]) -> None:
+    """A read-only run starts in a fence reading its folder alone: its CLI's own read-only mode stands down (so galaius's
+    app tools run), the kernel refuses every write but its scratch folder's, and its galaius server serves the app tools
+    alone, saving only inside that scratch folder."""
+    from galaius.agents.run import fence_decides, mesh_config
+    from galaius.diagnostics.debug_output import resolve_output_path
+    from galaius.runtime import config
+    from galaius.server import core
+
+    provider, scratch = PROVIDERS[cli], tmp_path / "scratch"
+    # A CLI npm installed (`#!/usr/bin/env node`) is seen with the node beside it: without it, it cannot start inside.
+    npm = tmp_path / "npm" / "bin"
+    npm.mkdir(parents=True)
+    (npm / "node").write_bytes(b"\x7fELF")
+    (npm / "tool").write_text("#!/usr/bin/env -S node --no-warnings\n")
+    spec = FenceSpec.reading((provider,), home / "docs", scratch=scratch, state=tmp_path / "state", programs=(npm / "tool",))
+    assert {npm / "tool", npm / "node"} <= set(spec.programs)
+    assert spec.writes_nothing() and fence_decides(provider, spec, "read_only")
+    assert not fence_decides(provider, _spec(home, tmp_path), "read_only")  # a fence that writes somewhere leaves the CLI's own mode on
+    monkeypatch.setattr(type(provider), "available", lambda self: True)
+    monkeypatch.setattr(provider, "_bwrap_refusal", lambda: "no nested bwrap", raising=False)
+    mesh = mesh_config(run_id="r1", role="tester", fence=spec)
+    # Its server is told its scratch folder and the fence's renderer pin (Codex hands its servers no other variable).
+    assert json.loads(mesh)["mcpServers"]["galaius"]["env"].items() >= {GatewayServed.SCRATCH: str(scratch), **fence.software_rendering()}.items()
+    argv = provider.command("t", cwd=str(home / "docs"), model=None, run_id="r1", permission_mode="read_only", fence_decides=True, mcp_config=mesh)
+    # Its CLI's own read-only mode stands down, and only galaius's server for this run is reached (never the person's own entry).
+    assert all(any(flag in argument for argument in argv) for flag in stands_down) and "plan" not in argv and "read-only" not in argv
+    if cli == "claude":  # `dontAsk` refuses every tool not granted: its role's tools are, each one
+        granted = provider.command("t", cwd=str(home / "docs"), model=None, run_id="r1", permission_mode="read_only", fence_decides=True,
+                                   agent="tester", agent_prompt="p", allowed_tools=["Read", "WebFetch", "mcp__galaius__screenshot"], mcp_config=None)
+        assert granted[granted.index("--allowedTools") + 1].split(",") == ["Read", "WebFetch", "mcp__galaius__screenshot", "mcp__galaius"]
+    assert argv[0] != sys.executable  # never Galaius's weaker confinement under the fence
+
+    monkeypatch.setattr(config, "scratch", scratch)
+    monkeypatch.setenv("GALAIUS_SCRATCH", str(scratch))
+    assert not SharedEndpoint.supported()  # its own server, never one shared with runs that write
+    assert resolve_output_path("shot.png") == scratch / "shot.png"
+    for outside in ("~/shot.png", str(home / "docs/shot.png"), "../shot.png"):
+        with pytest.raises(PermissionError):
+            resolve_output_path(outside)
+    served = {tool.name for tool in asyncio.run(core.mcp.list_tools())}
+    assert {"launch_app", "screenshot", "run_actions"} <= served and not served & {"agent_spawn", "navigate", "create_file"}
+    # What its client is told before the server answers (the install's snapshot) is the same list.
+    announced = McpAnnouncement.read(PackageData.path(PackageData.MCP_ANNOUNCEMENT)).as_served()
+    assert {tool["name"] for tool in announced.lists["tools/list"]["tools"]} == served
+    with pytest.raises(ToolError):
+        asyncio.run(core.mcp.call_tool("agent_spawn", {}))
+
+    if available()[0]:
+        places = {"start": str(home / "docs"), "scratch": str(scratch), "egress": fence.EGRESS_MOUNT}
+        tried = _inside(spec, f"PLACES = {places!r}\n{READ_ONLY_PROBE}")
+        assert tried == {"start": "Read-only file system", "scratch": "ok", "egress": "Read-only file system"}
+        assert (scratch / "hi").read_text() == "hi" and not (home / "docs/hi").exists()

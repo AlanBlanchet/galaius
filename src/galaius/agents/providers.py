@@ -44,7 +44,7 @@ from galaius.agents.limits.quota import REFUSAL
 from galaius.agents.catalog.profiles import overlay_for
 from galaius.agents.catalog.vocabulary import CLAUDE_VOCABULARY, CODEX_VOCABULARY, ApprovalIntent, HarnessVocabulary, TouchScope, ThinkingLevel
 from galaius.brief_hook import NOTE as BRIEF_NOTE
-from galaius.isolation.fence import COMPAT_KEY, RELAY, FencedCli, RELAY_PORT, Confinement, RelayedServer, SignIn, confinement_refusal, userns_refusal
+from galaius.isolation.fence import COMPAT_KEY, EGL_VENDOR, RELAY, FencedCli, RELAY_PORT, Confinement, RelayedServer, SignIn, confinement_refusal, userns_refusal
 from galaius.inbox_hook import NOTE as INBOX_NOTE
 from galaius.models.registry import Model
 from galaius.host.processes import ask_process, run_isolated_process, shell_entries
@@ -766,7 +766,7 @@ class AgentProvider(ABC):
                 reasoning: str | None = None,
                 agent_prompt: str | None = None, denied_tools: tuple[str, ...] = (),
                 image_paths: tuple[Path, ...] = (), coarse_accepted: bool = False,
-                base_url: str | None = None, environment: Mapping[str, str] | None = None) -> list[str]:
+                base_url: str | None = None, environment: Mapping[str, str] | None = None, fence_decides: bool = False) -> list[str]:
         """The argv to spawn for this task. ``agent`` names a definition the CLI resolves itself
         (Claude Code reads ~/.claude/agents/<name>.md), so a run can BE 'visual-critic'.
         ``coarse_accepted`` is the operator's recorded acceptance of sandbox-only enforcement for
@@ -932,7 +932,7 @@ class AgentProvider(ABC):
         agent: str | None = None, agent_prompt: str | None = None,
         mcp_config: str | None = None, allowed_tools: list[str] | None = None,
         denied_tools: tuple[str, ...] = (), coarse_accepted: bool = False,
-        base_url: str | None = None, fork_to: str | None = None,
+        base_url: str | None = None, fork_to: str | None = None, fence_decides: bool = False,
     ) -> list[str]:
         """The argv that delivers ``message`` into an existing session — or, with ``fork_to``, into
         a COPY of it under that new id (the original is never written)."""
@@ -1403,11 +1403,20 @@ class ClaudeCodeProvider(AgentProvider):
     def permission_modes(self) -> list[PermissionMode]:
         return list(self._MODES)
 
-    def _permission_flag(self, mode: str | None) -> list[str]:
+    #: What a run whose writes its fence refuses (`fence_decides`) and whose role names no tools is granted besides
+    #: galaius's: the tools Claude Code asks before running (`dontAsk` refuses each one not granted).
+    FENCED_GRANT: ClassVar[tuple[str, ...]] = ("Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch")
+
+    def _permission_flag(self, mode: str | None, fence_decides: bool = False, allowed_tools: list[str] | None = None) -> list[str]:
         """A read-only run (`plan`) also granted galaius's tools: plan refuses every MCP tool it is not granted, and of
         those granted, every one not marked `readOnlyHint` (2.1.288: « Cannot call mcp__galaius__launch_app while in plan
         mode »), so it calls exactly galaius's read-only ones (`_SessionScopedMCP.tool`'s `read_only`) — within its role's
-        tools, minus its denied ones (`--disallowedTools` wins over a grant)."""
+        tools, minus its denied ones (`--disallowedTools` wins over a grant). `fence_decides`: inside a fence that refuses
+        its writes, `dontAsk` granted its role's `allowed_tools` (`FENCED_GRANT` for a role naming none) — every tool of its
+        role runs, galaius's app tools too, and a write fails in the kernel."""
+        if fence_decides:
+            granted = (*(self.FENCED_GRANT if allowed_tools is None else allowed_tools), _GALAIUS_MCP_PREFIX.removesuffix("__"))
+            return [*super()._permission_flag("dontAsk"), "--allowedTools", ",".join(dict.fromkeys(granted))]
         grant = ["--allowedTools", _GALAIUS_MCP_PREFIX.removesuffix("__")] if self.touch_of(mode) is TouchScope.READ_ONLY else []
         return super()._permission_flag(mode) + grant
 
@@ -1443,9 +1452,13 @@ class ClaudeCodeProvider(AgentProvider):
         return arguments
 
     @staticmethod
-    def _mcp_arguments(mcp_config: str | None, allowed_tools: list[str] | None) -> list[str]:
-        """`--mcp-config`, never for a role with no tool at all (`role_arguments`)."""
-        return ["--mcp-config", mcp_config] if mcp_config and not no_tools(allowed_tools) else []
+    def _mcp_arguments(mcp_config: str | None, allowed_tools: list[str] | None, strict: bool = False) -> list[str]:
+        """`--mcp-config`, never for a role with no tool at all (`role_arguments`). `strict`: that server alone — the
+        person's own `galaius` entry (~/.claude.json) otherwise shadows it, and inside a fence (`fence_decides`) it
+        starts a program the fence does not hold, without the run's scratch folder."""
+        if not mcp_config or no_tools(allowed_tools):
+            return []
+        return ["--mcp-config", mcp_config, *(["--strict-mcp-config"] if strict else [])]
 
     def command(self, task: str, **arguments) -> list[str]:
         # The prompt goes LAST, after "--": one starting with "-" (a markdown bullet) is the
@@ -1460,7 +1473,7 @@ class ClaudeCodeProvider(AgentProvider):
                 agent_prompt: str | None = None, denied_tools: tuple[str, ...] = (),
                 image_paths: tuple[Path, ...] = (), coarse_accepted: bool = False,
                 base_url: str | None = None, environment: Mapping[str, str] | None = None,
-                turn: ClaudeTurnSettings | None = None) -> list[str]:
+                turn: ClaudeTurnSettings | None = None, fence_decides: bool = False) -> list[str]:
         # `base_url` is unused here: Claude Code only ever speaks the Anthropic wire protocol
         # (ANTHROPIC_BASE_URL, read from its own process env, set by resolve_model's overlay) —
         # never OpenAI's, so a routed hf/vllm endpoint is never handed to this binary at all
@@ -1479,8 +1492,8 @@ class ClaudeCodeProvider(AgentProvider):
         ]
         if model:
             argv += ["--model", model]
-        argv += self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools) + self._mcp_arguments(mcp_config, allowed_tools)
-        argv += self._permission_flag(permission_mode) + self._setting_sources(environment) + (turn.arguments() if turn else [])
+        argv += self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools) + self._mcp_arguments(mcp_config, allowed_tools, strict=fence_decides)
+        argv += self._permission_flag(permission_mode, fence_decides, allowed_tools) + self._setting_sources(environment) + (turn.arguments() if turn else [])
         if reasoning is not None:
             argv += ["--effort", self.provider_thinking_level(reasoning)]
         return argv
@@ -1593,11 +1606,11 @@ class ClaudeCodeProvider(AgentProvider):
         agent_prompt: str | None = None, allowed_tools: list[str] | None = None,
         denied_tools: tuple[str, ...] = (), mcp_config: str | None = None,
         coarse_accepted: bool = False, base_url: str | None = None, fork_to: str | None = None,
-        turn: ClaudeTurnSettings | None = None,
+        turn: ClaudeTurnSettings | None = None, fence_decides: bool = False,
     ) -> list[str]:
         """Continue an existing session using its provider session id (`fork_to`: as a copy)."""
         return [*self._resume_options(session_id, model=model, permission_mode=permission_mode, agent=agent, agent_prompt=agent_prompt, allowed_tools=allowed_tools,
-                                      denied_tools=denied_tools, mcp_config=mcp_config, fork_to=fork_to, turn=turn), "--", message]
+                                      denied_tools=denied_tools, mcp_config=mcp_config, fork_to=fork_to, turn=turn, fence_decides=fence_decides), "--", message]
 
     def resume_ahead_command(self, session_id: str, **arguments) -> list[str]:
         """`resume_command`'s options, the message read as stream-json input: the CLI loads the
@@ -1620,7 +1633,7 @@ class ClaudeCodeProvider(AgentProvider):
         self, session_id: str, *, model: str | None = None, permission_mode: str | None = None, reasoning: str | None = None,
         agent: str | None = None, agent_prompt: str | None = None, allowed_tools: list[str] | None = None, denied_tools: tuple[str, ...] = (),
         mcp_config: str | None = None, coarse_accepted: bool = False, base_url: str | None = None, fork_to: str | None = None,
-        turn: ClaudeTurnSettings | None = None,
+        turn: ClaudeTurnSettings | None = None, fence_decides: bool = False,
     ) -> list[str]:
         # base_url unused — see command()'s docstring note; reasoning travels as CLAUDE_CODE_EFFORT_LEVEL.
         return [
@@ -1629,7 +1642,7 @@ class ClaudeCodeProvider(AgentProvider):
             *(["--fork-session", "--session-id", fork_to] if fork_to else []),
             "--output-format", "stream-json",
             "--verbose",
-        ] + (["--model", model] if model else []) + self._permission_flag(permission_mode) + self._setting_sources() + (turn.arguments() if turn else []) + self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools) + self._mcp_arguments(mcp_config, allowed_tools)
+        ] + (["--model", model] if model else []) + self._permission_flag(permission_mode, fence_decides, allowed_tools) + self._setting_sources() + (turn.arguments() if turn else []) + self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools) + self._mcp_arguments(mcp_config, allowed_tools, strict=fence_decides)
 
     #: Claude's two usage dialects: ``message.usage`` / ``result.usage`` (snake) and
     #: ``result.modelUsage[model]`` (camel). Each reports the UNCACHED prompt remainder, cache
@@ -1892,7 +1905,7 @@ class _CodexMeshServer(BaseModel):
 
     command: str = Field(min_length=1)
     args: list[str]
-    env: dict[Literal["GALAIUS_PARENT_RUN_ID", GatewayServed.ROLE], Annotated[str, Field(min_length=1)]] = Field(min_length=1)
+    env: dict[Literal["GALAIUS_PARENT_RUN_ID", GatewayServed.SCRATCH, GatewayServed.ROLE, EGL_VENDOR], Annotated[str, Field(min_length=1)]] = Field(min_length=1)
 
 
 class _CodexMesh(BaseModel):
@@ -2459,13 +2472,19 @@ class CodexProvider(AgentProvider):
                 reasoning: str | None = None,
                 agent_prompt: str | None = None, denied_tools: tuple[str, ...] = (),
                 image_paths: tuple[Path, ...] = (), coarse_accepted: bool = False,
-                base_url: str | None = None, environment: Mapping[str, str] | None = None) -> list[str]:
+                base_url: str | None = None, environment: Mapping[str, str] | None = None, fence_decides: bool = False) -> list[str]:
+        """`fence_decides`: it starts inside a fence that refuses its writes, so Codex's own sandbox (whose bwrap cannot
+        nest under the fence's `--disable-userns`) stands down — `danger-full-access`, its galaius tools approved — and
+        the fence alone decides what it writes."""
         self.validate_tool_policy(allowed_tools, denied_tools, coarse_accepted=coarse_accepted)
         task = self._inject_definition(agent, task, agent_prompt)
         sandbox = self._native_sandbox_arguments(allowed_tools or [], denied_tools, permission_mode=permission_mode, coarse_accepted=coarse_accepted)
+        if fence_decides:
+            sandbox[1] = "danger-full-access"
         confinement = self._confinement(sandbox[1], mcp_config)
         argv = [self.binary, "exec", "--json", *self.exec_flags, *self.native_delegation_flags, *self.platform_flags(), *self._setting_sources(environment)]
-        argv += self.mesh_arguments(mcp_config, relayed=confinement is not None, read_only=self.touch_of(permission_mode) is TouchScope.READ_ONLY)
+        argv += self.mesh_arguments(mcp_config, relayed=confinement is not None,
+                                    read_only=not fence_decides and self.touch_of(permission_mode) is TouchScope.READ_ONLY)
         argv += self._mcp_tool_scope_arguments(allowed_tools or [], denied_tools)
         argv += sandbox if confinement is None else [self.permission_option, "danger-full-access", *sandbox[2:]]
         argv += self._openai_compat_arguments(base_url)
@@ -2499,9 +2518,9 @@ class CodexProvider(AgentProvider):
         agent: str | None = None,
         mcp_config: str | None = None, allowed_tools: list[str] | None = None,
         agent_prompt: str | None = None, denied_tools: tuple[str, ...] = (),
-        coarse_accepted: bool = False, base_url: str | None = None, fork_to: str | None = None,
+        coarse_accepted: bool = False, base_url: str | None = None, fork_to: str | None = None, fence_decides: bool = False,
     ) -> list[str]:
-        """Resume a stopped session with fresh model and reasoning policy.
+        """Resume a stopped session with fresh model and reasoning policy (`fence_decides`: as `command`'s).
 
         ``exec resume`` has no ``--sandbox`` option: every turn names its scope with ``-c sandbox_mode``,
         from the same policy as its first turn, never the scope the session saved (a turn begun inside
@@ -2524,10 +2543,11 @@ class CodexProvider(AgentProvider):
         mapping = _widen_for_coarse_acceptance(
             _classify_native_tools(*_native_tool_sets(allowed_tools or [], denied_tools)), coarse_accepted,
         )
-        native = self.provider_permission_mode(permission_mode) if permission_mode is not None else None
+        native = "danger-full-access" if fence_decides else self.provider_permission_mode(permission_mode) if permission_mode is not None else None
         confinement = self._confinement(native if native is not None else mapping.sandbox_mode, mcp_config)
         argv = [self.binary, "exec", "resume", "--json", *self.exec_flags, *self.native_delegation_flags, *self.platform_flags(), *self._setting_sources()]
-        argv += self.mesh_arguments(mcp_config, relayed=confinement is not None, read_only=self.touch_of(permission_mode) is TouchScope.READ_ONLY)
+        argv += self.mesh_arguments(mcp_config, relayed=confinement is not None,
+                                    read_only=not fence_decides and self.touch_of(permission_mode) is TouchScope.READ_ONLY)
         argv += self._mcp_tool_scope_arguments(allowed_tools or [], denied_tools)
         argv += self._openai_compat_arguments(base_url)
         # An explicit `permission_mode` is the operator's own per-turn choice; the shell/network

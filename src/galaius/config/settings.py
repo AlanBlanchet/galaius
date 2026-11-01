@@ -322,6 +322,10 @@ class Config(BaseSettings):
     # (debug_dir/sessions/…). Default ~/.galaius/out, kept under out/ so root stays clean.
     # Override: GALAIUS_DEBUG_DIR. screenshot_dump_dir wins if set.
     debug_dir: Path = Field(default_factory=lambda: Path.home() / ".galaius" / "out")
+    # A read-only run's output folder, set by its runner in the env of the server it starts inside the run's
+    # fence (GALAIUS_SCRATCH, `mesh_config`): every output path a caller names lands there or is refused, and
+    # only its `fenced` tools are served. None: a server serving whoever starts it.
+    scratch: Path | None = None
     video_fps: int = 5
     video_duration: float = 3.0
     # Cost cap: recording sampled to at most this many evenly-spaced frames before the VLM, so
@@ -414,7 +418,7 @@ class Config(BaseSettings):
     nested_headless: bool = True
 
     @field_validator(
-        "debug_dir", "screenshot_dump_dir", "browser_profile_dir", "prompt_cache",
+        "debug_dir", "screenshot_dump_dir", "browser_profile_dir", "prompt_cache", "scratch",
         "prompt_token_file", mode="after"
     )
     @classmethod

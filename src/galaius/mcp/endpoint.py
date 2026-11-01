@@ -13,7 +13,7 @@ from typing import NoReturn
 from galaius import mcp_relay
 
 from galaius.agents.limits.ceiling import contained
-from galaius.mcp.announcement import McpAnnouncement
+from galaius.mcp.announcement import GatewayServed, McpAnnouncement
 from galaius.mcp_relay import Endpoint
 from galaius.host.paths import UserPaths
 from galaius.host.private_files import PRIVATE_FILES
@@ -37,21 +37,22 @@ class SharedEndpoint:
     @classmethod
     def for_client(cls, runtime: Runtime) -> Endpoint:
         """`runtime`'s endpoint with what to answer ahead while its server starts: its announcement with
-        this client's gateway tools (`McpAnnouncement.with_gateway`, read in the client's own environment)."""
+        this client's tools (`McpAnnouncement.as_served`, read in the client's own environment)."""
         endpoint = cls.of(runtime)
         site = runtime.site_packages
         announced = None if site is None else McpAnnouncement.installed(site)
         if announced is not None:
             ahead = Path(endpoint.socket).with_name(f"ahead-{os.getpid()}.json")
-            PRIVATE_FILES.write_text(ahead, announced.with_gateway().model_dump_json())
+            PRIVATE_FILES.write_text(ahead, announced.as_served().model_dump_json())
             endpoint.ahead = str(ahead)
         return endpoint
 
     #: `0`: each client starts its own server under its upgrade supervisor, as on Windows.
     SWITCH_VARIABLE = "GALAIUS_SHARED_MCP"
     #: Set by a client that configures galaius through the server's environment (the VS Code extension: its keys,
-    #: settings and model catalog): such a client keeps its own server, which a shared one could not honour.
-    CONFIGURING = ("GALAIUS_MODELS_JSON", "GALAIUS_CONFIGURED_PROVIDERS")
+    #: settings and model catalog; a read-only run its scratch folder, `Config.scratch`): such a client keeps its own
+    #: server, which a shared one could not honour.
+    CONFIGURING = ("GALAIUS_MODELS_JSON", "GALAIUS_CONFIGURED_PROVIDERS", GatewayServed.SCRATCH)
 
     @classmethod
     def supported(cls) -> bool:

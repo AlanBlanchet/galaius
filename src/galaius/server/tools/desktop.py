@@ -217,7 +217,7 @@ def _capture_regions(windows, whole: DesktopWindow) -> str:
     )
 
 
-@mcp.tool(category="desktop", read_only=True)
+@mcp.tool(category="desktop", read_only=True, fenced=True)
 async def list_desktop_windows() -> str:
     """List desktop targets for the `target` param, on Linux, Windows and macOS: each monitor with
     its geometry (target="screen" for the whole desktop, target="screen:<index>" or
@@ -274,7 +274,7 @@ async def list_desktop_windows() -> str:
     return "\n\n".join(parts)
 
 
-@mcp.tool(category="desktop")
+@mcp.tool(category="desktop", fenced=True)
 async def launch_app(
     command: str,
     wait: float = 6.0,
@@ -446,7 +446,7 @@ async def launch_app(
     )
 
 
-@mcp.tool(category="desktop")
+@mcp.tool(category="desktop", fenced=True)
 async def reset_sandbox() -> str:
     """Tear down galaius's isolated sandbox display — kill every app launched into it and stop the
     nested X server. The next launch_app starts a fresh display.
@@ -462,7 +462,7 @@ async def reset_sandbox() -> str:
     return f"Sandbox reset — stopped the nested display and {n} app(s). The next launch_app respawns it."
 
 
-@mcp.tool(category="media")
+@mcp.tool(category="media", fenced=True)
 async def record(
     start: bool = True,
     query: str | None = None,
@@ -545,6 +545,8 @@ async def _record_scene(scene: str, duration: float | None, path: str | None, qu
     try:
         if query is not None:
             raise ValueError("a scene is recorded without query: nothing of its page comes back")
+        if config.scratch is not None:  # a scene's page plays in a browser and saves beside its caller, never in a scratch folder
+            raise ValueError("a read-only run records its sandbox display, never a scene")
         played = Scene(scene=scene, output=path or "", seconds=duration or 0)
         written = await played.record()
     except (ValidationError, ValueError, OSError, PlaywrightError) as error:

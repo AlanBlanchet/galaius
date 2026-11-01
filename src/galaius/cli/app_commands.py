@@ -1690,9 +1690,11 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
     and its continuations; it never grants permissions or changes global configuration.
     --provider-mode provider=mode preserves a provider's existing workspace permission setting
     during automatic selection. An explicit --permission-mode takes precedence.
-    --permission-mode read_only lets the agent call only galaius tools that change nothing (conversation_search,
-    agent_list, list_desktop_windows, …): app tools — launch_app, navigate, run_actions, screenshot — run commands
-    or write files, so they are refused. A critic that drives an app runs with its usual mode (omit --permission-mode).
+    --permission-mode read_only on Linux with an OS fence: the agent reads its folder alone and writes only in its
+    own scratch folder (the kernel refuses its shell's and file tools' writes); it drives its sandbox's apps
+    (launch_app, screenshot, run_actions, …) and saves their outputs in that scratch folder. Elsewhere it runs on its
+    CLI's own read-only mode and calls only galaius tools that change nothing (conversation_search, agent_list, …),
+    app tools refused. A critic that drives the browser (navigate) or the real desktop runs with its usual mode.
     --quota-window is how many seconds the new child is watched for a vendor quota refusal
     before the id is printed (a refusal inside it falls through to the next candidate); a
     supervisor that shows the run at once passes a short one.

@@ -117,6 +117,11 @@ UNSET = ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS",
 SYSTEM = ("/usr", "/etc", "/opt", "/nix", "/snap", "/sys")
 MERGED = ("/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32")
 EGRESS_MOUNT = "/run/galaius-egress"
+#: Mesa's EGL vendor file (glvnd, same path on Debian/Ubuntu/Fedora/Arch): pinned inside, where no GPU device exists, so
+#: GL loads Mesa's software renderer, never a GPU vendor's library (NVIDIA's crashes Xvfb with no /dev/nvidia*).
+MESA_EGL = Path("/usr/share/glvnd/egl_vendor.d/50_mesa.json")
+#: The variable that pins it (`software_rendering`).
+EGL_VENDOR = "__EGL_VENDOR_LIBRARY_FILENAMES"
 #: Landlock: create_ruleset / restrict_self syscall numbers (one table on every Linux architecture)
 #: and the scopes (ABI 6): abstract UNIX sockets, signals.
 _CREATE_RULESET, _RESTRICT_SELF, _SCOPES, _SCOPE_ABI = 444, 446, 0b11, 6
@@ -188,6 +193,8 @@ class Fence(BaseModel):
     #: for new `STEERING` names, held in the review store `reviews`.
     guards: tuple[tuple[Path, str, Path], ...] = ()
     reviews: Path | None = None
+    #: The runner-owned folder the run writes its outputs in (bound writable at its own path); None: none.
+    scratch: Path | None = None
     #: The secret-looking variables (`SECRET_SUFFIXES`) the run keeps: its CLIs' own keys. `outer` drops every other one
     #: from the environment the fence is started with, whoever built it (a key the runner adds for one child included).
     keys: tuple[str, ...] = ()
@@ -203,7 +210,10 @@ class Fence(BaseModel):
             view += ["--ro-bind-try", folder, folder]
         for folder in MERGED:
             view += ["--symlink", os.readlink(folder), folder] if os.path.islink(folder) else ["--ro-bind-try", folder, folder]
-        view += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--tmpfs", "/run", "--bind", "{egress}", EGRESS_MOUNT, "--tmpfs", str(self.home)]
+        # /tmp/.X11-unix as on the PC (sticky, everyone's): an X server started inside makes its socket there, and only root creates it.
+        # The egress folder read-only: its socket is connected to, never written (a writable one is a host /tmp folder to fill).
+        view += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--perms", "1777", "--dir", "/tmp/.X11-unix", "--tmpfs", "/run",
+                 "--ro-bind", "{egress}", EGRESS_MOUNT, "--tmpfs", str(self.home)]
         for bind in self.binds:
             view += ["--bind" if bind.writable else "--ro-bind", str(bind.source), str(bind.target)]
         for folder in self.emptied:
@@ -213,6 +223,8 @@ class Fence(BaseModel):
         for link, target in self.links:
             view += ["--symlink", str(target), str(link)]
         view += ["--setenv", "HOME", str(self.home)]
+        for name, value in software_rendering().items():
+            view += ["--setenv", name, value]
         for name in UNSET:
             view += ["--unsetenv", name]
         view += ["--chdir", str(self.cwd)]
@@ -289,6 +301,8 @@ class FenceSpec(BaseModel):
     state: Path
     #: The review store steering files created by the agent are moved into.
     reviews: Path | None = None
+    #: Runner-owned folder the run writes its outputs in, bound writable at its own path (`Fence.scratch`).
+    scratch: Path | None = None
 
     def places(self) -> PlaceMap:
         levels = self.levels
@@ -334,6 +348,8 @@ class FenceSpec(BaseModel):
         # A folder set below `read` inside one set at `read` or later: empty inside.
         emptied += [base.joinpath(*split(path)) for path, level in sorted(places.levels.items())
                     if LEVEL_RANK[level] < LEVEL_RANK["read"] and LEVEL_RANK[places.inherited(split(path))] >= LEVEL_RANK["read"]]
+        if self.scratch is not None:
+            binds.append(FenceBind(source=_private(self.scratch), target=self.scratch, writable=True))
         binds += self._tool_state(home)
         reached, roots = list(self.programs), [_install_root(program.resolve()) for program in self.programs]
         for python in _interpreters():
@@ -349,7 +365,7 @@ class FenceSpec(BaseModel):
         links = tuple({link: target for path in reached for link, target in _links(path)
                        if not any(link.is_relative_to(folder) or folder.is_relative_to(link) for folder in shown)}.items())
         return Fence(home=home, cwd=self.start.resolve(), binds=tuple(binds), emptied=tuple(emptied), blanked=tuple(blanked), links=links, egress=self.egress,
-                     guards=tuple(guards), reviews=self.reviews,
+                     guards=tuple(guards), reviews=self.reviews, scratch=self.scratch,
                      keys=tuple(sorted({name for provider in self.providers for name in FencedCli.of(provider).keys})))
 
     @classmethod
@@ -358,9 +374,27 @@ class FenceSpec(BaseModel):
         found on this PC's PATH and `programs`, their model hosts then `egress`; `fields` the rest of the spec. A CLI the
         fence does not run carries nothing into it."""
         fenced = tuple(cli for cli in clis if cli.fenced is not None)
-        found = (*(shutil.which(cli.binary) for cli in fenced), *programs)
-        return cls(providers=tuple(cli.name for cli in fenced), programs=tuple(Path(program) for program in found if program),
+        found = [Path(program) for program in (*(shutil.which(cli.binary) for cli in fenced), *programs) if program]
+        return cls(providers=tuple(cli.name for cli in fenced), programs=tuple(dict.fromkeys((*found, *filter(None, map(_interpreter, found))))),
                    egress=(*sorted(FencedCli.hosts(cli.name for cli in fenced)), *egress), **fields)
+
+    @classmethod
+    def reading(cls, clis: Iterable[FencedProgram], start: Path, *, scratch: Path, state: Path, programs: Iterable[Path | str] = ()) -> Self:
+        """A read-only run's fence: `start` (a folder of the home folder) read, nothing else of home seen, its
+        outputs written in `scratch` alone. Refused (ValueError / PermissionError) where it cannot be built: `start`
+        outside home or the home itself, a hidden (dot) folder, more entries than `Scan` checks."""
+        home, start = Path.home().resolve(), start.resolve()
+        if start == home or not start.is_relative_to(home):
+            raise ValueError(f"{start} is not a folder of the home folder")
+        spec = cls.for_clis(clis, programs=programs, working_directory=home, levels={start.relative_to(home).as_posix(): "read"},
+                            start=start, scratch=scratch, state=state)
+        spec.build()
+        return spec
+
+    def writes_nothing(self) -> bool:
+        """Whether no folder of the PC is writable inside but `scratch` and the CLI's private state: every place
+        opened at `read`, no project folder, no staging copy. Read from the levels as they are now."""
+        return self.project is None and not self.staging and all(level == "read" for _, level in self.places().in_force("read").values())
 
     def only(self, provider: str) -> Self:
         """This fence for one turn of `provider`'s CLI: its own keys, login and tool state (`FencedCli`, `homes`), its
@@ -421,6 +455,29 @@ class FenceSpec(BaseModel):
 def _private(folder: Path) -> Path:
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
     return folder
+
+
+def software_rendering() -> dict[str, str]:
+    """The environment that pins Mesa's renderer inside a fence (`MESA_EGL`); empty where Mesa's file is absent. A CLI
+    that starts its MCP servers with only the variables it is given (Codex) is given it too (`agents.run.mesh_config`)."""
+    return {EGL_VENDOR: str(MESA_EGL)} if MESA_EGL.is_file() else {}
+
+
+def _interpreter(program: Path) -> Path | None:
+    """The interpreter a script program starts with (its `#!` line; `#!/usr/bin/env node`: an npm CLI), found beside
+    the program first (an npm global `bin` folder holds its node), then on PATH; None for a binary or one not found."""
+    try:
+        with program.open("rb") as script:
+            first = script.readline(256)
+    except OSError:
+        return None
+    words = first[2:].decode(errors="replace").split() if first.startswith(b"#!") else []
+    named = [word for word in words[1:] if not word.startswith("-")] if words and Path(words[0]).name == "env" else words[:1]
+    if not named:
+        return None
+    beside = program.parent / named[0]
+    found = named[0] if Path(named[0]).is_absolute() else str(beside) if beside.is_file() else shutil.which(named[0])
+    return Path(found) if found else None
 
 
 def _install_root(program: Path) -> Path:

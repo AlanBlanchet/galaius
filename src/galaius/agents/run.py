@@ -10,6 +10,7 @@ from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+import functools
 import hashlib
 import json
 import logging
@@ -44,7 +45,7 @@ from galaius.agents.catalog import community as community_agents
 from galaius.agents.catalog.community import CommunityAgent
 from galaius.agents.limits.ceiling import contained
 from galaius.agents.transport.events import model_spoke, stream_lines
-from galaius.isolation.fence import FenceSpec, fenced
+from galaius.isolation.fence import FenceSpec, available, fenced, software_rendering
 from galaius.host.processes import process_group_options, spawnable
 from galaius.agents.policy import Policy, policy_path
 from galaius.agents.catalog.profiles import overlay_for, profiles_from
@@ -719,7 +720,7 @@ def _galaius_command() -> tuple[str, list[str]]:
 LAUNCH_STAMP = "Launch policy: role="
 
 
-def mesh_config(*, run_id: str, role: str | None) -> str:
+def mesh_config(*, run_id: str, role: str | None, fence: FenceSpec | None = None) -> str:
     """The ``--mcp-config`` payload handed to a spawned agent so it can reach back into galaius.
 
     Makes cross-provider teamwork work with no bespoke protocol: child is an MCP client, galaius
@@ -728,18 +729,45 @@ def mesh_config(*, run_id: str, role: str | None) -> str:
     keeping the team tree connected; the run's `role` (`GatewayServed.ROLE`) so galaius serves it
     its own gateway tools, never another role's.
 
-    Carries NO credential — the child's own CLI authenticates itself.
+    Carries NO credential — the child's own CLI authenticates itself. Inside a `fence` the server gets the fence's
+    renderer pin (`software_rendering`: Codex hands its servers no other variable), and with a scratch folder (a
+    read-only run's) is told it (`GatewayServed.SCRATCH`, `Config.scratch`): it serves that run's tools alone and writes
+    nowhere else.
     """
     command, args = _galaius_command()
+    scratch = {} if fence is None else {**software_rendering(), **({GatewayServed.SCRATCH: str(fence.scratch)} if fence.scratch is not None else {})}
     return json.dumps({
         "mcpServers": {
             "galaius": {
                 "command": command,
                 "args": args,
-                "env": GatewayServed.environment({"GALAIUS_PARENT_RUN_ID": run_id}, role),
+                "env": GatewayServed.environment({"GALAIUS_PARENT_RUN_ID": run_id, **scratch}, role),
             }
         }
     })
+
+
+def fence_decides(provider: AgentProvider, fence: FenceSpec | None, permission_mode: str | None) -> bool:
+    """Whether a turn's writes are the fence's to refuse, not its CLI's: a read-only run inside a fence that writes
+    nothing but its scratch folder (`FenceSpec.writes_nothing`). Its CLI then runs every tool its role has (`fence_decides`
+    on the provider's command) — galaius's app tools included, a write refused by the kernel."""
+    return fence is not None and provider.touch_of(permission_mode) is TouchScope.READ_ONLY and fence.writes_nothing()
+
+
+def read_only_fence(cwd: str, run_id: str) -> FenceSpec | None:
+    """The fence a read-only run starts in (`FenceSpec.reading`): its folder read, its outputs in its own scratch
+    folder beside its record. None where none can be built (no fence on this PC, a hidden or too large folder): it
+    runs on its CLI's own read-only mode, which reads the whole PC, and the log says why."""
+    ready, reason = available()
+    if ready:
+        launcher = shutil.which("galaius")
+        try:
+            return FenceSpec.reading(program_providers(), Path(cwd), scratch=reg.agents_dir() / f"{run_id}.scratch",
+                                     state=reg.agents_dir() / f"{run_id}.fence", programs=(launcher,) if launcher else ())
+        except (ValueError, OSError) as refused:  # OSError: a folder gone or unreadable while it is scanned
+            reason = str(refused)
+    log.warning("read-only run %s is not fenced (its CLI's read-only mode reads the whole PC): %s", run_id, reason)
+    return None
 
 
 def _folder_identity(folder: str) -> str:
@@ -866,7 +894,7 @@ class ChildLaunch(AheadLaunch):
 
     def command_arguments(self, run_id: str, session: str) -> dict[str, object]:
         arguments = {**self.arguments, "run_id": session, "environment": self.env(run_id),
-                     "mcp_config": mesh_config(run_id=run_id, role=self.role) if self.meshed else None}
+                     "mcp_config": mesh_config(run_id=run_id, role=self.role, fence=self.fence) if self.meshed else None}
         return arguments | self.turn_arguments(self.provider, run_id, self.fence, role=self.role, compact_at=self.compact_at, isolated=self.isolated)
 
     async def launch(self, run_id: str, session: str, task: str) -> asyncio.subprocess.Process:
@@ -948,12 +976,14 @@ class ResumeLaunch(AheadLaunch):
             raise ModelUnavailable(f"{provider.name} cannot continue this run on this PC: {refusal}")
         env = {**GatewayServed.environment(environment, None if run.community else run.agent), **routed, "GALAIUS_RUN_ID": run.run_id,
                "GALAIUS_PARENT_RUN_ID": run.run_id}
+        decides = fence_decides(provider, run.fence, run.permission_mode)
         arguments = dict(
-            model=model, permission_mode=run.permission_mode, reasoning=reasoning, agent=run.agent,
+            model=model, permission_mode=run.permission_mode, fence_decides=decides,
+            reasoning=reasoning, agent=run.agent,
             allowed_tools=policy.tools_for(run.agent), denied_tools=run.denied_tools,
             agent_prompt=(run.community.prompt(run.agent, run.parent_run_id or "") if run.community is not None
                           else _role_prompt(catalog, run.agent, provider, env) if catalog is not None else None),
-            mcp_config=mesh_config(run_id=run.run_id, role=run.agent) if run.mesh_enabled and not provider.meshed() else None,
+            mcp_config=mesh_config(run_id=run.run_id, role=run.agent, fence=run.fence) if run.mesh_enabled and (decides or not provider.meshed()) else None,
             coarse_accepted=coarse_accepted, base_url=routed.get("OPENAI_BASE_URL"),
             **AheadLaunch.turn_arguments(provider, run.run_id, run.fence, role=run.agent, compact_at=policy.compact_at_for(run.agent),
                                          isolated=run.community is not None),
@@ -1145,7 +1175,11 @@ def launch_editor_turn(
     keeps the model and instructions it was begun with; the permission is the run's recorded one,
     the environment exactly `environment` (never this process's)."""
     restore_folder(run, provider, fork_from or run.run_id, environment)
-    session, options = fork_from or run.run_id, {"permission_mode": run.permission_mode, "fork_to": run.run_id if fork_from else None}
+    decides = fence_decides(provider, run.fence, run.permission_mode)
+    session, options = fork_from or run.run_id, {"permission_mode": run.permission_mode, "fork_to": run.run_id if fork_from else None,
+                                                 "fence_decides": decides,
+                                                 # Inside its fence the editor's own galaius entry cannot start: the run's own, alone.
+                                                 **({"mcp_config": mesh_config(run_id=run.run_id, role=run.agent, fence=run.fence)} if decides and run.mesh_enabled else {})}
     argv, stdin = carried(provider, message, lambda text: provider.resume_command(session, text, **options), lambda: provider.resume_ahead_command(session, **options))
     env = {**GatewayServed.environment(environment, run.agent), "GALAIUS_RUN_ID": run.run_id}
     return _spawn_turn(provider, argv, run, env=env, raw_index=reg.raw_line_count(run.run_id), model=run.model, criterion=None, reasoning=None, stdin=stdin)
@@ -1557,6 +1591,7 @@ async def run_agent(
     #: gets a fresh id, because the vendor refuses an id a dead child already claimed
     #: ("Session ID ... is already in use") and the fall-through would die on arrival.
     vendor_sessions = 0
+    reading = functools.cache(lambda: read_only_fence(cwd, run_id))  # built once, for the first read-only candidate
     chosen: reg.LaunchCandidate | None = None
     chosen_ahead: ChildLaunch | None = None
     chosen_provider: AgentProvider | None = None
@@ -1735,10 +1770,19 @@ async def run_agent(
             vendor_sessions += 1
         else:
             vendor_session = run_id
+        if candidate_fence is None and community is None and candidate_provider.touch_of(candidate_permission_mode) is TouchScope.READ_ONLY:
+            # A read-only run reads its folder alone and writes in its scratch alone, the kernel refusing the rest.
+            if (spec := reading()) is not None:
+                candidate_fence = spec if not offered else \
+                    spec.model_copy(update={"homes": candidate_pin.homes() if candidate_pin is not None else RunSubscription.closed(offered)})
         command_kwargs: dict[str, object] = dict(
             cwd=cwd, model=candidate_model, agent=agent, permission_mode=candidate_permission_mode,
+            fence_decides=fence_decides(candidate_provider, candidate_fence, candidate_permission_mode),
             allowed_tools=allowed_tools, reasoning=candidate_effort, coarse_accepted=candidate_coarse_accepted,
         )
+        if command_kwargs["fence_decides"]:
+            brief += (f"Read-only run: {cwd} and everything you see are read-only (the system refuses a write); write files only "
+                      f"in {candidate_fence.scratch}, where your galaius tools save theirs (a relative `path` lands there).\n\n")
         if candidate_routed.get("OPENAI_BASE_URL"):
             command_kwargs["base_url"] = candidate_routed["OPENAI_BASE_URL"]
         if community is not None:
@@ -1754,8 +1798,11 @@ async def run_agent(
         launch = ChildLaunch(
             provider=candidate_provider, cwd=cwd, environment=env, arguments=command_kwargs,
             # Once, never twice: skip the mesh when the provider's own config already registers
-            # galaius — else the child would carry two registrations of the same server.
-            meshed=mesh and not candidate_provider.meshed(), fence=candidate_fence, role=None if community else agent,
+            # galaius — else the child would carry two registrations of the same server. A run its fence decides gets
+            # its own, alone (`--strict-mcp-config`): the person's entry starts a program the fence does not hold and
+            # knows nothing of the run's scratch folder.
+            meshed=mesh and (bool(command_kwargs["fence_decides"]) or not candidate_provider.meshed()), fence=candidate_fence,
+            role=None if community else agent,
             compact_at=policy.compact_at_for(agent), isolated=community is not None,
         )
         # A child started ahead for this very launch skips its CLI's own startup. Its run id is the

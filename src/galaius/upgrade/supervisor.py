@@ -473,7 +473,7 @@ class McpProtocol(RelayProtocol):
     def ahead(self, runtime: Runtime) -> McpAhead | None:
         site = runtime.site_packages
         announced = None if site is None else McpAnnouncement.installed(site)
-        return None if announced is None else McpAhead(announced=announced.with_gateway())
+        return None if announced is None else McpAhead(announced=announced.as_served())
 
 
 class ConsoleProtocol(RelayProtocol):

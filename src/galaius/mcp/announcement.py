@@ -5,6 +5,7 @@ upgrade relay answers a client's handshake and first listings from its worker's 
 while that worker still starts (`galaius.upgrade.supervisor.McpProtocol`), so an agent CLI that
 waits only a moment for its MCP servers finds every galaius tool in its first tool list."""
 
+from collections.abc import Mapping
 from importlib.metadata import distributions
 from pathlib import Path
 from typing import Annotated, ClassVar, Self
@@ -41,6 +42,12 @@ class GatewayServed(BaseModel):
 
     #: Set by the launcher on every run it starts (`galaius.agents.run`): the role the run plays.
     ROLE: ClassVar[str] = "GALAIUS_RUN_ROLE"
+    #: Set by the launcher on a read-only run (`mesh_config`): the scratch folder its server writes in (`Config.scratch`).
+    #: Such a server serves its tools marked `FENCED` alone: the app tools, acting inside the run's fence — no gateway
+    #: tool, no agent, no browser or desktop outside it.
+    SCRATCH: ClassVar[str] = "GALAIUS_SCRATCH"
+    #: The `_meta` key marking a tool a read-only run calls (`_SessionScopedMCP.tool`'s `fenced`).
+    FENCED: ClassVar[str] = "fenced"
 
     agents: dict[str, tuple[GatewayToolName, ...]] = {}
     tools: tuple[GatewayToolWire, ...] = ()
@@ -49,6 +56,16 @@ class GatewayServed(BaseModel):
     def role(cls) -> str | None:
         """The role this process's run plays; None outside a run started by galaius (an editor session)."""
         return Caller.environ().get(cls.ROLE) or None
+
+    @classmethod
+    def scratch(cls) -> str | None:
+        """The scratch folder of the read-only run this process serves; None for any other server."""
+        return Caller.environ().get(cls.SCRATCH) or None
+
+    @classmethod
+    def fenced(cls, meta: Mapping[str, object] | None) -> bool:
+        """Whether a tool with this `_meta` is one a read-only run calls."""
+        return (meta or {}).get(cls.FENCED) is True
 
     @classmethod
     def environment(cls, environment: dict[str, str], role: str | None) -> dict[str, str]:
@@ -115,15 +132,19 @@ class McpAnnouncement(BaseModel):
         a re-linked or unlinked PC's file follows it). OSError when it cannot be written."""
         PRIVATE_FILES.replace_text(cls.gateway_path(), served.model_dump_json())
 
-    def with_gateway(self, path: Path | None = None) -> Self:
-        """The announcement with the gateway tools of this run's role (`GatewayServed`) after galaius's
-        own, as the server lists them (`GalaiusMcp.list_tools`); unchanged when there are none or the
-        file is not one this galaius wrote (unreadable, not private, another shape)."""
+    def as_served(self, path: Path | None = None) -> Self:
+        """The announcement as this run's server lists it (`_SessionScopedMCP.list_tools`): a read-only run's
+        (`GatewayServed.scratch`) its `fenced` tools alone; another's with the gateway tools of its role (`GatewayServed`)
+        after galaius's own, unchanged when there are none or the file is not one this galaius wrote (unreadable, not
+        private, another shape)."""
+        listed = self.lists.get("tools/list")
+        if GatewayServed.scratch() and listed is not None:
+            fenced = [tool for tool in listed["tools"] if GatewayServed.fenced(tool.get("_meta"))]
+            return self.model_copy(update={"lists": {**self.lists, "tools/list": {**listed, "tools": fenced}}})
         try:
             tools = GatewayServed.model_validate_json(PRIVATE_FILES.read_text(path or self.gateway_path())).of(GatewayServed.role())
         except (OSError, ValueError):
             return self
-        listed = self.lists.get("tools/list")
         if not tools or listed is None:
             return self
         return self.model_copy(update={"lists": {**self.lists, "tools/list": {**listed, "tools": [*listed["tools"], *(tool.model_dump(mode="json") for tool in tools)]}}})

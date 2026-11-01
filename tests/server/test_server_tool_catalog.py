@@ -71,7 +71,7 @@ def test_the_relay_first_lists_the_gateway_tools_of_its_run_s_role(monkeypatch, 
         monkeypatch.setattr(ToolGateway, "linked", classmethod(lambda cls, linked=linked: None if linked is None else SimpleNamespace(cached=lambda: linked)))
         monkeypatch.setattr(core.mcp.gateway, "listing", ToolGateway.current(online=False))
         wire = [tool.model_dump(by_alias=True, mode="json", exclude_none=True) for tool in asyncio.run(core.mcp.list_tools())]
-        assert snapshot.with_gateway().lists["tools/list"] == {"tools": wire}
+        assert snapshot.as_served().lists["tools/list"] == {"tools": wire}
         assert [tool["name"] for tool in wire if tool["name"].startswith("ext__")] == ([linked.tools[0].name] if listed and linked else [])
 
 

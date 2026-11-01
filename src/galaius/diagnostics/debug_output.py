@@ -27,11 +27,17 @@ def resolve_output_path(path: str) -> Path:
     expands, an absolute path is kept, a RELATIVE path anchors under ``config.debug_dir``
     (galaius's own output dir, ``~/.galaius/out``, where every other artifact lives) — never the
     server process's cwd, whatever the editor started it with and invisible to the calling agent
-    (#120). Always absolute, so a tool can name the file the caller will actually find."""
+    (#120). Always absolute, so a tool can name the file the caller will actually find. In a
+    read-only run (``config.scratch``) relative anchors under its scratch folder, and a path
+    resolving anywhere else (a link included) is refused: PermissionError."""
     p = Path(path).expanduser()
     if not p.is_absolute():
-        p = Path(config.debug_dir).expanduser() / p
-    return p.absolute()
+        p = Path(config.scratch or config.debug_dir).expanduser() / p
+    if config.scratch is None:
+        return p.absolute()
+    if not (found := p.resolve()).is_relative_to(config.scratch.resolve()):
+        raise PermissionError(f"{path}: a read-only run writes only in its scratch folder {config.scratch}")
+    return found
 
 
 class Debug:

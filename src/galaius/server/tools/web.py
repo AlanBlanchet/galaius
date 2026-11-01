@@ -71,7 +71,7 @@ async def navigate(
     return _recovered(mgr, result)
 
 
-@mcp.tool(category="browser")
+@mcp.tool(category="browser", fenced=True)
 @instrumented
 async def run_actions(
     actions: list[AnyAction],
@@ -207,7 +207,7 @@ async def run_actions(
     return _recovered(mgr, result)  # a browser session may have self-recovered mid-run (#89)
 
 
-@mcp.tool(category="browser")
+@mcp.tool(category="browser", fenced=True)
 async def get_page_state(
     scope: str | None = None, tab: int | None = None, session: str = _AUTO_SESSION
 ) -> str:
@@ -305,7 +305,7 @@ async def download_asset(url: str, path: str, session: str = _AUTO_SESSION) -> s
     return _recovered(mgr, _session_response(session, body))
 
 
-@mcp.tool(category="browser")
+@mcp.tool(category="browser", fenced=True)
 async def get_logs(
     source: Literal["network", "console"],
     clear: bool = False,

@@ -42,7 +42,7 @@ from galaius.vision.measure import blank_frame_reason, format_measure, measure
 _log = logging.getLogger("galaius")
 
 
-@mcp.tool(category="vision")
+@mcp.tool(category="vision", fenced=True)
 @instrumented
 async def screenshot(
     query: str | None = None,
@@ -250,7 +250,7 @@ async def _screenshot(
     return result
 
 
-@mcp.tool(category="vision")
+@mcp.tool(category="vision", fenced=True)
 @instrumented
 async def get_interactive_elements(
     scope: str | None = None,
@@ -318,7 +318,7 @@ async def get_interactive_elements(
     return result
 
 
-@mcp.tool(category="vision")
+@mcp.tool(category="vision", fenced=True)
 async def review_ui(
     focus: str | None = None,
     reference: str | None = None,
@@ -366,7 +366,7 @@ async def review_ui(
     )
 
 
-@mcp.tool(category="vision")
+@mcp.tool(category="vision", fenced=True)
 async def verify_ui(
     requirements: list[str],
     target: str | None = None,
@@ -412,7 +412,7 @@ async def verify_ui(
     )
 
 
-@mcp.tool(category="vision")
+@mcp.tool(category="vision", fenced=True)
 @instrumented
 async def measure_ui(
     target: str | None = None,

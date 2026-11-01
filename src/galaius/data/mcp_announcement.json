@@ -751,7 +751,8 @@
       "readOnlyHint": true
      },
      "_meta": {
-      "category": "desktop"
+      "category": "desktop",
+      "fenced": true
      }
     },
     {
@@ -830,7 +831,8 @@
       "type": "object"
      },
      "_meta": {
-      "category": "desktop"
+      "category": "desktop",
+      "fenced": true
      }
     },
     {
@@ -855,7 +857,8 @@
       "type": "object"
      },
      "_meta": {
-      "category": "desktop"
+      "category": "desktop",
+      "fenced": true
      }
     },
     {
@@ -1136,7 +1139,8 @@
       "type": "object"
      },
      "_meta": {
-      "category": "media"
+      "category": "media",
+      "fenced": true
      }
     },
     {
@@ -2322,7 +2326,8 @@
       "type": "object"
      },
      "_meta": {
-      "category": "vision"
+      "category": "vision",
+      "fenced": true
      }
     },
     {
@@ -2452,7 +2457,8 @@
       "type": "object"
      },
      "_meta": {
-      "category": "vision"
+      "category": "vision",
+      "fenced": true
      }
     },
     {
@@ -2567,7 +2573,8 @@
       "type": "object"
      },
      "_meta": {
-      "category": "vision"
+      "category": "vision",
+      "fenced": true
      }
     },
     {
@@ -2692,7 +2699,8 @@
       "type": "object"
      },
      "_meta": {
-      "category": "vision"
+      "category": "vision",
+      "fenced": true
      }
     },
     {
@@ -2783,7 +2791,8 @@
       "type": "object"
      },
      "_meta": {
-      "category": "vision"
+      "category": "vision",
+      "fenced": true
      }
     },
     {
@@ -5106,7 +5115,8 @@
       "type": "object"
      },
      "_meta": {
-      "category": "browser"
+      "category": "browser",
+      "fenced": true
      }
     },
     {
@@ -5161,7 +5171,8 @@
       "type": "object"
      },
      "_meta": {
-      "category": "browser"
+      "category": "browser",
+      "fenced": true
      }
     },
     {
@@ -5312,7 +5323,8 @@
       "type": "object"
      },
      "_meta": {
-      "category": "browser"
+      "category": "browser",
+      "fenced": true
      }
     }
    ]

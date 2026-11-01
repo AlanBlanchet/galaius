@@ -25,6 +25,7 @@ from pathlib import Path
 
 from mcp import types
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 
 from galaius import __version__
@@ -32,7 +33,7 @@ from galaius.agents.tool_gateway import ServedGateway
 from galaius.browser.manager import SessionRegistry, session_name
 from galaius.account.caller import Caller
 from galaius.diagnostics.debug_output import _CURRENT_INV, Debug, resolve_output_path
-from galaius.mcp.announcement import GATEWAY_PREFIX, McpAnnouncement
+from galaius.mcp.announcement import GATEWAY_PREFIX, GatewayServed, McpAnnouncement
 from galaius.desktop.window import CaptureError
 from galaius.runtime import (
     config,
@@ -520,27 +521,36 @@ class _SessionScopedMCP(FastMCP):
     gateway = ServedGateway()
 
     async def list_tools(self):
+        # A read-only run's server (`config.scratch`, inside its fence) serves its `fenced` tools alone: its own sandbox
+        # display driven and seen, outputs in its scratch folder (`resolve_output_path`).
+        if config.scratch is not None:
+            return [tool for tool in await super().list_tools() if GatewayServed.fenced(tool.meta)]
         return [*await super().list_tools(), *self.gateway.tools()]
 
     async def call_tool(self, name: str, arguments: dict):
+        if config.scratch is not None and not GatewayServed.fenced((found.meta if (found := self._tool_manager.get_tool(name)) else None)):
+            raise ToolError(f"{name}: a read-only run calls only {', '.join(sorted(tool.name for tool in await self.list_tools()))}")
         if self.gateway.serves(name):
             return await self.gateway.call(name, arguments)
         return await super().call_tool(name, arguments)
 
-    def tool(self, *args, category: ToolCategory, meta: dict | None = None, read_only: bool = False, **kwargs):
+    def tool(self, *args, category: ToolCategory, meta: dict | None = None, read_only: bool = False, fenced: bool = False, **kwargs):
         """Every galaius tool names its `ToolCategory`; it travels in the tool's `_meta`. Its
         description is its docstring cleaned (`inspect.cleandoc`): the same on every Python (3.13
         dedents docstrings itself), so the snapshot the upgrade relay answers from is too.
         `read_only`: it changes nothing outside galaius's own bookkeeping — no file written where its caller says, no
         browser, app, window, page or run started or acted on — said to clients as MCP's `readOnlyHint`, the one mark a
-        read-only run may call it by (Claude Code's plan and Codex unapproved run it, refuse the rest)."""
+        read-only run may call it by (Claude Code's plan and Codex unapproved run it, refuse the rest). `fenced`: it acts
+        only on its run's own sandbox display and saves only through `resolve_output_path` — the tools a read-only run's
+        server serves inside its fence (`GatewayServed.FENCED`, in the tool's `_meta`)."""
         if read_only and "annotations" in kwargs:
             raise ValueError("read_only and annotations: say readOnlyHint in one of them")
 
         def register(fn):
             described = {"description": inspect.cleandoc(fn.__doc__)} if fn.__doc__ else {}
             marked = {"annotations": types.ToolAnnotations(readOnlyHint=True)} if read_only else {}
-            return FastMCP.tool(self, *args, meta={**(meta or {}), "category": category}, **(described | marked | kwargs))(fn)
+            return FastMCP.tool(self, *args, meta={**(meta or {}), "category": category, **({GatewayServed.FENCED: True} if fenced else {})},
+                                **(described | marked | kwargs))(fn)
 
         def decorator(fn):
             slots = self._session_params(fn)
