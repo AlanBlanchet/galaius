@@ -33,6 +33,7 @@ from galaius.vision.usage import log_api_attempt
 from galaius.vision.workspace import _MediaWorkspace
 
 litellm = deferred("litellm")
+listing = deferred("galaius.inference.listing")
 openai = deferred("openai")
 
 _log = logging.getLogger(__name__)
@@ -275,10 +276,16 @@ class VisionError(Exception):
     out-of-credits account reads as a billing problem to fix, not as a galaius traceback to
     report (#124, #125). The raw litellm exception stays chained as ``__cause__``."""
 
+    MISSING_KEY = "has no API key configured"
+
     def __init__(self, model: str, *, provider: str, cause: str, said: str = ""):
         self.model, self.provider, self.cause, self.said = model, provider, cause, said
         quote = f" — {said}" if said else ""
         super().__init__(f"{provider} {cause} for model {model}{quote}. {_MODEL_FIX}")
+
+    @property
+    def missing_key(self) -> bool:
+        return self.cause == self.MISSING_KEY
 
 
 # What to tell the agent per litellm class, most specific first (``Timeout`` is an
@@ -456,7 +463,7 @@ async def _api_media_completion(
     if (row := _key_missing(model)) is not None:
         # Raised, never a placeholder answer: the fallback chain walks past it, and a structured
         # caller never parses "[Vision unavailable …" as its JSON.
-        raise VisionError(model, provider=row.provider, cause="has no API key configured")
+        raise VisionError(model, provider=row.provider, cause=VisionError.MISSING_KEY)
     tok: int | None = config.max_tokens if isinstance(max_tokens, Unset) else max_tokens
     media_parts, sent_native_video = await _build_media_content(media, model, config)
     messages = _build_messages([{"type": "text", "text": context}, *media_parts], prompt)
@@ -508,6 +515,8 @@ async def _api_media_with_fallback(
     _dispatch_state: list[bool] | None = None,
 ) -> VLMResult:
     """One breaker-aware API chain shared by every caller, after at most one session pass."""
+    # Ranking asks each provider's listing; a stale one is fetched here, off the event loop.
+    await asyncio.to_thread(listing.warm)
     primary = resolved_model or config.resolve_model(role, requested_model, breaker)
     fallbacks = [] if requested_model else [
         candidate
@@ -541,7 +550,8 @@ async def _api_media_with_fallback(
         except (asyncio.CancelledError, KeyboardInterrupt):
             raise
         except Exception as exc:
-            breaker.trip(candidate)
+            if not (isinstance(exc, VisionError) and exc.missing_key):
+                breaker.trip(candidate)  # a key added a second later must not wait out the breaker
             previous_model = candidate
             previous_failure = _api_failure_text(exc)
             last_error = exc
@@ -695,7 +705,7 @@ async def transcribe_audio(
     """Speech-to-text for an audio (or audio-bearing) clip via litellm's transcription endpoint
     (``litellm.atranscription`` — a DIFFERENT API from chat ``acompletion``: it routes to Whisper /
     gpt-4o-transcribe / Gemini / Groq / Deepgram). ``model`` is already resolved. Returns the
-    transcript as ``VLMResult.text``; a missing key degrades to a friendly note, never a crash."""
+    transcript as ``VLMResult.text``; a missing key raises :class:`VisionError`, never a transcript."""
     effective_config = config or Config()
     _, provider, _, _ = litellm.get_llm_provider(model)
     if effective_config.media_billing != "api_allowed":
@@ -703,10 +713,8 @@ async def transcribe_audio(
             "subscription sessions cannot transcribe audio; configure audio.criteria with an "
             "API or local-compatible transcription backend and permit API billing"
         )
-    if _key_missing(model) is not None:
-        return VLMResult(
-            text=f"[Transcription unavailable — {model} API key not configured]", elapsed=0
-        )
+    if (row := _key_missing(model)) is not None:
+        raise VisionError(model, provider=row.provider, cause=VisionError.MISSING_KEY)
     t0 = time.monotonic()
     item = MediaItem.from_bytes(audio_bytes, "audio", mime_type)
     with _MediaWorkspace.create(effective_config) as workspace:

@@ -27,7 +27,7 @@ def _model(asked: str) -> str:
     if not asked or Criteria.written(asked):
         return asked
     if (row := Model.by_id(asked)) is None or not row.is_available():
-        raise ValueError(f"model {asked!r} is neither a criterion nor a model this PC's catalog has a key for")
+        raise ValueError(f"model {asked!r} is neither a criterion nor a model this PC's catalog has a key for and its provider still serves")
     return asked
 
 

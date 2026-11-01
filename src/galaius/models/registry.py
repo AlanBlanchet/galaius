@@ -10,10 +10,14 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from galaius.catalog.published import PublishedTable
 from galaius.data import PackageData
+from galaius.lazy import deferred
 from galaius.vision.formats import CoordFormat
 
 from galaius.models.capability import ModelCapability, is_audio_model, is_native_video_model
 from galaius.models.spec import ModelsConfig
+
+#: Pulls in httpx; this module sits on every CLI path (`galaius.lazy`).
+listing = deferred("galaius.inference.listing")
 
 if TYPE_CHECKING:
     from galaius.inference.ollama import OllamaModel
@@ -291,9 +295,7 @@ class Model(RegistryMixin, BaseModel):
             # A keyed provider's own listing, read when asked rather than at load: a server takes
             # its keys from settings after the registry loaded. Ids compared exactly as a call takes
             # them — the bare-name join below would let a retired `-001` spelling pass as its
-            # served sibling. Imported here for the Ollama module's reason: httpx, on every CLI path.
-            from galaius.inference import listing
-
+            # served sibling.
             listed = listing.served(self.provider)
             return listed is None or self.id.removeprefix(f"{self.provider}/") in listed
         # Joined on the NORMALIZED name, like every cross-source comparison here. Ollama spells

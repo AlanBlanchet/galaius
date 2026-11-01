@@ -308,3 +308,12 @@ async def test_a_missing_key_raises_so_the_fallback_chain_walks_on(monkeypatch):
     media = [MediaItem.from_bytes(_PNG)]
     with pytest.raises(VisionError, match="no API key configured"):
         await v._api_media_completion(media, "ctx", Config(), None, v.UNSET, None, "gemini/gemini-2.5-flash")
+
+
+@pytest.mark.asyncio
+async def test_a_missing_transcription_key_raises_never_a_transcript(monkeypatch):
+    """The transcript is answered as speech downstream: a placeholder there reads as words said."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    config = Config(media_backend="api", media_billing="api_allowed")
+    with pytest.raises(VisionError, match="no API key configured"):
+        await v.transcribe_audio(b"RIFF\x08\x00\x00\x00WAVE", model="whisper-1", mime_type="audio/wav", config=config)

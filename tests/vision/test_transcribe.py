@@ -114,13 +114,6 @@ async def test_transcribe_audio_calls_the_transcription_endpoint(monkeypatch, me
 
 
 @pytest.mark.asyncio
-async def test_transcribe_audio_missing_key_is_friendly_not_a_crash(monkeypatch):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    r = await transcribe_audio(b"x", model="whisper-1")
-    assert "unavailable" in r.text.lower() and r.elapsed == 0
-
-
-@pytest.mark.asyncio
 async def test_audio_content_builds_an_input_audio_part_passthrough_wav():
     part = await _audio_content(
         MediaItem.from_bytes(b"RIFF\x08\x00\x00\x00WAVE", "audio", "audio/wav"), Config()

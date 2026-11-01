@@ -1,6 +1,6 @@
 """Which ids a keyed provider serves today, read from that provider's own model listing.
 
-The bundled catalog keeps ids a provider has retired. Gemini's listing no longer carries
+The bundled catalog keeps ids a provider has retired. Gemini's listing (read 2026-11-01) no longer carries
 `gemini-2.0-flash-lite`, `gemma-3-27b-it`, `gemini-exp-1206` or `learnlm-1.5-pro-experimental`, yet
 the catalog still priced them at $0 — so a cheapest-first criterion chose them first and every call
 answered "gemini does not know this model id", after the fallback chain had spent its slots on them.
@@ -118,6 +118,7 @@ LISTINGS: tuple[ModelListing, ...] = (
 _MEMO_TTL = 60.0
 _MEMO: dict[tuple[str, str], tuple[float, frozenset[str] | None]] = {}
 _BY_PROVIDER = {listing.provider: listing for listing in LISTINGS}
+_WARNED: set[str] = set()
 
 
 def served(provider: str) -> frozenset[str] | None:
@@ -135,8 +136,19 @@ def served(provider: str) -> frozenset[str] | None:
     except Exception:  # a live source must never break the catalog
         _log.debug("%s model listing failed", provider, exc_info=True)
         ids = None
+    if ids is None and memo[1] and provider not in _WARNED:
+        # Unread, it restricts nothing: the retired ids rank first again. Said once per process.
+        _WARNED.add(provider)
+        _log.warning("%s model listing unreadable; its retired catalog ids count as runnable", provider)
     _MEMO[memo] = (time.monotonic(), ids)
     return ids
 
 
-__all__ = ["LISTINGS", "ModelListing", "served"]
+def warm() -> None:
+    """Read every listing now, so a ranking right after only reads memory. Blocks on a stale cache:
+    an async caller runs it in a thread."""
+    for provider in _BY_PROVIDER:
+        served(provider)
+
+
+__all__ = ["LISTINGS", "ModelListing", "served", "warm"]
