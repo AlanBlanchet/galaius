@@ -541,7 +541,9 @@ async def _api_media_with_fallback(
                 _dispatch_state,
             )
             result = result.validated(response_format)
-            if index:
+            if index and response_format is None:
+                # A structured answer stays the JSON its schema names: a fenced caller validates the
+                # relayed text again, and a prefix there failed verify_ui's whole verdict.
                 result.text = (
                     f"[Fallback: used {candidate} after {previous_model} failed: "
                     f"{previous_failure}]\n\n{result.text}"

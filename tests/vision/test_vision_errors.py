@@ -317,3 +317,35 @@ async def test_a_missing_transcription_key_raises_never_a_transcript(monkeypatch
     config = Config(media_backend="api", media_billing="api_allowed")
     with pytest.raises(VisionError, match="no API key configured"):
         await v.transcribe_audio(b"RIFF\x08\x00\x00\x00WAVE", model="whisper-1", mime_type="audio/wav", config=config)
+
+
+@pytest.mark.asyncio
+async def test_a_structured_answer_after_a_fallback_stays_valid_json(srv):
+    """Inside a fence the relayed text is validated again (`MediaRelay.analyze`): a fallback note glued
+    before the JSON failed verify_ui's whole verdict."""
+    from pydantic import BaseModel
+
+    from galaius.models.capability import ModelCapability
+    from galaius.models.registry import Model
+
+    class Halves(BaseModel):
+        left: str
+
+    calls = 0
+
+    async def _mock(media, context, cfg, query, max_tokens, response_format, model, _dispatch_state):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise VisionError(model, provider="test", cause="failed the request")
+        return VLMResult(text='{"left":"red"}', elapsed=0.1, model=model)
+
+    rows = [Model(id=f"{name}/model", provider="test", capabilities={ModelCapability.VLM}) for name in ("a", "b")]
+    with (
+        patch("galaius.vision.core._api_media_completion", _mock),
+        patch.object(Config, "ranked_models", return_value=rows),
+        patch.object(Model, "is_available", return_value=True),
+    ):
+        result = await v._api_media_with_fallback(
+            [], "ctx", Config(), None, v.UNSET, Halves, role="image", requested_model="", resolved_model="")
+    assert result.validated(Halves).text == '{"left":"red"}'
