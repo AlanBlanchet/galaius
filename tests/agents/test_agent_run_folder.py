@@ -142,8 +142,8 @@ def test_a_folder_that_cannot_be_put_back_fails_the_resume_with_why_and_what_to_
         (tmp_path / "blocker").write_text("a file where the folder's parent was")
         folder = tmp_path / "blocker" / "work"
     elif layout == "parent_read_only":
-        if os.geteuid() == 0:
-            pytest.skip("root writes anywhere")
+        if sys.platform == "win32" or os.geteuid() == 0:
+            pytest.skip("mode bits refuse no write here (Windows ignores them on a folder; root writes anywhere)")
         locked = tmp_path / "archives"
         locked.mkdir()
         folder = locked / "notes-2025"

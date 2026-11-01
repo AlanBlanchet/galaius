@@ -64,4 +64,4 @@ class TestOutLayout:
             src = (
                 TESTS / "e2e" / "test_extension_statusbar.py"
             ).read_text()
-            assert "from .harness import OUT_DIR" in src
+            assert "from tests.e2e.harness import OUT_DIR" in src

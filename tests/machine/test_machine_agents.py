@@ -45,6 +45,7 @@ from galaius.machine.projects.workspace_copy import WorkspaceTransfers
 from galaius.agents.providers import PROJECT_SETTINGS_OFF, UNTRUSTED_FOLDERS, ClaudeCodeProvider
 from galaius.machine.places.place_reviews import PlaceReviews
 from galaius.host.private_files import PRIVATE_FILES
+from galaius.host.processes import detached_options
 from galaius.machine.projects.project_secrets import MARKER, ProjectEnv
 from galaius_core.identity.sealing import SecretsSeal
 
@@ -319,8 +320,8 @@ def test_a_run_stays_on_its_subscription_and_a_lent_pc_lends_no_login(base: Path
         reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="w", cwd=str(base / "project"), started_at=1.0,
                                   subscription=RunSubscription(subscription_id=pinned, limits=SubscriptionLimits()) if pinned else None))
         agents.runs.add(WebRun(run_id=run_id, root="project"))
-        with pytest.raises(SubscriptionRefused, match="pinned to another subscription|own login"):
-            _answer(agents, _request("send", run_id=run_id, text="next", subscription_id=str(asked)))
+        # A message naming another login runs where the run is (89628510): its pin never moves.
+        assert agents._pinned_run(_request("send", run_id=run_id, text="next", subscription_id=str(asked))).subscription_id == pinned
     with pytest.raises(SubscriptionRefused, match="never lent.*fence is off"):
         start(lent=True)
     fenced = agents.model_copy(update={"fence_agents": True})
@@ -451,7 +452,7 @@ def test_a_message_is_answered_once_durably_queued_and_its_dispatcher_gets_the_m
     env, path = dict(started["env"]), started["env"]["PATH"]
     assert {**env, "PATH": None} == {**agents.environment, "GALAIUS_AGENTS_DIR": str(reg.agents_dir()), "PATH": None}
     assert path.startswith(agents.environment["PATH"])
-    assert started["argv"][-2] == "--serve" and started["start_new_session"] and agent_queue._hub_change(lambda hubs: hubs).runs == {started["argv"][-1]: (run_id,)}
+    assert started["argv"][-2] == "--serve" and detached_options().items() <= started.items() and agent_queue._hub_change(lambda hubs: hubs).runs == {started["argv"][-1]: (run_id,)}
     assert [(item.state, item.message_id) for item in agent_queue.items(run_id)] == [("pending", str(request.id))]
     assert [event.text for event in reg.read_messages(run_id)] == ["- and one more thing"]
     # One that was never delivered says so when asked again, never "queued".
@@ -1388,7 +1389,8 @@ def _cut(run_id: str, kind: str, *, pid: int, at: float) -> None:
 @pytest.mark.parametrize("kind, resumes, sender", [
     pytest.param("process_gone", "itself", reg.CUT_RESUME_SENDER, id="process-gone-or-pc-rebooted"),
     pytest.param("out_of_memory", "itself", reg.CUT_RESUME_SENDER, id="oom"),
-    pytest.param("killed", "itself", reg.CUT_RESUME_SENDER, id="sigkill"),
+    pytest.param("killed", "itself", reg.CUT_RESUME_SENDER, id="sigkill",
+                 marks=pytest.mark.skipif(os.name != "posix", reason="Windows has no SIGKILL: no exit there reads as one")),
     pytest.param("sigterm", "itself", reg.CUT_RESUME_SENDER, id="sigterm-nobody-asked-pc-shutdown-or-timeout"),
     pytest.param("usage_limit", "itself", reg.LIMIT_RESUME_SENDER, id="usage-limit-reset-a-day-ago"),
     pytest.param("login_lost", "sign_in", reg.LOGIN_RESUME_SENDER, id="login-lost-a-day-ago"),

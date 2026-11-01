@@ -2641,9 +2641,12 @@ def test_cli_import_and_help_do_not_load_or_discover_conversation_dependencies()
     }
     imported = subprocess.run(
         [sys.executable, "-c", (
-            "import sys; import galaius.cli.app; "
-            "forbidden={'galaius.agents.host','galaius.models'}; "
-            "loaded=sorted(forbidden.intersection(sys.modules)); "
+            # The registry, not the `galaius.models` package: its light modules (spec, capability) load with any of it; the
+            # registry is what pulls numpy and playwright. A `galaius.lazy.deferred` module sits in sys.modules unexecuted:
+            # a `_LazyModule` until its first use.
+            "import sys, types; import galaius.cli.app; "
+            "forbidden={'galaius.agents.host','galaius.models.registry'}; "
+            "loaded=sorted(name for name in forbidden if type(sys.modules.get(name)) is types.ModuleType); "
             "raise SystemExit('loaded:'+','.join(loaded) if loaded else 0)"
         )],
         cwd=PROJECT_ROOT, env=environment, text=True, capture_output=True, timeout=10,

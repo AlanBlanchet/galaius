@@ -87,7 +87,7 @@ def test_provider_context_scope_and_immutable_skill_references(tmp_path):
     assert 'Pinned skill body.' not in worker
     reference = next(name for name in outputs if name.startswith('references/'))
     root = tmp_path / 'projection' / 'references'
-    assert f"read {root}/<skill path>" in worker and f"\n- {Path(reference).relative_to('references')}" in worker
+    assert f"read {root}/<skill path>" in worker and f"\n- {Path(reference).relative_to('references').as_posix()}" in worker
     assert f"{os.sep}RULE.md" in outputs['AGENTS.md']
     org = json.loads(outputs['org.json'])
     assert org['agents'][0]['reports_to'] == 'main'

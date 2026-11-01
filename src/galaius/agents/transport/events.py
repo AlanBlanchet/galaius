@@ -12,13 +12,19 @@ from collections.abc import Mapping
 from contextlib import suppress
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Literal, Self, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, Self, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from galaius_core import CompactionTrigger, ContextGauge, UsageWindow
 
-from galaius.models.registry import TokenMix
+from galaius.lazy import deferred
+
+if TYPE_CHECKING:
+    from galaius.models.registry import TokenMix
+
+#: Loaded at its first use: the model registry stays out of every CLI start (`galaius --help` included).
+registry = deferred("galaius.models.registry")
 
 EventKind = Literal[
     "started",     # session is up (id, cwd, tools known)
@@ -222,13 +228,13 @@ class TokenUsage(BaseModel):
         """Growth of a cumulative counter; a counter that went BACKWARDS restarted from zero."""
         return self - previous if self.covers(previous) else self
 
-    def mix(self) -> TokenMix | None:
+    def mix(self) -> "TokenMix | None":
         """These tokens as a `TokenMix` — how a workload splits between fresh input, cache reads,
         cache writes and output; None before the first counted token."""
         if self.input_tokens + self.output_tokens <= 0:
             return None
         fresh = self.input_tokens - self.cached_input_tokens - self.cache_write_input_tokens
-        return TokenMix(input=max(fresh, 0), cache_read=self.cached_input_tokens,
+        return registry.TokenMix(input=max(fresh, 0), cache_read=self.cached_input_tokens,
                         cache_write=self.cache_write_input_tokens, output=self.output_tokens)
 
 

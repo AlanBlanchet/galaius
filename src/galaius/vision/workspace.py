@@ -29,7 +29,7 @@ def _private_directory(parent: Path, name: str) -> Path:
         info = directory.lstat()
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         raise RuntimeError(f"private media directory {name!r} is a symlink or not a directory")
-    if not PRIVATE_FILES.owns(info):
+    if not PRIVATE_FILES.owns(directory, info):
         raise RuntimeError(f"private media directory {name!r} is owned by another user")
     if directory.resolve(strict=True).parent != parent.resolve(strict=True):
         raise RuntimeError(f"private media directory {name!r} escapes its workspace root")
@@ -47,7 +47,7 @@ def _workspace_root(config: Config) -> Path:
     existing = root
     while not existing.exists() and existing != existing.parent:
         existing = existing.parent
-    if not PRIVATE_FILES.owns(existing.stat()):
+    if not PRIVATE_FILES.owns(existing, existing.stat()):
         raise RuntimeError("media workspace parent is owned by another user")
     return PRIVATE_FILES.directory(root)
 
@@ -61,7 +61,7 @@ def _prune(root: Path) -> None:
             info = candidate.lstat()
         except FileNotFoundError:
             continue
-        if info.st_mtime >= cutoff or not PRIVATE_FILES.owns(info):
+        if info.st_mtime >= cutoff or not PRIVATE_FILES.owns(candidate, info):
             continue
         if stat.S_ISLNK(info.st_mode):
             candidate.unlink(missing_ok=True)

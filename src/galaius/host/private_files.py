@@ -59,8 +59,8 @@ class PrivateFiles(BaseModel):
         """PermissionError unless `path` is a regular file (or folder) only this user can read."""
         self._verify(path, path.lstat())
 
-    def owns(self, info: os.stat_result) -> bool:
-        """Whether this user owns what `info` describes."""
+    def owns(self, path: Path, info: os.stat_result) -> bool:
+        """Whether this user owns `path`, whose `lstat` is `info`."""
         raise NotImplementedError
 
     def _verify(self, path: Path, info: os.stat_result) -> None:
@@ -143,11 +143,11 @@ class PosixPrivateFiles(PrivateFiles):
         """Through the descriptor: the name is never looked up again."""
         os.fchmod(descriptor, 0o600)
 
-    def owns(self, info: os.stat_result) -> bool:
+    def owns(self, path: Path, info: os.stat_result) -> bool:
         return info.st_uid == os.getuid()
 
     def _verify(self, path: Path, info: os.stat_result) -> None:
-        if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)) or info.st_mode & 0o077 or not self.owns(info):
+        if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)) or info.st_mode & 0o077 or not self.owns(path, info):
             raise PermissionError(f"{path} must be private to this user (mode 0600, a folder 0700, owned by you)")
 
     def _settle(self, folder: Path) -> None:
@@ -182,10 +182,15 @@ class WindowsPrivateFiles(PrivateFiles):
                     raise
                 time.sleep(0.05)
 
-    def owns(self, info: os.stat_result) -> bool:
-        """True: a Windows stat carries no owner (`st_uid` is 0), so a caller holding only a stat checks none here. The
-        owner is the file's security descriptor, read by `check` on a path (where `restrict` set it)."""
-        return True
+    def owns(self, path: Path, info: os.stat_result) -> bool:
+        """The owner in `path`'s security descriptor (a Windows stat carries none: `st_uid` is 0) is this user or a
+        `trusted` principal (an elevated process's files belong to Administrators)."""
+        return self._owner(path) in {win32security.ConvertSidToStringSid(self.user()), *self.trusted}
+
+    @staticmethod
+    def _owner(path: Path) -> str:
+        descriptor = win32security.GetNamedSecurityInfo(str(path), win32security.SE_FILE_OBJECT, win32security.OWNER_SECURITY_INFORMATION)
+        return win32security.ConvertSidToStringSid(descriptor.GetSecurityDescriptorOwner())
 
     @staticmethod
     def user():

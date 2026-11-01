@@ -167,6 +167,8 @@ def test_the_egress_proxy_opens_only_the_model_api(request_line: str, allowed: b
 
 
 live = pytest.mark.skipif(not available()[0], reason=f"no fence on this PC: {available()[1]}")
+#: A test of the fence bubblewrap builds (its binds, PATH, links): Linux only, as the fence is.
+bubblewrap = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="bubblewrap is Linux only")
 
 
 def _inside(spec: FenceSpec, script: str) -> dict:
@@ -306,7 +308,7 @@ async def test_a_fenced_launch_starts_inside_the_fence_and_its_run_keeps_the_spe
     assert reg.get_run(run.run_id).fence == spec
 
 
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="bubblewrap is Linux only")
+@bubblewrap
 @pytest.mark.parametrize("stderr,code,landlock,mode,started", [
     ("", 0, None, "workspace-write", "codex"),  # its own sandbox starts: Codex as before
     ("bwrap: setting up uid map: Permission denied", 1, None, "workspace-write", "confined"),  # AppArmor-unconfined service, Ubuntu 24.04
@@ -396,6 +398,7 @@ def test_the_longest_fence_reason_keeps_its_root_command_in_the_field_the_web_sh
     assert MachineFence(platform="linux", available=False, on=False, reason=shown).reason == shown
 
 
+@bubblewrap
 def test_a_runtime_whose_python_links_through_a_folder_link_starts_inside_and_stays_read_only(home: Path, tmp_path: Path) -> None:
     """An installed runtime (a uv venv): `bin/python` -> uv's `cpython-3.x` folder link -> the interpreter. The fence,
     built by that runtime's own process (a PC runner, a resume dispatcher), re-makes the link and binds this runtime
@@ -552,6 +555,7 @@ def test_a_read_only_run_drives_apps_and_writes_only_in_its_scratch(home: Path, 
         assert (scratch / "hi").read_text() == "hi" and not (home / "docs/hi").exists()
 
 
+@bubblewrap
 def test_a_fence_holds_the_cli_its_run_starts_where_only_the_shell_finds_it(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A dispatcher the service manager started has no nvm on its PATH, yet its run starts nvm's codex (the shell's entries,
     `AgentProvider.search_path`): the fence holds that codex and the node beside it, else codex exits 127 inside."""
@@ -591,6 +595,7 @@ def _runtime(folder: Path) -> Path:
     return folder / "galaius"
 
 
+@bubblewrap
 def test_a_continued_turn_starts_the_galaius_its_runner_finds_now_never_the_removed_one_its_first_turn_found(
         home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A run's next turn, continued by a runner whose PATH finds another galaius after its first turn's runtime was removed,
@@ -617,6 +622,7 @@ def test_a_turn_whose_cli_is_installed_nowhere_is_refused_naming_it(home: Path, 
         fenced(["claude"], spec, _Installed("claude", None))
 
 
+@bubblewrap
 @pytest.mark.parametrize("named", [False, True])
 def test_a_read_only_run_launches_the_browsers_this_pc_installed(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, named: bool) -> None:
     """A read-only run's galaius server finds Playwright's browsers inside its fence, read-only and named where they are:

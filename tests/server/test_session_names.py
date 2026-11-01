@@ -50,7 +50,8 @@ def test_a_session_name_that_is_not_a_plain_slug_is_refused_everywhere(name, tmp
 
 @pytest.mark.parametrize("name", ACCEPTED)
 def test_a_plain_slug_is_a_session_name(name):
-    assert "closed" in str(asyncio.run(core.mcp.call_tool("session", {"action": "close", "name": name})))
+    """Accepted: the close reaches the session table (none of these is open here, ee0c3d3f says so)."""
+    assert f"No session '{name}' is open here." in str(asyncio.run(core.mcp.call_tool("session", {"action": "close", "name": name})))
 
 
 def test_every_session_parameter_passes_the_gate():

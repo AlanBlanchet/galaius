@@ -628,6 +628,10 @@ async def test_the_next_start_of_the_same_launch_runs_on_the_child_started_ahead
         assert held in warm.holding, "the first folder's child still waits for its next start"
     finally:
         warm.close()
+    for _ in range(200):  # Windows deletes its files once it has ended (`WarmChild.end`)
+        if not reg.raw_events_path(held).exists():
+            break
+        await asyncio.sleep(0.05)
     assert not reg.raw_events_path(held).exists() and reg.get_run(held) is None, "an unused child leaves nothing behind"
 
 

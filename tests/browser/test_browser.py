@@ -1,4 +1,5 @@
 import os
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -341,6 +342,7 @@ async def _chromium_installed() -> bool:
         return Path(pw.chromium.executable_path).exists()
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="reads each Chromium process's command line and cgroup from /proc")
 async def test_session_browser_sandboxed_and_capped():
     """A real session launch on this machine: no Chromium process carries --no-sandbox (Playwright adds it unless
     asked), and the browser's own cgroup holds the configured memory cap. Skips the half this machine offers no route
@@ -369,6 +371,7 @@ async def test_session_browser_sandboxed_and_capped():
         await manager.close()
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="the user-namespace route it forces exists on Linux only")
 async def test_session_browser_starts_when_the_sandbox_guess_is_wrong(monkeypatch, caplog):
     """A setup the route guess misses (a pod, a seccomp filter) used to start unsandboxed; it still starts: Chromium's
     sandbox abort relaunches it once unsandboxed instead of reinstalling. Forced here by guessing namespaces with the

@@ -430,12 +430,13 @@ def passed_on(path: str, run: "reg.AgentRun | None") -> str:
     a person's own session included; ValueError: not a UTF-8 text file of at most `PASSED_ON_MAX` bytes."""
     if run is None:
         raise PermissionError("content_from passes on the file of a community agent your agent run started; this session is none")
-    target = PurePosixPath(os.path.normpath(Path(path).expanduser()))
+    # This system's own path rules (a Windows `C:\…` is no POSIX path), normalised without following a link.
+    target = Path(os.path.normpath(Path(path).expanduser()))
     works = [child.community.work.resolve() for child in reg.children_of(run.run_id) if child.community is not None and child.community.work is not None]
-    work = next((work for work in works if target.is_absolute() and target.is_relative_to(work.as_posix())), None)
-    if work is None or target == PurePosixPath(work.as_posix()):
+    work = next((work for work in works if target.is_absolute() and target.is_relative_to(work)), None)
+    if work is None or target == work:
         raise PermissionError(f"{path}: content_from reads only a file in the folder of a community agent this run started")
-    with _plain_file(work, target.relative_to(work.as_posix()).as_posix(), "that community agent's folder") as handle:
+    with _plain_file(work, target.relative_to(work).as_posix(), "that community agent's folder") as handle:
         data = handle.read(PASSED_ON_MAX + 1)
     if len(data) > PASSED_ON_MAX:
         raise ValueError(f"{path} weighs more than the {PASSED_ON_MAX // 1024} KiB content_from passes on")

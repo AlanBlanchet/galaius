@@ -278,7 +278,7 @@ def test_codex_projects_mesh_without_changing_permissions(resume):
 # write) that has no clean equivalent and still falls back to the coarse opt-in, named concretely.
 
 @pytest.mark.parametrize("allowed,expected_sandbox,shell_disabled,network_on", [
-    ([], "workspace-write", False, True),                                          # no restriction at all
+    (None, "workspace-write", False, True),                                        # no restriction at all ([] = no tool)
     (["Read", "Grep", "Glob"], "read-only", True, False),                          # pure read: no reason for a shell
     (["Read", "Grep", "Glob", "Bash"], "read-only", False, False),                 # read-only critic
     (["Read", "Write", "Edit"], "workspace-write", True, False),                   # writes, no shell (e.g. teacher)

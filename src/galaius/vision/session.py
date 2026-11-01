@@ -93,7 +93,7 @@ def _prune_failure_diagnostics(root: Path) -> None:
         if (
             candidate.suffix != ".json"
             or not stat.S_ISREG(info.st_mode)
-            or not PRIVATE_FILES.owns(info)
+            or not PRIVATE_FILES.owns(candidate, info)
         ):
             continue
         if info.st_mtime < cutoff:

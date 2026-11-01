@@ -29,7 +29,7 @@ class _PromptCache:
             descriptor = folder.file(path.name, os.O_RDWR | os.O_CREAT, 0o600)
             try:
                 metadata = os.fstat(descriptor)
-                if not stat.S_ISREG(metadata.st_mode) or not PRIVATE_FILES.owns(metadata):
+                if not stat.S_ISREG(metadata.st_mode) or not PRIVATE_FILES.owns(folder.path / path.name, metadata):
                     raise OSError("prompt cache must be an owned regular file")
                 PRIVATE_FILES.restrict_open(descriptor, folder.path / path.name)
                 database = sqlite3.connect(path)

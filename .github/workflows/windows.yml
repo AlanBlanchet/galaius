@@ -96,7 +96,7 @@ jobs:
       - name: The commands he types start (galaius, galaius agents list)
         timeout-minutes: 3
         run: |
-          foreach ($arguments in @(@(), @('agents', 'list', '--all-sessions'))) {
+          foreach ($arguments in @(@(), @('agents', 'list'), @('agents', 'list', '--all-sessions'))) {
             $said = & galaius @arguments 2>&1 | Out-String
             "> galaius $($arguments -join ' ') (exit $LASTEXITCODE)"
             $said

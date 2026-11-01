@@ -39,7 +39,7 @@ def project(tmp_path: Path) -> Path:
     files = {"src/deep/main.py": "print('hi')\n", "README.md": "# app\n", ".env.local": "TOKEN=x\n", ".env": "A=1\n", "id_rsa": "key\n", "src/cert.pem": "pem\n",
              ".github/ci.yml": "on: push\n", "notes.txt": NOTES, "big.log": "x" * (PROJECT_TEXT_MAX + 10)}
     for name, text in files.items():
-        (folder / name).write_text(text)
+        (folder / name).write_text(text, newline="\n")  # the bytes as written, on Windows too (no \r\n)
     (folder / "logo.png").write_bytes(PNG)
     (folder / "blob.bin").write_bytes(b"\x00\x01" * 100)
     (folder / "out").symlink_to(tmp_path)
@@ -48,7 +48,7 @@ def project(tmp_path: Path) -> Path:
     subprocess.run((*git, "init", "-q"), cwd=folder, check=True)
     subprocess.run((*git, "add", "src/deep/main.py", "README.md"), cwd=folder, check=True)
     subprocess.run((*git, "commit", "-qm", "one"), cwd=folder, check=True)
-    (folder / "src" / "deep" / "main.py").write_text("print('changed')\n")
+    (folder / "src" / "deep" / "main.py").write_text("print('changed')\n", newline="\n")
     return folder
 
 
@@ -309,7 +309,7 @@ def test_a_private_key_never_shows_whatever_page_holds_part_of_it(project: Path,
     """Pages asked from any line of the key (the one after its BEGIN line included), or chained across the cut, mask it."""
     filler = "".join(f"line {index:07d}\n" for index in range(before // 13 + 1))[:before]
     key = "\n".join((PEM_BEGIN, *PEM_BODY, PEM_END)) + "\n"
-    (project / "deploy.txt").write_text(filler + key + "after\n" * 1000)
+    (project / "deploy.txt").write_text(filler + key + "after\n" * 1000, newline="\n")
     agents = _agents(project, tmp_path)
     at = len(filler)
     lines = [at + key.index(line) for line in (*PEM_BODY, PEM_END)]
@@ -324,7 +324,7 @@ def test_a_pc_secret_holding_a_line_end_never_shows_at_either_cut(project: Path,
     head = "x" * 50 + "\n"
     filler = head * ((PROJECT_TEXT_MAX - 2000) // len(head))
     body = filler + "y" * (PROJECT_TEXT_MAX - len(filler) - len(secret) + 10) + secret + " tail\n" * 10
-    (project / "env.log").write_text(body)
+    (project / "env.log").write_text(body, newline="\n")
     pages = _pages(agents, "env.log")
     assert body.index(secret) < pages[0].end < body.index(secret) + len(secret)   # the cut splits it
     starts = range(body.index(secret), body.index(secret) + len(secret) + 1)

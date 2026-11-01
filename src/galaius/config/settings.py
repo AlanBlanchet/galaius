@@ -5,7 +5,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 from collections.abc import Sequence
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, ByteSize, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode
@@ -14,10 +14,16 @@ from galaius_core import CompactAt
 from galaius_core.tools.settings import VLM_MIN_DIM_DEFAULT, VLM_MAX_DIM_DEFAULT
 
 from galaius.agents.providers import MEDIA_PROVIDERS
-from galaius.catalog.criteria import Criteria, CriteriaError
 from galaius.models.breaker import CircuitBreaker
-from galaius.models.registry import Model
 from galaius.models.spec import ModelRole
+from galaius.lazy import deferred
+
+if TYPE_CHECKING:
+    from galaius.catalog.criteria import Criteria
+    from galaius.models.registry import Model
+
+#: Loaded at its first use: the criteria and the model registry they rank stay out of every CLI start.
+criteria = deferred("galaius.catalog.criteria")
 
 DEFAULT_LIMIT = 50
 LOG_MAXLEN = 1000
@@ -505,8 +511,8 @@ class Config(BaseSettings):
             raise ValueError(f"unknown media provider: {provider}") from None
         text = (getattr(self, field, "") or _CLAUDE_MEDIA_DEFAULT_CRITERIA).strip()
         try:
-            criterion = Criteria.parse(text)
-        except CriteriaError:
+            criterion = criteria.Criteria.parse(text)
+        except criteria.CriteriaError:
             return ""
         chosen = criterion.choose(
             available_only=False,
@@ -538,14 +544,14 @@ class Config(BaseSettings):
         resolvable and a role never silently means "no requirement"."""
         return (getattr(self, f"{role}_criteria") or _ROLE_DEFAULT_CRITERIA[role]).strip()
 
-    def _role_criterion(self, role: ModelRole) -> Criteria:
-        criterion = Criteria.parse(self.criteria_for(role))
+    def _role_criterion(self, role: ModelRole) -> "Criteria":
+        criterion = criteria.Criteria.parse(self.criteria_for(role))
         criterion.validate_weights(self.criteria_weights)
         return criterion
 
     def ranked_models(
         self, role: ModelRole, breaker: CircuitBreaker | None = None
-    ) -> list[Model]:
+    ) -> "list[Model]":
         """Every model this role's criterion clears, best/cheapest first. The FULL ranking, not
         just the top pick — the second entry already IS the fallback a separate stored chain
         used to duplicate (galaius_core.tools.settings)."""
@@ -599,8 +605,8 @@ class Config(BaseSettings):
             return ""
         text = (self.tier_sovereign_criteria or _TIER_SOVEREIGN_DEFAULT_CRITERIA).strip()
         try:
-            criterion = Criteria.parse(text)
-        except CriteriaError:
+            criterion = criteria.Criteria.parse(text)
+        except criteria.CriteriaError:
             return ""
         chosen = criterion.choose(available_only=True, weights=self.criteria_weights)
         return chosen.id if chosen else ""

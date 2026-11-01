@@ -29,7 +29,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from collections.abc import Mapping, Sequence
-from typing import Annotated, ClassVar, Literal, Protocol, get_args
+from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Protocol, get_args
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, model_validator
@@ -46,9 +46,11 @@ from galaius.agents.catalog.vocabulary import CLAUDE_VOCABULARY, CODEX_VOCABULAR
 from galaius.brief_hook import NOTE as BRIEF_NOTE
 from galaius.isolation.fence import BROWSERS, COMPAT_KEY, EGL_VENDOR, RELAY, FencedCli, RELAY_PORT, Confinement, RelayedServer, SignIn, confinement_refusal, userns_refusal
 from galaius.inbox_hook import NOTE as INBOX_NOTE
-from galaius.models.registry import Model
 from galaius.host.processes import ask_process, run_isolated_process, shell_entries
 from galaius.mcp.announcement import GatewayServed
+
+if TYPE_CHECKING:  # the model registry stays out of every CLI start
+    from galaius.models.registry import Model
 
 #: Set (to anything) in the environment of an agent working in a folder whose own agent settings
 #: must not load - a workspace cloned from the web: its hooks and permission rules are code and
@@ -718,13 +720,13 @@ class AgentProvider(ABC):
     #: Catalog providers whose models this CLI runs through its OWN login — no API key in our env.
     native_providers: frozenset[str] = frozenset()
 
-    def can_run(self, model: Model, env: dict[str, str]) -> bool:
+    def can_run(self, model: "Model", env: dict[str, str]) -> bool:
         """Whether this CLI can be pointed at `model` at all — the pool a criterion chooses from.
         A criterion once picked the cheapest VLM in the whole catalog, a Gemini id, and handed it
         to the claude binary. Native = yes; anything else = no, unless a subclass knows a route."""
         return model.provider in self.native_providers
 
-    def model_id_for(self, model: Model) -> str:
+    def model_id_for(self, model: "Model") -> str:
         """What a resolved criterion hands on: a bare id for a native model, `provider/id` for one
         that must be routed, so `resolve_model`'s overlay fires."""
         return model.id if model.provider in self.native_providers else f"{model.provider}/{model.id}"
@@ -1109,7 +1111,7 @@ class ClaudeCodeProvider(AgentProvider):
         "and turn auto-reload off"
     )
 
-    def can_run(self, model: Model, env: dict[str, str]) -> bool:
+    def can_run(self, model: "Model", env: dict[str, str]) -> bool:
         if super().can_run(model, env):
             return True
         # Claude Code honours ANTHROPIC_BASE_URL, so a provider galaius knows the Anthropic-wire
@@ -1191,7 +1193,7 @@ class ClaudeCodeProvider(AgentProvider):
         except ValueError:
             return None
 
-    def model_id_for(self, model: Model) -> str:
+    def model_id_for(self, model: "Model") -> str:
         """Derive Claude Code's hyphenated version spelling for every future catalog row."""
         model_id = super().model_id_for(model)
         return re.sub(r"(?<=\d)\.(?=\d)", "-", model_id)
@@ -2237,7 +2239,7 @@ class CodexProvider(AgentProvider):
             chosen = None
         return () if chosen else ("-c", f'windows.sandbox="{cls.WINDOWS_SANDBOX}"')
 
-    def can_run(self, model: Model, env: dict[str, str]) -> bool:
+    def can_run(self, model: "Model", env: dict[str, str]) -> bool:
         if super().can_run(model, env):
             return True
         # Codex speaks the OpenAI chat-completions wire protocol natively; an operator-configured
@@ -2700,8 +2702,8 @@ class _MediaSessionProvider(Protocol):
 
     def available(self) -> bool: ...
     def executable(self) -> str: ...
-    def model_id_for(self, model: Model) -> str: ...
-    def can_run(self, model: Model, env: dict[str, str]) -> bool: ...
+    def model_id_for(self, model: "Model") -> str: ...
+    def can_run(self, model: "Model", env: dict[str, str]) -> bool: ...
     def supports_session_media(self, media_kind: str) -> bool: ...
     def subscription_env(
         self, base: dict[str, str] | None = None, *, temp_dir: Path | None = None

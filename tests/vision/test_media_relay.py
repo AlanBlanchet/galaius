@@ -7,6 +7,7 @@ import asyncio
 import base64
 import contextlib
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,9 @@ from galaius.config.settings import Config
 from galaius.vision.core import UNSET, _native_response_format, analyze_media
 from galaius.vision.relay import MediaRelay, MediaRequest
 from galaius.vision.types import MediaItem, VLMResult
+
+#: The relay answers a server inside the agent fence over a Unix socket: Linux only, as the fence is.
+pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="the media relay serves the agent fence, Linux only")
 
 _PNG = base64.b64encode(b"\x89PNG\r\n\x1a\n fake").decode()
 

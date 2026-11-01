@@ -359,10 +359,9 @@ def process_started(pid: int) -> int | None:
 
 
 def process_parent(pid: int) -> int | None:
-    """The pid of `pid`'s parent; None when it is gone, has none (pid 1), or the system cannot say
-    (Windows: no parent walk yet)."""
+    """The pid of `pid`'s parent; None when it is gone, has none (pid 1), or the system cannot say."""
     if sys.platform == "win32":
-        return None
+        return _parent_windows(pid, _parents_windows())
     if sys.platform == "darwin":
         info = _ProcBsdInfo()
         filled = _libproc().proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))  # PROC_PIDTBSDINFO
@@ -376,10 +375,12 @@ def process_parent(pid: int) -> int | None:
 def process_ancestry(pid: int) -> tuple[tuple[int, int | None], ...]:
     """Each ancestor of `pid`, nearest first, as (pid, `process_started`): one process for good."""
     found: list[tuple[int, int | None]] = []
-    parent = process_parent(pid)
+    # Windows: one snapshot of every process serves the whole walk.
+    parent_of = functools.partial(_parent_windows, parents=_parents_windows()) if sys.platform == "win32" else process_parent
+    parent = parent_of(pid)
     while parent is not None and len(found) < 64:
         found.append((parent, process_started(parent)))
-        parent = process_parent(parent)
+        parent = parent_of(parent)
     return tuple(found)
 
 
@@ -471,6 +472,43 @@ def _started_darwin(pid: int) -> int | None:
     if filled != ctypes.sizeof(info):
         return None
     return info.start_sec * 1_000_000 + info.start_usec
+
+
+class _ProcessEntry(ctypes.Structure):
+    """Windows's PROCESSENTRY32W: one process of a Toolhelp snapshot."""
+    _fields_ = [("dwSize", ctypes.c_uint32), ("cntUsage", ctypes.c_uint32), ("th32ProcessID", ctypes.c_uint32),
+                ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", ctypes.c_uint32), ("cntThreads", ctypes.c_uint32),
+                ("th32ParentProcessID", ctypes.c_uint32), ("pcPriClassBase", ctypes.c_long), ("dwFlags", ctypes.c_uint32),
+                ("szExeFile", ctypes.c_wchar * 260)]
+
+
+def _parent_windows(pid: int, parents: Mapping[int, int]) -> int | None:
+    """`pid`'s parent in a snapshot (`_parents_windows`). Windows records the parent's pid only, which a later process
+    may reuse: a parent counts only when it started no later than `pid`."""
+    parent = parents.get(pid)
+    started, own = (process_started(parent) if parent else None), process_started(pid)
+    return parent if started is not None and own is not None and started <= own else None
+
+
+def _parents_windows() -> dict[int, int]:
+    """Each process's parent pid, from one Toolhelp snapshot of every process; empty when the system refuses one."""
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.CreateToolhelp32Snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
+    kernel32.Process32FirstW.argtypes = kernel32.Process32NextW.argtypes = (wintypes.HANDLE, ctypes.POINTER(_ProcessEntry))
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    if snapshot is None or snapshot == ctypes.c_void_p(-1).value:  # INVALID_HANDLE_VALUE
+        return {}
+    try:
+        entry, parents = _ProcessEntry(dwSize=ctypes.sizeof(_ProcessEntry)), {}
+        found = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while found:
+            parents[entry.th32ProcessID] = entry.th32ParentProcessID
+            found = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+        return parents
+    finally:
+        kernel32.CloseHandle(snapshot)
 
 
 def _started_windows(pid: int) -> int | None:

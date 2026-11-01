@@ -15,6 +15,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr
 
@@ -22,6 +23,9 @@ from galaius.agents import registry as reg
 from galaius.host.processes import end_process_tree
 
 log = logging.getLogger(__name__)
+
+#: Removals waiting for their child to end, kept so no task is collected before it ran.
+_dropping: set[asyncio.Task] = set()
 
 
 class WarmChild(BaseModel):
@@ -41,10 +45,30 @@ class WarmChild(BaseModel):
         return self.process.returncode is None
 
     def end(self) -> None:
-        """Stop it (`end_waiting`) and drop the files it wrote when they are its own: it never became a run."""
+        """Stop it (`end_waiting`) and drop the files it wrote when they are its own: it never became a run.
+        A file the child still holds open (Windows deletes none) goes once the child has ended. Runs in the child's
+        event loop, as closing its stdin does."""
         end_waiting(self.process)
-        for path in (reg.raw_events_path(self.run_id), reg.stderr_path(self.run_id)) if self.owns_files else ():
-            path.unlink(missing_ok=True)
+        held = [path for path in (reg.raw_events_path(self.run_id), reg.stderr_path(self.run_id)) if self.owns_files and not _dropped(path)]
+        if held:
+            task = asyncio.get_running_loop().create_task(_drop_once_ended(self.process, held))
+            _dropping.add(task)
+            task.add_done_callback(_dropping.discard)
+
+
+def _dropped(path: Path) -> bool:
+    """Whether `path` is gone: False while another process holds it open where that forbids deleting it."""
+    try:
+        path.unlink(missing_ok=True)
+    except PermissionError:
+        return False
+    return True
+
+
+async def _drop_once_ended(process: asyncio.subprocess.Process, paths: list[Path]) -> None:
+    await process.wait()
+    if left := [path for path in paths if not _dropped(path)]:
+        log.warning("files of an agent started ahead left behind, still held open: %s", ", ".join(map(str, left)))
 
 
 def end_waiting(process: asyncio.subprocess.Process) -> None:

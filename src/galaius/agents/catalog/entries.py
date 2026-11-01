@@ -19,8 +19,11 @@ from galaius.agents.catalog.connection import (
     CatalogConnectionError,
     CatalogOffline,
 )
-from galaius.catalog.criteria import Criteria
 from galaius.host.private_files import PRIVATE_FILES
+from galaius.lazy import deferred
+
+#: Loaded at the first catalog validated: its model registry stays out of `galaius --help` and every CLI start.
+criteria = deferred("galaius.catalog.criteria")
 
 
 def role_identifier(agent: AgentRevision) -> str:
@@ -74,8 +77,8 @@ class AgentInstructionSet(BaseModel):
     @model_validator(mode="after")
     def complete(self) -> Self:
         if self.agent.criteria is not None:
-            Criteria.parse(self.agent.criteria)
-        Criteria.validate_weights(self.agent.criteria_weights)
+            criteria.Criteria.parse(self.agent.criteria)
+        criteria.Criteria.validate_weights(self.agent.criteria_weights)
         for reference in (self.agent.prompt, *self.agent.paradigms, *self.agent.skill_paradigms):
             self.prompt(reference)
         for reference in (self.agent.prompt, *self.agent.paradigms):
@@ -92,8 +95,8 @@ class CatalogSnapshot(AgentCatalogSnapshot):
             raise ValueError("agent catalog exceeds its record limit")
         for agent in self.agents:
             if agent.criteria is not None:
-                Criteria.parse(agent.criteria)
-            Criteria.validate_weights(agent.criteria_weights)
+                criteria.Criteria.parse(agent.criteria)
+            criteria.Criteria.validate_weights(agent.criteria_weights)
         return self
 
     def role(self, key: str) -> AgentRevision:

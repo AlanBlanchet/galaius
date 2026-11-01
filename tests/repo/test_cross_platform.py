@@ -163,6 +163,7 @@ def test_every_program_galaius_starts_goes_through_popen_where_windows_hides_its
     assert set(BYPASS_ALLOWED) <= present, f"allowed but gone, take them out: {sorted(set(BYPASS_ALLOWED) - present)}"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the relay serves no Windows client (galaius.mcp_relay is POSIX only)")
 def test_the_relay_lock_lets_one_process_at_a_time_through(tmp_path):
     """`mcp_relay.locked`, the relay's own stdlib-only lock (it runs under `python -I -S`: no pydantic, no pywin32,
     so `galaius.host.file_lock` cannot serve it). Here: a held lock makes the next taker wait."""

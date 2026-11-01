@@ -35,10 +35,16 @@ def _ended(run_id: str, *, report: str = "", **rest) -> None:
 def asked(monkeypatch) -> list[dict[str, str]]:
     """Each spawn the watcher asks, its reflection taken by run REFLECTION (started under MAIN)."""
     calls: list[dict[str, str]] = []
+    run = turn_reviews.subprocess.run      # the one `subprocess` module: every other program still runs (the shell's PATH)
 
-    def spawn(argv, **_):
-        tail = argv[argv.index("spawn") + 1:]
-        calls.append(dict(zip(tail[::2], tail[1::2])))
+    def spawn(argv, **options):
+        if "spawn" not in argv:
+            return run(argv, **options)
+        options, tail = {}, argv[argv.index("spawn") + 1:]
+        while tail:      # `--task=<words>` is one argument (see the test below), the others a pair
+            name, joined, value = tail.pop(0).partition("=")
+            options[name] = value if joined else tail.pop(0)
+        calls.append(options)
         if reg.get_run(REFLECTION) is None:
             register_run(REFLECTION, agent="reflection", name="reflection", parent_run_id=MAIN)
         return turn_reviews.subprocess.CompletedProcess(argv, 0, f"{REFLECTION}\n", "")

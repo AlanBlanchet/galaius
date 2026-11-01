@@ -309,6 +309,7 @@ async def test_common_launcher_uses_one_catalog_for_prompt_and_policy(catalog_ho
 
     monkeypatch.setattr(provider_type, "available", lambda self: True)
     monkeypatch.setattr(provider_type, "command", command)
+    monkeypatch.setattr(provider_type, "starts_ahead", False)   # its task on the command line, where `command` reads it
     monkeypatch.setattr("galaius.agents.run.resolve_model", lambda rule, env, **kwargs: ({}, "fixture-model"))
     # The ranked list is stubbed at its entry point for the same reason the resolver is: the
     # fixture role weights `gui.screenspot`, which no catalog row scores, so a real ranking finds
@@ -625,7 +626,7 @@ def test_launch_uses_body_only_and_skill_paths_keep_pinned_content(catalog_home)
     assert "skill instruction revision 1" not in launch
     path = catalog.skill_path(catalog.snapshot.role("fixture-worker").skill_paradigms[0])
     root = path.parents[3]  # the skill root stated once, each line the path below it
-    assert f"read {root}/<skill path>" in launch and f"\n- {path.relative_to(root)}" in launch
+    assert f"read {root}/<skill path>" in launch and f"\n- {path.relative_to(root).as_posix()}" in launch
     skill_content = path.read_bytes()
     assert b"skill instruction revision 1" in skill_content
     assert hashlib.sha256(skill_content).hexdigest() == catalog.snapshot.role("fixture-worker").skill_paradigms[0].digest
@@ -889,6 +890,7 @@ async def test_a_child_delegates_through_the_capability_its_catalog_declares(adv
                      agent="fixture-worker", agent_ref=pinned, cwd=str(catalog_home))
     monkeypatch.setattr(ClaudeCodeProvider, "available", lambda self: True)
     monkeypatch.setattr(ClaudeCodeProvider, "command", lambda self, task, **kwargs: [sys.executable, "-c", "pass"])
+    monkeypatch.setattr(ClaudeCodeProvider, "starts_ahead", False)   # its task on the command line, where `command` reads it
     monkeypatch.setattr("galaius.agents.run.resolve_model", lambda rule, env, **kwargs: ({}, "fixture-model"))
     monkeypatch.setattr("galaius.agents.run.rank_candidates", lambda rule, env, *, providers, weights="", role=None: (
         reg.LaunchCandidate(provider=providers[0].name, model=rule, rank=0),))
@@ -918,6 +920,7 @@ async def test_local_delegation_and_resume_run_exact_parent_pin(advanced_catalog
 
     monkeypatch.setattr(ClaudeCodeProvider, "available", lambda self: True)
     monkeypatch.setattr(ClaudeCodeProvider, "command", command)
+    monkeypatch.setattr(ClaudeCodeProvider, "starts_ahead", False)   # its task on the command line, where `command` reads it
     monkeypatch.setattr(ClaudeCodeProvider, "resume_command", lambda self, session_id, task, **kwargs: command(self, task, cwd=str(catalog_home), run_id="resume", **kwargs))
     monkeypatch.setattr("galaius.agents.run.resolve_model", lambda rule, env, **kwargs: ({}, f"fixture-model-{rule.rsplit(' ', 1)[-1]}"))
     # The ranked list is stubbed at its entry point for the same reason the resolver is: the

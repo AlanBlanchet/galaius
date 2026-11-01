@@ -2324,10 +2324,11 @@ def test_a_cut_comes_back_by_itself_only_once_a_runner_here_resumes_cuts_and_onl
 @pytest.mark.parametrize("exit_code, cause", [(-9, "killed"), (137, "killed"), (129, "killed"), (134, None), (139, None), (2, None)],
                          ids=["sigkill", "sigkill-shell", "sighup-shell", "its-own-abort", "its-own-segfault", "its-own-error"])
 def test_only_a_signal_sent_from_outside_reads_as_a_kill_its_pc_resumes(resuming, exit_code, cause):
-    """code-reviewer b57485ab: a crash of the program itself (SIGABRT, SIGSEGV) is its own error, never resumed by itself."""
+    """code-reviewer b57485ab: a crash of the program itself (SIGABRT, SIGSEGV) is its own error, never resumed by itself.
+    Windows ends no process by a signal: there every exit code is the program's own."""
     register_run(run_id="sig")
     reg.finish("sig", exit_code=exit_code, first=0)
-    assert reg.cut_cause(reg.get_run("sig")) == cause
+    assert reg.cut_cause(reg.get_run("sig")) == (cause if os.name == "posix" else None)
 
 
 def test_a_cut_that_keeps_coming_back_is_resumed_twice_then_left_to_a_person_until_a_turn_ends_done(resuming):

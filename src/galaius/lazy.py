@@ -1,8 +1,10 @@
-"""Heavy third-party modules bound at import, loaded on first attribute use.
+"""Heavy modules bound at import, loaded on first attribute use.
 
 litellm costs ~4 s to import and openai ~1 s. `galaius mcp` boots inside every agent's CLI, and the
 CLI holds the agent's first turn until its MCP servers answer: an eager import there is ~4 s of
-wait on every agent start, for a dependency only a vision call ever touches.
+wait on every agent start, for a dependency only a vision call ever touches. A galaius module whose
+import pulls heavy ones is bound the same way: `galaius.models.registry` (numpy and playwright through
+its coordinate formats, ~0.2 s) stays out of every CLI start.
 """
 
 import importlib.util

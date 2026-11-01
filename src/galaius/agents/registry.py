@@ -1724,7 +1724,7 @@ def ancestor_run() -> AgentRun | None:
     parent a launch cannot hide by clearing `GALAIUS_PARENT_RUN_ID` from its environment.
 
     Where runs have scopes the scope answers first (`Caller.scope_run`: `setsid -f` leaves a process in it; a unit
-    `systemd-run` started is no one, `Caller.unowned`); this walk serves systems without one. Windows has none here. Only
+    `systemd-run` started is no one, `Caller.unowned`); this walk serves systems without one (Windows, macOS). Only
     the fence holds a run to its subscription (A3): a lent run starts only inside it; an unfenced run
     on the owner's own subscription can reach his own default login, never another account's."""
     ancestors = set(process_ancestry(Caller.current().pid))
