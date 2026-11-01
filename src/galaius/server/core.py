@@ -29,7 +29,7 @@ from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 
 from galaius import __version__
 from galaius.agents.tool_gateway import ServedGateway
-from galaius.browser.manager import SessionRegistry
+from galaius.browser.manager import SessionRegistry, session_name
 from galaius.account.caller import Caller
 from galaius.diagnostics.debug_output import _CURRENT_INV, Debug, resolve_output_path
 from galaius.mcp.announcement import GATEWAY_PREFIX, McpAnnouncement
@@ -181,9 +181,10 @@ def _auto_session_name() -> str | None:
 
 def _resolve_session(session: str) -> str:
     """The one rule turning what the caller sent into the session it means. Idempotent: only the
-    ``_AUTO_SESSION`` sentinel moves, so every helper that calls it lands on the same name."""
+    ``_AUTO_SESSION`` sentinel moves, so every helper that calls it lands on the same name. Any other
+    name must pass :func:`session_name` — every session tool refuses it before its body runs."""
     if session != _AUTO_SESSION:
-        return session
+        return session_name(session)
     return _auto_session_name() or _DEFAULT_SESSION
 
 
@@ -549,7 +550,8 @@ class _SessionScopedMCP(FastMCP):
             def resolved(call_args: tuple, call_kwargs: dict) -> dict:
                 for name, index in slots:
                     if index is not None and len(call_args) > index:
-                        continue  # passed positionally: already a name the caller chose
+                        session_name(call_args[index])  # passed positionally: a name the caller chose
+                        continue
                     call_kwargs[name] = _resolve_session(call_kwargs.get(name, _AUTO_SESSION))
                 return call_kwargs
 

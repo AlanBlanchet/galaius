@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import stat
 import sys
@@ -166,10 +167,30 @@ async def _restore_url(page, url: str) -> tuple[str, str | None]:
         return page.url, f"could not return to {_redacted(url)} ({first}) — navigate again before acting"
 
 
+#: A session name is one plain path component: it names the session's own profile folder under
+#: ``browser_profile_dir``. ASCII letters, digits, ``.``, ``_``, ``-``; starts and ends on a letter or
+#: digit (so never ``.``, ``..``, a hidden or option-like name, or one Windows trims); 64 characters at most.
+_SESSION_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?")
+#: Device names Windows opens instead of a folder, with or without an extension.
+_WINDOWS_DEVICE = re.compile(r"(?:con|prn|aux|nul|com\d|lpt\d)(?:\..*)?", re.IGNORECASE)
+
+
+def session_name(name: str) -> str:
+    """``name`` when it is a valid session name, else ValueError saying the rule. The one gate between
+    a caller's string and the profile folder it becomes: a separator, ``..`` or an absolute path would
+    reach any folder the server can write."""
+    if not _SESSION_NAME.fullmatch(name) or _WINDOWS_DEVICE.fullmatch(name):
+        raise ValueError(
+            f"invalid session name {name!r}: use 1-64 ASCII letters, digits, '.', '_' or '-', "
+            "starting and ending on a letter or digit (no path separators, no '..', not a Windows device name)"
+        )
+    return name
+
+
 class BrowserManager:
     def __init__(self, config: Config, session_id: str = "default"):
         self._config = config
-        self._session_id = session_id
+        self._session_id = session_name(session_id)
         self._playwright = None
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
