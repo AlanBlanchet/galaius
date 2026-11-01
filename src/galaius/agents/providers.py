@@ -1403,6 +1403,14 @@ class ClaudeCodeProvider(AgentProvider):
     def permission_modes(self) -> list[PermissionMode]:
         return list(self._MODES)
 
+    def _permission_flag(self, mode: str | None) -> list[str]:
+        """A read-only run (`plan`) also granted galaius's tools: plan refuses every MCP tool it is not granted, and of
+        those granted, every one not marked `readOnlyHint` (2.1.288: « Cannot call mcp__galaius__launch_app while in plan
+        mode »), so it calls exactly galaius's read-only ones (`_SessionScopedMCP.tool`'s `read_only`) — within its role's
+        tools, minus its denied ones (`--disallowedTools` wins over a grant)."""
+        grant = ["--allowedTools", _GALAIUS_MCP_PREFIX.removesuffix("__")] if self.touch_of(mode) is TouchScope.READ_ONLY else []
+        return super()._permission_flag(mode) + grant
+
     def validate_tool_policy(self, allowed_tools: list[str] | None, denied_tools: tuple[str, ...], *,
                              coarse_accepted: bool = False) -> None:
         # Claude enforces the FULL list itself (`--agents`/`--allowedTools`/`--disallowedTools`
@@ -2357,9 +2365,11 @@ class CodexProvider(AgentProvider):
                          if line.strip().lower().startswith("logged in using "))
 
     @staticmethod
-    def mesh_arguments(mcp_config: str | None, relayed: bool = False) -> list[str]:
+    def mesh_arguments(mcp_config: str | None, relayed: bool = False, read_only: bool = False) -> list[str]:
         """Project the launcher's credential-free stdio mesh without granting access. `relayed`: Codex
-        starts `RELAY` instead, to the server its `Confinement` runs outside."""
+        starts `RELAY` instead, to the server its `Confinement` runs outside. `read_only`: a read-only run's
+        (`TouchScope.READ_ONLY`), whose galaius tools wait for an approval no one gives, so it calls only those marked
+        `readOnlyHint` (`_SessionScopedMCP.tool`), as Claude Code's plan does."""
         if mcp_config is None:
             return []
         try:
@@ -2374,7 +2384,9 @@ class CodexProvider(AgentProvider):
             # Its tools are the role's (enabled_tools / disabled_tools); a run has no one to answer an
             # approval prompt, and under approval_policy=never Codex 0.155 refuses every tool call
             # without a read-only annotation instead (codex-rs config/src/mcp_types.rs).
-            "-c", 'mcp_servers.galaius.default_tools_approval_mode="approve"',
+            # A read-only run's says `writes` itself (codex-cli 0.155.1 `AppToolApproval`: prompt / writes / approve; measured:
+            # `writes` runs a `readOnlyHint` tool, `prompt` refuses it too); left out, the person's own config could say `approve`.
+            "-c", f'mcp_servers.galaius.default_tools_approval_mode="{"writes" if read_only else "approve"}"',
             *(item for key, value in sorted(server.env.items()) for item in ("-c", f"mcp_servers.galaius.env.{key}=" + json.dumps(value, ensure_ascii=False))),
         ]
 
@@ -2453,7 +2465,7 @@ class CodexProvider(AgentProvider):
         sandbox = self._native_sandbox_arguments(allowed_tools or [], denied_tools, permission_mode=permission_mode, coarse_accepted=coarse_accepted)
         confinement = self._confinement(sandbox[1], mcp_config)
         argv = [self.binary, "exec", "--json", *self.exec_flags, *self.native_delegation_flags, *self.platform_flags(), *self._setting_sources(environment)]
-        argv += self.mesh_arguments(mcp_config, relayed=confinement is not None)
+        argv += self.mesh_arguments(mcp_config, relayed=confinement is not None, read_only=self.touch_of(permission_mode) is TouchScope.READ_ONLY)
         argv += self._mcp_tool_scope_arguments(allowed_tools or [], denied_tools)
         argv += sandbox if confinement is None else [self.permission_option, "danger-full-access", *sandbox[2:]]
         argv += self._openai_compat_arguments(base_url)
@@ -2515,7 +2527,7 @@ class CodexProvider(AgentProvider):
         native = self.provider_permission_mode(permission_mode) if permission_mode is not None else None
         confinement = self._confinement(native if native is not None else mapping.sandbox_mode, mcp_config)
         argv = [self.binary, "exec", "resume", "--json", *self.exec_flags, *self.native_delegation_flags, *self.platform_flags(), *self._setting_sources()]
-        argv += self.mesh_arguments(mcp_config, relayed=confinement is not None)
+        argv += self.mesh_arguments(mcp_config, relayed=confinement is not None, read_only=self.touch_of(permission_mode) is TouchScope.READ_ONLY)
         argv += self._mcp_tool_scope_arguments(allowed_tools or [], denied_tools)
         argv += self._openai_compat_arguments(base_url)
         # An explicit `permission_mode` is the operator's own per-turn choice; the shell/network

@@ -1690,6 +1690,9 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
     and its continuations; it never grants permissions or changes global configuration.
     --provider-mode provider=mode preserves a provider's existing workspace permission setting
     during automatic selection. An explicit --permission-mode takes precedence.
+    --permission-mode read_only lets the agent call only galaius tools that change nothing (conversation_search,
+    agent_list, list_desktop_windows, …): app tools — launch_app, navigate, run_actions, screenshot — run commands
+    or write files, so they are refused. A critic that drives an app runs with its usual mode (omit --permission-mode).
     --quota-window is how many seconds the new child is watched for a vendor quota refusal
     before the id is printed (a refusal inside it falls through to the next candidate); a
     supervisor that shows the run at once passes a short one.

@@ -48,6 +48,29 @@ def test_claude_role_tools_and_denials_are_available_tool_restrictions_on_every_
     assert "--permission-mode" not in command
 
 
+@pytest.mark.parametrize("resume", [False, True])
+@pytest.mark.parametrize(("permission_mode", "granted"), [("read_only", True), ("plan", True), ("workspace_write", False), (None, False)])
+def test_a_read_only_claude_run_is_granted_galaius_tools_plan_lets_through_only_read_only_ones(resume, permission_mode, granted):
+    """Plan refuses an MCP tool it was not granted; granted, it runs only one marked `readOnlyHint`."""
+    provider = ClaudeCodeProvider()
+    command = provider.resume_command("s", "Review", permission_mode=permission_mode) if resume else provider.command(
+        "Review", cwd="/tmp", model=None, mcp_config=None, run_id="r", permission_mode=permission_mode)
+    assert ("--allowedTools" in command) is granted
+    if granted:
+        assert command[command.index("--allowedTools") + 1] == "mcp__galaius"
+        assert command[command.index("--permission-mode") + 1] == "plan"
+
+
+@pytest.mark.parametrize("resume", [False, True])
+@pytest.mark.parametrize(("permission_mode", "approved"), [("read_only", False), ("workspace_write", True), (None, True)])
+def test_a_read_only_codex_run_gets_galaius_tools_unapproved(resume, permission_mode, approved):
+    """Unapproved, Codex calls only a galaius tool marked `readOnlyHint`, like Claude's plan."""
+    provider, mesh = CodexProvider(), json.dumps({"mcpServers": {"galaius": {"command": "galaius", "args": ["mcp"], "env": {"GALAIUS_PARENT_RUN_ID": "p"}}}})
+    command = provider.resume_command("s", "Review", permission_mode=permission_mode, mcp_config=mesh) if resume else provider.command(
+        "Review", cwd="/tmp", model=None, mcp_config=mesh, run_id="r", permission_mode=permission_mode)
+    assert f'mcp_servers.galaius.default_tools_approval_mode="{"approve" if approved else "writes"}"' in command
+
+
 def test_denied_tool_names_cannot_inject_flags_or_unverified_patterns():
     provider = ClaudeCodeProvider()
     for tool in ("--permission-mode", "Bash(git *)", "mcp__*", "Read,Write", "Read\nWrite"):

@@ -217,7 +217,7 @@ def _capture_regions(windows, whole: DesktopWindow) -> str:
     )
 
 
-@mcp.tool(category="desktop")
+@mcp.tool(category="desktop", read_only=True)
 async def list_desktop_windows() -> str:
     """List desktop targets for the `target` param, on Linux, Windows and macOS: each monitor with
     its geometry (target="screen" for the whole desktop, target="screen:<index>" or

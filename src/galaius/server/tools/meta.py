@@ -62,7 +62,7 @@ async def report_issue(title: str, body: str, kind: str = "bug") -> str:
     return report(title, body, kind)
 
 
-@mcp.tool(category="vision")
+@mcp.tool(category="vision", read_only=True)
 async def list_providers() -> str:
     """Return subscription visual CLIs, API/local providers, and current configuration.
 

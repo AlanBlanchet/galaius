@@ -73,3 +73,13 @@ def test_the_relay_first_lists_the_gateway_tools_of_its_run_s_role(monkeypatch, 
         wire = [tool.model_dump(by_alias=True, mode="json", exclude_none=True) for tool in asyncio.run(core.mcp.list_tools())]
         assert snapshot.with_gateway().lists["tools/list"] == {"tools": wire}
         assert [tool["name"] for tool in wire if tool["name"].startswith("ext__")] == ([linked.tools[0].name] if listed and linked else [])
+
+
+def test_only_tools_that_change_nothing_say_they_are_read_only():
+    """`readOnlyHint` is what lets a read-only run call a tool (Claude Code's plan runs only those): a tool that writes a
+    file (`path`, `debug_dir`), clears state, or drives an app, page, window or run must never carry it."""
+    marked = [tool for tool in asyncio.run(core.mcp.list_tools()) if tool.annotations and tool.annotations.readOnlyHint]
+    assert {tool.name for tool in marked} == {"list_desktop_windows", "list_providers", "community_search", "agent_list",
+                                              "agent_providers", "conversation_search", "conversation_read"}
+    writing = {"path", "debug_dir", "folder", "output", "clear", "session"}
+    assert not [(tool.name, name) for tool in marked for name in tool.inputSchema.get("properties", {}) if name in writing]

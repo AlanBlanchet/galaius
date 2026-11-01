@@ -321,6 +321,9 @@
       "title": "community_searchOutput",
       "type": "object"
      },
+     "annotations": {
+      "readOnlyHint": true
+     },
      "_meta": {
       "category": "agents"
      }
@@ -368,6 +371,9 @@
       ],
       "title": "agent_listOutput",
       "type": "object"
+     },
+     "annotations": {
+      "readOnlyHint": true
      },
      "_meta": {
       "category": "agents"
@@ -464,6 +470,9 @@
       ],
       "title": "agent_providersOutput",
       "type": "object"
+     },
+     "annotations": {
+      "readOnlyHint": true
      },
      "_meta": {
       "category": "agents"
@@ -580,6 +589,9 @@
       "title": "conversation_searchOutput",
       "type": "object"
      },
+     "annotations": {
+      "readOnlyHint": true
+     },
      "_meta": {
       "category": "agents"
      }
@@ -635,8 +647,83 @@
       "title": "conversation_readOutput",
       "type": "object"
      },
+     "annotations": {
+      "readOnlyHint": true
+     },
      "_meta": {
       "category": "agents"
+     }
+    },
+    {
+     "name": "audit_ui",
+     "description": "Drive every interactive element through its own states and report MEASURED anomalies — no\nvision model, no opinion. A still screenshot cannot show a menu that closed the instant the\npointer moved toward it, a tray covering its own trigger, focus that vanished, or a page that\nshifted when something opened; this catches exactly that class by actually hovering, focusing,\npressing, opening and closing each control and comparing real geometry / hit-testing / focus /\naccessible-name / text-fit / settle-time before and after.\n\nDefect classes it measures, each with the geometry/DOM evidence that proves it:\n- unrequested_movement: an ancestor or sibling's box, scroll extent, or the page's own\n  scrollWidth/Height changed on hover/focus/close when nothing asked for it.\n- outside_viewport / clipped_by_ancestor / covers_trigger: where an opened surface (menu,\n  listbox, dialog, tooltip, popover — by ARIA role, not this app's CSS names) actually renders.\n- hit_test_mismatch: elementFromPoint at the control's own centre does not resolve to it — the\n  exact \"every hover dead after a route change\" shape (hit-testing disagreeing with geometry).\n- focus_not_landed / focus_not_returned / escape_does_not_close / keyboard_unreachable: the\n  full open/close focus lifecycle, and whether every control has a keyboard path at all.\n- name_leak: the accessible name is long, sentence-shaped, and shares little with the text the\n  control itself paints — the measurable shape of a name pulled from a hint bubble or a hidden\n  native control behind the one the user actually operates.\n- text_overflow / text_wrap_degenerate: content wider than its box, or wrapped to near one\n  character per line (measured via the browser's own line-fragment rects, not a guess).\n- never_settles: animation or layout still running well past the bounded settle wait.\n\nScope: BROWSER sessions only (errors on a desktop `target` for now — no AT-SPI state walker\nyet). Checks the page AT ITS CURRENT viewport/locale; re-run after `emulate_device` (narrower\nwidth) or a locale switch via run_actions to cover those — this tool composes with the existing\nprimitives rather than reimplementing viewport/locale control.\n\nscope: CSS selector to audit one component instead of the whole page.\nlimit: max interactive elements to drive through the full state walk (cost bound on a busy\n    page); elements beyond it are named in the reply, never silently dropped.\ntab: which browser tab (default: the session's active tab).",
+     "inputSchema": {
+      "properties": {
+       "scope": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Scope"
+       },
+       "limit": {
+        "default": 20,
+        "title": "Limit",
+        "type": "integer"
+       },
+       "tab": {
+        "anyOf": [
+         {
+          "type": "integer"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Tab"
+       },
+       "target": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Target"
+       },
+       "session": {
+        "default": "auto",
+        "title": "Session",
+        "type": "string"
+       }
+      },
+      "title": "audit_uiArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "audit_uiOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "vision"
      }
     },
     {
@@ -659,6 +746,9 @@
       ],
       "title": "list_desktop_windowsOutput",
       "type": "object"
+     },
+     "annotations": {
+      "readOnlyHint": true
      },
      "_meta": {
       "category": "desktop"
@@ -770,7 +860,7 @@
     },
     {
      "name": "record",
-     "description": "Record actions as video and optionally analyze with vision.\n\nBrowser (target unset): Two-step — record(start=True), perform actions, then record(start=False).\nStarting AND stopping browser recording reload the page. Cookies and localStorage carry over,\nbut in-memory state and sessionStorage can reset. Seed the state under test after starting;\nreacquire refs after either transition. The result repeats this warning.\nDesktop (target=<window title> / nested): same two-step by default — record(start=True) begins a\nNON-blocking session and returns at once (so you can drive actions, e.g. tap a control to trigger\nan animation, while it captures), then record(start=False) stops and analyzes. Pass duration= for\na blocking one-shot clip of fixed length instead (no interleaved actions).\nA desktop target and a session you named are mutually exclusive (list_desktop_windows lists them).\n\nSandbox (nested) recordings include the APP'S AUDIO: launched apps play into the sandbox's\nprivate sink (never the user's speakers), and its monitor is muxed into the mp4 — so\nrecord(path=...) then transcribe(path=...) hears what the app said. Real-desktop/browser\nrecordings stay video-only.\n\nstart: True to begin recording, False to stop and export.\nquery: question for VLM visual analysis of the recording.\nduration: fixed clip length in seconds (desktop one-shot mode); omit for a start/stop session.\nfps: requested frames per second, default from config. Desktop capture uses this rate.\n    Browser capture uses the recorder's own encoded rate; requested_fps preserves your\n    request and measured_fps reports the saved clip's rate when probeable. Sample timestamps\n    describe sampled frames, not distinct source observations.\npath: save the video here. A relative path lands under ~/.galaius/out (galaius's output dir),\n    never the server's cwd; \"~\" expands. The reply names the absolute file written.\n\nSAMPLING LIMIT — read before asking about a FAST animation. Session backends always sample the\nclip into still frames at `video.fps` (default 5/s) and cap it at `video.max_frames`; an API\nbackend may send native video when supported. A sampled result cannot see anything shorter than\none interval (~200ms at the default), so it can report \"it happened all at once\" even when a\nfaster stagger exists. That is a limit of the sampling, NOT evidence the animation is missing\n(#86). For CSS timing claims — a staggered reveal, a transition duration, an animation-delay\nladder — do not use record at all: ask the page directly with evaluate_js and\n`document.getAnimations()`, reading each animation's `effect.getComputedTiming()`\n(delay/duration) and its keyframes. That is deterministic, free, and exact. Use record for WHAT\nHAPPENED over time at human speed; use getAnimations for sub-second timing.",
+     "description": "Record actions as video and optionally analyze with vision.\n\nScene (motion design, an animated title): scene=<an .html or .svg page with CSS / SVG animation, no script>,\nduration=<seconds, at most 60>, path=<.webm in your working folder> plays that page alone and saves it as a video;\nthen edit_video turns it into the .mp4 the person gets in their chat. `scene` is a file of your working folder, or\nthe absolute path of one a community agent you started wrote in its own folder. The page runs in a new browser with\nno script, no network and no file of this PC; nothing of it comes back to you but the video's path (no frame, no\n`query`), so a stranger's page never reaches your context.\n\nBrowser (target unset): Two-step — record(start=True), perform actions, then record(start=False).\nStarting AND stopping browser recording reload the page. Cookies and localStorage carry over,\nbut in-memory state and sessionStorage can reset. Seed the state under test after starting;\nreacquire refs after either transition. The result repeats this warning.\nDesktop (target=<window title> / nested): same two-step by default — record(start=True) begins a\nNON-blocking session and returns at once (so you can drive actions, e.g. tap a control to trigger\nan animation, while it captures), then record(start=False) stops and analyzes. Pass duration= for\na blocking one-shot clip of fixed length instead (no interleaved actions).\nA desktop target and a session you named are mutually exclusive (list_desktop_windows lists them).\n\nSandbox (nested) recordings include the APP'S AUDIO: launched apps play into the sandbox's\nprivate sink (never the user's speakers), and its monitor is muxed into the mp4 — so\nrecord(path=...) then transcribe(path=...) hears what the app said. Real-desktop/browser\nrecordings stay video-only.\n\nstart: True to begin recording, False to stop and export.\nquery: question for VLM visual analysis of the recording.\nduration: fixed clip length in seconds (desktop one-shot mode); omit for a start/stop session.\nfps: requested frames per second, default from config. Desktop capture uses this rate.\n    Browser capture uses the recorder's own encoded rate; requested_fps preserves your\n    request and measured_fps reports the saved clip's rate when probeable. Sample timestamps\n    describe sampled frames, not distinct source observations.\npath: save the video here. A relative path lands under ~/.galaius/out (galaius's output dir),\n    never the server's cwd; \"~\" expands. The reply names the absolute file written.\n\nSAMPLING LIMIT — read before asking about a FAST animation. Session backends always sample the\nclip into still frames at `video.fps` (default 5/s) and cap it at `video.max_frames`; an API\nbackend may send native video when supported. A sampled result cannot see anything shorter than\none interval (~200ms at the default), so it can report \"it happened all at once\" even when a\nfaster stagger exists. That is a limit of the sampling, NOT evidence the animation is missing\n(#86). For CSS timing claims — a staggered reveal, a transition duration, an animation-delay\nladder — do not use record at all: ask the page directly with evaluate_js and\n`document.getAnimations()`, reading each animation's `effect.getComputedTiming()`\n(delay/duration) and its keyframes. That is deterministic, free, and exact. Use record for WHAT\nHAPPENED over time at human speed; use getAnimations for sub-second timing.",
      "inputSchema": {
       "properties": {
        "start": {
@@ -842,6 +932,18 @@
         "default": "auto",
         "title": "Session",
         "type": "string"
+       },
+       "scene": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Scene"
        }
       },
       "title": "recordArguments",
@@ -1039,7 +1141,7 @@
     },
     {
      "name": "create_file",
-     "description": "Write a file the person opens — a document, a spreadsheet, a deck, a PDF, a mail draft — in your working folder.\n\nUse this for every file meant for the person: it is written here at no cost, and shows in their chat as a file\nthey can download. `path` is relative to your working folder (folders made when missing); its suffix picks the\nformat and what it reads:\n\n- .txt, .md: `content` as is. .json: `content`, which must be valid JSON.\n- .csv: `rows` (the first row is the header).\n- .xlsx: `rows`, or `sheets` {sheet name: rows} for several (numbers stay numbers; header in bold).\n- .docx: `content` as Markdown-lite (`#` headings, `-` bullets, paragraphs), then `rows` as a table.\n- .pptx: `content` as Markdown-lite, one slide per `#` heading with its bullets.\n- .pdf: `content` as Typst markup (`= Title`, `- item`, `*bold*`), then `rows` as a table.\n- .eml: a mail DRAFT the person sends themselves: `to`, `cc`, `subject`, `content` as its body, `attach` the paths\n  of files you wrote with create_file in this run (a report, a sheet; 4 MiB together). Never sent from here.\n\nreplace: write over a file already at `path` (refused otherwise). Written only where you may write on this\ncomputer, never as an agent's steering file (CLAUDE.md, AGENTS.md…). Returns where it was written and its size, or\nwhy nothing was written.",
+     "description": "Write a file the person opens — a document, a spreadsheet, a deck, a PDF, a mail draft — in your working folder.\n\nUse this for every file meant for the person: it is written here at no cost, and shows in their chat as a file\nthey can download. `path` is relative to your working folder (folders made when missing); its suffix picks the\nformat and what it reads:\n\n- .txt, .md: `content` as is. .json: `content`, which must be valid JSON.\n- .csv: `rows` (the first row is the header).\n- .xlsx: `rows`, or `sheets` {sheet name: rows} for several (numbers stay numbers; header in bold).\n- .docx: `content` as Markdown-lite (`#` headings, `-` bullets, paragraphs), then `rows` as a table.\n- .pptx: `content` as Markdown-lite, one slide per `#` heading with its bullets.\n- .pdf: `content` as Typst markup (`= Title`, `- item`, `*bold*`), then `rows` as a table.\n- .eml: a mail DRAFT the person sends themselves: `to`, `cc`, `subject`, `content` as its body, `attach` the paths\n  of files you wrote with create_file in this run (a report, a sheet; 4 MiB together). Never sent from here.\n\ncontent_from: instead of `content`, the absolute path of a file a community agent you started wrote in its own\nfolder (a deck's Markdown-lite, a page's Typst): its text becomes `content` without you reading it, so a stranger's\nwords reach the person, never your context. Only that agent's folder; check its report before passing it on.\n\nreplace: write over a file already at `path` (refused otherwise). Written only where you may write on this\ncomputer, never as an agent's steering file (CLAUDE.md, AGENTS.md…). Returns where it was written and its size, or\nwhy nothing was written.",
      "inputSchema": {
       "properties": {
        "path": {
@@ -1050,6 +1152,18 @@
         "default": "",
         "title": "Content",
         "type": "string"
+       },
+       "content_from": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Content From"
        },
        "rows": {
         "anyOf": [
@@ -1621,6 +1735,77 @@
      }
     },
     {
+     "name": "report_issue",
+     "description": "Report a problem, missing capability, or feedback about GALAIUS ITSELF — not the\nsite/app you're automating — to its maintainers, so it gets fixed. Use when galaius errors\nin a way that blocks you, behaves unexpectedly, or is missing something you needed.\n\nFiles a GitHub issue on galaius's repo when gh is authed; otherwise opens the prefilled\nissue page in the user's browser (they just press Submit — tell them). Don't include\nsecrets/credentials; galaius appends its version + platform itself.\nkind: bug | limitation | feedback.",
+     "inputSchema": {
+      "properties": {
+       "title": {
+        "title": "Title",
+        "type": "string"
+       },
+       "body": {
+        "title": "Body",
+        "type": "string"
+       },
+       "kind": {
+        "default": "bug",
+        "title": "Kind",
+        "type": "string"
+       }
+      },
+      "required": [
+       "title",
+       "body"
+      ],
+      "title": "report_issueArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "report_issueOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "feedback"
+     }
+    },
+    {
+     "name": "list_providers",
+     "description": "Return subscription visual CLIs, API/local providers, and current configuration.\n\nUse to discover what models can be passed as the 'model' override to\nget_interactive_elements and screenshot tools.",
+     "inputSchema": {
+      "properties": {},
+      "title": "list_providersArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "list_providersOutput",
+      "type": "object"
+     },
+     "annotations": {
+      "readOnlyHint": true
+     },
+     "_meta": {
+      "category": "vision"
+     }
+    },
+    {
      "name": "edit_video",
      "description": "Edit a video in your working folder — cut it, join clips, caption it, lay text over it, resize it, take its\nsound — on this PC, at no cost, and show the result in the person's chat as a video they can play and download.\n\nUse this for every video edit meant for the person, never ffmpeg or a script of your own. `input` and every path are\nrelative to your working folder; `steps` run in order, each on the result of the one before:\n\n- {\"op\": \"trim\", \"start\": 3}: keep from 3 s to the end (cut the first 3 seconds); \"end\": 10 stops at 10 s.\n- {\"op\": \"join\", \"clips\": [\"b.mp4\"], \"transition\": \"fade\"}: the video so far, then each clip (transition optional).\n- {\"op\": \"caption\", \"text\": \"bonjour\", \"start\": 0, \"end\": 2}: a subtitle burnt in at the bottom (end omitted: to the end).\n- {\"op\": \"add_text\", \"text\": \"Title\", \"position\": \"center\", \"size\": 48, \"color\": \"white\", \"start\": 0, \"duration\": 3}.\n- {\"op\": \"resize\", \"width\": 1280} or {\"op\": \"resize\", \"aspect\": \"9:16\"}.\n- {\"op\": \"extract_audio\"}: its sound alone, the last step, with an .mp3 or .wav `output`.\n\n`output`: where the result goes (.mp4 or .webm for a video; its suffix picks the format). replace: write over a file\nalready there (refused otherwise). Returns where it was written, its length and size, and what it cost ($0), or why\nnothing was written.",
      "inputSchema": {
@@ -1979,74 +2164,6 @@
      },
      "_meta": {
       "category": "media"
-     }
-    },
-    {
-     "name": "report_issue",
-     "description": "Report a problem, missing capability, or feedback about GALAIUS ITSELF — not the\nsite/app you're automating — to its maintainers, so it gets fixed. Use when galaius errors\nin a way that blocks you, behaves unexpectedly, or is missing something you needed.\n\nFiles a GitHub issue on galaius's repo when gh is authed; otherwise opens the prefilled\nissue page in the user's browser (they just press Submit — tell them). Don't include\nsecrets/credentials; galaius appends its version + platform itself.\nkind: bug | limitation | feedback.",
-     "inputSchema": {
-      "properties": {
-       "title": {
-        "title": "Title",
-        "type": "string"
-       },
-       "body": {
-        "title": "Body",
-        "type": "string"
-       },
-       "kind": {
-        "default": "bug",
-        "title": "Kind",
-        "type": "string"
-       }
-      },
-      "required": [
-       "title",
-       "body"
-      ],
-      "title": "report_issueArguments",
-      "type": "object"
-     },
-     "outputSchema": {
-      "properties": {
-       "result": {
-        "title": "Result",
-        "type": "string"
-       }
-      },
-      "required": [
-       "result"
-      ],
-      "title": "report_issueOutput",
-      "type": "object"
-     },
-     "_meta": {
-      "category": "feedback"
-     }
-    },
-    {
-     "name": "list_providers",
-     "description": "Return subscription visual CLIs, API/local providers, and current configuration.\n\nUse to discover what models can be passed as the 'model' override to\nget_interactive_elements and screenshot tools.",
-     "inputSchema": {
-      "properties": {},
-      "title": "list_providersArguments",
-      "type": "object"
-     },
-     "outputSchema": {
-      "properties": {
-       "result": {
-        "title": "Result",
-        "type": "string"
-       }
-      },
-      "required": [
-       "result"
-      ],
-      "title": "list_providersOutput",
-      "type": "object"
-     },
-     "_meta": {
-      "category": "vision"
      }
     },
     {
@@ -5196,78 +5313,6 @@
      },
      "_meta": {
       "category": "browser"
-     }
-    },
-    {
-     "name": "audit_ui",
-     "description": "Drive every interactive element through its own states and report MEASURED anomalies — no\nvision model, no opinion. A still screenshot cannot show a menu that closed the instant the\npointer moved toward it, a tray covering its own trigger, focus that vanished, or a page that\nshifted when something opened; this catches exactly that class by actually hovering, focusing,\npressing, opening and closing each control and comparing real geometry / hit-testing / focus /\naccessible-name / text-fit / settle-time before and after.\n\nDefect classes it measures, each with the geometry/DOM evidence that proves it:\n- unrequested_movement: an ancestor or sibling's box, scroll extent, or the page's own\n  scrollWidth/Height changed on hover/focus/close when nothing asked for it.\n- outside_viewport / clipped_by_ancestor / covers_trigger: where an opened surface (menu,\n  listbox, dialog, tooltip, popover — by ARIA role, not this app's CSS names) actually renders.\n- hit_test_mismatch: elementFromPoint at the control's own centre does not resolve to it — the\n  exact \"every hover dead after a route change\" shape (hit-testing disagreeing with geometry).\n- focus_not_landed / focus_not_returned / escape_does_not_close / keyboard_unreachable: the\n  full open/close focus lifecycle, and whether every control has a keyboard path at all.\n- name_leak: the accessible name is long, sentence-shaped, and shares little with the text the\n  control itself paints — the measurable shape of a name pulled from a hint bubble or a hidden\n  native control behind the one the user actually operates.\n- text_overflow / text_wrap_degenerate: content wider than its box, or wrapped to near one\n  character per line (measured via the browser's own line-fragment rects, not a guess).\n- never_settles: animation or layout still running well past the bounded settle wait.\n\nScope: BROWSER sessions only (errors on a desktop `target` for now — no AT-SPI state walker\nyet). Checks the page AT ITS CURRENT viewport/locale; re-run after `emulate_device` (narrower\nwidth) or a locale switch via run_actions to cover those — this tool composes with the existing\nprimitives rather than reimplementing viewport/locale control.\n\nscope: CSS selector to audit one component instead of the whole page.\nlimit: max interactive elements to drive through the full state walk (cost bound on a busy\n    page); elements beyond it are named in the reply, never silently dropped.\ntab: which browser tab (default: the session's active tab).",
-     "inputSchema": {
-      "properties": {
-       "scope": {
-        "anyOf": [
-         {
-          "type": "string"
-         },
-         {
-          "type": "null"
-         }
-        ],
-        "default": null,
-        "title": "Scope"
-       },
-       "limit": {
-        "default": 20,
-        "title": "Limit",
-        "type": "integer"
-       },
-       "tab": {
-        "anyOf": [
-         {
-          "type": "integer"
-         },
-         {
-          "type": "null"
-         }
-        ],
-        "default": null,
-        "title": "Tab"
-       },
-       "target": {
-        "anyOf": [
-         {
-          "type": "string"
-         },
-         {
-          "type": "null"
-         }
-        ],
-        "default": null,
-        "title": "Target"
-       },
-       "session": {
-        "default": "auto",
-        "title": "Session",
-        "type": "string"
-       }
-      },
-      "title": "audit_uiArguments",
-      "type": "object"
-     },
-     "outputSchema": {
-      "properties": {
-       "result": {
-        "title": "Result",
-        "type": "string"
-       }
-      },
-      "required": [
-       "result"
-      ],
-      "title": "audit_uiOutput",
-      "type": "object"
-     },
-     "_meta": {
-      "category": "vision"
      }
     }
    ]

@@ -222,7 +222,7 @@ async def agent_spawn(
             f"Watch it with agent_list, or agent_events(run_id=\"{handle.run_id}\").{caveat}")
 
 
-@mcp.tool(category="agents")
+@mcp.tool(category="agents", read_only=True)
 @instrumented
 @offloaded
 def community_search(need: str, kind: CommunityKind | None = None) -> str:
@@ -240,7 +240,7 @@ def community_search(need: str, kind: CommunityKind | None = None) -> str:
         return f"ERROR: the community library could not be read: {e}"
 
 
-@mcp.tool(category="agents")
+@mcp.tool(category="agents", read_only=True)
 @instrumented
 @offloaded
 def agent_list(include_foreign: bool = False, session_id: str | None = None, all_sessions: bool = False) -> str:
@@ -330,7 +330,7 @@ def agent_stop(run_id: str) -> str:
     return f"ERROR: no agent run {run_id!r}. Use agent_list to see the run ids."
 
 
-@mcp.tool(category="agents")
+@mcp.tool(category="agents", read_only=True)
 @instrumented
 @offloaded
 def agent_providers() -> str:
@@ -394,7 +394,7 @@ async def agent_send(run_id: str, message: str, wait: bool = False, fyi: bool = 
     return f"{said}\n{reply}" if waiting else reply
 
 
-@mcp.tool(category="agents")
+@mcp.tool(category="agents", read_only=True)
 @instrumented
 async def conversation_search(query: str, limit: int = 20, project: str | None = None, since: str | None = None,
                               every_project: bool = False) -> str:
@@ -420,7 +420,7 @@ async def conversation_search(query: str, limit: int = 20, project: str | None =
     return await asyncio.to_thread(answers.search, query, limit, project, since, every_project)
 
 
-@mcp.tool(category="agents")
+@mcp.tool(category="agents", read_only=True)
 @instrumented
 async def conversation_read(id: str, around: int | None = None, limit: int = 50, every_project: bool = False) -> str:
     """Read one conversation this computer holds, `limit` lines at a time (what was asked, answered,

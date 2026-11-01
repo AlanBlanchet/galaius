@@ -526,14 +526,20 @@ class _SessionScopedMCP(FastMCP):
             return await self.gateway.call(name, arguments)
         return await super().call_tool(name, arguments)
 
-    def tool(self, *args, category: ToolCategory, meta: dict | None = None, **kwargs):
+    def tool(self, *args, category: ToolCategory, meta: dict | None = None, read_only: bool = False, **kwargs):
         """Every galaius tool names its `ToolCategory`; it travels in the tool's `_meta`. Its
         description is its docstring cleaned (`inspect.cleandoc`): the same on every Python (3.13
-        dedents docstrings itself), so the snapshot the upgrade relay answers from is too."""
+        dedents docstrings itself), so the snapshot the upgrade relay answers from is too.
+        `read_only`: it changes nothing outside galaius's own bookkeeping — no file written where its caller says, no
+        browser, app, window, page or run started or acted on — said to clients as MCP's `readOnlyHint`, the one mark a
+        read-only run may call it by (Claude Code's plan and Codex unapproved run it, refuse the rest)."""
+        if read_only and "annotations" in kwargs:
+            raise ValueError("read_only and annotations: say readOnlyHint in one of them")
 
         def register(fn):
             described = {"description": inspect.cleandoc(fn.__doc__)} if fn.__doc__ else {}
-            return FastMCP.tool(self, *args, meta={**(meta or {}), "category": category}, **(described | kwargs))(fn)
+            marked = {"annotations": types.ToolAnnotations(readOnlyHint=True)} if read_only else {}
+            return FastMCP.tool(self, *args, meta={**(meta or {}), "category": category}, **(described | marked | kwargs))(fn)
 
         def decorator(fn):
             slots = self._session_params(fn)
