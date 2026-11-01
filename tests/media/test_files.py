@@ -212,8 +212,11 @@ def test_a_community_agent_s_deck_reaches_the_chat_unread_by_the_run_that_starte
             write(FileSpec(path="leak.pptx", content_from=str(refused)), replace=False)
     with pytest.raises(ValueError, match="not both"):
         FileSpec(path="a.md", content="x", content_from=str(work / "deck.md"))
-    os.mkfifo(work / "pipe.md")
     (work / "linked").symlink_to(other)
-    for refused, why in ((work / "pipe.md", "not a plain file"), (work / "linked" / "deck.md", "link"), (work, "only a file in the folder")):
+    refusals = [(work / "linked" / "deck.md", "link"), (work, "only a file in the folder")]
+    if hasattr(os, "mkfifo"):  # a FIFO is a POSIX file type: no Windows path names one
+        os.mkfifo(work / "pipe.md")
+        refusals.append((work / "pipe.md", "not a plain file"))
+    for refused, why in refusals:
         with pytest.raises((ValueError, OSError), match=why):
             write(FileSpec(path="leak.pptx", content_from=str(refused)), replace=False)

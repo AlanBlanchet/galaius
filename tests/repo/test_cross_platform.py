@@ -79,8 +79,10 @@ def test_every_module_imports_where_only_windows_signals_exist():
         "    try:\n"
         "        importlib.import_module(name)\n"
         "    except Exception as error:  # `from signal import SIGHUP` is an ImportError; another failure is not this test's\n"
-        "        if \"'signal'\" in str(error):\n"
-        "            frame = traceback.extract_tb(error.__traceback__)[-1]\n"
+        "        said = str(error)\n"
+        "        if \"'signal'\" in said or \"'Signals'\" in said or isinstance(error, KeyError) and said.strip(\"'\").startswith('SIG'):\n"
+        "            frames = traceback.extract_tb(error.__traceback__)\n"
+        "            frame = next((f for f in reversed(frames) if f.filename.startswith(str(root))), frames[-1])\n"
         "            failed[name] = f'{error} at {frame.filename}:{frame.lineno}'\n"
         "print(json.dumps(failed))\n"
     )

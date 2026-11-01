@@ -95,6 +95,10 @@ jobs:
       # The commands he types, from the installed galaius.exe, after the login above.
       - name: The commands he types start (galaius, galaius agents list)
         timeout-minutes: 3
+        # `agents list` lists one conversation's runs, named here as an agent's CLI names its own (on every platform a
+        # list without one is refused, exit 2); `--all-sessions` lists every run.
+        env:
+          GALAIUS_SESSION_ID: windows-ci
         run: |
           foreach ($arguments in @(@(), @('agents', 'list'), @('agents', 'list', '--all-sessions'))) {
             $said = & galaius @arguments 2>&1 | Out-String

@@ -19,13 +19,15 @@ env:
 
 jobs:
   test:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.os }} (suite ${{ matrix.shard }}/3)
     strategy:
       fail-fast: false
       matrix:
         # ubuntu-24.04, not -latest: -latest became 26.04 (2026-10), where Playwright 1.58's
         # `install --with-deps` refuses (« does not support chromium on ubuntu26.04-x64 »).
         os: [ubuntu-24.04, macos-latest]  # Windows: windows-suite below, in 8 shards
+        # The whole suite took 17 min on Linux and over 20 on macOS (2026-11-01): a third each.
+        shard: [0, 1, 2]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20  # backstop: bound any real hang (pytest-timeout catches most first, at 90s)
     steps:
@@ -58,15 +60,18 @@ jobs:
       # -rs lists every SKIP with its reason. Without it a test that quietly stops running —
       # a browser that will not launch, a missing display — is indistinguishable from one that
       # passed, and the suite keeps reporting green over a shrinking amount of actual coverage.
+      - name: This runner's share of the test files
+        run: uv run python scripts/ci_shard.py ${{ matrix.shard }} 3 > shard.txt
+
       - name: Run tests (integration + desktop auto-skip here)
-        run: uv run pytest -m "not integration" -q -rs
+        run: uv run pytest -m "not integration" -q -rs @shard.txt
 
       # The macOS runner is a real GUI session, so drive the PortableBackend (mss + pynput) on it
       # and SHOW the per-test result (-rs prints skip reasons): the visible mac desktop-automation
       # check (#24; Windows runs it inside windows-suite). Non-fatal — a host that denies
       # Screen-Recording/Accessibility skips with a diagnostic rather than failing.
       - name: Desktop automation (macOS real GUI)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && matrix.shard == 0
         run: uv run pytest tests/desktop/backend/test_portable_backend.py -v -rs
 
   # The whole suite on Windows (integration and live-desktop tests auto-skip): every agent, console
@@ -93,11 +98,8 @@ jobs:
         run: npm ci
       - name: This runner's share of the test files
         run: |
-          # Every test file, sorted, dealt round-robin to 8 runners (pytest reads them from @shard.txt).
-          $files = @(Get-ChildItem tests -Recurse -Filter 'test_*.py' | Where-Object { $_.FullName -notmatch '[\\/](e2e|fixtures)[\\/]' } | ForEach-Object { (Resolve-Path -Relative $_.FullName) -replace '\\', '/' -replace '^\./', '' } | Sort-Object)
-          $mine = @(for ($i = 0; $i -lt $files.Count; $i++) { if ($i % 8 -eq ${{ matrix.shard }}) { $files[$i] } })
-          $mine | Set-Content -Encoding ascii shard.txt
           uv sync --frozen --quiet
+          .venv\Scripts\python.exe scripts/ci_shard.py ${{ matrix.shard }} 8 | Set-Content -Encoding ascii shard.txt  # pytest reads @shard.txt
           .venv\Scripts\python.exe -m playwright install chromium  # the page tests drive it
       # pytest under a watchdog of our own, well inside the step's limit: on a hang it prints the test
       # in progress and every process (who started what), then ends the tree - the log survives.

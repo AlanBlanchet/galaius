@@ -309,6 +309,25 @@ async def test_a_fenced_launch_starts_inside_the_fence_and_its_run_keeps_the_spe
 
 
 @bubblewrap
+def test_codex_s_own_bwrap_is_found_through_the_link_npm_installs(tmp_path, monkeypatch):
+    """npm / nvm install `bin/codex` as a link into the package (`.../@openai/codex/bin/codex.js`); with no `bwrap`
+    on PATH the one bundled beside that package is the one checked, never none (no sandbox, no word said)."""
+    package = tmp_path / "lib" / "node_modules" / "@openai" / "codex"
+    bundled = package / "node_modules" / "@openai" / "codex-linux-x64" / "vendor" / "x86_64-unknown-linux-musl" / "codex-resources" / "bwrap"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_text("")
+    (package / "bin").mkdir()
+    (package / "bin" / "codex.js").write_text("")
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "codex").symlink_to(package / "bin" / "codex.js")
+    provider, checked = CodexProvider(), []
+    monkeypatch.setattr(provider, "located", lambda: str(tmp_path / "bin" / "codex"))
+    monkeypatch.setattr(providers.shutil, "which", lambda name, *args, **named: None)
+    monkeypatch.setattr(providers, "userns_refusal", lambda bwrap: checked.append(bwrap) or "refused")
+    assert provider._bwrap_refusal() == "refused" and checked == [str(bundled)]
+
+
+@bubblewrap
 @pytest.mark.parametrize("stderr,code,landlock,mode,started", [
     ("", 0, None, "workspace-write", "codex"),  # its own sandbox starts: Codex as before
     ("bwrap: setting up uid map: Permission denied", 1, None, "workspace-write", "confined"),  # AppArmor-unconfined service, Ubuntu 24.04
@@ -327,8 +346,7 @@ def test_codex_runs_in_galaius_confinement_where_its_own_sandbox_cannot_start(tm
     monkeypatch.setattr(providers, "userns_refusal", userns_refusal)
     monkeypatch.setattr(providers, "confinement_refusal", lambda: landlock)
     provider = CodexProvider()
-    monkeypatch.setattr(provider, "available", lambda: True)
-    monkeypatch.setattr(provider, "executable", lambda: "/opt/codex/bin/codex")
+    monkeypatch.setattr(provider, "located", lambda: "/opt/codex/bin/codex")
     mesh = json.dumps({"mcpServers": {"galaius": {"command": "galaius", "args": ["mcp"], "env": {"GALAIUS_PARENT_RUN_ID": "r1"}}}})
     permission = {"workspace-write": "workspace_write", "read-only": "read_only"}[mode]
     argv = provider.command("task", cwd=str(tmp_path), model=None, mcp_config=mesh, run_id="r1", permission_mode=permission)

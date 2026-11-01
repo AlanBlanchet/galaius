@@ -2197,9 +2197,9 @@ class CodexProvider(AgentProvider):
         first `bwrap` on PATH, else the one bundled with the CLI. Its Landlock fallback refuses
         workspace-write since 0.155 (`.git` / `.codex` / `.agents` stay read-only, which Landlock
         cannot express), so a refused user namespace leaves it no sandbox at all."""
-        if not sys.platform.startswith("linux") or not self.available():
+        if not sys.platform.startswith("linux") or (found := self.located()) is None:
             return None
-        bundled = sorted(Path(self.executable()).parent.parent.glob("node_modules/@openai/codex-linux-*/vendor/*/codex-resources/bwrap"))
+        bundled = sorted(Path(found).resolve().parent.parent.glob("node_modules/@openai/codex-linux-*/vendor/*/codex-resources/bwrap"))
         bwrap = shutil.which("bwrap") or (str(bundled[0]) if bundled else None)
         return None if bwrap is None else userns_refusal(bwrap)
 

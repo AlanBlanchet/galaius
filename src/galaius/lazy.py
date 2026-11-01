@@ -24,4 +24,7 @@ def deferred(name: str) -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
+    parent, _, child = name.rpartition(".")
+    if parent:  # as `import a.b` does: `a.b` reads as an attribute of `a` (a dotted `monkeypatch.setattr` resolves it so)
+        setattr(importlib.import_module(parent), child, module)
     return module

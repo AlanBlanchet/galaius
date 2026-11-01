@@ -451,7 +451,8 @@ def test_a_message_is_answered_once_durably_queued_and_its_dispatcher_gets_the_m
     # every agent program's folder (`participant_environment`).
     env, path = dict(started["env"]), started["env"]["PATH"]
     assert {**env, "PATH": None} == {**agents.environment, "GALAIUS_AGENTS_DIR": str(reg.agents_dir()), "PATH": None}
-    assert path.startswith(agents.environment["PATH"])
+    kept = list(dict.fromkeys(entry for entry in agents.environment["PATH"].split(os.pathsep) if entry))  # once each, in order
+    assert path.split(os.pathsep)[:len(kept)] == kept
     assert started["argv"][-2] == "--serve" and detached_options().items() <= started.items() and agent_queue._hub_change(lambda hubs: hubs).runs == {started["argv"][-1]: (run_id,)}
     assert [(item.state, item.message_id) for item in agent_queue.items(run_id)] == [("pending", str(request.id))]
     assert [event.text for event in reg.read_messages(run_id)] == ["- and one more thing"]
