@@ -52,8 +52,9 @@ LineKind = Literal["prompt", "text", "tool", "message"]
 
 #: Event kinds a conversation is read and searched by; tool results, thinking and bookkeeping are not.
 KEPT: tuple[str, ...] = LineKind.__args__
-#: A registry stream line of a kept kind (the registry writes `kind` first): the rest are never decoded.
-_KEPT_LINE = re.compile(rb'^\{"kind":"(?:' + b"|".join(kind.encode() for kind in KEPT) + rb')"')
+#: A registry stream line of a kept kind: the rest are never decoded. Wherever `kind` falls in the line: the fields an
+#: event inherits are written before it (`context_tokens` first since e6be02c3).
+_KEPT_LINE = re.compile(rb'"kind":"(?:' + b"|".join(kind.encode() for kind in KEPT) + rb')"')
 #: Characters of one line the index keeps.
 LINE_CHARACTERS = 20000
 #: Characters a snippet shows on each side of the first match.
@@ -189,7 +190,7 @@ class ConversationFile(BaseModel):
         """One of its lines: a registry stream line as its event, a CLI's saved record through its provider."""
         provider = self.provider
         if provider is None:
-            if not _KEPT_LINE.match(raw_line):
+            if not _KEPT_LINE.search(raw_line):
                 return SavedLine()
             try:
                 return SavedLine(event=AgentEvent.model_validate_json(raw_line))
