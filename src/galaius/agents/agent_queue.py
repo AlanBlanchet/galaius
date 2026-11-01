@@ -25,7 +25,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Self
 
-from galaius_core import AGENT_IMAGES_MAX, MEDIA_KEY, AgentRefused, AgentRevisionRef, Refused
+from galaius_core import AGENT_IMAGES_MAX, MEDIA_KEY, AgentRevisionRef, Refused
 from galaius_core.wire import readable
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -81,7 +81,8 @@ class QueuedTurn(BaseModel, ABC):
     mid_turn: ClassVar[bool]
     #: Its attempt's error when its turn ended without an event accepting it (`accepts`).
     unaccepted: ClassVar[str]
-    #: Its turn resumes under its run's role policy (`launch`), so only a run naming a role receives it (`check_deliverable`).
+    #: Its turn resumes its run's provider session under its run's role policy (`launch`), so only a run naming a role, its
+    #: session id known, receives it (`check_deliverable`). False: its own launcher resumes it as it was begun.
     policed: ClassVar[bool] = True
 
     @abstractmethod
@@ -255,6 +256,10 @@ class EditorTurn(MessageTurn):
     role, so no policy); refused once this PC's owner turned continuing off (`galaius machine agents --continue off`)."""
 
     kind: Literal["editor"] = "editor"  # pyright: ignore[reportIncompatibleVariableOverride]
+    #: Its folder's marks when sent (`MachineAgents.folder_marks`): the dispatcher's environment is its first caller's,
+    #: so a turn in a folder placed from the web carries its own (`PROJECT_SETTINGS_OFF`, `UNTRUSTED_FOLDERS`).
+    marks: dict[Annotated[str, Field(max_length=80)], Annotated[str, Field(max_length=32_000)]] = Field(
+        default_factory=dict, max_length=8, exclude_if=lambda value: not value)
     mid_turn = False
     policed = False
 
@@ -267,11 +272,10 @@ class EditorTurn(MessageTurn):
     def launch(self, run: reg.AgentRun, prompt: str, *, raw_index: int) -> ContinuationHandle:
         # Circular layers: machine and run import this module.
         from galaius.agents.run import launch_editor_turn
+        from galaius.machine.agents import require_continue
         from galaius.machine.connection import MachineRunner
-        if not MachineRunner().load().continue_conversations:
-            raise AgentRefused("continue_off", "continuing your editor conversations from the web was turned off on this computer "
-                                               "before this message's turn; its owner turns it on there with `galaius machine agents --continue on`")
-        return launch_editor_turn(provider_for(run.provider), run, prompt, environment=Caller.environ(), raw_index=raw_index, record_locked=True)
+        require_continue(MachineRunner().load().continue_conversations)
+        return launch_editor_turn(provider_for(run.provider), run, prompt, environment={**Caller.environ(), **self.marks}, raw_index=raw_index, record_locked=True)
 
 
 QueuedTurnValue = Annotated[MessageTurn | EditorTurn | CompactionTurn, Field(discriminator="kind")]

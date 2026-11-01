@@ -16,7 +16,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 import pytest
 from galaius.agents.limits.subscriptions import SubscriptionRefused
-from galaius_core import AgentSignIn
+from galaius_core import AgentSignIn, AgentSignOutRequest
 
 from galaius.agents.providers import PROVIDERS, AgentProvider, LoginStatus
 from galaius.machine.programs import AgentPrograms, ProgramFailed
@@ -234,6 +234,12 @@ def test_signing_a_subscription_out_ends_its_sign_in_under_way(tmp_path: Path, m
     assert jobs.sign_out("claude", subscription).step == "signed_out"
     assert time.monotonic() - started < 10
     assert not any(item.subscription_id == subscription for item in jobs.states())  # its folder is gone
+
+
+def test_a_sign_out_waits_long_enough_for_an_ended_sign_in_to_be_seen_and_for_the_web_to_hear_back() -> None:
+    """Its sign-in's watcher sees the program end only at its next poll, at worst two polls late; the web waits for all of it."""
+    assert AgentSignOutRequest.stop_seconds >= 2 * AgentPrograms.poll_seconds + 10
+    assert AgentSignOutRequest.seconds > AgentSignOutRequest.settle_seconds + AgentSignOutRequest.stop_seconds + AgentSignOutRequest.logout_seconds
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="its stand-in program is a POSIX shell script")

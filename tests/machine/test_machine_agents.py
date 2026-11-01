@@ -645,12 +645,14 @@ def test_a_message_sent_while_a_continued_conversation_answers_waits_in_its_queu
 
     monkeypatch.setattr("galaius.machine.agents.launch_editor_turn", launched)
     monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(MachineAgents, "folder_marks", lambda self, folder: {PROJECT_SETTINGS_OFF: "1"})  # a folder placed from the web
     started = _answer(agents, _request("continue", session_id=str(inside), text="first"))
     run = reg.get_run(str(started.run_id))
     assert run is not None
     answers = [agents.continue_turn(run, text, request_id=uuid4()) for text in ("second", "third")]
     assert [answer.reads_at for answer in answers] == ["turn_end", "turn_end"] and turns == ["first"]
-    assert [(item.turn.kind, item.state) for item in agent_queue.items(run.run_id)] == [("editor", "pending")] * 2
+    # Each carries its folder's marks to the dispatcher, whose environment is its first caller's.
+    assert [(item.turn.kind, item.state, getattr(item.turn, "marks", None)) for item in agent_queue.items(run.run_id)] == [("editor", "pending", {PROJECT_SETTINGS_OFF: "1"})] * 2
     assert [event.text for event in reg.read_messages(run.run_id)] == ["first", "second", "third"]
 
 

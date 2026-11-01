@@ -20,7 +20,7 @@ from galaius.agents import run as agent_run
 from galaius.agents import registry as reg
 from galaius.agents.catalog.connection import CatalogAuthenticationError, CatalogConnectionError
 from galaius.agents.policy import Policy
-from galaius.agents.providers import ClaudeCodeProvider, ClaudeTurnSettings
+from galaius.agents.providers import PROJECT_SETTINGS_OFF, ClaudeCodeProvider, ClaudeTurnSettings
 from galaius.cli.app_commands import agents_work_for
 from galaius.isolation.fence import FenceSpec
 from galaius.machine.connection import MachineRunner
@@ -68,9 +68,18 @@ def test_messages_to_a_continued_editor_conversation_wait_in_its_queue_and_open_
     provider = setup_queue(monkeypatch)
     run = reg.get_run("r1")
     assert run is not None
-    reg.save_run(run.model_copy(update={"agent": None, "pid": os.getpid()}))  # its first turn still answers
+    reg.save_run(run.model_copy(update={"agent": None, "provider_session_id": None, "pid": os.getpid()}))  # its first turn still answers, its session id unknown yet
     monkeypatch.setattr(MachineRunner, "load", lambda self: SimpleNamespace(continue_conversations=on))
-    sent = [messaging.deliver_message("r1", text, sender=reg.PERSON_SENDER, turn=agent_queue.EditorTurn()) for text in ("second", "third")]
+    launch, environments = agent_run.launch_editor_turn, []
+
+    def launched(*args, environment, **options):
+        environments.append(environment)
+        return launch(*args, environment=environment, **options)
+
+    monkeypatch.setattr(agent_run, "launch_editor_turn", launched)
+    # Its folder was placed from the web; the shared dispatcher's environment, its first caller's, never says so.
+    marks = {PROJECT_SETTINGS_OFF: "1"}
+    sent = [messaging.deliver_message("r1", text, sender=reg.PERSON_SENDER, turn=agent_queue.EditorTurn(marks=marks)) for text in ("second", "third")]
     assert [delivery.reads_at for delivery in sent] == ["turn_end", "turn_end"]
     reg.save_run(run.model_copy(update={"agent": None, "pid": 999999}))  # that turn ended
 
@@ -79,7 +88,8 @@ def test_messages_to_a_continued_editor_conversation_wait_in_its_queue_and_open_
     items = agent_queue.items("r1")
     assert [item.state for item in items] == (["replied", "replied"] if on else ["failed", "failed"])
     assert provider.messages == (["second", "third"] if on else [])
-    assert all("turned off" in item.error for item in items) != on
+    assert [environment.get(PROJECT_SETTINGS_OFF) for environment in environments] == (["1", "1"] if on else [])
+    assert all("--continue on" in item.error for item in items) != on
 
 
 def test_a_message_showing_an_image_keeps_it_records_it_and_hands_it_over(monkeypatch):

@@ -171,6 +171,11 @@ class AgentPrograms(BaseModel):
                 raise SubscriptionRefused("sign_in_over", f"the {name} sign-in ended before its code: start it again") from error
         return job
 
+    def _login(self, key: tuple[str, UUID | None]) -> subprocess.Popen | None:
+        """The sign-in program running for `key`, None before it started or once it ended (under `_lock`)."""
+        login = self._logins.get(key)
+        return None if login is None else login[0]
+
     def sign_out(self, name: AgentProvider, subscription_id: UUID) -> AgentProviderState:
         """`subscription_id` signed out: a sign-in of it under way ended first, then its program's own sign-out inside its
         folder, then the folder removed with whatever credential it kept. The default login is never touched. Its state after."""
@@ -182,14 +187,14 @@ class AgentPrograms(BaseModel):
         def settling() -> bool:  # an install, or a sign-in not yet started, in its folder
             with self._lock:
                 job = self._jobs.get(key)
-                return job is not None and (job.step == "installing" or (job.step == "signing_in" and self._logins.get(key, (None, None, None))[0] is None))
+                return job is not None and (job.step == "installing" or (job.step == "signing_in" and self._login(key) is None))
 
         if not _until(lambda: not settling(), AgentSignOutRequest.settle_seconds):
             raise SubscriptionRefused("sign_in_busy", f"{name} is still installing or starting its sign-in here after "
                                                       f"{AgentSignOutRequest.settle_seconds:.0f}s; sign out once it is ready")
         with self._lock:
             job = self._jobs.get(key)
-            login = self._logins.get(key, (None, None, None))[0] if job is not None and job.step == "signing_in" else None
+            login = self._login(key) if job is not None and job.step == "signing_in" else None
         if login is not None:  # a sign-in under way in its folder: ended first, it is what he undoes
             end_process_tree(login.pid)
             if not _until(lambda: (job := self._jobs.get(key)) is None or job.step not in self.RUNNING, AgentSignOutRequest.stop_seconds):

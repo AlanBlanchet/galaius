@@ -369,11 +369,11 @@ class MachineAgents(BaseModel):
             case AgentAnswerRequest():
                 raise PermissionError("only a session asks before acting; this run is not one")
             case AgentSessionsRequest():
-                self._require_continue()
+                require_continue(self.continue_conversations)
                 found = [session for editor in EditorConversations.every(self) for session in await editor.listed()]
                 return MachineAgentAnswer(request_id=request.id, sessions=tuple(sorted(found, key=lambda item: item.updated_at, reverse=True))[:EDITOR_SESSIONS_MAX])
             case AgentContinueRequest():
-                self._require_continue()
+                require_continue(self.continue_conversations)
                 for editor in EditorConversations.every(self):
                     if (continued := await editor.continued(request)) is not None:
                         return continued
@@ -439,14 +439,18 @@ class MachineAgents(BaseModel):
         """What a run started now may do: `asked`, capped by this PC's permission."""
         return self.permission if asked is None else min(asked, self.permission, key=AGENT_TOUCH_SCOPES.index)
 
+    def folder_marks(self, folder: Path) -> dict[str, str]:
+        """What an agent working in `folder` is told of the web's folders on this PC: a workspace cloned from the
+        web loads none of its own agent settings (`PROJECT_SETTINGS_OFF`: its hooks would run code its owner never
+        read), and every folder put here from the web is named (`UNTRUSTED_FOLDERS`: no git of galaius's runs there)."""
+        if self.workspaces is None:
+            return {}
+        placed = os.pathsep.join(str(place) for _, place in self.workspaces.placed())
+        return {**({UNTRUSTED_FOLDERS: placed} if placed else {}), **({PROJECT_SETTINGS_OFF: "1"} if self.workspaces.prepared(folder) else {})}
+
     def environment_in(self, folder: Path) -> dict[str, str]:
-        """The child's environment for an agent working in `folder`: a workspace cloned from the
-        web loads none of its own agent settings (its hooks would run code its owner never read),
-        and every folder put here from the web is named (`UNTRUSTED_FOLDERS`: no git of galaius's runs there)."""
-        placed = [str(place) for _, place in self.workspaces.placed()] if self.workspaces is not None else []
-        environment = {**self.environment, UNTRUSTED_FOLDERS: os.pathsep.join(placed)} if placed else self.environment
-        untrusted = self.workspaces is not None and self.workspaces.prepared(folder)
-        return {**environment, PROJECT_SETTINGS_OFF: "1"} if untrusted else environment
+        """The child's environment for an agent working in `folder`: this connection's, marked (`folder_marks`)."""
+        return {**self.environment, **self.folder_marks(folder)}
 
     def launcher_environment_in(self, folder: Path) -> dict[str, str]:
         """What the launcher runs a role's agent in `folder` with: `environment_in` and this PC's
@@ -1298,20 +1302,16 @@ class MachineAgents(BaseModel):
 
     # ---- the owner's own editor conversations ------------------------------------------------
 
-    def _require_continue(self) -> None:
-        if not self.continue_conversations:
-            raise AgentRefused("continue_off", "continuing your editor conversations from the web is off on this computer; its owner turns it on there with `galaius machine agents --continue on`")
-
     def continue_turn(self, run: reg.AgentRun, text: str, *, request_id: UUID, fork_from: str | None = None, media: tuple[str, ...] = ()) -> MachineAgentAnswer:
         """One turn of a continued conversation, the opt-in checked on EVERY turn (turning it off stops the copies too).
         Its first copies the editor's session `fork_from` at once, one start per request (under the run's lock); every
         later one is queued durably under the request's id (`EditorTurn`) and started by the run's dispatcher once the
         turn before it ended, one at a time, in the order sent: a message sent while it answers waits (`turn_end`), as a
         session's does. The images it shows (`media`, the run's own) are named to it by their files."""
-        self._require_continue()
+        require_continue(self.continue_conversations)
         if fork_from is None:
             delivery = deliver_message(run.run_id, text, sender=reg.PERSON_SENDER, environment=self.environment_in(Path(run.cwd)),
-                                       message_id=str(request_id), turn=agent_queue.EditorTurn(media=media))
+                                       message_id=str(request_id), turn=agent_queue.EditorTurn(media=media, marks=self.folder_marks(Path(run.cwd))))
             delivery.taken("not delivered")
             return MachineAgentAnswer(request_id=request_id, run_id=UUID(run.run_id), detail=delivery.text, reads_at=delivery.reads_at)
         with _TURN_LOCKS.setdefault(run.run_id, threading.Lock()):
@@ -1337,6 +1337,14 @@ class MachineAgents(BaseModel):
             text = reg.read_stderr(str(request.run_id), limit=16_000)
             return MachineAgentAnswer(request_id=request.id, lines=tuple(redact(line, self.secrets)[:600] for line in text.splitlines()[-400:] if line.strip()))
         return MachineAgentAnswer(request_id=request.id, lines=tuple(redact(line, self.secrets) for line in self.logs.lines) if self.logs is not None else ())
+
+
+def require_continue(on: bool) -> None:
+    """Refuse a continued editor conversation's turn while its PC's owner has continuing off (`MachineAgents.continue_turn`,
+    and `EditorTurn.launch` at its queued turn)."""
+    if not on:
+        raise AgentRefused("continue_off", "continuing your editor conversations from the web is off on this computer; "
+                                           "its owner turns it on there with `galaius machine agents --continue on`")
 
 
 #: One turn at a time per continued conversation (`continue_turn`).

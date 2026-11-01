@@ -91,8 +91,8 @@ class Delivery(BaseModel):
 
 
 def check_deliverable(run_id: str, *, sender: str | None = None, policed: bool = True):
-    """Return the owned recipient or a refusal with its safe alternative; `policed`: the turn resumes under the run's
-    role policy, so the run must name a role (`QueuedTurn.policed`).
+    """Return the owned recipient or a refusal with its safe alternative; `policed`: the turn resumes the run's provider
+    session under its role policy, so the run must name a role and know its session (`QueuedTurn.policed`).
 
     ``sender`` is the addressing run's own id. An OPERATOR (CLI/panel, no recorded run of their
     own) is never scoped — a human already sees every run it names, the same as `agent_list
@@ -126,7 +126,7 @@ def check_deliverable(run_id: str, *, sender: str | None = None, policed: bool =
                       "would arrive with no context. Spawn a new agent with agent_spawn instead.")
     if policed and not run.agent:
         return None, "ERROR: this run has no named agent role; it cannot receive a policy-safe continuation."
-    if not _session_id(run):
+    if policed and not _session_id(run):
         return None, (f"ERROR: {run.name!r} has no provider session id yet; wait for its first "
                       "thread-start event before sending a message.")
     return run, None
@@ -283,7 +283,7 @@ def _queue_message(
             # resolves the model again when it starts the turn (`_fresh_policy`, which waits the same way).
             criterion = model = reasoning = None
             offline = OFFLINE_WAIT
-        if _session_id(run) is None:
+        if turn.policed and _session_id(run) is None:
             return Delivery(
                 state="error", text="ERROR: provider session identity is unavailable; not queued.",
                 run_id=run.run_id,
