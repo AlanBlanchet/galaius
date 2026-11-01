@@ -1702,7 +1702,7 @@ class MachineRunner:
                     output = json.dumps(await asyncio.to_thread(self._run_script_pooled, command, config), separators=(",", ":"))
                 elif command.impl.kind == "agent":
                     if not config.run_agents:
-                        raise AgentRefused("agents_off", "agent steps are off on this computer; its owner turns them on there with `galaius machine agents on`")
+                        raise PermissionError("agent steps are off on this computer; its owner turns them on there with `galaius machine agents on`")
                     output = await self._run_agent(command.impl.agent, str(command.inputs["task"]), config, socket, command.id)
                 else:
                     # Files first: a step never sees a server reference, only a checked local copy.
@@ -2127,7 +2127,7 @@ class MachineRunner:
             return None
         ready, reason = available()
         if not ready:
-            raise AgentRefused("fence_broken", f"the agent fence is on here but cannot be built: {reason}; its owner switches it off there with `galaius machine fence off`")
+            raise PermissionError(f"the agent fence is on here but cannot be built: {reason}; its owner switches it off there with `galaius machine fence off`")
         places = config.place_map()
         spec = FenceSpec.for_clis(agent_providers.program_providers(), egress=(urlsplit(config.server_url).hostname or "",), working_directory=config.working_directory,
                                   levels_file=self.config_path, levels=places.levels, internal=places.internal, start=config.working_directory,

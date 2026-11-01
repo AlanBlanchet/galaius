@@ -83,6 +83,8 @@ class AgentPrograms(BaseModel):
     ANSI: ClassVar[re.Pattern[str]] = re.compile(r"\x1b\[[0-9;]*m")
     #: The steps a job is under way in: asked again, it is not started twice (threat M6).
     RUNNING: ClassVar[frozenset[str]] = frozenset({"installing", "signing_in"})
+    #: How long a sign-out waits for its program's install, or its sign-in's start, to end first.
+    SETTLE_SECONDS: ClassVar[float] = 60
 
     #: Each job by its program and login (a subscription's id; None: the default login).
     _jobs: dict[tuple[str, UUID | None], AgentProviderState] = PrivateAttr(default_factory=dict)
@@ -177,13 +179,17 @@ class AgentPrograms(BaseModel):
         if subscription.provider != name:
             raise PermissionError(f"subscription {subscription_id} is a {subscription.provider} login, not {name}")
         key = self._key(subscription.program, subscription)
-        with self._lock:
-            job = self._jobs.get(key)
-            if job is not None and job.step == "installing":
-                raise SubscriptionRefused("sign_in_busy", f"{name} is installing here; sign out once it is installed")
-            login = self._logins.get(key, (None, None, None))[0] if job is not None and job.step == "signing_in" else None
-            if job is not None and job.step == "signing_in" and login is None:
-                raise SubscriptionRefused("sign_in_busy", f"its {name} sign-in is starting; sign out again in a few seconds")
+        settled = time.monotonic() + self.SETTLE_SECONDS
+        while True:  # an install or a sign-in still starting in its folder is waited for, never refused at once
+            with self._lock:
+                job = self._jobs.get(key)
+                login = self._logins.get(key, (None, None, None))[0] if job is not None and job.step == "signing_in" else None
+                settling = job is not None and (job.step == "installing" or (job.step == "signing_in" and login is None))
+            if not settling:
+                break
+            if time.monotonic() > settled:
+                raise SubscriptionRefused("sign_in_busy", f"{name} is still installing or starting its sign-in here after {self.SETTLE_SECONDS:.0f}s; sign out once it is ready")
+            time.sleep(0.05)
         if login is not None:  # a sign-in under way in its folder: ended first, it is what he undoes
             end_process_tree(login.pid)
             deadline = time.monotonic() + 2 * self.poll_seconds + 10

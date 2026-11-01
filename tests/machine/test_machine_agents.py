@@ -630,6 +630,38 @@ def test_editor_conversations_are_listed_only_inside_agent_roots_and_continue_as
     assert agents.runs.read()[-1].kind == "continued" and agents.runs.read()[-1].run_id == started.run_id
 
 
+
+def test_a_message_sent_while_a_continued_conversation_answers_opens_its_next_turn_once_that_one_ends(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """2026-10-30 « stop placing hard rules »: a message to a continued conversation still answering was refused (« send this
+    once it has finished »); it now waits, in its order, and opens the next turn when that one ends, one turn at a time."""
+    agents = _agents(base, tmp_path, continue_conversations=True).model_copy(update={"editor_projects": tmp_path / "projects"})
+    _, inside = _editor(tmp_path, base, base / "project" / "src")
+    turns: list[str] = []
+
+    def launched(provider, run, text, *, environment, fork_from=None):  # as `launch_editor_turn`: its turn runs once it returns
+        turns.append(text)
+        reg.begin_turn(run.run_id, pid=os.getpid())
+
+    def ended(run_id: str, count: int) -> None:
+        reg.finish(run_id, exit_code=0, first=reg.raw_line_count(run_id))
+        deadline = time.monotonic() + 5
+        while len(turns) < count and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    monkeypatch.setattr("galaius.machine.agents.launch_editor_turn", launched)
+    monkeypatch.setattr(MachineAgents, "TURN_POLL_SECONDS", 0.01)
+    started = _answer(agents, _request("continue", session_id=str(inside), text="first"))
+    run = reg.get_run(str(started.run_id))
+    assert run is not None
+    answers = [agents.continue_turn(run, text, request_id=uuid4()) for text in ("second", "third")]
+    assert [answer.reads_at for answer in answers] == ["turn_end", "turn_end"] and turns == ["first"]
+    ended(run.run_id, 2)
+    time.sleep(0.1)
+    assert turns == ["first", "second"]
+    ended(run.run_id, 3)
+    assert turns == ["first", "second", "third"]
+
+
 def test_editor_conversations_need_their_own_opt_in(base: Path, tmp_path: Path) -> None:
     with pytest.raises(PermissionError, match="continuing your editor conversations"):
         _answer(_agents(base, tmp_path), _request("sessions"))

@@ -274,6 +274,8 @@ class MachineAgents(BaseModel):
     session: str
     #: How a web launcher session's id starts.
     web_prefix: ClassVar[str] = "web-"
+    #: How often a message waiting for a continued conversation's turn to end looks again (`_next_turns`).
+    TURN_POLL_SECONDS: ClassVar[float] = 0.5
     #: The starts launching in this process now, by request id (`_start`): a repeat joins its first, whichever answerer it reaches.
     _starting: ClassVar[dict[UUID, asyncio.Future[MachineAgentAnswer]]] = {}
 
@@ -690,7 +692,7 @@ class MachineAgents(BaseModel):
                 raise PermissionError(f"that {what} is not a plain file")
             if offset is not None:
                 if offset >= max(facts.st_size, 1):
-                    raise AgentRefused("not_here", f"that {what} ends before byte {offset:,}")
+                    raise PermissionError(f"that {what} ends before byte {offset:,}")
                 handle.seek(offset)
                 return handle.read(MACHINE_AGENT_MEDIA), facts.st_size
             if facts.st_size > MACHINE_AGENT_MEDIA:
@@ -1249,7 +1251,7 @@ class MachineAgents(BaseModel):
         await asyncio.to_thread(self.runs.refuse_full, request)
         route, models, reason = await self.sessions.route()
         if route is None:
-            raise PermissionError(reason)
+            raise AgentRefused("sessions_unavailable", reason)
         if request.model is not None and request.model not in models:
             raise AgentRefused("model_unavailable", f"{request.model} is not a model sessions can use here")
         refresh = await asyncio.to_thread(self._refresh, folder)
@@ -1306,23 +1308,59 @@ class MachineAgents(BaseModel):
 
     def continue_turn(self, run: reg.AgentRun, text: str, *, request_id: UUID, fork_from: str | None = None, media: tuple[str, ...] = ()) -> MachineAgentAnswer:
         """One turn of a continued conversation: the opt-in is checked on EVERY turn (turning it off
-        stops the copies too), and one turn at a time (checked and started under the run's lock). The images it shows
-        (`media`, the run's own) are named to it by their files: its turn takes its message on the command line."""
+        stops the copies too), and one turn at a time (checked and started under the run's lock). A message sent while a
+        turn still answers is kept in its order and opens the next turn once that one ends (`turn_end`), as a session's
+        does. The images it shows (`media`, the run's own) are named to it by their files: its turn takes its message on
+        the command line."""
         self._require_continue()
         with _TURN_LOCKS.setdefault(run.run_id, threading.Lock()):
-            if reg.message_for(run.run_id, str(request_id)) is not None:  # the same request again: its turn opened already
-                return MachineAgentAnswer(request_id=request_id, run_id=UUID(run.run_id), detail="sent", reads_at="now")
-            current = reg.get_run(run.run_id) or run
-            if fork_from is None and reg.trees(frozenset({run.run_id}))[0].status in {"running", "waiting"}:
-                raise AgentRefused("answering", "it is still answering; send this once it has finished")
+            if reg.message_for(run.run_id, str(request_id)) is not None:  # the same request again: recorded already
+                return MachineAgentAnswer(request_id=request_id, run_id=UUID(run.run_id), detail="sent", reads_at="turn_end" if run.run_id in _WAITING else "now")
             reg.record_message_event(from_run=reg.PERSON_SENDER, to_run=run.run_id, text=text, event_id=str(request_id), media=media)
             said = reg.RunMedia.mentioned(text, (reg.RunMedia.path(run.run_id, name) for name in media))
-            try:
-                launch_editor_turn(PROVIDERS[current.provider], current, said, environment=self.environment_in(Path(current.cwd)), fork_from=fork_from)
-            except BaseException:
-                reg.finish(run.run_id, exit_code=1, first=reg.raw_line_count(run.run_id))  # never left "running" by a turn that did not start
-                raise
+            if fork_from is None and (run.run_id in _WAITING or _answering(run.run_id)):
+                if (waiting := _WAITING.get(run.run_id)) is None:
+                    _WAITING[run.run_id] = waiting = deque()
+                    threading.Thread(target=self._next_turns, args=(run.run_id,), name=f"turns-{run.run_id[:8]}", daemon=True).start()
+                waiting.append(said)
+                return MachineAgentAnswer(request_id=request_id, run_id=UUID(run.run_id), detail="sent", reads_at="turn_end")
+            self._turn(run, said, fork_from=fork_from)
         return MachineAgentAnswer(request_id=request_id, run_id=UUID(run.run_id), detail="sent", reads_at="now")
+
+    def _turn(self, run: reg.AgentRun, said: str, *, fork_from: str | None = None) -> None:
+        """One turn of `run` started on `said`, under its lock; a turn that did not start never leaves it « running »."""
+        current = reg.get_run(run.run_id) or run
+        try:
+            launch_editor_turn(PROVIDERS[current.provider], current, said, environment=self.environment_in(Path(current.cwd)), fork_from=fork_from)
+        except BaseException:
+            reg.finish(run.run_id, exit_code=1, first=reg.raw_line_count(run.run_id))
+            raise
+
+    def _next_turns(self, run_id: str) -> None:
+        """The messages sent to `run_id` while it answered, each opening its next turn once the one before ends, in the
+        order they came; the opt-in is checked again before each. A turn that cannot start ends the wait: its messages
+        stay in the conversation, recorded."""
+        lock = _TURN_LOCKS[run_id]
+        while True:
+            while _answering(run_id):
+                time.sleep(self.TURN_POLL_SECONDS)
+            with lock:
+                if _answering(run_id):
+                    continue
+                waiting = _WAITING[run_id]
+                said = waiting.popleft()
+                try:
+                    self._require_continue()
+                    if (run := reg.get_run(run_id)) is None:
+                        raise LookupError(f"run {run_id} is gone")
+                    self._turn(run, said)
+                except Exception:
+                    logger.warning("the next turn of continued conversation %s did not start", run_id, exc_info=True)
+                    del _WAITING[run_id]
+                    return
+                if not waiting:  # under the lock: a message sent from now on starts the next wait
+                    del _WAITING[run_id]
+                    return
 
     # ---- logs ------------------------------------------------------------------------------------
 
@@ -1338,5 +1376,12 @@ class MachineAgents(BaseModel):
 
 #: One turn at a time per continued conversation (`continue_turn`).
 _TURN_LOCKS: dict[str, threading.Lock] = {}
+#: What was sent to a continued conversation while it answered, in order, each its next turn (`_next_turns`).
+_WAITING: dict[str, deque[str]] = {}
+
+
+def _answering(run_id: str) -> bool:
+    """A turn of `run_id` still runs (or waits on what it asked)."""
+    return reg.trees(frozenset({run_id}))[0].status in {"running", "waiting"}
 #: (when, models) — `MachineAgents.models`' one-minute cache.
 _MODELS: tuple[float, tuple[MachineAgentModel, ...]] | None = None

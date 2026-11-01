@@ -236,6 +236,24 @@ def test_signing_a_subscription_out_ends_its_sign_in_under_way(tmp_path: Path, m
     assert not any(item.subscription_id == subscription for item in jobs.states())  # its folder is gone
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="its stand-in program is a POSIX shell script")
+def test_a_subscription_signed_out_while_its_program_installs_waits_for_the_install_then_signs_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """2026-10-30 « stop placing hard rules »: signed out mid-install it was refused (« sign out once it is installed »); it
+    now waits for the install, ends the sign-in that follows, and signs out."""
+    claude = stand_in_claude(tmp_path, opens=False, prints=True)
+    monkeypatch.setattr(AgentPrograms, "_status", lambda self, provider, environment: LoginStatus(signed_in=False))
+    monkeypatch.setattr(AgentPrograms, "poll_seconds", 0.1)
+    monkeypatch.setattr(AgentPrograms, "_install", lambda self, provider, key: (self._update(key, step="installing"), time.sleep(0.5)))
+    monkeypatch.setattr(type(PROVIDERS["claude"]), "available", lambda self: False)
+    monkeypatch.setattr(type(PROVIDERS["claude"]), "executable", lambda self: str(claude))
+    jobs = AgentPrograms(environment={"PATH": "/usr/bin:/bin"}, log_path=tmp_path / "agent-programs.log")
+    subscription = UUID(int=43)
+    jobs.install("claude", subscription)
+    signing(jobs, lambda state: any(item.subscription_id == subscription and item.step == "installing" for item in jobs.states()))
+    assert jobs.sign_out("claude", subscription).step == "signed_out"
+    assert not any(item.subscription_id == subscription for item in jobs.states())
+
+
 #: Claude Code 2.1.288 with its claude.ai login expired and not refreshable: the JSON status still says
 #: `loggedIn: true`, the text status says « Login: Expired » and exits 1. `old` is a Claude Code without
 #: `--text` (its own refusal, exit 1); `slow` answers neither in time.
