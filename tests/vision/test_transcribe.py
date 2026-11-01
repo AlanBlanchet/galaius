@@ -29,6 +29,7 @@ class _FakeConfig:
         self.media_max_items = 16
         self.media_max_total_bytes = 50 * 1024 * 1024
         self.media_max_context_chars = 32 * 1024
+        self.media_relay = None
         self.criteria_weights = ""
 
     def refresh(self):

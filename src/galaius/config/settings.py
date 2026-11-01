@@ -326,6 +326,9 @@ class Config(BaseSettings):
     # fence (GALAIUS_SCRATCH, `mesh_config`): every output path a caller names lands there or is refused, and
     # only its `fenced` tools are served. None: a server serving whoever starts it.
     scratch: Path | None = None
+    # The socket of the media relay outside the fence this server runs in (GALAIUS_MEDIA_RELAY, `mesh_config`,
+    # `galaius.vision.relay`): every media analysis is asked of it, this side holding no model key. None: analysed here.
+    media_relay: Path | None = None
     video_fps: int = 5
     video_duration: float = 3.0
     # Cost cap: recording sampled to at most this many evenly-spaced frames before the VLM, so

@@ -1905,7 +1905,7 @@ class _CodexMeshServer(BaseModel):
 
     command: str = Field(min_length=1)
     args: list[str]
-    env: dict[Literal["GALAIUS_PARENT_RUN_ID", GatewayServed.SCRATCH, GatewayServed.ROLE, EGL_VENDOR], Annotated[str, Field(min_length=1)]] = Field(min_length=1)
+    env: dict[Literal["GALAIUS_PARENT_RUN_ID", GatewayServed.SCRATCH, GatewayServed.ROLE, EGL_VENDOR, GatewayServed.MEDIA_RELAY], Annotated[str, Field(min_length=1)]] = Field(min_length=1)
 
 
 class _CodexMesh(BaseModel):

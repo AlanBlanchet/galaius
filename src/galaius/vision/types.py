@@ -16,7 +16,7 @@ from galaius.browser.state import bytes_to_b64
 _MEDIA_MAX_BYTES = 50 * 1024 * 1024
 
 
-def _compile_response_schema(
+def compile_response_schema(
     response_format: type[BaseModel] | dict[str, Any] | None,
 ) -> dict[str, Any] | None:
     if response_format is None:
@@ -54,7 +54,7 @@ class VLMResult(BaseModel):
 
     def validated(self, response_format: type[BaseModel] | dict[str, Any] | None) -> Self:
         """Compile and enforce one structured-output contract for every transport."""
-        schema = _compile_response_schema(response_format)
+        schema = compile_response_schema(response_format)
         if schema is None:
             return self
         if isinstance(response_format, type) and issubclass(response_format, BaseModel):

@@ -120,7 +120,17 @@ def test_the_desktop_and_session_sockets_are_unset_inside(home: Path, tmp_path: 
     command = _spec(home, tmp_path).build().command(["true"])
     for name in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR"):
         assert command[command.index(name) - 1] == "--unsetenv"
-    assert command[:4] == [sys.executable, "-m", "galaius.isolation.fence", "outer"] and "--unshare-net" in command
+    assert command[:5] == [sys.executable, "-I", "-m", "galaius.isolation.fence", "outer"] and "--unshare-net" in command
+
+
+@pytest.mark.parametrize("module", ["galaius.isolation.fence", "galaius.vision.relay"])
+def test_a_package_planted_in_the_start_folder_is_never_imported(tmp_path: Path, module: str) -> None:
+    """`outer`, `confine` and the media relay start in the agent's folder, which it writes: started without `-I`,
+    a `galaius/` it made there would run outside the fence with this PC's keys."""
+    (tmp_path / "galaius").mkdir()
+    (tmp_path / "galaius" / "__init__.py").write_text("raise SystemExit('planted code ran')")
+    done = subprocess.run([*fence.PACKAGE, module, str(tmp_path / "absent" / "x.sock")], cwd=tmp_path, capture_output=True, text=True, timeout=60, check=False)
+    assert "planted code ran" not in done.stderr and done.returncode != 0  # the real module ran, and refused its arguments
 
 
 def test_each_turn_reads_the_levels_as_they_are_now(home: Path, tmp_path: Path) -> None:
@@ -290,7 +300,7 @@ async def test_a_fenced_launch_starts_inside_the_fence_and_its_run_keeps_the_spe
     spec = FenceSpec(working_directory=tmp_path, levels={"work": "write"}, start=tmp_path / "work", state=tmp_path / "state")
     run = await run_module.run_agent(StreamProvider(), "t", agent="tester", name="w", cwd=str(tmp_path / "work"), fence=spec)
     await asyncio.wait_for(run.wait(), timeout=30)
-    assert started[0][:4] == [sys.executable, "-m", "galaius.isolation.fence", "outer"]
+    assert started[0][:5] == [sys.executable, "-I", "-m", "galaius.isolation.fence", "outer"]
     assert reg.get_run(run.run_id).fence == spec
 
 
@@ -326,10 +336,10 @@ def test_codex_runs_in_galaius_confinement_where_its_own_sandbox_cannot_start(tm
         assert f'sandbox_mode="{mode}"' in resumed  # never the danger-full-access a confined first turn saved
         return
     for started_argv, inner_mode in ((argv, ["--sandbox", "danger-full-access"]), (resumed, ["-c", 'sandbox_mode="danger-full-access"'])):
-        assert started_argv[:4] == [sys.executable, "-m", "galaius.isolation.fence", "confine"] and started_argv[5:7] == ["--", "/opt/codex/bin/codex"]
-        confinement = Confinement.model_validate_json(started_argv[4])
+        assert started_argv[:5] == [sys.executable, "-I", "-m", "galaius.isolation.fence", "confine"] and started_argv[6:8] == ["--", "/opt/codex/bin/codex"]
+        confinement = Confinement.model_validate_json(started_argv[5])
         assert confinement.write_start is (mode == "workspace-write") and confinement.relayed.argv == ("galaius", "mcp")
-        inner = started_argv[6:]
+        inner = started_argv[7:]
         assert " ".join(inner_mode) in " ".join(inner) and "{relay}" in next(part for part in inner if part.startswith("mcp_servers.galaius.args="))
 
 
@@ -500,8 +510,9 @@ def test_a_read_only_run_drives_apps_and_writes_only_in_its_scratch(home: Path, 
     monkeypatch.setattr(type(provider), "available", lambda self: True)
     monkeypatch.setattr(provider, "_bwrap_refusal", lambda: "no nested bwrap", raising=False)
     mesh = mesh_config(run_id="r1", role="tester", fence=spec)
-    # Its server is told its scratch folder and the fence's renderer pin (Codex hands its servers no other variable).
-    assert json.loads(mesh)["mcpServers"]["galaius"]["env"].items() >= {GatewayServed.SCRATCH: str(scratch), **fence.software_rendering()}.items()
+    # Its server is told its scratch folder, the fence's renderer pin and its media relay (Codex hands its servers no other variable).
+    assert json.loads(mesh)["mcpServers"]["galaius"]["env"].items() >= {GatewayServed.SCRATCH: str(scratch), GatewayServed.MEDIA_RELAY: fence.MEDIA_SOCKET,
+                                                                       **fence.software_rendering()}.items()
     argv = provider.command("t", cwd=str(home / "docs"), model=None, run_id="r1", permission_mode="read_only", fence_decides=True, mcp_config=mesh)
     # Its CLI's own read-only mode stands down, and only galaius's server for this run is reached (never the person's own entry).
     assert all(any(flag in argument for argument in argv) for flag in stands_down) and "plan" not in argv and "read-only" not in argv

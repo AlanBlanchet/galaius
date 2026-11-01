@@ -82,24 +82,25 @@ async def _vlm_detect_elements(
         transform = transform.with_crop(crop_offset[0], crop_offset[1])
     vlm_bytes, vlm_w, vlm_h = transform.resize_image(screenshot_bytes, img_w, img_h)
 
-    # A session provider emits the provider-neutral schema below; an unrelated API catalog/model
-    # must not choose its coordinate dialect or appear as the model that ran. Auto/API fallback
-    # resolves inside server.vlm's separate breaker-aware API path.
-    session_transport = config.media_sessions_enabled() and not model_override
+    # A session provider, or the media relay outside a fence (`Config.media_relay`), picks the model
+    # itself and gets the provider-neutral schema below; an unrelated API catalog/model must not
+    # choose its coordinate dialect or appear as the model that ran. Auto/API fallback resolves
+    # inside server.vlm's separate breaker-aware API path.
+    model_elsewhere = (config.media_sessions_enabled() or config.media_relay is not None) and not model_override
     component_model = ""
-    if not session_transport:
+    if not model_elsewhere:
         try:
             # "component" is a PREFERENCE with a real fallback (image) below it — a criterion
             # that clears nothing here is not a dead end, unlike "image" itself.
             component_model = config.resolve_model("component", breaker=breaker)
         except RuntimeError:
             component_model = ""
-    image_model = "" if session_transport else config.resolve_model("image", breaker=breaker)
+    image_model = "" if model_elsewhere else config.resolve_model("image", breaker=breaker)
 
     if model_override:
         use_component = False
         detection_model = model_override
-    elif session_transport:
+    elif model_elsewhere:
         use_component = not simple
         detection_model = ""
     else:
@@ -117,9 +118,9 @@ async def _vlm_detect_elements(
     task_coord_formats: list[CoordFormat] = []
 
     def _enqueue(model: str, label: str):
-        fmt = CoordFormat() if session_transport else CoordFormat.for_model(model)
+        fmt = CoordFormat() if model_elsewhere else CoordFormat.for_model(model)
         structured = not simple and (
-            session_transport
+            model_elsewhere
             or (fmt == CoordFormat() and _model_supports_structured(model))
         )
         preamble = (
@@ -149,7 +150,7 @@ async def _vlm_detect_elements(
 
     if model_override:
         _enqueue(detection_model, "override")
-    elif session_transport:
+    elif model_elsewhere:
         _enqueue("", "component" if use_component else "image")
     elif use_component:
         _enqueue(component_model, "component")

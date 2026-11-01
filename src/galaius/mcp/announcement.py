@@ -46,6 +46,9 @@ class GatewayServed(BaseModel):
     #: Such a server serves its tools marked `FENCED` alone: the app tools, acting inside the run's fence — no gateway
     #: tool, no agent, no browser or desktop outside it.
     SCRATCH: ClassVar[str] = "GALAIUS_SCRATCH"
+    #: Set by the launcher on a run in a fence (`mesh_config`): the media relay its server asks its vision calls of
+    #: (`Config.media_relay`, `galaius.vision.relay`), the keys staying outside.
+    MEDIA_RELAY: ClassVar[str] = "GALAIUS_MEDIA_RELAY"
     #: The `_meta` key marking a tool a read-only run calls (`_SessionScopedMCP.tool`'s `fenced`).
     FENCED: ClassVar[str] = "fenced"
 

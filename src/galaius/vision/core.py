@@ -11,6 +11,7 @@ from typing import Any, TypeAlias
 
 from pydantic import BaseModel
 
+from galaius.isolation.fence import without_secrets
 from galaius.agents.providers import MEDIA_PROVIDERS
 from galaius.config.settings import Config
 from galaius.catalog.criteria import Criteria
@@ -20,11 +21,12 @@ from galaius.models.capability import supports_native_video_inline
 from galaius.host.processes import run_isolated_process
 from galaius.runtime import breaker
 from galaius.browser.state import PageState, bytes_to_b64
+from galaius.vision.relay import MediaRelay, MediaRequest
 from galaius.vision.session import sample_video_frames, subscription_media_completion
 from galaius.vision.types import (
     MediaItem,
     VLMResult,
-    _compile_response_schema,
+    compile_response_schema,
 )
 from galaius.vision.usage import log_api_attempt
 from galaius.vision.workspace import _MediaWorkspace
@@ -33,21 +35,21 @@ litellm = deferred("litellm")
 openai = deferred("openai")
 
 _log = logging.getLogger(__name__)
-_MAX_API_FALLBACKS = 3
+MAX_API_FALLBACKS = 3
 _ContentPart: TypeAlias = dict[str, Any]
 _Message: TypeAlias = dict[str, Any]
 
 
-class _Unset:
+class Unset:
     """Sentinel for unset parameters."""
 
     __slots__ = ()
 
     def __repr__(self) -> str:
-        return "_UNSET"
+        return "UNSET"
 
 
-_UNSET = _Unset()
+UNSET = Unset()
 
 
 def _image_content(item: MediaItem) -> _ContentPart:
@@ -233,6 +235,15 @@ def _supports_response_schema(model: str) -> bool:
         return False
 
 
+def _native_response_format(response_format: type[BaseModel] | dict[str, Any]) -> type[BaseModel] | dict[str, Any]:
+    """The ``response_format`` litellm takes: a model class as is (litellm makes its schema), a JSON Schema wrapped
+    as a ``json_schema`` format (a bare schema is no format: Gemini answered it with nothing parseable)."""
+    if isinstance(response_format, type):
+        return response_format
+    name = re.sub(r"[^A-Za-z0-9_-]", "_", str(response_format.get("title") or "response"))[:64]
+    return {"type": "json_schema", "json_schema": {"name": name, "schema": response_format}}
+
+
 def _schema_instruction(response_format: type[BaseModel] | dict[str, Any]) -> str:
     """A prompt fragment asking for one bare JSON object matching the schema — the fallback for models
     without native ``response_format``. The caller's ``_parse_json_model`` tolerates fences/prose, but
@@ -294,7 +305,7 @@ def _provider_said(err: Exception) -> str:
     agent cannot act on."""
     text = str(getattr(err, "message", None) or err).strip()
     text = re.sub(r"^(litellm\.\w+:\s*|\w+Error:\s*|\w+Exception\s*-\s*)+", "", text)
-    first = text.splitlines()[0] if text else ""
+    first = without_secrets(text).splitlines()[0] if text else ""
     return first.strip().rstrip(".")[:200]
 
 
@@ -328,7 +339,7 @@ async def _vision_completion(
         kwargs["max_tokens"] = max_tokens
     if response_format is not None:
         if _supports_response_schema(model):
-            kwargs["response_format"] = response_format
+            kwargs["response_format"] = _native_response_format(response_format)
         else:
             # Provider rejects a native schema → ask for JSON in the prompt instead (append to the last
             # user message) so THIS model produces the structured output, not a frontier fallback.
@@ -420,7 +431,7 @@ async def _api_media_completion(
     context: str,
     config: Config,
     prompt: str | None,
-    max_tokens: int | None | _Unset,
+    max_tokens: int | None | Unset,
     response_format: type[BaseModel] | dict[str, Any] | None,
     model: str,
     _dispatch_state: list[bool] | None = None,
@@ -438,7 +449,7 @@ async def _api_media_completion(
             dispatch_attempted=False,
             dispatch_status="unavailable",
         )
-    tok: int | None = config.max_tokens if isinstance(max_tokens, _Unset) else max_tokens
+    tok: int | None = config.max_tokens if isinstance(max_tokens, Unset) else max_tokens
     media_parts, sent_native_video = await _build_media_content(media, model, config)
     messages = _build_messages([{"type": "text", "text": context}, *media_parts], prompt)
     try:
@@ -480,7 +491,7 @@ async def _api_media_with_fallback(
     context: str,
     config: Config,
     prompt: str | None,
-    max_tokens: int | None | _Unset,
+    max_tokens: int | None | Unset,
     response_format: type[BaseModel] | dict[str, Any] | None,
     *,
     role: ModelRole,
@@ -494,7 +505,7 @@ async def _api_media_with_fallback(
         candidate
         for candidate in config.ranked_models(role, breaker)
         if candidate.id != primary
-    ][:_MAX_API_FALLBACKS]
+    ][:MAX_API_FALLBACKS]
     candidates = [primary, *(candidate.litellm_id() for candidate in fallbacks)]
     previous_model = primary
     previous_failure = ""
@@ -539,7 +550,7 @@ async def analyze_media(
     context: str,
     config: Config,
     prompt: str | None = None,
-    max_tokens: int | None | _Unset = _UNSET,
+    max_tokens: int | None | Unset = UNSET,
     response_format: type[BaseModel] | dict[str, Any] | None = None,
     *,
     model: str = "",
@@ -552,8 +563,16 @@ async def analyze_media(
     ``model`` is an explicit per-call selection when supplied and is never discarded: it reaches
     the selected CLI's ``--model`` flag, or the API resolver.  An empty model lets each subscription
     CLI use its configured/default model and resolves the role model only if an API path is allowed.
+    Inside an agent fence (`Config.media_relay`) the whole call is the relay's, outside it, with that side's own
+    token cap and API model (`galaius.vision.relay`).
     """
-    _compile_response_schema(response_format)
+    if config.media_relay is not None:
+        request = MediaRequest.of(media, context, prompt, response_format, model=model, role=role)
+        # The outside answers within its own deadline (as long as this one's, `MAX_API_FALLBACKS`), once a request
+        # queued before it is done: twice that, with headroom, only bounds a relay stuck past it.
+        return await MediaRelay(socket=config.media_relay).analyze(
+            request, response_format, _dispatch_state, deadline=2 * config.media_timeout * (MAX_API_FALLBACKS + 1) + 30)
+    compile_response_schema(response_format)
     # A SPECIFIED criterion — an explicit per-call rule like "aa.intelligence > 80%", or the raw
     # role field the user actually set (never the bare-capability DEFAULT injected when it's
     # unset) — is resolved right here, eagerly, across session then API, and REFUSES loudly if
@@ -564,7 +583,7 @@ async def analyze_media(
     # `claude_media_criteria`), API via `config.resolve_model`'s own default injection — so an
     # unset role default can never silently override a provider-specific choice, or leak into
     # the API fallback as a bogus override bypassing its breaker-aware ranking.
-    explicit_criterion = model if model.startswith(("cap.", "aa.", "gui.", "oc.", "price.")) else ""
+    explicit_criterion = model if Criteria.written(model) else ""
     raw_role_criterion = (getattr(config, f"{role}_criteria", "") or "").strip() if not model else ""
     specified_criterion = explicit_criterion or raw_role_criterion
     session_model = model

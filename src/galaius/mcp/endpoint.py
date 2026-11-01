@@ -50,9 +50,9 @@ class SharedEndpoint:
     #: `0`: each client starts its own server under its upgrade supervisor, as on Windows.
     SWITCH_VARIABLE = "GALAIUS_SHARED_MCP"
     #: Set by a client that configures galaius through the server's environment (the VS Code extension: its keys,
-    #: settings and model catalog; a read-only run its scratch folder, `Config.scratch`): such a client keeps its own
-    #: server, which a shared one could not honour.
-    CONFIGURING = ("GALAIUS_MODELS_JSON", "GALAIUS_CONFIGURED_PROVIDERS", GatewayServed.SCRATCH)
+    #: settings and model catalog; a read-only run its scratch folder, `Config.scratch`; a fenced run its media relay,
+    #: `Config.media_relay`): such a client keeps its own server, which a shared one could not honour.
+    CONFIGURING = ("GALAIUS_MODELS_JSON", "GALAIUS_CONFIGURED_PROVIDERS", GatewayServed.SCRATCH, GatewayServed.MEDIA_RELAY)
 
     @classmethod
     def supported(cls) -> bool:

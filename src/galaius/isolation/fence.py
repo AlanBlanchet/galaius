@@ -54,6 +54,7 @@ from galaius.host.paths import UserPaths
 from galaius.host.pinned_directory import PinnedDirectory
 from galaius_core import AgentRefused
 from galaius.machine.places.levels import DEPENDENCY_FOLDERS, LEVEL_RANK, NEVER_GRANTABLE, PlaceMap, split
+from galaius.upgrade.handoff import Children
 from galaius.upgrade.store import active_interpreter
 
 class FencedCli(BaseModel):
@@ -113,6 +114,17 @@ INSTRUCTIONS = frozenset({"claude.md", "claude.local.md", "agents.md", "gemini.m
 #: The one variable galaius hands Codex the token of a self-hosted model it routes it to in (`agents.profiles`): its own key.
 COMPAT_KEY = "GALAIUS_OPENAI_COMPAT_KEY"
 SECRET_SUFFIXES = ("_API_KEY", "_KEY", "_TOKEN", "_SECRET", "_PASSWORD", "_PASS", "_CREDENTIALS")
+#: The shortest secret value `without_secrets` replaces (a shorter one would blank ordinary words).
+SECRET_LENGTH = 8
+
+
+def without_secrets(text: str) -> str:
+    """`text` with no value of this environment's secret variables (`SECRET_SUFFIXES`) in it, raw or JSON-escaped: run
+    before any cut, which would leave a prefix no longer equal to the value."""
+    for name, value in os.environ.items():
+        if name.upper().endswith(SECRET_SUFFIXES) and len(value) >= SECRET_LENGTH:
+            text = text.replace(value, "[redacted]").replace(json.dumps(value)[1:-1], "[redacted]")
+    return text
 SCAN_DEPTH, SCAN_ENTRIES = 8, 200_000
 #: Variables that point at the desktop or the user's session: gone inside (their sockets are too).
 UNSET = ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS", "SSH_AUTH_SOCK", "SSH_AGENT_PID", "XDG_RUNTIME_DIR",
@@ -121,6 +133,12 @@ UNSET = ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS",
 SYSTEM = ("/usr", "/etc", "/opt", "/nix", "/snap", "/sys")
 MERGED = ("/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32")
 EGRESS_MOUNT = "/run/galaius-egress"
+#: The media relay's socket inside a fence (`Config.media_relay`): `outer` serves `galaius.vision.relay` beside the
+#: egress proxy, outside, with this PC's keys.
+MEDIA_SOCKET = f"{EGRESS_MOUNT}/media.sock"
+#: How this package's modules are started outside a fence: isolated (`-I`), so the folder they start in (the agent's,
+#: writable by it) is never on `sys.path`, nor any `PYTHON*` variable read.
+PACKAGE = (sys.executable, "-I", "-m")
 #: Mesa's EGL vendor file (glvnd, same path on Debian/Ubuntu/Fedora/Arch): pinned inside, where no GPU device exists, so
 #: GL loads Mesa's software renderer, never a GPU vendor's library (NVIDIA's crashes Xvfb with no /dev/nvidia*).
 MESA_EGL = Path("/usr/share/glvnd/egl_vendor.d/50_mesa.json")
@@ -233,8 +251,8 @@ class Fence(BaseModel):
             view += ["--unsetenv", name]
         view += ["--chdir", str(self.cwd)]
         inner = [sys.executable, "-I", "-c", INNER, f"{EGRESS_MOUNT}/egress.sock", *argv]
-        guard = json.dumps({"reviews": str(self.reviews) if self.reviews else None, "guards": [[str(top), place, str(folder)] for top, place, folder in self.guards]})
-        return [sys.executable, "-m", self.MODULE, "outer", ",".join(self.egress), guard, ",".join(self.keys), "--", bwrap, *view, "--", *inner]
+        guard = SteeringGuard(reviews=self.reviews, guards=self.guards)
+        return Outer(hosts=self.egress, guard=guard, keys=self.keys, media=True).command([bwrap, *view, "--", *inner])
 
 
 class Scan(BaseModel):
@@ -699,26 +717,50 @@ class SteeringGuard(BaseModel):
                 print(f"galaius fence: could not hold {path}: {error}", file=sys.stderr)
 
 
-def outer(hosts: tuple[str, ...], guard: SteeringGuard, keys: tuple[str, ...], argv: list[str]) -> int:
-    """Outside the view: scopes, the egress proxy on a fresh socket, bwrap as a child (signals
-    passed on) with no secret of this environment but `keys`, steering names swept while it runs
-    and once it ended; its exit code returned."""
-    scope_self()
-    before = guard.candidates() | guard.nested()
-    with tempfile.TemporaryDirectory(prefix="ifence-") as folder:
-        threading.Thread(target=EgressProxy(hosts=hosts).serve, args=(os.path.join(folder, "egress.sock"),), daemon=True).start()
-        env = {name: value for name, value in os.environ.items() if name in keys or not name.upper().endswith(SECRET_SUFFIXES)}
-        child = subprocess.Popen([part.replace("{egress}", folder) for part in argv], env=env)
-        for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-            signal.signal(number, lambda received, _frame: child.send_signal(received))
-        while True:
+class Outer(BaseModel):
+    """What runs outside the view: scopes, the egress proxy to `hosts` on a fresh socket and, when `media`, the media
+    relay beside it (`MEDIA_SOCKET`), bwrap as a child (signals passed on) with no secret of this environment but
+    `keys`, steering names swept while it runs and once it ended."""
+
+    model_config = ConfigDict(frozen=True)
+    hosts: tuple[str, ...] = ()
+    guard: SteeringGuard = Field(default_factory=SteeringGuard)
+    keys: tuple[str, ...] = ()
+    media: bool = False
+
+    def command(self, argv: list[str]) -> list[str]:
+        """`argv` (bwrap's) started by this module outside."""
+        return [*PACKAGE, Fence.MODULE, "outer", self.model_dump_json(), "--", *argv]
+
+    def run(self, argv: list[str]) -> int:
+        """`argv` run; its exit code."""
+        scope_self()
+        before = self.guard.candidates() | self.guard.nested()
+        with tempfile.TemporaryDirectory(prefix="ifence-") as folder:
+            # Started before any thread here: its death signal is set in the forked child (`Children.options`), so it
+            # dies with this process even when killed with no `finally` run. `LITELLM_MODE`: litellm loads no `.env`
+            # found above its install folder into the process holding this PC's keys; started in `/`, never the agent's folder.
+            relay = subprocess.Popen([*PACKAGE, "galaius.vision.relay", os.path.join(folder, os.path.basename(MEDIA_SOCKET))],
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, env={**os.environ, "LITELLM_MODE": "PRODUCTION"},
+                                     cwd="/", **Children.options(False)) if self.media else None
             try:
-                code = child.wait(timeout=0.5)
-                break
-            except subprocess.TimeoutExpired:
-                guard.sweep(before)
-        guard.sweep(before, deep=True)
-        return code
+                threading.Thread(target=EgressProxy(hosts=self.hosts).serve, args=(os.path.join(folder, "egress.sock"),), daemon=True).start()
+                env = {name: value for name, value in os.environ.items() if name in self.keys or not name.upper().endswith(SECRET_SUFFIXES)}
+                child = subprocess.Popen([part.replace("{egress}", folder) for part in argv], env=env)
+                for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+                    signal.signal(number, lambda received, _frame: child.send_signal(received))
+                while True:
+                    try:
+                        code = child.wait(timeout=0.5)
+                        break
+                    except subprocess.TimeoutExpired:
+                        self.guard.sweep(before)
+                self.guard.sweep(before, deep=True)
+                return code
+            finally:
+                if relay is not None:
+                    relay.kill()
+                    relay.wait()
 
 
 #: What bubblewrap prints when this system refuses it a user namespace (the lines Codex 0.155.1
@@ -921,7 +963,7 @@ class Confinement(BaseModel):
 
     def command(self, argv: list[str]) -> list[str]:
         """`argv` started inside this confinement."""
-        return [sys.executable, "-m", Fence.MODULE, "confine", self.model_dump_json(), "--", *argv]
+        return [*PACKAGE, Fence.MODULE, "confine", self.model_dump_json(), "--", *argv]
 
     def _home(self, login: Path, private: Path) -> bytes | None:
         """Fill `private` from `login`; the sign-in file's content as copied (None: none)."""
@@ -1051,8 +1093,8 @@ def available() -> tuple[bool, str]:
         return False, refusal
     if (abi := landlock_abi()) < _SCOPE_ABI:
         return False, f"this kernel's Landlock (ABI {abi}) cannot scope sockets and signals: Linux 6.12 or later is needed"
-    trial = subprocess.run([sys.executable, "-m", Fence.MODULE, "outer", "", "{}", "", "--", bwrap, "--unshare-user", "--unshare-pid", "--unshare-net", "--die-with-parent",
-                            "--ro-bind", "/", "/", "true"], capture_output=True, text=True, timeout=20, check=False)
+    trial = subprocess.run(Outer().command([bwrap, "--unshare-user", "--unshare-pid", "--unshare-net", "--die-with-parent",
+                                         "--ro-bind", "/", "/", "true"]), capture_output=True, text=True, timeout=20, check=False)
     if trial.returncode != 0:
         return False, f"bubblewrap cannot start here: {(trial.stderr.strip().splitlines() or ['exit ' + str(trial.returncode)])[-1][:200]}"
     return True, ""
@@ -1062,6 +1104,6 @@ if __name__ == "__main__":
     mode, *rest = sys.argv[1:]
     if mode == "confine" and len(rest) >= 3 and rest[1] == "--":
         raise SystemExit(Confinement.model_validate_json(rest[0]).run(rest[2:]))
-    if mode != "outer" or len(rest) < 4 or rest[3] != "--":
-        raise SystemExit("usage: python -m galaius.isolation.fence outer <hosts> <guard json> <kept keys> -- <bwrap argv> | confine <confinement json> -- <argv>")
-    raise SystemExit(outer(tuple(host for host in rest[0].split(",") if host), SteeringGuard.model_validate_json(rest[1]), tuple(key for key in rest[2].split(",") if key), rest[4:]))
+    if mode != "outer" or len(rest) < 2 or rest[1] != "--":
+        raise SystemExit("usage: python -m galaius.isolation.fence outer <outer json> -- <bwrap argv> | confine <confinement json> -- <argv>")
+    raise SystemExit(Outer.model_validate_json(rest[0]).run(rest[2:]))

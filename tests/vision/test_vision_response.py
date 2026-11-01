@@ -11,7 +11,7 @@ the model verbatim, with nothing but "Annotated page with N elements" around it,
 dialog" read as an instruction and came back as "Closed." — the agent then believed something had
 happened. Every query answer crosses one seam; the framing lives there.
 
-The request side of that same seam: `max_tokens=_UNSET` (the default) resolves to `config.max_tokens`
+The request side of that same seam: `max_tokens=UNSET` (the default) resolves to `config.max_tokens`
 rather than litellm's own default, and an explicit value still overrides it.
 """
 
@@ -106,11 +106,11 @@ async def test_the_model_is_told_it_can_only_look(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_unset_sentinel_uses_config_max_tokens():
-    """When max_tokens=_UNSET (default), analyze_media uses config.max_tokens."""
+    """When max_tokens=UNSET (default), analyze_media uses config.max_tokens."""
     from unittest.mock import AsyncMock
     from galaius.config.settings import Config
     from galaius.vision.types import MediaItem
-    from galaius.vision.core import _UNSET, analyze_media
+    from galaius.vision.core import UNSET, analyze_media
 
     cfg = Config()
     media_item = [MediaItem.from_bytes(_PNG)]
@@ -124,7 +124,7 @@ async def test_unset_sentinel_uses_config_max_tokens():
             return_value={"keys_in_environment": True},
         ),
     ):
-        await analyze_media(media_item, "ctx", cfg, max_tokens=_UNSET, model="test-model")
+        await analyze_media(media_item, "ctx", cfg, max_tokens=UNSET, model="test-model")
 
     # Should have passed config.max_tokens (default: None)
     assert mock_completion.call_args.kwargs["max_tokens"] == cfg.max_tokens

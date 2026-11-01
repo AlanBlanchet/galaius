@@ -554,6 +554,9 @@ class ValueRule(BaseModel):
 class Criteria:
     """A model requirement, as a sentence somebody can read and change."""
 
+    #: How a requirement starts, telling it from a model id (`Criteria.written`).
+    NAMESPACES: ClassVar[tuple[str, ...]] = ("cap.", "aa.", "gui.", "oc.", "price.")
+
     #: Every cache file a ranking reads (fixed names under ``~/.galaius/out``; the VS Code extension
     #: reads them too). ``machine_local`` marks the one describing this machine's own daemon.
     INPUTS: ClassVar[tuple[TTLCache, ...]] = (
@@ -566,6 +569,11 @@ class Criteria:
     #: `ProviderConstraint`). Applied downstream, over the ranked (model, CLI) candidate list.
     providers: tuple[ProviderConstraint, ...] = field(default_factory=tuple)
     source: str = ""
+
+    @classmethod
+    def written(cls, text: str) -> bool:
+        """Whether `text` is a requirement (`cap.vlm`, `aa.intelligence >= 40`), not a model id."""
+        return text.startswith(cls.NAMESPACES)
 
     @classmethod
     def input_files(cls) -> list[tuple[Path, TTLCache]]:

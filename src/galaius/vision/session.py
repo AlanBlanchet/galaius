@@ -24,6 +24,7 @@ import jsonschema
 from jsonschema.exceptions import SchemaError, ValidationError
 from pydantic import BaseModel
 
+from galaius.isolation.fence import without_secrets
 from galaius.agents.providers import (
     MEDIA_PROVIDERS,
     _MediaProcessFailure,
@@ -36,7 +37,7 @@ from galaius.host.processes import run_isolated_process
 from galaius.vision.types import (
     MediaItem,
     VLMResult,
-    _compile_response_schema,
+    compile_response_schema,
     video_sample_indices,
 )
 from galaius.vision.usage import log_session_attempt
@@ -259,7 +260,8 @@ def _validated_text(text: str, response_format: type[BaseModel] | dict | None) -
         raise RuntimeError(f"subscription provider returned schema-invalid output: {exc}") from exc
 
 
-def _redacted(reason: str) -> str:
+def redacted(reason: str) -> str:
+    reason = without_secrets(reason)
     reason = re.sub(
         r"(?:[A-Za-z]:)?[/\\][^\s:]*media-jobs[/\\]job-[^\s:/\\]+(?:[/\\][^\s:]*)?",
         "[media-stage]",
@@ -310,7 +312,7 @@ def _persist_failure(
             "outcome": outcome,
             "failures": [
                 {
-                    key: (_redacted(str(value)) if key == "reason" else value)
+                    key: (redacted(str(value)) if key == "reason" else value)
                     for key, value in asdict(failure).items()
                     if value is not None
                 }
@@ -375,7 +377,7 @@ async def subscription_media_completion(
     _dispatch_state: list[bool] | None = None,
 ) -> VLMResult:
     """Try configured subscription providers in order and return the first valid final result."""
-    schema = _compile_response_schema(response_format)
+    schema = compile_response_schema(response_format)
     failures: list[_SessionFailureFact] = []
     warnings: list[str] = []
     request_id = uuid.uuid4().hex

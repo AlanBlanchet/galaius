@@ -9,9 +9,9 @@ from dataclasses import dataclass
 from galaius.server import core
 from galaius.server.core import config
 from galaius.vision.core import (
-    _UNSET,
+    UNSET,
     VisionError,
-    _Unset,
+    Unset,
     analyze_media,
     analyze_screenshot,
 )
@@ -54,7 +54,7 @@ async def _vlm(
     query: str | None = None,
     media_type: str = "image",
     mime: str | None = None,
-    max_tokens: int | None | _Unset = _UNSET,
+    max_tokens: int | None | Unset = UNSET,
     response_format: type | dict | None = None,
     model_override: str | None = None,
     extra_images: list[MediaItem | bytes] | None = None,
