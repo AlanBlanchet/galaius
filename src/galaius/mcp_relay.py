@@ -21,6 +21,7 @@ This module is also the one place the wire between relay and server is defined (
 `Endpoint`): the server imports it."""
 
 import contextlib
+import errno
 import json
 import os
 import queue
@@ -65,6 +66,8 @@ STARTER = frozenset({"HOME", "USER", "LOGNAME", "PATH", "SHELL", "LANG", "LANGUA
                      "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS", "GALAIUS_AGENTS_DIR", "GALAIUS_SUBSCRIPTIONS_DIR", "GALAIUS_RUNTIMES",
                      "GALAIUS_AGENT_CEILING"})
 STARTER_PREFIXES = ("LC_", "XDG_", "GALAIUS_SHARED_MCP_")
+#: errno of a shutdown on a socket the peer already closed (macOS / BSD; Windows reports WSAENOTCONN).
+NOT_CONNECTED = frozenset({errno.ENOTCONN, getattr(errno, "WSAENOTCONN", errno.ENOTCONN)})
 
 
 class Endpoint:
@@ -358,7 +361,11 @@ class McpRelay:
         if line.method == SWITCH and not line.request:
             self.switch_to = Endpoint.parsed(line.body["params"])
             self.phase = "switching"
-            self.conn.shutdown(socket.SHUT_RDWR)
+            try:
+                self.conn.shutdown(socket.SHUT_RDWR)
+            except OSError as error:   # macOS: the server closed right after its switch; its end of file still comes
+                if error.errno not in NOT_CONNECTED:
+                    raise
             return
         if line.answer and line.key == self.handshake_key and self.phase == "handshake":
             self.handshake_done(line)

@@ -18,6 +18,7 @@ from uuid import UUID
 from galaius_core.identity.sealing import SecretsSeal
 from pydantic import BaseModel, ConfigDict
 
+from galaius.host.atomic_file import replace_held_open
 from galaius.machine.projects.workspaces import MachineWorkspaces
 from galaius.host.private_files import PRIVATE_FILES
 
@@ -83,7 +84,7 @@ class ProjectEnv(BaseModel):
             with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
                 PRIVATE_FILES.restrict(temporary)
                 stream.write("\n".join(lines) + "\n")
-            os.replace(temporary, self.path)
+            replace_held_open(temporary, self.path)
         except BaseException:
             temporary.unlink(missing_ok=True)
             raise

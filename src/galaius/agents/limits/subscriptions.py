@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict
 
 from galaius.agents.limits import quota
 from galaius.agents.providers import PROVIDERS, AgentProvider
+from galaius.host.atomic_file import replace_held_open
 from galaius.host.paths import UserPaths
 
 logger = logging.getLogger(__name__)
@@ -337,7 +338,7 @@ class Subscription(BaseModel):
         temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
         temporary.write_bytes(content)
         temporary.chmod(0o600)
-        temporary.replace(path)
+        replace_held_open(temporary, path)
 
     def _write(self, state: SubscriptionState) -> None:
         """Through a temporary file of its own (two writers never rename each other's half-written one)."""

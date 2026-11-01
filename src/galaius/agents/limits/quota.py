@@ -38,6 +38,7 @@ from galaius_core import UsageWindow
 from pydantic import BaseModel, ConfigDict, Field
 
 from galaius.agents.transport.events import instant
+from galaius.host.atomic_file import replace_held_open
 from galaius.host.file_lock import exclusive
 from galaius.host.paths import UserPaths
 
@@ -467,7 +468,7 @@ def _write_json(path: Path, data: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
-        tmp.replace(path)
+        replace_held_open(tmp, path)
 
 
 def _until(key: str, now: float | None) -> float | None:

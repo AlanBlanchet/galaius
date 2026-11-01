@@ -28,6 +28,8 @@ from typing import ClassVar
 
 from pydantic import BaseModel
 
+from galaius.host.atomic_file import replace_held_open
+
 
 class Scope(StrEnum):
     user = "user"
@@ -369,7 +371,7 @@ class TomlClient(ClientTarget):
         try:
             if mode is not None:
                 temporary.chmod(mode)
-            os.replace(temporary, path)
+            replace_held_open(temporary, path)
         except OSError:
             temporary.unlink(missing_ok=True)
             raise

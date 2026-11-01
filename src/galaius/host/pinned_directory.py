@@ -27,6 +27,8 @@ from typing import ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict
 
+from galaius.host.atomic_file import replace_held_open
+
 
 class PinnedDirectory(BaseModel):
     """The platform-neutral contract; `open` builds the selected backend (`selected`)."""
@@ -312,7 +314,7 @@ class PathDirectory(PinnedDirectory):
         shutil.rmtree(path)
 
     def replace(self, name: str, target: Self, target_name: str) -> None:
-        os.replace(self.path / self._name(name), target.path / target._name(target_name))
+        replace_held_open(self.path / self._name(name), target.path / target._name(target_name))
 
     def move(self, name: str, target: Self, target_name: str) -> None:
         if os.name != "nt":

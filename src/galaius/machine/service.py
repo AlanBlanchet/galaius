@@ -34,6 +34,7 @@ from xml.sax.saxutils import escape
 from pydantic import BaseModel, ConfigDict
 
 from galaius.diagnostics.error_reports import MachineErrorReports
+from galaius.host.atomic_file import replace_held_open
 from galaius.machine.connection import JsonLines, MachineRunner
 from galaius.host.processes import end_process_tree, process_exited, process_group_options, process_started
 from galaius.host.private_files import WindowsPrivateFiles
@@ -333,7 +334,7 @@ class WindowsMachineService(MachineService):
             path = self.log_path()
             path.parent.mkdir(parents=True, exist_ok=True)
             if path.exists() and path.stat().st_size > 5 << 20:
-                path.replace(path.with_suffix(".log.1"))
+                replace_held_open(path, path.with_suffix(".log.1"))
             sys.stdout = sys.stderr = open(path, "a", encoding="utf-8", buffering=1)  # noqa: SIM115 - lives as long as the process
         try:
             job = self.held_children()

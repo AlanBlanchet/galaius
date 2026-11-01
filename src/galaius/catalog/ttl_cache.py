@@ -30,6 +30,8 @@ from typing import Any, TypeVar
 import httpx
 from pydantic import BaseModel, ConfigDict
 
+from galaius.host.atomic_file import replace_held_open
+
 T = TypeVar("T")
 
 #: Prices and scores both move on the order of days, so half a day keeps a panel responsive
@@ -254,7 +256,7 @@ class TTLCache:
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             temp.write_text(json.dumps(payload))
-            os.replace(temp, target)  # atomic within a filesystem
+            replace_held_open(temp, target)
         except OSError:
             try:
                 temp.unlink()

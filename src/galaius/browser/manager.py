@@ -18,6 +18,7 @@ from playwright.async_api import async_playwright, Browser, BrowserContext, Brow
 
 from galaius.config.settings import LOG_MAXLEN, Config
 from galaius.browser.state import InteractiveElement
+from galaius.host.atomic_file import replace_held_open
 from galaius.host.windowless import console_python
 
 
@@ -91,7 +92,7 @@ def browser_scope(executable: str, memory_max: int) -> dict:
         staged = wrapper.with_name(f"{wrapper.name}.{os.getpid()}")
         staged.write_text(script)
         staged.chmod(0o700)
-        staged.replace(wrapper)
+        replace_held_open(staged, wrapper)
     parts = Path("/proc/self/cgroup").read_text().strip().rsplit(":", 1)[-1].split("/")
     managed = parts[next((i for i, part in enumerate(parts) if part.startswith("user@")), len(parts)):]
     own_slice = next((part for part in reversed(managed) if part.endswith(".slice")), "app.slice")

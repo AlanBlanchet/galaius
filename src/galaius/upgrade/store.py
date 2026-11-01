@@ -24,6 +24,7 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
+from galaius.host.atomic_file import replace_held_open
 from galaius.host.file_lock import exclusive
 from galaius.host.paths import UserPaths
 from galaius.host.private_files import PRIVATE_FILES
@@ -305,7 +306,7 @@ class RuntimeStore(BaseModel):
         temporary = launcher.with_name(f".{launcher.name}-{os.getpid()}")
         temporary.unlink(missing_ok=True)
         temporary.symlink_to(runtime.path / "bin" / "galaius")
-        os.replace(temporary, launcher)
+        replace_held_open(temporary, launcher)
 
     def activate(self, runtime: Runtime, *, explicit: bool = False) -> Pointer:
         """Point every long-lived process at `runtime`. Older than the floor only when `explicit`

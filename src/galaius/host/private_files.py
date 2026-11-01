@@ -16,7 +16,6 @@ folders holding them. One owner of "private" per operating system (`PRIVATE_FILE
 
 import base64
 import os
-import time
 import stat
 import sys
 from pathlib import Path
@@ -24,6 +23,8 @@ from typing import ClassVar
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
+
+from galaius.host.atomic_file import replace_held_open
 
 if sys.platform == "win32":
     import ntsecuritycon
@@ -171,16 +172,8 @@ class WindowsPrivateFiles(PrivateFiles):
     entropy: ClassVar[bytes] = b"interact.private-files.v1"
 
     def replace(self, temporary: Path, path: Path) -> None:
-        """A file another process has open (a supervisor reading the upgrade pointer) refuses the
-        rename for that instant: try again for up to 2 s before failing."""
-        for attempt in range(40):
-            try:
-                os.replace(temporary, path)
-                return
-            except PermissionError:
-                if attempt == 39:
-                    raise
-                time.sleep(0.05)
+        """A file another process has open refuses the rename for that instant (`replace_held_open`)."""
+        replace_held_open(temporary, path)
 
     def owns(self, path: Path, info: os.stat_result) -> bool:
         """The owner in `path`'s security descriptor (a Windows stat carries none: `st_uid` is 0) is this user or a

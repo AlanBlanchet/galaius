@@ -37,6 +37,7 @@ from pathlib import Path
 from galaius_core import UserModelOrigin
 
 from galaius import USER_AGENT
+from galaius.host.atomic_file import replace_held_open
 from galaius.inference import weights as model_safety
 from galaius.account.tls import server_tls
 
@@ -101,7 +102,7 @@ def _fetch_from_server(origin: UserModelOrigin, model_id: str, cache_root: Path,
             raise RuntimeError(f"server refused this model's weights: HTTP {error.code}") from error
         except urllib.error.URLError as error:
             raise RuntimeError(f"could not reach the server for this model's weights: {error.reason}") from error
-        os.replace(temporary, weights_path)
+        replace_held_open(temporary, weights_path)
     finally:
         temporary.unlink(missing_ok=True)
     model_safety.assert_safetensors_only(weights_path)

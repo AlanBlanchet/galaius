@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -17,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from galaius.agents.catalog.entries import CatalogSnapshot
 from galaius.agents.catalog.connection import CatalogAuthenticationError, CatalogConnection, CatalogConnectionError
 from galaius.catalog.criteria import Criteria
+from galaius.host.atomic_file import replace_held_open
 from galaius.prompts.heads import ServerPrompts
 
 
@@ -247,7 +247,7 @@ class ServerWorkspace(ServerPrompts):
                         output.write(chunk)
             if size != artifact.size or digest.hexdigest() != artifact.digest:
                 raise CatalogConnectionError(f"File {artifact.path} does not match its recorded size and digest; nothing kept.")
-            os.replace(partial, target)
+            replace_held_open(partial, target)
         finally:
             partial.unlink(missing_ok=True)
         return target

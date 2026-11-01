@@ -50,6 +50,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from galaius_core import PlaceLevel
 
+from galaius.host.atomic_file import replace_held_open
 from galaius.host.paths import UserPaths
 from galaius.host.pinned_directory import PinnedDirectory
 from galaius.host.processes import platform_signals
@@ -1022,7 +1023,7 @@ class Confinement(BaseModel):
         handle, staged = tempfile.mkstemp(prefix=f".{self.signin.file}.", dir=login)
         with os.fdopen(handle, "wb") as staging:
             staging.write(after)
-        os.replace(staged, login / self.signin.file)
+        replace_held_open(Path(staged), login / self.signin.file)
 
     def _serves(self, private: Path) -> bool:
         """Whether the CLI will start the relayed server: not when none is relayed or any of its

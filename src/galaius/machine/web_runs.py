@@ -12,6 +12,7 @@ from galaius_core import AgentRefused, AgentRunKind, AgentStartRequest, StopActo
 from pydantic import BaseModel, ConfigDict
 
 from galaius.agents import registry as reg
+from galaius.host.atomic_file import replace_held_open
 from galaius.host.file_lock import exclusive
 
 logger = logging.getLogger(__name__)
@@ -66,7 +67,7 @@ class WebRuns(BaseModel):
             handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(handle, "w", encoding="utf-8") as stream:
                 json.dump([item.model_dump(mode="json") for item in kept], stream)
-            os.replace(temporary, self.path)
+            replace_held_open(temporary, self.path)
 
     def runs(self) -> list[reg.AgentRun]:
         """These runs and every run they launched, as the launcher's registry has them now."""

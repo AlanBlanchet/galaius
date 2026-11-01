@@ -33,6 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, Valid
 
 from galaius_core import refusal_of, PcFeature, PcFeatures, AGENT_IMAGES_WIRE, MACHINE_AGENT_REQUESTS, PROJECTS_DIR, PROJECTS_ROOT, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, AgentRefusal, MachineAgentAnswer, MachineRefusal, OwnFault, OwnFaultDoing, OwnFaultKind, Refused, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
 from galaius import USER_AGENT
+from galaius.host.atomic_file import replace_held_open
 from galaius.prompts import mirror as prompt_mirror
 from galaius.prompts import projection as prompt_projection
 from galaius.agents.limits.subscription_watch import SubscriptionWatch
@@ -651,7 +652,7 @@ class CommandFiles(MachineFiles):
                     stream.write(chunk)
             if digest.hexdigest() != ref.digest:
                 raise RuntimeError(f"{port}: the file arrived damaged (sha256 mismatch)")
-            os.replace(partial, target)
+            replace_held_open(partial, target)
         except urllib.error.HTTPError as error:
             raise RuntimeError(f"{port}: the server refused the file (HTTP {error.code})") from error
         finally:
