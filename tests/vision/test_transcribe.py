@@ -103,7 +103,7 @@ async def test_transcribe_audio_calls_the_transcription_endpoint(monkeypatch, me
         captured["read"] = file.read()  # the endpoint receives the audio bytes
         return _Resp()
 
-    monkeypatch.setattr(vis.litellm, "validate_environment", lambda m: {"keys_in_environment": True})
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
     monkeypatch.setattr(vis.litellm, "atranscription", fake_at)
     r = await transcribe_audio(
         b"RIFF\x08\x00\x00\x00WAVE", model="whisper-1", mime_type="audio/wav",
@@ -115,7 +115,7 @@ async def test_transcribe_audio_calls_the_transcription_endpoint(monkeypatch, me
 
 @pytest.mark.asyncio
 async def test_transcribe_audio_missing_key_is_friendly_not_a_crash(monkeypatch):
-    monkeypatch.setattr(vis.litellm, "validate_environment", lambda m: {"keys_in_environment": False})
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     r = await transcribe_audio(b"x", model="whisper-1")
     assert "unavailable" in r.text.lower() and r.elapsed == 0
 

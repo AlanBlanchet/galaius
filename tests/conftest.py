@@ -18,6 +18,8 @@ import pytest
 # `GALAIUS_*` var that config.env does not define, and any test whose code path refreshes config
 # (every `@instrumented` MCP tool does) would silently re-enable discovery for the REST of the run.
 os.environ.setdefault("OLLAMA_DISCOVERY", "0")
+# Same for the keyed providers' own model listings (`galaius.inference.listing`).
+os.environ.setdefault("MODEL_LISTING", "0")
 
 # Same reason, same timing: the registry is rescored from the live Artificial Analysis board AT
 # LOAD, and importing `galaius.runtime` loads it before any fixture can run. A developer box with

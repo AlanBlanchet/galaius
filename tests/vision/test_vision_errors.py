@@ -117,7 +117,7 @@ async def test_a_non_provider_exception_is_not_dressed_up(monkeypatch):
 @pytest.mark.asyncio
 async def test_transcription_shares_the_translation(monkeypatch, media_output_root):
     """``transcribe_audio`` is the OTHER litellm call; the same 429 must read the same way there."""
-    monkeypatch.setattr(v.litellm, "validate_environment", lambda model: {"keys_in_environment": True})
+    monkeypatch.setattr(v, "_key_missing", lambda model: None)
     monkeypatch.setattr(
         v.litellm,
         "atranscription",
@@ -251,9 +251,7 @@ async def test_a_provider_fault_on_a_page_query_reaches_the_agent_as_an_ERROR_st
     monkeypatch.setattr(srv.targets, "_resolve_target", lambda *a, **k: (None, MagicMock(), None))
     monkeypatch.setattr(srv.capture, "_capture", AsyncMock(return_value=state))
     monkeypatch.setattr("galaius.vision.core.litellm.acompletion", no_credits)
-    monkeypatch.setattr(
-        "galaius.vision.core.litellm.validate_environment", lambda model: {"keys_in_environment": True}
-    )
+    monkeypatch.setattr("galaius.vision.core._key_missing", lambda model: None)
     fn = getattr(srv.tools.vision.screenshot, "fn", srv.tools.vision.screenshot)
     out = await fn(query="what is on this page?")
     assert isinstance(out, str), "a provider fault must be a readable result, not an exception"
@@ -298,3 +296,15 @@ async def test_vlm_exhausted_chain_is_an_ERROR_line_that_says_why(srv, make_erro
 
     assert result.text.startswith("ERROR:"), result.text
     assert "fallback/model" in result.text and expect in result.text, result.text
+
+
+@pytest.mark.asyncio
+async def test_a_missing_key_raises_so_the_fallback_chain_walks_on(monkeypatch):
+    """A placeholder answer used to stop the chain at its first candidate, and review_ui then parsed
+    "[Vision unavailable …" as its JSON (`Expecting value: line 1 column 2`)."""
+    from galaius.vision.types import MediaItem
+
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    media = [MediaItem.from_bytes(_PNG)]
+    with pytest.raises(VisionError, match="no API key configured"):
+        await v._api_media_completion(media, "ctx", Config(), None, v.UNSET, None, "gemini/gemini-2.5-flash")

@@ -16,6 +16,7 @@ from galaius.agents.providers import MEDIA_PROVIDERS
 from galaius.config.settings import Config
 from galaius.catalog.criteria import Criteria
 from galaius.lazy import deferred
+from galaius.models.registry import Model
 from galaius.models.spec import ModelRole
 from galaius.models.capability import supports_native_video_inline
 from galaius.host.processes import run_isolated_process
@@ -426,6 +427,22 @@ def _frame_untrusted_context(context: str, max_chars: int) -> str:
     )
 
 
+def _key_missing(model: str) -> Model | None:
+    """The catalog row of ``model`` when this PC provably cannot call it (its provider's key is
+    absent), else None. Never ``litellm.validate_environment``: it demands ``OLLAMA_API_BASE`` for
+    an Ollama id the daemon serves at its default address, and can block on an interactive login
+    (`Model.is_available`). An id outside the catalog is checked against the provider litellm
+    routes it to."""
+    row = Model.by_id(model)
+    if row is None:
+        try:
+            name, provider, _, _ = litellm.get_llm_provider(model)
+        except litellm.exceptions.BadRequestError:  # litellm routes it nowhere: the call itself will say so
+            return None
+        row = Model.named(f"{provider}/{name}")
+    return row if row.key_missing() else None
+
+
 async def _api_media_completion(
     media: list[MediaItem],
     context: str,
@@ -436,19 +453,10 @@ async def _api_media_completion(
     model: str,
     _dispatch_state: list[bool] | None = None,
 ) -> VLMResult:
-    if not litellm.validate_environment(model)["keys_in_environment"]:
-        return VLMResult(
-            text=f"[Vision unavailable — {model} API key not configured] {context}",
-            elapsed=0,
-            model=model,
-            backend="none",
-            provider=model.split("/", 1)[0] if "/" in model else "",
-            billing="none",
-            incremental_cost_usd=0,
-            dispatch_eligible=False,
-            dispatch_attempted=False,
-            dispatch_status="unavailable",
-        )
+    if (row := _key_missing(model)) is not None:
+        # Raised, never a placeholder answer: the fallback chain walks past it, and a structured
+        # caller never parses "[Vision unavailable …" as its JSON.
+        raise VisionError(model, provider=row.provider, cause="has no API key configured")
     tok: int | None = config.max_tokens if isinstance(max_tokens, Unset) else max_tokens
     media_parts, sent_native_video = await _build_media_content(media, model, config)
     messages = _build_messages([{"type": "text", "text": context}, *media_parts], prompt)
@@ -695,7 +703,7 @@ async def transcribe_audio(
             "subscription sessions cannot transcribe audio; configure audio.criteria with an "
             "API or local-compatible transcription backend and permit API billing"
         )
-    if not litellm.validate_environment(model)["keys_in_environment"]:
+    if _key_missing(model) is not None:
         return VLMResult(
             text=f"[Transcription unavailable — {model} API key not configured]", elapsed=0
         )

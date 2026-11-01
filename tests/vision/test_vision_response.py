@@ -115,28 +115,15 @@ async def test_unset_sentinel_uses_config_max_tokens():
     cfg = Config()
     media_item = [MediaItem.from_bytes(_PNG)]
     mock_completion = AsyncMock(return_value=VLMResult(text="ok", elapsed=0.1))
-    # model is now resolved at the boundary and passed in; analyze_media no longer reads
-    # config.model_for. It still validates the key, so patch that True.
-    with (
-        patch("galaius.vision.core._vision_completion", mock_completion),
-        patch(
-            "galaius.vision.core.litellm.validate_environment",
-            return_value={"keys_in_environment": True},
-        ),
-    ):
+    # model is resolved at the boundary and passed in; analyze_media no longer reads config.model_for.
+    with patch("galaius.vision.core._vision_completion", mock_completion):
         await analyze_media(media_item, "ctx", cfg, max_tokens=UNSET, model="test-model")
 
     # Should have passed config.max_tokens (default: None)
     assert mock_completion.call_args.kwargs["max_tokens"] == cfg.max_tokens
 
     # Now pass explicit value -- should override
-    with (
-        patch("galaius.vision.core._vision_completion", mock_completion),
-        patch(
-            "galaius.vision.core.litellm.validate_environment",
-            return_value={"keys_in_environment": True},
-        ),
-    ):
+    with patch("galaius.vision.core._vision_completion", mock_completion):
         await analyze_media(media_item, "ctx", cfg, max_tokens=512, model="test-model")
 
     assert mock_completion.call_args.kwargs["max_tokens"] == 512

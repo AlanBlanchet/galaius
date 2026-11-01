@@ -570,3 +570,13 @@ def test_the_real_daemon_reports_what_is_pulled():
     assert all(m.model_id.startswith("ollama/") for m in models)
     for m in models:
         assert isinstance(m.capabilities, tuple)
+
+
+def test_vision_calls_a_served_ollama_model_without_ollama_api_base(discovered, monkeypatch):
+    """litellm's own environment check demands OLLAMA_API_BASE for every `ollama/` id; the daemon
+    answering at its default address is the proof, and the vision gate must read it."""
+    from galaius.vision import core
+
+    monkeypatch.delenv("OLLAMA_API_BASE", raising=False)
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    assert core._key_missing("ollama/kimi-k3:cloud") is None

@@ -261,7 +261,8 @@ class Model(RegistryMixin, BaseModel):
         — see ``_served``. Still a pure local check: the daemon was asked once, at registry
         load, short timeout; this method only reads the answer. Answer is per-MODEL, so a
         catalog row for something the user never pulled is correctly NOT available even though
-        its provider is running.
+        its provider is running. A provider that LISTS its ids (`galaius.inference.listing`) still
+        needs its key, and rules out the ids it no longer lists.
         """
         if self.provider in Model._served:
             return self.is_served()
@@ -274,7 +275,7 @@ class Model(RegistryMixin, BaseModel):
             # Explicitly-configured models still run — is_available only filters automatic
             # fallback candidates.
             return False
-        return all(os.environ.get(k) for k in keys)
+        return all(os.environ.get(k) for k in keys) and self.is_served()
 
     def is_served(self) -> bool:
         """False only when a LIVE provider itself told us it does not have this model.
@@ -287,7 +288,14 @@ class Model(RegistryMixin, BaseModel):
         """
         served = Model._served.get(self.provider)
         if served is None:
-            return True
+            # A keyed provider's own listing, read when asked rather than at load: a server takes
+            # its keys from settings after the registry loaded. Ids compared exactly as a call takes
+            # them — the bare-name join below would let a retired `-001` spelling pass as its
+            # served sibling. Imported here for the Ollama module's reason: httpx, on every CLI path.
+            from galaius.inference import listing
+
+            listed = listing.served(self.provider)
+            return listed is None or self.id.removeprefix(f"{self.provider}/") in listed
         # Joined on the NORMALIZED name, like every cross-source comparison here. Ollama spells
         # one model two ways — `kimi-k3` from its cloud endpoint, `kimi-k3:cloud` from the local
         # daemon — whichever answered discovery decided which spelling the set holds, and a pin

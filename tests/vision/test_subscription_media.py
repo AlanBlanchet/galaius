@@ -1044,9 +1044,7 @@ async def test_invalid_json_schema_fails_before_api_dispatch(monkeypatch) -> Non
         raise AssertionError("metered dispatch reached")
 
     monkeypatch.setattr(vision.litellm, "acompletion", forbidden)
-    monkeypatch.setattr(
-        vision.litellm, "validate_environment", lambda model: {"keys_in_environment": True}
-    )
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
     config = Config(media_backend="api", media_billing="api_allowed")
     with pytest.raises(SchemaError):
         await analyze_media(
@@ -1206,9 +1204,7 @@ async def test_audio_api_permission_is_independent_of_visual_session_backend(mon
     async def transcription(*args, **kwargs):
         return {"text": "allowed transcript"}
 
-    monkeypatch.setattr(vision.litellm, "validate_environment", lambda model: {
-        "keys_in_environment": True
-    })
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
     monkeypatch.setattr(vision.litellm, "atranscription", transcription)
     cfg = Config(media_backend="session", media_billing="api_allowed")
     result = await transcribe_audio(
@@ -1235,9 +1231,7 @@ async def test_transcription_uses_configured_private_media_workspace(
 
     monkeypatch.setattr(Config, "media_workspace_root", lambda self: root, raising=False)
     monkeypatch.setattr(tempfile, "NamedTemporaryFile", forbidden_tempfile)
-    monkeypatch.setattr(vision.litellm, "validate_environment", lambda model: {
-        "keys_in_environment": True
-    })
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
     monkeypatch.setattr(vision.litellm, "atranscription", transcription)
     cfg = Config(media_backend="session", media_billing="api_allowed")
 
@@ -1260,7 +1254,7 @@ async def test_transcribe_audio_without_config_uses_the_fail_closed_default(monk
     async def forbidden_transcription(*args, **kwargs):
         raise AssertionError("default session-only policy reached transcription API")
 
-    monkeypatch.setattr(vision.litellm, "validate_environment", forbidden_validation)
+    monkeypatch.setattr(vision, "_key_missing", forbidden_validation)
     monkeypatch.setattr(vision.litellm, "atranscription", forbidden_transcription)
 
     with pytest.raises(RuntimeError, match="permit API billing"):
@@ -1279,11 +1273,7 @@ async def test_transcription_api_usage_is_metered_in_the_selected_config(
     async def transcription(*args, **kwargs):
         return response
 
-    monkeypatch.setattr(
-        vision.litellm,
-        "validate_environment",
-        lambda model: {"keys_in_environment": True},
-    )
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
     monkeypatch.setattr(vision.litellm, "atranscription", transcription)
     monkeypatch.setattr(vision.litellm, "completion_cost", lambda **kwargs: 0.031)
     cfg = Config(media_backend="session", media_billing="api_allowed")
@@ -1320,11 +1310,7 @@ async def test_api_attempts_log_nullable_cost_without_usage_or_on_failure(
             usage=None,
         )
 
-    monkeypatch.setattr(
-        vision.litellm,
-        "validate_environment",
-        lambda model: {"keys_in_environment": True},
-    )
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
     monkeypatch.setattr(
         vision.litellm,
         "completion_cost",

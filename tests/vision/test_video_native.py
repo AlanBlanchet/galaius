@@ -108,9 +108,7 @@ async def test_analyze_falls_back_to_frames_when_native_video_is_rejected(monkey
     import litellm
 
     monkeypatch.setattr(vision, "_extract_frames", AsyncMock(return_value=["F"]))
-    monkeypatch.setattr(
-        vision.litellm, "validate_environment", lambda model: {"keys_in_environment": True}
-    )
+    monkeypatch.setenv("GEMINI_API_KEY", "test")
     calls: list[str] = []
 
     async def fake_completion(messages, model, **k):
