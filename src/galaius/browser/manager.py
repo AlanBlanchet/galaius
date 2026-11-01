@@ -926,10 +926,12 @@ class SessionRegistry:
         inspection (e.g. noticing a session moved) that must not start a browser."""
         return self._sessions.get(session_id)
 
-    async def close(self, session_id: str):
+    async def close(self, session_id: str) -> bool:
+        """Close `session_id`; False when no such session is open here."""
         mgr = self._sessions.pop(session_id, None)
         if mgr:
             await mgr.close()
+        return mgr is not None
 
     def active(self) -> list[str]:
         return list(self._sessions.keys())

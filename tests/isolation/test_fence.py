@@ -533,7 +533,9 @@ def test_a_read_only_run_drives_apps_and_writes_only_in_its_scratch(home: Path, 
     served = {tool.name for tool in asyncio.run(core.mcp.list_tools())}
     assert {"launch_app", "screenshot", "run_actions", "session"} <= served and not served & {"agent_spawn", "navigate", "create_file"}
     # It closes its own browser session (its server holds no other run's); a session file it saves lands in scratch alone.
-    assert "closed" in str(asyncio.run(core.mcp.call_tool("session", {"action": "close"})))
+    core._sessions.get("caller-own")  # a session opened by this run (no browser started)
+    assert "'caller-own' closed" in str(asyncio.run(core.mcp.call_tool("session", {"action": "close", "name": "caller-own"})))
+    assert "No session 'caller-other' is open here" in str(asyncio.run(core.mcp.call_tool("session", {"action": "close", "name": "caller-other"})))
     with pytest.raises(ToolError, match="scratch"):
         asyncio.run(core.mcp.call_tool("session", {"action": "save", "path": "~/cookies.json"}))
     # What its client is told before the server answers (the install's snapshot) is the same list.
