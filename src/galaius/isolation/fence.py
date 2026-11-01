@@ -142,8 +142,10 @@ PACKAGE = (sys.executable, "-I", "-m")
 #: Mesa's EGL vendor file (glvnd, same path on Debian/Ubuntu/Fedora/Arch): pinned inside, where no GPU device exists, so
 #: GL loads Mesa's software renderer, never a GPU vendor's library (NVIDIA's crashes Xvfb with no /dev/nvidia*).
 MESA_EGL = Path("/usr/share/glvnd/egl_vendor.d/50_mesa.json")
-#: The variable that pins it (`software_rendering`).
+#: The variable that pins it (`inside_environment`).
 EGL_VENDOR = "__EGL_VENDOR_LIBRARY_FILENAMES"
+#: The variable naming the folder Playwright launches its browsers from (`playwright_browsers`).
+BROWSERS = "PLAYWRIGHT_BROWSERS_PATH"
 #: Landlock: create_ruleset / restrict_self syscall numbers (one table on every Linux architecture)
 #: and the scopes (ABI 6): abstract UNIX sockets, signals.
 _CREATE_RULESET, _RESTRICT_SELF, _SCOPES, _SCOPE_ABI = 444, 446, 0b11, 6
@@ -245,7 +247,7 @@ class Fence(BaseModel):
         for link, target in self.links:
             view += ["--symlink", str(target), str(link)]
         view += ["--setenv", "HOME", str(self.home)]
-        for name, value in software_rendering().items():
+        for name, value in inside_environment().items():
             view += ["--setenv", name, value]
         for name in UNSET:
             view += ["--unsetenv", name]
@@ -373,6 +375,9 @@ class FenceSpec(BaseModel):
         if self.scratch is not None:
             binds.append(FenceBind(source=_private(self.scratch), target=self.scratch, writable=True))
         binds += self._tool_state(home)
+        # Read-only: a run's galaius server launches the browsers this PC installed, never installs one (no egress, no write).
+        if (browsers := playwright_browsers()) is not None and browsers.is_dir():
+            binds.append(FenceBind(source=browsers, target=browsers, writable=False))
         reached, roots = list(self.programs), [_install_root(program.resolve()) for program in self.programs]
         for python in _interpreters():
             paths, folders = _runs_from(python)
@@ -480,10 +485,21 @@ def _private(folder: Path) -> Path:
     return folder
 
 
-def software_rendering() -> dict[str, str]:
-    """The environment that pins Mesa's renderer inside a fence (`MESA_EGL`); empty where Mesa's file is absent. A CLI
-    that starts its MCP servers with only the variables it is given (Codex) is given it too (`agents.run.mesh_config`)."""
-    return {EGL_VENDOR: str(MESA_EGL)} if MESA_EGL.is_file() else {}
+def playwright_browsers() -> Path | None:
+    """The folder Playwright launches its browsers from on this PC, in its own order: `PLAYWRIGHT_BROWSERS_PATH`, else
+    `ms-playwright` in `$XDG_CACHE_HOME` or ~/.cache; None for "0" (inside its package, which the fence already shows)."""
+    named = os.environ.get(BROWSERS)
+    if named == "0":
+        return None
+    return Path(named).expanduser() if named else Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "ms-playwright"
+
+
+def inside_environment() -> dict[str, str]:
+    """The variables every program inside a fence starts with: Mesa's renderer pinned (`MESA_EGL`, where its file is) and
+    Playwright's browsers named where the fence shows them (`playwright_browsers`, where installed). A CLI that starts its
+    MCP servers with only the variables it is given (Codex) is given them too (`agents.run.mesh_config`)."""
+    browsers = playwright_browsers()
+    return {**({EGL_VENDOR: str(MESA_EGL)} if MESA_EGL.is_file() else {}), **({BROWSERS: str(browsers)} if browsers is not None and browsers.is_dir() else {})}
 
 
 def _interpreter(program: Path) -> Path | None:

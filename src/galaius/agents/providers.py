@@ -44,7 +44,7 @@ from galaius.agents.limits.quota import REFUSAL
 from galaius.agents.catalog.profiles import overlay_for
 from galaius.agents.catalog.vocabulary import CLAUDE_VOCABULARY, CODEX_VOCABULARY, ApprovalIntent, HarnessVocabulary, TouchScope, ThinkingLevel
 from galaius.brief_hook import NOTE as BRIEF_NOTE
-from galaius.isolation.fence import COMPAT_KEY, EGL_VENDOR, RELAY, FencedCli, RELAY_PORT, Confinement, RelayedServer, SignIn, confinement_refusal, userns_refusal
+from galaius.isolation.fence import BROWSERS, COMPAT_KEY, EGL_VENDOR, RELAY, FencedCli, RELAY_PORT, Confinement, RelayedServer, SignIn, confinement_refusal, userns_refusal
 from galaius.inbox_hook import NOTE as INBOX_NOTE
 from galaius.models.registry import Model
 from galaius.host.processes import ask_process, run_isolated_process, shell_entries
@@ -1905,7 +1905,7 @@ class _CodexMeshServer(BaseModel):
 
     command: str = Field(min_length=1)
     args: list[str]
-    env: dict[Literal["GALAIUS_PARENT_RUN_ID", GatewayServed.SCRATCH, GatewayServed.ROLE, EGL_VENDOR, GatewayServed.MEDIA_RELAY], Annotated[str, Field(min_length=1)]] = Field(min_length=1)
+    env: dict[Literal["GALAIUS_PARENT_RUN_ID", GatewayServed.SCRATCH, GatewayServed.ROLE, EGL_VENDOR, BROWSERS, GatewayServed.MEDIA_RELAY], Annotated[str, Field(min_length=1)]] = Field(min_length=1)
 
 
 class _CodexMesh(BaseModel):

@@ -45,7 +45,7 @@ from galaius.agents.catalog import community as community_agents
 from galaius.agents.catalog.community import CommunityAgent
 from galaius.agents.limits.ceiling import contained
 from galaius.agents.transport.events import model_spoke, stream_lines
-from galaius.isolation.fence import MEDIA_SOCKET, FenceSpec, available, fenced, software_rendering
+from galaius.isolation.fence import MEDIA_SOCKET, FenceSpec, available, fenced, inside_environment
 from galaius.host.processes import process_group_options, spawnable
 from galaius.agents.policy import Policy, policy_path
 from galaius.agents.catalog.profiles import overlay_for, profiles_from
@@ -727,13 +727,13 @@ def mesh_config(*, run_id: str, role: str | None, fence: FenceSpec | None = None
     its own gateway tools, never another role's.
 
     Carries NO credential — the child's own CLI authenticates itself. Inside a `fence` the server gets the fence's
-    renderer pin (`software_rendering`: Codex hands its servers no other variable) and its media relay (`GatewayServed.MEDIA_RELAY`:
+    variables (`inside_environment`: Codex hands its servers no other) and its media relay (`GatewayServed.MEDIA_RELAY`:
     its vision calls run outside, where the keys are), and with a scratch folder (a
     read-only run's) is told it (`GatewayServed.SCRATCH`, `Config.scratch`): it serves that run's tools alone and writes
     nowhere else.
     """
     command, args = _galaius_command()
-    scratch = {} if fence is None else {**software_rendering(), GatewayServed.MEDIA_RELAY: MEDIA_SOCKET,
+    scratch = {} if fence is None else {**inside_environment(), GatewayServed.MEDIA_RELAY: MEDIA_SOCKET,
                                         **({GatewayServed.SCRATCH: str(fence.scratch)} if fence.scratch is not None else {})}
     return json.dumps({
         "mcpServers": {

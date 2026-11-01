@@ -29,7 +29,7 @@ from galaius.data import PackageData
 from galaius.mcp.announcement import GatewayServed, McpAnnouncement
 from galaius.mcp.endpoint import SharedEndpoint
 from galaius.agents.providers import PROVIDERS
-from galaius.isolation.fence import Confinement, EgressProxy, FenceSpec, available, confinement_refusal, fenced, userns_refusal
+from galaius.isolation.fence import Confinement, EgressProxy, FenceBind, FenceSpec, available, confinement_refusal, fenced, userns_refusal
 
 AGENT_HOSTS = ("api.anthropic.com",)
 
@@ -512,7 +512,7 @@ def test_a_read_only_run_drives_apps_and_writes_only_in_its_scratch(home: Path, 
     mesh = mesh_config(run_id="r1", role="tester", fence=spec)
     # Its server is told its scratch folder, the fence's renderer pin and its media relay (Codex hands its servers no other variable).
     assert json.loads(mesh)["mcpServers"]["galaius"]["env"].items() >= {GatewayServed.SCRATCH: str(scratch), GatewayServed.MEDIA_RELAY: fence.MEDIA_SOCKET,
-                                                                       **fence.software_rendering()}.items()
+                                                                       **fence.inside_environment()}.items()
     argv = provider.command("t", cwd=str(home / "docs"), model=None, run_id="r1", permission_mode="read_only", fence_decides=True, mcp_config=mesh)
     # Its CLI's own read-only mode stands down, and only galaius's server for this run is reached (never the person's own entry).
     assert all(any(flag in argument for argument in argv) for flag in stands_down) and "plan" not in argv and "read-only" not in argv
@@ -562,3 +562,19 @@ def test_a_fence_holds_the_cli_its_run_starts_where_only_the_shell_finds_it(home
     monkeypatch.setattr(providers, "shell_entries", lambda: (str(nvm),))
     spec = FenceSpec.reading((PROVIDERS["codex"],), home / "docs", scratch=tmp_path / "scratch", state=tmp_path / "state")
     assert {nvm / "codex", nvm / "node"} <= set(spec.programs)
+
+
+@pytest.mark.parametrize("named", [False, True])
+def test_a_read_only_run_launches_the_browsers_this_pc_installed(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, named: bool) -> None:
+    """A read-only run's galaius server finds Playwright's browsers inside its fence, read-only and named where they are:
+    missing, Playwright asks for `playwright install`, which a fence (no egress, no write) refuses."""
+    browsers = (tmp_path / "browsers") if named else (home / ".cache/ms-playwright")
+    (browsers / "chromium-1").mkdir(parents=True)
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    if named:
+        monkeypatch.setenv(fence.BROWSERS, str(browsers))
+    else:
+        monkeypatch.delenv(fence.BROWSERS, raising=False)
+    spec = FenceSpec.reading((PROVIDERS["claude"],), home / "docs", scratch=tmp_path / "scratch", state=tmp_path / "state")
+    assert FenceBind(source=browsers, target=browsers, writable=False) in spec.build().binds
+    assert fence.inside_environment()[fence.BROWSERS] == str(browsers)
