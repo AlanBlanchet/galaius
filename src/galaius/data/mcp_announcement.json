@@ -5177,7 +5177,7 @@
     },
     {
      "name": "session",
-     "description": "Manage browser sessions — one tool for the whole lifecycle.\n\naction:\n  - \"list\"  — active sessions + how long each has been idle (ignores name/path).\n  - \"save\"  — export `name`'s cookies + localStorage to `path` (path required).\n  - \"load\"  — restore `name` from a previously saved `path` (path required).\n  - \"close\" — close `name` and free its browser/resources.\n\nname: the session to act on — omit it for YOUR OWN session (the one every reply names in\n    its `[session: …]` prefix); \"default\" is the shared one.\npath: the session-state file for save/load. A relative path lands under ~/.galaius/out\n    (galaius's output dir), never the server's cwd; \"~\" expands. The reply names the\n    absolute file.",
+     "description": "Manage browser sessions — one tool for the whole lifecycle.\n\naction:\n  - \"list\"  — active sessions + how long each has been idle (ignores name/path).\n  - \"save\"  — export `name`'s cookies + localStorage to `path` (path required).\n  - \"load\"  — restore `name` from a previously saved `path` (path required).\n  - \"close\" — close `name` and free its browser/resources.\n\nname: the session to act on — omit it for YOUR OWN session (the one every reply names in\n    its `[session: …]` prefix); \"default\" is the shared one.\n    A read-only run's server is its own: it lists and closes that run's sessions alone, and\n    they close when the run ends.\npath: the session-state file for save/load. A relative path lands under ~/.galaius/out\n    (galaius's output dir), never the server's cwd; \"~\" expands. The reply names the\n    absolute file.",
      "inputSchema": {
       "properties": {
        "action": {
@@ -5228,7 +5228,8 @@
       "type": "object"
      },
      "_meta": {
-      "category": "browser"
+      "category": "browser",
+      "fenced": true
      }
     },
     {

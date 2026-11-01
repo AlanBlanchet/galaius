@@ -239,7 +239,7 @@ async def get_page_state(
     )
 
 
-@mcp.tool(category="browser")
+@mcp.tool(category="browser", fenced=True)
 async def session(
     action: Literal["list", "save", "load", "close"],
     name: str = _AUTO_SESSION,
@@ -255,6 +255,8 @@ async def session(
 
     name: the session to act on — omit it for YOUR OWN session (the one every reply names in
         its `[session: …]` prefix); "default" is the shared one.
+        A read-only run's server is its own: it lists and closes that run's sessions alone, and
+        they close when the run ends.
     path: the session-state file for save/load. A relative path lands under ~/.galaius/out
         (galaius's output dir), never the server's cwd; "~" expands. The reply names the
         absolute file.
@@ -279,11 +281,11 @@ async def session(
         return _session_response(name, f"Session '{name}' closed.")
     if not path:
         return f"ERROR: action={action!r} requires `path` (the session-state file)"
+    dest = core._resolve_save_path(path)  # a path it may not use is refused before any browser starts
     mgr = core._sessions.get(name)
     if action == "save":
-        dest = core._save_to_path(path, json.dumps(await mgr.save_state()).encode())
+        core._save_to_path(str(dest), json.dumps(await mgr.save_state()).encode())
         return _session_response(name, f"Session '{name}' saved to {dest}.")
-    dest = core._resolve_save_path(path)
     await mgr.load_state(json.loads(dest.read_text()))
     return _session_response(name, f"Session '{name}' restored from {dest}.")
 
