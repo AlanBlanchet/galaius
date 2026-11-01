@@ -560,5 +560,5 @@ async def transcribe(path: str, query: str | None = None, model: str | None = No
     return (
         f"(answered from the TRANSCRIPT — {audio_model} is transcription-only and did not hear "
         f"the audio)\n{answer.text}\n\n--- transcript ---\n{transcript}"
-        f"\n(VLM: {answer.model} {answer.elapsed:.1f}s)"
+        f"\n{vlm._footer(answer)}"
     )

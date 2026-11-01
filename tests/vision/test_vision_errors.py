@@ -223,8 +223,8 @@ async def test_vlm_falls_back_on_error(srv, make_error):
         result = await srv.vlm._vlm(_PNG, "ctx")
 
     assert call_count == 2
-    assert result.text.startswith("[Fallback: used fallback/model")
-    assert "recovered" in result.text
+    assert result.text == "recovered"
+    assert any(w.startswith("used fallback/model after") for w in result.warnings)
 
 
 @pytest.mark.asyncio
@@ -349,3 +349,4 @@ async def test_a_structured_answer_after_a_fallback_stays_valid_json(srv):
         result = await v._api_media_with_fallback(
             [], "ctx", Config(), None, v.UNSET, Halves, role="image", requested_model="", resolved_model="")
     assert result.validated(Halves).text == '{"left":"red"}'
+    assert len(result.warnings) == 1 and result.warnings[0].startswith("used b/model after a/model failed:")

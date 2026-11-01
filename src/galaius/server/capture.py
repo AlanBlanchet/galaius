@@ -353,8 +353,7 @@ async def _run_ui_critique(
     if parsed and strict and valid_refs is not None:
         apply_strict(parsed, valid_refs)
     body = format_body(parsed, valid_refs) if parsed else r.text  # graceful: raw VLM text on parse miss
-    model_tag = f" {r.model}" if r.model else ""
-    out = f"{context}\n{body}\n(VLM:{model_tag} {r.elapsed:.1f}s)"
+    out = f"{context}\n{body}\n{vlm._footer(r)}"
     if saved:
         out += f"\n{core._saved_note(saved, img)}"
     Debug.dump_output(inv, out)

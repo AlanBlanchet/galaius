@@ -122,14 +122,19 @@ async def _vlm(
         )
 
 
-def _fmt_timing(r: VLMResult) -> str:
+def _footer(r: VLMResult) -> str:
+    """Which model answered, how long it took, and what went wrong on the way (a fallback)."""
     identity = r.model or (
         f"{r.provider} subscription session (provider default)"
         if r.backend == "session" and r.provider else ""
     )
     model_tag = f" {identity}" if identity else ""
     notes = "".join(f"\nwarning: {warning}" for warning in r.warnings)
-    return f"{r.text}\n(VLM:{model_tag} {r.elapsed:.1f}s){notes}"
+    return f"(VLM:{model_tag} {r.elapsed:.1f}s){notes}"
+
+
+def _fmt_timing(r: VLMResult) -> str:
+    return f"{r.text}\n{_footer(r)}"
 
 
 async def _run_observe(screenshot_bytes: bytes, query: str, context: str) -> str:

@@ -493,7 +493,7 @@ async def test_direct_interaction_sequence_uses_the_central_api_fallback_chain(
 
     assert calls == [primary.id, fallback.id]
     assert local_breaker.tripped(primary.id)
-    assert "sequence recovered" in result and "Fallback" in result
+    assert "sequence recovered" in result and f"warning: used {fallback.id} after {primary.id} failed" in result
 
 
 @pytest.mark.asyncio

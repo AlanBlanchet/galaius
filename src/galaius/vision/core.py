@@ -541,12 +541,11 @@ async def _api_media_with_fallback(
                 _dispatch_state,
             )
             result = result.validated(response_format)
-            if index and response_format is None:
-                # A structured answer stays the JSON its schema names: a fenced caller validates the
-                # relayed text again, and a prefix there failed verify_ui's whole verdict.
-                result.text = (
-                    f"[Fallback: used {candidate} after {previous_model} failed: "
-                    f"{previous_failure}]\n\n{result.text}"
+            if index:
+                # A warning, never glued to the text: a structured answer stays its schema's JSON (a
+                # fenced caller validates the relayed text again), and every answer's footer prints it.
+                result.warnings.append(
+                    f"used {candidate} after {previous_model} failed: {previous_failure}"
                 )
             return result
         except (asyncio.CancelledError, KeyboardInterrupt):
