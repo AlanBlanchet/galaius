@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import ClassVar
@@ -82,6 +83,8 @@ class AgentPrograms(BaseModel):
     #: How a code comes sealed to a sign-in's key (`PasteSignIn.seal_key`): what WebCrypto's RSA-OAEP with SHA-256 makes.
     SEAL: ClassVar[padding.OAEP] = padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
     ANSI: ClassVar[re.Pattern[str]] = re.compile(r"\x1b\[[0-9;]*m")
+    #: How many logins' CLIs `states` asks at once (each a status check, a version and maybe an account ask).
+    STATE_CHECKS: ClassVar[int] = 8
     #: The steps a job is under way in: asked again, it is not started twice (threat M6).
     RUNNING: ClassVar[frozenset[str]] = frozenset({"installing", "signing_in"})
 
@@ -105,8 +108,16 @@ class AgentPrograms(BaseModel):
         with self._lock:
             jobs = dict(self._jobs)
         logins = [(provider, None) for provider in self.installable()] + [(subscription.program, subscription) for subscription in Subscription.all()]
-        return tuple(job if (job := jobs.get(self._key(provider, subscription))) is not None and job.step in self.RUNNING else self._now(provider, job, subscription)
-                     for provider, subscription in logins)
+
+        def state(login: tuple[Program, Subscription | None]) -> AgentProviderState:
+            provider, subscription = login
+            job = jobs.get(self._key(provider, subscription))
+            return job if job is not None and job.step in self.RUNNING else self._now(provider, job, subscription)
+
+        # Each login's CLI asked at once, never one after another: 15 logins (13 subscription folders) took 7-15 s
+        # in a row, every first open of the conversation list waiting on it (2026-11-02).
+        with ThreadPoolExecutor(max_workers=max(1, min(len(logins), self.STATE_CHECKS)), thread_name_prefix="program-state") as pool:
+            return tuple(pool.map(state, logins))
 
     def install(self, name: AgentProvider, subscription_id: UUID | None = None) -> AgentProviderState:
         """Starts `name`'s job (inside `subscription_id`'s folder, made now when new) unless one runs or

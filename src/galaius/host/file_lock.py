@@ -148,6 +148,20 @@ class SoleHolder:
             self.held = FILE_LOCK.try_acquire(self.descriptor)
         return self.held
 
+    def elsewhere(self) -> bool:
+        """Whether another process holds the job now: taken and let go at once when nobody does (a waiting
+        process asking `holds` in that instant asks again on its next tick)."""
+        if self.held:
+            return False
+        descriptor = self.opener()
+        try:
+            if not FILE_LOCK.try_acquire(descriptor):
+                return True
+            FILE_LOCK.release(descriptor)
+            return False
+        finally:
+            os.close(descriptor)
+
     def __enter__(self) -> "SoleHolder":
         return self
 

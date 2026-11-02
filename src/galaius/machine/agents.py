@@ -552,7 +552,7 @@ class MachineAgents(BaseModel):
                 asked_by=tuple(UUID(asker) for asker in run.asked_by), community=run.community.ref() if run.community else None,
                 **{field: getattr(run, field) for field in ContextGauge.model_fields},
             ))
-        return MachineAgentAnswer(request_id=request.id, runs=tuple(found), web=self.runs.load(request))
+        return MachineAgentAnswer(request_id=request.id, runs=tuple(found), web=self.runs.load(request, forest))
 
     @staticmethod
     def compact_refusal(run: reg.AgentRun, kind: AgentRunKind) -> AgentRefused | None:
@@ -578,7 +578,7 @@ class MachineAgents(BaseModel):
         return "", ""
 
     def _require_run(self, run_id: UUID) -> reg.AgentRun:
-        run = next((item for item in self.runs.runs() if item.run_id == str(run_id)), None)
+        run = self.runs.run(str(run_id))
         if run is None:
             raise AgentRefused("not_here", "this run was not started from the web on this computer")
         return run
@@ -607,11 +607,12 @@ class MachineAgents(BaseModel):
 
     def _tail(self, request: AgentTailRequest) -> MachineAgentAnswer:
         run = self._require_run(request.run_id)
-        if run.status in {"running", "waiting"} or not reg.mirror_is_current(str(run.run_id)):
-            # The readable copy of a working run's stream is rebuilt on demand; nothing else on a
-            # PC with no editor open would rebuild it while the owner watches. An ended run's too once
-            # its messages moved: a resume refused before its turn started is read at once, never only
-            # when the next turn runs.
+        if not reg.mirror_is_current(run.run_id) and not (run.status == "running" and reg.sole_holder("run-mirror").elsewhere()):
+            # The readable copy of a run's stream is rebuilt here once it is behind, unless the process mirroring every
+            # running run keeps it (`run._mirror_running_runs`, within a second): read whole on each look, a 14 MB stream
+            # cost 1.1-1.6 s of this PC's CPU per second its conversation stayed open (2026-11-02). With no such process (no
+            # editor open) nothing else rebuilds it while the owner watches. An ended run's too once its messages moved: a
+            # resume refused before its turn started is read at once, never only when the next turn runs.
             reg.read_events(run.run_id)
         path = reg.events_path(str(request.run_id))
         try:

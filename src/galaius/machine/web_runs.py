@@ -97,28 +97,34 @@ class WebRuns(BaseModel):
         """Each of these runs with every run it launched (`reg.forest`), as the launcher's registry has them now."""
         return reg.forest(frozenset(str(item.run_id) for item in self.read()))
 
+    def run(self, run_id: str) -> reg.AgentRun | None:
+        """One of these runs or a run it launched, as `runs` lists it (`reg.tree_run`); None: neither."""
+        return reg.tree_run(run_id, frozenset(str(item.run_id) for item in self.read()))
+
     def runs(self) -> list[reg.AgentRun]:
         """These runs and every run they launched, newest first."""
         return reg.newest_first(self.forest())
 
-    def live(self) -> int:
-        """The conversations started from the web that work now (one of their runs starting or running): one counts
-        ONCE, whatever agents it launched (owner 2026-10-10: two conversations and their five sub-agents refused his
-        third); one waiting for its owner, with nothing of it working, does not count; nor a run of a tool of the web's own
-        UI (`UI_ROLES`: a question to the blob), which is none of his conversations."""
-        return sum(1 for root, runs in reg.forest(frozenset(str(item.run_id) for item in self.read())).items()
+    @staticmethod
+    def live(forest: Mapping[str, Sequence[reg.AgentRun]]) -> int:
+        """The conversations started from the web that work now in `forest` (`forest()`; one of their runs starting or
+        running): one counts ONCE, whatever agents it launched (owner 2026-10-10: two conversations and their five
+        sub-agents refused his third); one waiting for its owner, with nothing of it working, does not count; nor a run of a
+        tool of the web's own UI (`UI_ROLES`: a question to the blob), which is none of his conversations."""
+        return sum(1 for root, runs in forest.items()
                    if any(run.status in WORKING for run in runs) and listed_role(next((run.agent for run in runs if run.run_id == root), None)))
 
-    def load(self, request: WebLimited) -> WebLoad:
-        """The conversations started from the web working here against how many may at once, as `request` carries it
-        from the web (`WebLimited.web_conversations`, each with whatever agents it launched; the web reads it)."""
-        return WebLoad(working=self.live(), limit=request.web_conversations)
+    def load(self, request: WebLimited, forest: Mapping[str, Sequence[reg.AgentRun]]) -> WebLoad:
+        """The conversations started from the web working here, counted in `forest` (`forest()`), against how many may at
+        once, as `request` carries it from the web (`WebLimited.web_conversations`, each with whatever agents it launched;
+        the web reads it)."""
+        return WebLoad(working=self.live(forest), limit=request.web_conversations)
 
     def refuse_full(self, request: WebLimited) -> None:
         """Refuses one more start while as many conversations started from the web as `request` allows work here; never a
         run of a tool of the web's own UI (a question to the blob: no conversation of his, `UI_ROLES`). Nothing here caps how
         many of those start at once but the web's start rate limit: the blob role has no tools and runs read_only."""
-        if listed_role(request.role if isinstance(request, AgentStartRequest) else None) and (load := self.load(request)).full:
+        if listed_role(request.role if isinstance(request, AgentStartRequest) else None) and (load := self.load(request, self.forest())).full:
             raise AgentRefused(WebFull(web=load), f"{load.working} conversations started from the web are already working on this computer (at most {load.limit}); stop one first")
 
     def working(self) -> bool:

@@ -306,6 +306,26 @@ def test_tail_of_an_ended_run_whose_last_line_says_nothing_reads_it_once(base: P
     assert len(reads) == 1, reads
 
 
+@pytest.mark.parametrize("mirrored_elsewhere", [True, False], ids=["mirror-process-holds-it", "no-mirror-process"])
+def test_tail_of_a_running_run_leaves_its_mirror_to_the_process_that_keeps_it(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mirrored_elsewhere: bool) -> None:
+    """Each look at a running run re-parsed its whole stream (1.1-1.6 s a second for a 14 MB stream, 2026-11-02) though
+    the process holding « run-mirror » keeps it current within a second; with no such process the tail still rebuilds it."""
+    agents = _agents(base, tmp_path)
+    run_id = str(uuid4())
+    reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="r", cwd=str(base / "project"), started_at=1.0))
+    reg.begin_turn(run_id, pid=os.getpid())
+    agents.runs.add(WebRun(run_id=run_id, root="project"))
+    reg.raw_events_path(run_id).write_text('{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"one"}]},"session_id":"s"}\n')
+    reads = []
+    real = reg.read_events
+    monkeypatch.setattr(reg, "read_events", lambda run: reads.append(run) or real(run))
+    with reg.sole_holder("run-mirror") as holder:  # its own open of the lock file: the lock tells it apart like another process's
+        if mirrored_elsewhere:
+            assert holder.holds()
+        _answer(agents, _request("tail", run_id=run_id, cursor=0))
+    assert reads == ([] if mirrored_elsewhere else [run_id])
+
+
 def test_a_run_stays_on_its_subscription_and_a_lent_pc_lends_no_login(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A start runs on the subscription it names, refused at its cap; a message never moves a run to
     another login; a member's run on a lent PC runs only inside the fence, with every CLI login closed
@@ -1215,7 +1235,7 @@ def test_the_web_cap_counts_conversations_never_the_agents_they_launched(base: P
     run(parent_run_id=str(uuid4()), root_run_id=second)  # its parent's record gone: still the second conversation's
     start = _request("start", root="project", role="main", text="go")
     agents._prepare_start(start, None)
-    assert agents.runs.live() == 2
+    assert agents.runs.live(agents.runs.forest()) == 2
     run(parent_run_id=started(kind="conversation", status="waiting"))  # idle itself, one of its agents working: it counts
     started()
     with pytest.raises(AgentRefused, match=r"^4 conversations started from the web are already working on this computer \(at most 4\)") as refused:
@@ -1228,7 +1248,7 @@ def test_the_web_cap_counts_conversations_never_the_agents_they_launched(base: P
     assert listed.web == WebLoad(working=4, limit=4)  # what the web's Auto reads to pass over a full PC
     # A question to the blob (a tool of the web's own UI) is none of his conversations: it takes no place, nor is it refused.
     started(agent="blob")
-    assert agents.runs.live() == 4
+    assert agents.runs.live(agents.runs.forest()) == 4
     agents._prepare_start(_request("start", root="project", role="blob", text="où sont mes crédits ?"), None)
     # Its owner set another number on the web (owner 2026-10-11 « where do i set this number ? »): it rides on each start
     # and runs read; one out of the settable range keeps the default rather than refusing the request it rides on.

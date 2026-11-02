@@ -2400,3 +2400,58 @@ def test_a_run_a_network_failure_cut_comes_back_by_itself_until_its_backoff_runs
     assert reg.schedule_resumes(now=ended_at + 1) == [], "a failure longer than the whole backoff is left to a person"
     assert reg.get_run("net1").resume_at is None and reg.claim_resume("net1", now=ended_at + 10**4) is None
     assert reg.get_run("net1").resumed_cuts == len(reg.NETWORK_RESUME_BACKOFF)
+
+
+def test_one_run_is_read_along_its_own_launch_links_as_the_forest_lists_it():
+    """A web read of one run rebuilt the whole forest each second its conversation stayed open (~0.3 s for
+    1,500 runs, 2026-11-02); `tree_run` walks its launch links instead and must agree with `forest`."""
+    def put(run_id: str, **links: str) -> None:
+        reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="r", cwd=str(Path.cwd()), started_at=1.0, exit_code=0, status="done", **links))
+
+    put("root")
+    put("child", parent_run_id="root")
+    put("provider-child", parent_run_id="gone", root_run_id="child")  # its parent never recorded
+    put("grandchild", parent_run_id="provider-child")
+    put("stranger")
+    put("loop-a", parent_run_id="loop-b")
+    put("loop-b", parent_run_id="loop-a")
+    roots = frozenset({"root"})
+    listed = {run.run_id: run.status for run in reg.forest(roots)["root"]}
+    walked = {run_id: run.status for run_id in ("root", "child", "provider-child", "grandchild", "stranger", "loop-a", "unknown")
+              if (run := reg.tree_run(run_id, roots)) is not None}
+    assert walked == listed and set(listed) == {"root", "child", "provider-child", "grandchild"}
+
+
+def test_a_settled_derive_is_redone_once_its_stream_or_record_moves(monkeypatch):
+    """`forest` keeps an ended run's derived status while neither its record nor its stream moved: 964 of 1,548
+    runs were re-derived on every listing (2026-11-02). A moved stream or record is derived again."""
+    reg.save_run(reg.AgentRun(run_id="ended", provider="claude", name="r", cwd=str(Path.cwd()), started_at=1.0, status="interrupted", pid=999_999, pid_started=1.0))
+    monkeypatch.setattr(reg, "_status_for", lambda run: "interrupted")
+    derives = []
+    real = reg._derive
+    monkeypatch.setattr(reg, "_derive", lambda run: derives.append(run.run_id) or real(run))
+    for _ in range(2):  # a derive may write its healed record back: the next listing derives that record once
+        reg.forest(frozenset({"ended"}))
+    derives.clear()
+    for _ in range(2):
+        reg.forest(frozenset({"ended"}))
+    assert derives == []
+    raw = reg.raw_events_path("ended")
+    raw.write_text('{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"one"}]},"session_id":"s"}\n')
+    reg.forest(frozenset({"ended"}))
+    assert derives == ["ended"]
+    reg.save_run(reg.get_run("ended").model_copy(update={"name": "renamed"}))
+    reg.forest(frozenset({"ended"}))
+    assert derives == ["ended"] * 2
+
+
+@pytest.mark.parametrize(("raw_after_mirror_ns", "current"), [(-1, True), (0, False), (1, False)], ids=["older", "same-tick", "newer"])
+def test_a_mirror_is_current_only_when_written_after_its_stream(raw_after_mirror_ns, current):
+    """A line appended in the clock tick the mirror was written in leaves both at one time: the tail of a waiting run
+    would skip it for good (code-reviewer r1). Only a mirror strictly newer than its stream is current."""
+    register_run(run_id="m")
+    reg.raw_events_path("m").write_text('{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"one"}]},"session_id":"s"}\n')
+    reg.read_events("m")
+    at = reg.events_path("m").stat().st_mtime_ns + raw_after_mirror_ns
+    os.utime(reg.raw_events_path("m"), ns=(at, at))
+    assert reg.mirror_is_current("m") is current

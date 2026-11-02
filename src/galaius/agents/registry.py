@@ -2250,9 +2250,10 @@ def stream_signature(run_id: str) -> tuple:
 
 def mirror_is_current(run_id: str) -> bool:
     """Whether the run's normalised mirror was written after the last change of what it is built from
-    (`stream_signature`): a process taking over the mirroring leaves such a run alone until it moves."""
+    (`stream_signature`): a process taking over the mirroring leaves such a run alone until it moves. Strictly after: a
+    line appended in the clock tick the mirror was written in leaves both at one time, and is read once more."""
     mirror = FileStamp.at(events_path(run_id))
-    return mirror is not None and all(source is None or mirror.mtime_ns >= source.mtime_ns for source in stream_signature(run_id))
+    return mirror is not None and all(source is None or mirror.mtime_ns > source.mtime_ns for source in stream_signature(run_id))
 
 
 @functools.cache
@@ -3181,6 +3182,11 @@ def deepest_first(runs: Sequence[AgentRun]) -> list[AgentRun]:
     return sorted(runs, key=lambda run: -len(ancestors(run.run_id)))
 
 
+def _links(run: AgentRun) -> tuple[str, ...]:
+    """The runs `run` hangs under in a tree: its parent, then a provider child's recorded root."""
+    return tuple(filter(None, (run.parent_run_id, run.root_run_id)))
+
+
 def _tree_of(records: Sequence[AgentRun], root_run_ids: frozenset[str]) -> dict[str, str]:
     """Each run of `records` under one of `root_run_ids` (parent links, or a provider child's recorded root),
     mapped to that root."""
@@ -3188,7 +3194,7 @@ def _tree_of(records: Sequence[AgentRun], root_run_ids: frozenset[str]) -> dict[
     while grew:
         grew = False
         for run in records:
-            if run.run_id not in tree_of and (top := tree_of.get(run.parent_run_id or "") or tree_of.get(run.root_run_id or "")) is not None:
+            if run.run_id not in tree_of and (top := next(filter(None, map(tree_of.get, _links(run))), None)) is not None:
                 tree_of[run.run_id] = top
                 grew = True
     return tree_of
@@ -3210,16 +3216,57 @@ def forest(root_run_ids: frozenset[str]) -> dict[str, list[AgentRun]]:
         return {}
     records = _stored_records()
     tree_of = _tree_of(records, root_run_ids)
-    def current(run: AgentRun) -> AgentRun:
-        status = _status_for(run)
-        # A process gone with no ending recorded is healed from its own stream (it may have
-        # finished while nothing watched it) — the only case that pays for reading the stream.
-        # `_derive` compare-and-swaps against the STORED record, so it gets that record as read.
-        return _derive(run) if status == "interrupted" else run.model_copy(update={"status": status})
     grouped: dict[str, list[AgentRun]] = {run_id: [] for run_id in root_run_ids}
-    for run in sorted((current(run) for run in records if run.run_id in tree_of), key=lambda run: run.started_at, reverse=True):
+    for run in sorted((_current(run) for run in records if run.run_id in tree_of), key=lambda run: run.started_at, reverse=True):
         grouped[tree_of[run.run_id]].append(run)
     return grouped
+
+
+#: run id -> (its record as `_stored_records` cached it, its `_stream_source`, what `_derive` made of them) for an ended
+#: run whose process left no exit code (most of a PC's: 964 of 1,548 on 2026-11-02): re-derived alike by every `forest`.
+_SETTLED: dict[str, tuple[AgentRun, str, AgentRun]] = {}
+
+
+def _current(run: AgentRun) -> AgentRun:
+    """`run` with its status re-checked as `forest` lists it."""
+    status = _status_for(run)
+    if status != "interrupted":
+        return run.model_copy(update={"status": status})
+    # A process gone with no ending recorded is healed from its own stream (it may have
+    # finished while nothing watched it) — the only case that pays for reading the stream.
+    # `_derive` compare-and-swaps against the STORED record, so it gets that record as read.
+    # One that ended on record derives the same run while neither its record (the cached object) nor its stream moved.
+    settled, source = run.status in TERMINAL_STATUSES, _stream_source(run.run_id)
+    if settled and (kept := _SETTLED.get(run.run_id)) is not None and kept[0] is run and kept[1] == source:
+        return kept[2]
+    derived = _derive(run)
+    if settled and derived.status in TERMINAL_STATUSES:
+        _SETTLED[run.run_id] = (run, source, derived)
+    return derived
+
+
+def tree_run(run_id: str, root_run_ids: frozenset[str]) -> AgentRun | None:
+    """`run_id` as `forest(root_run_ids)` lists it, None when it is in none of those trees — read along its own launch
+    links (a few records), never every record: a web read of one run (each second while its conversation is open)
+    rebuilt the whole forest, ~0.3 s for 1,500 runs (2026-11-02)."""
+    run = _stat_cached_record(_record_path(run_id))
+    if run is None:
+        return None
+    seen, up = set(), [run_id]
+    while up:
+        link = up.pop()
+        if link in root_run_ids:
+            return _current(run)
+        if link in seen:
+            continue
+        seen.add(link)
+        try:
+            above = run if link == run_id else _stat_cached_record(_record_path(link))
+        except ValueError:  # not a run id: no record
+            continue
+        if above is not None:
+            up.extend(_links(above))
+    return None
 
 
 def ancestors(run_id: str) -> list[str]:
