@@ -1162,29 +1162,34 @@ def test_web_runs_are_working_while_a_run_they_launched_still_runs(base: Path, t
     assert runs.working() is working
 
 
-@pytest.mark.parametrize(("launched", "questions", "now"), [(5, 0, "working"), (1500, 0, "working"), (0, 250, "working"), (0, 250, "waiting"), (0, 250, "idle")])
+@pytest.mark.parametrize(("launched", "questions", "now"), [(5, 0, "working"), (1500, 0, "working"), (0, 150, "working"), (0, 250, "waiting"), (0, 250, "idle"), (250, 0, "busy")])
 def test_a_conversation_he_uses_stays_listed(base: Path, tmp_path: Path, launched: int, questions: int, now: str) -> None:
     """2026-11-02: his month-old conversation had launched 1,500 agents since, so the newest 200 runs of the list held
     none of his conversations — the web never learned its program and refused his subscription switch (422). His oldest
     conversation stays listed whatever it launched since and however many newer conversations (questions to the blob)
-    came after it: while one of its agents works, while it waits for his answer, or since it last did something; the list
-    stays newest first and full."""
+    came after it: while one of its agents works, while it waits for his answer, or since it last did something — and so
+    does his other conversation, idle while the first one's agents work; the list stays newest first and full."""
     agents = _agents(base, tmp_path)
-    conversation, last = str(uuid4()), str(uuid4())
+    conversation, last, other = str(uuid4()), str(uuid4()), str(uuid4())
+    reg.save_run(reg.AgentRun(run_id=other, provider="claude", name="main", cwd=str(base / "project"), started_at=5.0, finished_at=1e8, exit_code=0))
+    agents.runs.add(WebRun(run_id=UUID(other), root="project"))
     state = {"status": "waiting"} if now == "waiting" else {"finished_at": 2.0, "exit_code": 0}
     reg.save_run(reg.AgentRun(run_id=conversation, kind="conversation", provider="claude", name="main", cwd=str(base / "project"), started_at=1.0, **state))
     agents.runs.add(WebRun(run_id=UUID(conversation), root="project"))
     ended = {"pid": os.getpid()} if now == "working" else {"finished_at": 1e9 if now == "idle" else 4.0, "exit_code": 0}
     reg.save_run(reg.AgentRun(run_id=last, provider="claude", name="last", cwd=str(base / "project"), parent_run_id=conversation, started_at=3.0, **ended))
-    for index in range(launched):
-        reg.save_run(reg.AgentRun(run_id=str(uuid4()), provider="claude", name="c", cwd=str(base / "project"), parent_run_id=conversation, started_at=10.0 + index, finished_at=11.0 + index, exit_code=0))
+    for index in range(launched):  # "busy": every one of them still at work
+        done = {"pid": os.getpid()} if now == "busy" else {"finished_at": 11.0 + index, "exit_code": 0}
+        reg.save_run(reg.AgentRun(run_id=str(uuid4()), provider="claude", name="c", cwd=str(base / "project"), parent_run_id=conversation, started_at=10.0 + index, **done))
     for index in range(questions):
         question = str(uuid4())
         reg.save_run(reg.AgentRun(run_id=question, provider="claude", name="q", cwd=str(base / "project"), started_at=10.0 + index, finished_at=11.0 + index, exit_code=0))
         agents.runs.add(WebRun(run_id=UUID(question), root="project"))
     listed = _answer(agents, _request("runs")).runs
     ids = {str(run.run_id) for run in listed}
-    assert conversation in ids and (last in ids or now != "working") and len(listed) == min(launched + questions + 2, LISTED_RUNS)
+    assert conversation in ids and other in ids
+    assert last in ids or now != "working"
+    assert len(listed) == min(launched + questions + 3, LISTED_RUNS)
     assert [run.started_at for run in listed] == sorted((run.started_at for run in listed), reverse=True)
     assert next(run for run in listed if str(run.run_id) == conversation).provider == "claude"
 

@@ -25,18 +25,22 @@ WORKING = frozenset({"starting", "running"})
 HELD = WORKING | {"waiting"}
 
 
+def last_active(tree: Sequence[reg.AgentRun]) -> float:
+    """When a conversation's tree last did something: now (`inf`) while one of its runs works or waits for him."""
+    return max((math.inf if run.status in HELD else run.finished_at or run.started_at for run in tree), default=0.0)
+
+
 def listed(forest: Mapping[str, Sequence[reg.AgentRun]], most: int) -> list[reg.AgentRun]:
-    """The runs of `forest` (`reg.forest`) a list answer carries, at most `most`, newest first. Every run at work or
-    waiting for him first, then the conversations (`forest`'s roots), the last active first, then the newest of the others:
-    a conversation he still uses stays listed whatever it launched or how many questions to the blob came after it
-    (2026-11-02: one month old, 1,500 agents since, the web lost its program and refused his subscription switch)."""
+    """The runs of `forest` (`reg.forest`) a list answer carries, at most `most`, newest first. First the conversations
+    (`forest`'s roots), the last active first (one at work or waiting for him before any), then every other run at work
+    or waiting, then the newest of the rest: a conversation he uses stays listed whatever it or another launched and
+    however many agents work at once, since the web may learn a conversation's program from this list alone (2026-11-02: one
+    month old, 1,500 agents since, the web lost its program and refused his subscription switch)."""
     runs = reg.newest_first(forest)
     present = {run.run_id for run in runs}
-    def active(tree: Sequence[reg.AgentRun]) -> float:
-        return max((math.inf if run.status in HELD else run.finished_at or run.started_at for run in tree), default=0.0)
-    ranked = (*(run.run_id for run in runs if run.status in HELD),
-              *(root for root in sorted(forest, key=lambda root: active(forest[root]), reverse=True) if root in present),
-              *(run.run_id for run in runs))
+    active = {root: last_active(tree) for root, tree in forest.items()}
+    ranked = (*(root for root in sorted(forest, key=active.__getitem__, reverse=True) if root in present),
+              *(run.run_id for run in runs if run.status in HELD), *(run.run_id for run in runs))
     kept = set(list(dict.fromkeys(ranked))[:most])
     return [run for run in runs if run.run_id in kept]
 
