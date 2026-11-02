@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import ClassVar, TypeVar
 from uuid import UUID, uuid4
 
+from annotated_types import MaxLen
 from pydantic import BaseModel, ConfigDict, Field
 
 from galaius_core import (
@@ -56,7 +57,7 @@ from galaius.agents.limits.warm import WarmStart
 from galaius.config.user import UserConfig
 from galaius.isolation.fence import FenceSpec, available
 from galaius.machine.editors import EDITOR_SESSIONS_MAX, EditorConversations
-from galaius.machine.web_runs import WebRun, WebRuns
+from galaius.machine.web_runs import WebRun, WebRuns, listed
 from galaius.machine.programs import AgentPrograms
 from galaius.machine.tools import MachineTools
 from galaius.machine.places.places import LOG as PLACES_LOG
@@ -82,6 +83,8 @@ START_SECONDS = 120.0
 COLD_TAIL = 48 * 1024
 #: Lines one `tail` answer carries at most (`MachineAgentAnswer.lines`); the cursor stops after the last.
 TAIL_LINES = 4000
+#: How many runs one list answer carries (the contract's cap).
+LISTED_RUNS = next(item.max_length for item in MachineAgentAnswer.model_fields["runs"].metadata if isinstance(item, MaxLen))
 #: A message id as the web gives it (`AgentSendRequest.id`, a UUID in its usual spelling).
 _WEB_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 #: Why a member's run on a lent PC found nothing to run on (`SubscriptionUse.lent`); the server words it for him.
@@ -527,15 +530,12 @@ class MachineAgents(BaseModel):
                 self.audit(PLACES_LOG, {"op": "project_files", "read": request.op, "root": request.root, "base": request.base,
                                         **request.model_dump(include={"path", "query", "offset"}), "refused": refused, "initiator_account": str(request.initiator_account)})
 
-    def _allowed(self) -> tuple[dict[str, WebRun], list[reg.AgentRun]]:
-        return {str(item.run_id): item for item in self.runs.read()}, self.runs.runs()
-
     def _runs(self, request: AgentRunsRequest) -> MachineAgentAnswer:
-        started, runs = self._allowed()
+        started, forest = {str(item.run_id): item for item in self.runs.read()}, self.runs.forest()
         # A run launched inside a fenced run is inside the same fence.
-        fenced = {run.run_id for run in runs if run.fence is not None}
+        fenced = {run.run_id for runs in forest.values() for run in runs if run.fence is not None}
         found, secrets = [], self.secrets
-        for run in runs[:200]:
+        for run in listed(forest, LISTED_RUNS):
             placed = started.get(run.run_id)
             root, path = (placed.root, placed.path) if placed else self.place(run.cwd)
             kind = placed.kind if placed else "agent"
@@ -578,8 +578,7 @@ class MachineAgents(BaseModel):
         return "", ""
 
     def _require_run(self, run_id: UUID) -> reg.AgentRun:
-        _, runs = self._allowed()
-        run = next((item for item in runs if item.run_id == str(run_id)), None)
+        run = next((item for item in self.runs.runs() if item.run_id == str(run_id)), None)
         if run is None:
             raise AgentRefused("not_here", "this run was not started from the web on this computer")
         return run
@@ -1133,7 +1132,7 @@ class MachineAgents(BaseModel):
         (`SessionStops`), never by typing into it. None when the id is not such a session. Refused when this session
         cannot be stopped: `hook_missing` the hook is not installed, `opened_before` the session started before it
         was (Claude Code reads its hooks when a session starts: reopened, it can be)."""
-        if any(item.run_id == str(request.run_id) for item in self._allowed()[1]):
+        if any(item.run_id == str(request.run_id) for item in self.runs.runs()):
             return None
         session = next((run for run in reg.list_runs(include_foreign=True) if run.foreign and run.run_id == str(request.run_id)), None)
         if session is None:

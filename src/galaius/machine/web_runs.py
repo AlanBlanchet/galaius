@@ -3,7 +3,9 @@ message or stop."""
 
 import json
 import logging
+import math
 import os
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import ClassVar
 from uuid import UUID
@@ -19,6 +21,24 @@ logger = logging.getLogger(__name__)
 
 #: A run's statuses while it works (`waiting` for its owner is not working).
 WORKING = frozenset({"starting", "running"})
+#: A run he follows now: at work, or waiting for his answer.
+HELD = WORKING | {"waiting"}
+
+
+def listed(forest: Mapping[str, Sequence[reg.AgentRun]], most: int) -> list[reg.AgentRun]:
+    """The runs of `forest` (`reg.forest`) a list answer carries, at most `most`, newest first. Every run at work or
+    waiting for him first, then the conversations (`forest`'s roots), the last active first, then the newest of the others:
+    a conversation he still uses stays listed whatever it launched or how many questions to the blob came after it
+    (2026-11-02: one month old, 1,500 agents since, the web lost its program and refused his subscription switch)."""
+    runs = reg.newest_first(forest)
+    present = {run.run_id for run in runs}
+    def active(tree: Sequence[reg.AgentRun]) -> float:
+        return max((math.inf if run.status in HELD else run.finished_at or run.started_at for run in tree), default=0.0)
+    ranked = (*(run.run_id for run in runs if run.status in HELD),
+              *(root for root in sorted(forest, key=lambda root: active(forest[root]), reverse=True) if root in present),
+              *(run.run_id for run in runs))
+    kept = set(list(dict.fromkeys(ranked))[:most])
+    return [run for run in runs if run.run_id in kept]
 
 
 class WebRun(BaseModel):
@@ -69,9 +89,13 @@ class WebRuns(BaseModel):
                 json.dump([item.model_dump(mode="json") for item in kept], stream)
             replace_held_open(temporary, self.path)
 
+    def forest(self) -> dict[str, list[reg.AgentRun]]:
+        """Each of these runs with every run it launched (`reg.forest`), as the launcher's registry has them now."""
+        return reg.forest(frozenset(str(item.run_id) for item in self.read()))
+
     def runs(self) -> list[reg.AgentRun]:
-        """These runs and every run they launched, as the launcher's registry has them now."""
-        return reg.trees(frozenset(str(item.run_id) for item in self.read()))
+        """These runs and every run they launched, newest first."""
+        return reg.newest_first(self.forest())
 
     def live(self) -> int:
         """The conversations started from the web that work now (one of their runs starting or running): one counts

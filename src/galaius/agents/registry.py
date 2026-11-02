@@ -3237,9 +3237,14 @@ def conversation_of(run_id: str) -> str:
     return ancestors(run_id)[-1]
 
 
+def newest_first(trees: Mapping[str, Sequence[AgentRun]]) -> list[AgentRun]:
+    """Every run of `trees` (`forest`: each root with what it launched), newest first."""
+    return sorted((run for runs in trees.values() for run in runs), key=lambda run: run.started_at, reverse=True)
+
+
 def trees(root_run_ids: frozenset[str]) -> list[AgentRun]:
     """The runs `root_run_ids` name and every run they launched (`forest`), newest first."""
-    return sorted((run for runs in forest(root_run_ids).values() for run in runs), key=lambda run: run.started_at, reverse=True)
+    return newest_first(forest(root_run_ids))
 
 
 def session_ids() -> frozenset[str]:

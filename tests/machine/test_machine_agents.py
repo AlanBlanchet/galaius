@@ -27,7 +27,7 @@ from galaius.agents import registry as reg
 from galaius.agents.host import ConversationRefused
 from galaius.agents.run import ModelUnavailable
 from galaius.agents.limits.subscriptions import RunSubscription, Subscription, SubscriptionRefused
-from galaius.machine.agents import LogRing, MachineAgents, MachineSessions, interaction_digest
+from galaius.machine.agents import LISTED_RUNS, LogRing, MachineAgents, MachineSessions, interaction_digest
 from galaius.machine.editors import EditorConversations
 from galaius.machine.web_runs import WebRun, WebRuns
 from galaius.diagnostics.redaction import redact
@@ -1160,6 +1160,33 @@ def test_web_runs_are_working_while_a_run_they_launched_still_runs(base: Path, t
     assert not runs.working()
     runs.add(WebRun(run_id=root, root="project"))
     assert runs.working() is working
+
+
+@pytest.mark.parametrize(("launched", "questions", "now"), [(5, 0, "working"), (1500, 0, "working"), (0, 250, "working"), (0, 250, "waiting"), (0, 250, "idle")])
+def test_a_conversation_he_uses_stays_listed(base: Path, tmp_path: Path, launched: int, questions: int, now: str) -> None:
+    """2026-11-02: his month-old conversation had launched 1,500 agents since, so the newest 200 runs of the list held
+    none of his conversations — the web never learned its program and refused his subscription switch (422). His oldest
+    conversation stays listed whatever it launched since and however many newer conversations (questions to the blob)
+    came after it: while one of its agents works, while it waits for his answer, or since it last did something; the list
+    stays newest first and full."""
+    agents = _agents(base, tmp_path)
+    conversation, last = str(uuid4()), str(uuid4())
+    state = {"status": "waiting"} if now == "waiting" else {"finished_at": 2.0, "exit_code": 0}
+    reg.save_run(reg.AgentRun(run_id=conversation, kind="conversation", provider="claude", name="main", cwd=str(base / "project"), started_at=1.0, **state))
+    agents.runs.add(WebRun(run_id=UUID(conversation), root="project"))
+    ended = {"pid": os.getpid()} if now == "working" else {"finished_at": 1e9 if now == "idle" else 4.0, "exit_code": 0}
+    reg.save_run(reg.AgentRun(run_id=last, provider="claude", name="last", cwd=str(base / "project"), parent_run_id=conversation, started_at=3.0, **ended))
+    for index in range(launched):
+        reg.save_run(reg.AgentRun(run_id=str(uuid4()), provider="claude", name="c", cwd=str(base / "project"), parent_run_id=conversation, started_at=10.0 + index, finished_at=11.0 + index, exit_code=0))
+    for index in range(questions):
+        question = str(uuid4())
+        reg.save_run(reg.AgentRun(run_id=question, provider="claude", name="q", cwd=str(base / "project"), started_at=10.0 + index, finished_at=11.0 + index, exit_code=0))
+        agents.runs.add(WebRun(run_id=UUID(question), root="project"))
+    listed = _answer(agents, _request("runs")).runs
+    ids = {str(run.run_id) for run in listed}
+    assert conversation in ids and (last in ids or now != "working") and len(listed) == min(launched + questions + 2, LISTED_RUNS)
+    assert [run.started_at for run in listed] == sorted((run.started_at for run in listed), reverse=True)
+    assert next(run for run in listed if str(run.run_id) == conversation).provider == "claude"
 
 
 def test_the_web_cap_counts_conversations_never_the_agents_they_launched(base: Path, tmp_path: Path) -> None:
