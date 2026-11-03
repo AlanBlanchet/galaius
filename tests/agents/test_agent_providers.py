@@ -606,13 +606,13 @@ def test_a_claude_run_knows_its_window_before_its_first_turn_ends():
     compacted = (TESTS / "fixtures" / "agents" / "claude_compact_stream.jsonl").read_text().splitlines()
     result = json.loads(compacted[3].replace('"contextWindow":200000', '"contextWindow":1000000'))
     assert [provider.parse(json.dumps(line), ledger).context_window for line in (sized, json.loads(stream[1]), result)] == [200_000, None, 200_000]
-    # Turns that ask nothing (a resume with its message as an argument) compact below the model's window or the one
-    # galaius launched them with (its line ahead of theirs), whichever is less; one turn's answer or line never
-    # outlives it, so a replay reads a run whose window was raised between turns as it ran. No line: the model's.
-    turns = [provider.turn_preface(["-p", "--settings", json.dumps({"autoCompactWindow": window}), "--", "go on"]).decode() for window in (200_000, 1_000_000)]
+    # A run recorded while galaius set a compaction window (its line ahead of each turn's, until 2026-11-03) replays it:
+    # a turn that asks nothing reads the model's window or that line's, whichever is less; one turn's answer or line
+    # never outlives it. No line: the model's.
+    turns = [json.dumps({"type": provider.TURN_LINE, "compact_window": window}) for window in (200_000, 1_000_000)]
     replay, ledger = (stream[1], turns[0], json.dumps(result), turns[1], json.dumps(result), json.dumps(result)), UsageLedger()
     assert [e.context_window for line in replay if (e := provider.parse(line, ledger)) is not None and e.kind == "done"] == [200_000, 1_000_000, 1_000_000]
-    assert provider.turn_preface(["-p", "--", "go on"]) == b"" and not provider.took_message(turns[0])
+    assert not provider.took_message(turns[0])
     other = json.loads(lines[1])
     for answer in ({"request_id": provider.USAGE_REQUEST}, {"subtype": "error", "error": "unsupported"}):
         assert provider.parse(json.dumps(other | {"response": other["response"] | answer})).context_window is None

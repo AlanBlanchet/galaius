@@ -674,11 +674,11 @@ def test_every_agent_turn_runs_under_galaius_settings_and_gets_its_task_back_aft
     task = "- fix the footer"
     reg.register(run_id="r3", pid=os.getpid(), provider="claude", name="worker", task=task, agent="tester")
     provider = ClaudeCodeProvider()
-    turn = agent_run.AheadLaunch.turn_arguments(provider, "r3", None, role="tester", compact_at=267_000)
+    turn = agent_run.AheadLaunch.turn_arguments(provider, "r3", None, role="tester")
     first = provider.command("t", cwd=str(tmp_path), model=None, mcp_config=None, run_id="r3", **turn)
     resumed = provider.resume_command("r3", "go on", **turn)
     settings = [json.loads(argv[argv.index("--settings") + 1]) for argv in (first, resumed)]
-    assert settings[0] == settings[1] and (settings[0]["autoCompactWindow"], settings[0]["bashOutputMaxChars"]) == (300_000, 15_000)
+    assert settings[0] == settings[1] and settings[0]["bashOutputMaxChars"] == 15_000
     assert f"\n{brief_hook.HEADING}\n" in first[first.index("--append-system-prompt") + 1]
     [[hook]] = [entry["hooks"] for entry in settings[0]["hooks"]["SessionStart"] if entry["matcher"] == "compact"]
 
@@ -694,17 +694,16 @@ def test_every_agent_turn_runs_under_galaius_settings_and_gets_its_task_back_aft
     lost = session_start("compact", check=False)
     assert (lost.returncode, lost.stdout) == (1, "") and "unreadable" in lost.stderr
     fence = FenceSpec(working_directory=tmp_path, levels={"work": "write"}, start=tmp_path, state=tmp_path / "state")
-    assert agent_run.AheadLaunch.turn_arguments(provider, "r3", fence, role="tester", compact_at=267_000)["turn"].brief_hook is None
+    assert agent_run.AheadLaunch.turn_arguments(provider, "r3", fence, role="tester")["turn"].brief_hook is None
 
 
-@pytest.mark.parametrize(("role", "compact_at"), [("visual-critic", 120_000), ("app-engineer", 200_000), (None, 200_000)])
-def test_an_agent_turn_compacts_at_its_role_s_point(role, compact_at):
-    """A role's own or its department's `compact_at` (a critic's 120k), else `Config.agent_compact_at` (200k; a run with no role too), becomes
-    Claude Code's `autoCompactWindow` plus the reserve it keeps: probed 2.1.288, window 153000 → `autoCompactThreshold`
-    120000. Never Claude Code's own 967k on a 1M model (2026-10-26: half a day's subscription in hours)."""
-    policy = Policy(compact_at={"visual-critic": 120_000})
-    turn = agent_run.AheadLaunch.turn_arguments(ClaudeCodeProvider(), "w1", None, role=role, compact_at=policy.compact_at_for(role))["turn"]
-    assert json.loads(turn.arguments()[turn.arguments().index("--settings") + 1])["autoCompactWindow"] == compact_at + 33_000
+@pytest.mark.parametrize(("role", "isolated"), [("visual-critic", False), ("app-engineer", False), (None, False), ("tester", True)])
+def test_no_agent_turn_sets_a_compaction_window(role, isolated):
+    """Owner 2026-11-03: « I explicitely asked to remove the "233 k" limit... » — 200k + Claude Code's 33k reserve, set on
+    every launched turn. No role, department or community agent sets `autoCompactWindow`: Claude Code compacts where it does
+    on its own, as in a plain session."""
+    turn = agent_run.AheadLaunch.turn_arguments(ClaudeCodeProvider(), "w1", None, role=role, isolated=isolated)["turn"]
+    assert "autoCompactWindow" not in json.loads(turn.arguments()[turn.arguments().index("--settings") + 1])
 
 
 @pytest.mark.parametrize(("role", "name"), [("app-engineer", "app-engineer-0f9576d3"), (None, "agent-0f9576d3")])
@@ -713,7 +712,7 @@ def test_every_agent_turn_is_named_for_peers_by_its_role_and_run(role, name, tmp
     'app-engineer' found no session: first and resumed turn alike carry `-n` (a resume without it drops the name)."""
     run_id = "0f9576d3-ac91-5243-a254-c2acf1aad6e6"
     provider = ClaudeCodeProvider()
-    turn = agent_run.AheadLaunch.turn_arguments(provider, run_id, None, role=role, compact_at=200_000)
+    turn = agent_run.AheadLaunch.turn_arguments(provider, run_id, None, role=role)
     first = provider.command("t", cwd=str(tmp_path), model=None, mcp_config=None, run_id=run_id, **turn)
     resumed = provider.resume_command(run_id, "go on", **turn)
     assert [argv[argv.index("-n") + 1] for argv in (first, resumed)] == [name, name]
@@ -743,7 +742,7 @@ def test_a_message_to_a_working_run_is_read_after_its_next_own_tool_call_and_set
     # The person's heading opens the context (the trust anchor); where the run stands follows the messages.
     message, card = said["additionalContext"].split("\n\n---\n\n")
     assert said["hookEventName"] == "PostToolUse" and message == f"{heading}\n\nalso check the footer" and card.startswith(CARD_HEADING)
-    assert f"\n{heading}\n" in ClaudeTurnSettings(compact_at=200_000, bash_output_chars=15_000, inbox_hook=hook, name="tester-r2").arguments()[-1] == inbox_hook.NOTE
+    assert f"\n{heading}\n" in ClaudeTurnSettings(bash_output_chars=15_000, inbox_hook=hook, name="tester-r2").arguments()[-1] == inbox_hook.NOTE
     assert tool_call() == "" and [item.state for item in agent_queue.items("r2")] == ["running"] and agent_queue.read_ids("r2") == [sent]
 
     with reg.open_raw_events("r2", append=True) as stream:

@@ -509,7 +509,7 @@ def test_a_child_that_never_got_its_task_is_ended_instead_of_run(monkeypatch, tm
 
     deaf = _Deaf()
     launch = ChildLaunch(provider=ClaudeCodeProvider(), cwd=str(tmp_path), environment={}, arguments={},
-                         meshed=False, role="backend-engineer", compact_at=200_000)
+                         meshed=False, role="backend-engineer")
     monkeypatch.setattr(ChildLaunch, "_ahead", lambda self, run_id, session: _answer(deaf))
 
     with pytest.raises(TaskNotHanded):

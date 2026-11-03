@@ -796,17 +796,17 @@ class AheadLaunch(BaseModel):
     fence: FenceSpec | None = None
 
     @staticmethod
-    def turn_arguments(provider: AgentProvider, run_id: str, fence: FenceSpec | None, *, role: str | None, compact_at: int,
+    def turn_arguments(provider: AgentProvider, run_id: str, fence: FenceSpec | None, *, role: str | None,
                        isolated: bool = False) -> dict[str, ClaudeTurnSettings]:
         """What each turn of agent run `run_id` playing `role` runs under where `provider` takes it (`takes_turn_settings`): the
         name peers message it by, its role then the id `galaius agents list` prints (`app-engineer-0f9576d3`: unique on the
-        machine; a peer naming only the role gets each running one back to pick from); the context it compacts at (`compact_at`, its role's) and Bash output; the messages sent to it while it works where it reads them
+        machine; a peer naming only the role gets each running one back to pick from) and its Bash output (its conversation compacts where Claude Code's own default puts it); the messages sent to it while it works where it reads them
         (`agent_queue.inbox_hook`); its launch task once a compaction replaced its conversation (`reg.brief_hook`),
         except inside a `fence`, where the run's record and galaius's interpreter are out of reach (its home is empty). `isolated`:
         a community agent's (`ClaudeTurnSettings.isolated`), named `community-<short id>` so no peer takes it for its caller's role."""
         if not provider.takes_turn_settings:
             return {}
-        return {"turn": ClaudeTurnSettings(compact_at=compact_at, bash_output_chars=config.claude_bash_output_chars,
+        return {"turn": ClaudeTurnSettings(bash_output_chars=config.claude_bash_output_chars,
                                      inbox_hook=agent_queue.inbox_hook(run_id) if provider.reads_mid_turn else None,
                                      brief_hook=None if fence else reg.brief_hook(run_id), isolated=isolated,
                                      name=f"{'community' if isolated else role or 'agent'}-{reg.short_id(run_id)}")}
@@ -832,8 +832,6 @@ class AheadLaunch(BaseModel):
         reads what it is to do from its stdin, written later (`hand`)."""
         later, env = stderr is not None, self.provider.child_environment(reg.participant_environment(env), mcp_wait_seconds=Config().agent_mcp_startup_wait_seconds)
         sink = reg.open_raw_events(run_id, append=later)
-        sink.write(self.provider.turn_preface(argv))
-        sink.flush()
         stderr = stderr if later else reg.open_stderr(run_id, append=False)
         try:
             return await asyncio.create_subprocess_exec(
@@ -883,8 +881,6 @@ class ChildLaunch(AheadLaunch):
     meshed: bool
     #: The role the child plays (`GatewayServed.ROLE`); None: none, even one its parent's environment holds.
     role: str | None
-    #: The context, in tokens, its conversation compacts at (`Policy.compact_at_for` its role).
-    compact_at: int
     #: A community agent's child (`ClaudeTurnSettings.isolated`).
     isolated: bool = False
 
@@ -899,7 +895,7 @@ class ChildLaunch(AheadLaunch):
     def command_arguments(self, run_id: str, session: str) -> dict[str, object]:
         arguments = {**self.arguments, "run_id": session, "environment": self.env(run_id),
                      "mcp_config": mesh_config(run_id=run_id, role=self.role, fence=self.fence) if self.meshed else None}
-        return arguments | self.turn_arguments(self.provider, run_id, self.fence, role=self.role, compact_at=self.compact_at, isolated=self.isolated)
+        return arguments | self.turn_arguments(self.provider, run_id, self.fence, role=self.role, isolated=self.isolated)
 
     async def launch(self, run_id: str, session: str, task: str) -> asyncio.subprocess.Process:
         """Run `run_id`'s child doing `task` (as vendor session `session`): handed on its stdin as to a child started
@@ -989,7 +985,7 @@ class ResumeLaunch(AheadLaunch):
                           else _role_prompt(catalog, run.agent, provider, env) if catalog is not None else None),
             mcp_config=mesh_config(run_id=run.run_id, role=run.agent, fence=run.fence) if run.mesh_enabled and (decides or not provider.meshed()) else None,
             coarse_accepted=coarse_accepted, base_url=routed.get("OPENAI_BASE_URL"),
-            **AheadLaunch.turn_arguments(provider, run.run_id, run.fence, role=run.agent, compact_at=policy.compact_at_for(run.agent),
+            **AheadLaunch.turn_arguments(provider, run.run_id, run.fence, role=run.agent,
                                          isolated=run.community is not None),
         )
         env.update(provider.effort_environment(reasoning))
@@ -1200,8 +1196,6 @@ def _spawn_turn(
     child's stdin then closed (`carried`)."""
     env = provider.child_environment(reg.participant_environment(env), mcp_wait_seconds=Config().agent_mcp_startup_wait_seconds)
     sink = reg.open_raw_events(run.run_id, append=True)
-    sink.write(provider.turn_preface(argv))
-    sink.flush()
     stderr_file = tempfile.TemporaryFile()
     try:
         process = subprocess.Popen(
@@ -1811,7 +1805,7 @@ async def run_agent(
             # knows nothing of the run's scratch folder.
             meshed=mesh and (bool(command_kwargs["fence_decides"]) or not candidate_provider.meshed()), fence=candidate_fence,
             role=None if community else agent,
-            compact_at=policy.compact_at_for(agent), isolated=community is not None,
+            isolated=community is not None,
         )
         # A child started ahead for this very launch skips its CLI's own startup. Its run id is the
         # vendor session id, so it serves only the first child handed to that vendor.

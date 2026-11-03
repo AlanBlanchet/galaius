@@ -280,7 +280,7 @@ class UsageLedger(BaseModel):
     #: The window the CLI said this turn compacts below (Claude's context request), until the turn's result: there
     #: it wins over the model's own window (`result.modelUsage`); the next turn asks again or reads the model's.
     window: int | None = None
-    #: The compaction window galaius launched this turn with (its line ahead of the CLI's, `turn_preface`), until
+    #: The compaction window a recorded turn was launched with (galaius's line ahead of the CLI's, `TURN_LINE`), until
     #: the turn's result: what caps the model's own window when the turn did not ask.
     compact_window: int | None = None
     seen: set[str] = Field(default_factory=set)

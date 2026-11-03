@@ -28,7 +28,7 @@ from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Protocol, get_args
 from urllib.parse import urlsplit
 
@@ -983,10 +983,6 @@ class AgentProvider(ABC):
         `task_message` writes (`starts_ahead`)."""
         raise UnsupportedToolPolicy(f"{self.name} cannot resume before its message")
 
-    def turn_preface(self, argv: Sequence[str]) -> bytes:
-        """What galaius writes into a turn's stream ahead of the CLI's, from the turn's `argv`: nothing by default."""
-        return b""
-
     def took_message(self, line: str) -> bool:
         """Whether `line`, written by a turn's child after its message was handed to it (on its
         command line or its stdin), says it took it: anything but its start's bookkeeping."""
@@ -1029,18 +1025,11 @@ _STOP_HOOK_FEEDBACK = "Stop hook feedback:"
 
 class ClaudeTurnSettings(BaseModel):
     """What galaius sets in each agent turn of Claude Code it launches, as `--settings`: on 2.1.288 they win over the
-    user's own settings files, whatever `--setting-sources` loads. Values: the role's `compact_at` (`Policy.compact_at_for`),
-    `Config.claude_bash_output_chars`."""
+    user's own settings files, whatever `--setting-sources` loads. Value: `Config.claude_bash_output_chars`. No compaction
+    window: a run compacts where Claude Code itself does (owner 2026-11-03 « remove the "233 k" limit »)."""
 
     model_config = ConfigDict(frozen=True)
 
-    #: What Claude Code keeps free below its `autoCompactWindow`: it compacts at the window minus this. Probed 2.1.288
-    #: (`get_context_usage`): window 153000 → `autoCompactThreshold` 120000; a window under 100000 is ignored (the user's
-    #: own setting applies), which `CompactAt`'s floor keeps clear of.
-    COMPACT_RESERVE: ClassVar[int] = 33_000
-
-    #: The context, in tokens, it compacts the conversation at.
-    compact_at: int
     #: The characters of a Bash command's output kept in the conversation (`bashOutputMaxChars`); the rest goes to a
     #: file the agent is pointed at.
     bash_output_chars: int
@@ -1062,7 +1051,7 @@ class ClaudeTurnSettings(BaseModel):
             **({"PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": self.inbox_hook}]}]} if self.inbox_hook else {}),
             **({"SessionStart": [{"matcher": "compact", "hooks": [{"type": "command", "command": self.brief_hook}]}]} if self.brief_hook else {}),
         }
-        settings = {"autoCompactWindow": self.compact_at + self.COMPACT_RESERVE, "bashOutputMaxChars": self.bash_output_chars, **({"hooks": hooks} if hooks else {})}
+        settings = {"bashOutputMaxChars": self.bash_output_chars, **({"hooks": hooks} if hooks else {})}
         notes = [note for hook, note in ((self.inbox_hook, INBOX_NOTE), (self.brief_hook, BRIEF_NOTE)) if hook]
         return (["-n", self.name, "--settings", json.dumps(settings)] + (["--append-system-prompt", "\n\n".join(notes)] if notes else [])
                 + (["--strict-mcp-config"] if self.isolated else []))
@@ -1507,19 +1496,9 @@ class ClaudeCodeProvider(AgentProvider):
 
     #: The id its context request answers under (`task_message`).
     CONTEXT_REQUEST: ClassVar[str] = "galaius-context"
-    #: The `type` of the line galaius writes ahead of each turn's stream (`turn_preface`).
+    #: The `type` of the line galaius wrote ahead of each turn's stream while it set a compaction window (until
+    #: 2026-11-03): a run recorded then still replays the window it ran under.
     TURN_LINE: ClassVar[str] = "galaius_turn"
-
-    def turn_preface(self, argv: Sequence[str]) -> bytes:
-        """The compaction window this turn's `argv` sets (`ClaudeTurnSettings`'s `--settings`), as a line ahead of the
-        CLI's own: a replay of the stream reads what each turn ran under. Nothing for a turn that sets none (an editor
-        conversation's: its owner's own settings apply)."""
-        options = list(argv[:argv.index("--")] if "--" in argv else argv)
-        try:
-            window = json.loads(options[options.index("--settings") + 1]).get("autoCompactWindow")
-        except (ValueError, IndexError, AttributeError):  # no `--settings`, or a settings file's path (`media_command`)
-            window = None
-        return (json.dumps({"type": self.TURN_LINE, "compact_window": window}) + "\n").encode() if isinstance(window, int) else b""
 
     def task_message(self, task: str, images: tuple[Path, ...] = ()) -> bytes:
         """Its stream-json user message — `task` alone, or a text block (when `task` says something) then one base64
@@ -1738,7 +1717,7 @@ class ClaudeCodeProvider(AgentProvider):
 
         if kind == self.TURN_LINE:
             ledger.compact_window = raw.get("compact_window") if isinstance(raw.get("compact_window"), int) else None
-            return None  # galaius's own line: what the turn runs under, not what the agent did
+            return None  # galaius's own line: what the turn ran under, not what the agent did
 
         if kind == "system" and raw.get("subtype") in _HARNESS_BOOKKEEPING:
             return None  # about the harness's own machinery, not about what the agent did
@@ -1862,7 +1841,7 @@ class ClaudeCodeProvider(AgentProvider):
             )
             # The window this turn compacts below: the CLI's answer to its context request when this turn asked
             # (`control_response`, 2.1.288: the effective `autoCompactWindow`, capped at the model's own), else the
-            # model's own (`modelUsage`) capped at the window this turn was launched with (2.1.288's rule). Both count
+            # model's own (`modelUsage`), capped at the window a recorded turn was launched with (`TURN_LINE`). Both count
             # for this turn only: a later one (a resume with its message as an argument asks nothing) may run under
             # another setting.
             main = (raw.get("modelUsage") or {}).get(ledger.primary)

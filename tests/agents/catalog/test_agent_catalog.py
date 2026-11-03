@@ -123,21 +123,6 @@ def catalog_transport(value, status=200):
     return httpx.MockTransport(respond)
 
 
-@pytest.mark.parametrize(("department", "own", "compact_at"), [
-    ("quality", None, 120_000),       # a critic: its department's point
-    ("quality", 150_000, 150_000),    # its catalog revision's own value wins
-    ("engineering", None, 200_000),   # a maker: Config.agent_compact_at
-    (None, None, 200_000),
-])
-def test_a_role_compacts_at_its_own_point_else_its_department_s(catalog_home, department, own, compact_at):
-    """Critics and reviewers (catalog department `quality`) compact at 120k with no value set on each role
-    (owner 2026-10-26: makers around 200k, critics around 120k)."""
-    value = snapshot(1, department=department, compact_at=own)
-    connection = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode="preview", workspace_id=uuid4())
-    policy = Policy.from_catalog(AgentCatalog.refresh(connection, transport=catalog_transport(value)))
-    assert policy.compact_at_for("fixture-worker") == compact_at
-
-
 def test_server_revisions_replace_prompt_policy_skills_and_team(catalog_home):
     connection = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode="preview", workspace_id=uuid4())
     before = AgentCatalog.refresh(connection, transport=catalog_transport(snapshot(1)))
