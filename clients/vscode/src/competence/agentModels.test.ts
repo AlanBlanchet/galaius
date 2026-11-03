@@ -239,7 +239,7 @@ test("a model is the same model across two id namespaces", () => {
   // (`openrouter/anthropic/claude-opus-4.7`) while the browse catalogue speaks OpenRouter
   // (`anthropic/claude-opus-4.7`), so an exact set lookup missed by exactly one prefix and
   // `openai/gpt-5.5` "not scored" kept sitting two rows under `gpt-5.5` at "60.2 · joint 1st".
-  // The Python twin is `_bare_model_name` in `src/galaius/cli/app.py`; the pairs match its test.
+  // The Python twin is `_bare_model_name` in `galaius/cli/app.py`; the pairs match its test.
   const same = (a: string, b: string) => assert.equal(bareModelName(a), bareModelName(b), `${a} = ${b}`);
   same("openrouter/anthropic/claude-opus-4.7", "anthropic/claude-opus-4.7");
   same("openai/gpt-5.5", "gpt-5.5");
@@ -354,7 +354,7 @@ test("a board name reduces the same way on both sides of the panel", () => {
   // Round 28, blocking: the Benchmarks tab counted 433 models where the picker counted 450, from
   // the same 633-row file, because this side re-normalised board NAMES with the id normalizer.
   // That manufactured keys like "deepseek" and "grok" which merge genuinely different models.
-  // The Python twin is `_leaderboard_key` in `src/galaius/catalog/models.py`.
+  // The Python twin is `_leaderboard_key` in `galaius/catalog/models.py`.
   assert.equal(leaderboardKey("GPT-5.5 (xhigh)"), "gpt-5-5");
   assert.equal(leaderboardKey("Claude Fable 5.1 (Adaptive Reasoning, Max Effort)"), "claude-fable-5-1");
   assert.equal(leaderboardKey("Claude Opus 4.7"), "claude-opus-4-7");

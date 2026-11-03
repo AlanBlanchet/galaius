@@ -10,7 +10,8 @@ from tests.support.paths import REPO
 
 ROOT = REPO
 RELOCATIONS = (
-    ("packages/galaius-local", "src/galaius"),
+    ("packages/galaius-local", "galaius"),
+    ("src", "galaius"),
     ("vscode-extension", "clients/vscode"),
     ("docs", "site"),
 )
@@ -38,7 +39,7 @@ def test_public_prompt_contracts_are_exported_to_schema_and_vscode() -> None:
 
 def test_public_python_imports_no_galaius_package_but_core() -> None:
     public_roots = (
-        ROOT / "src",
+        ROOT / "galaius",
     )
     assert all(root.is_dir() for root in public_roots)
     for root in public_roots:
@@ -60,4 +61,4 @@ def test_precommit_hook_targets_only_the_relocated_release_graph() -> None:
     assert "vscode-extension/" not in hook
     assert "packages/galaius-local" not in hook
     assert "clients/vscode" in hook
-    assert "^src/galaius/" in hook
+    assert "^galaius/" in hook

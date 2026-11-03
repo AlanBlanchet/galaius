@@ -34,12 +34,12 @@ def _runtime_dir() -> Path:
 
 def _source_version() -> str | None:
     """The version in the source tree's pyproject.toml when galaius runs from an editable checkout
-    (``src/galaius/`` below the repo root). None for a wheel install — there the
+    (the ``galaius/`` package at the repo root). None for a wheel install — there the
     installed metadata IS the latest, so no drift is possible without a reinstall+restart."""
     try:
         import tomllib
 
-        pyproject = Path(__file__).resolve().parents[3] / "pyproject.toml"
+        pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
         if pyproject.exists():
             return tomllib.loads(pyproject.read_text()).get("project", {}).get("version")
     except Exception:

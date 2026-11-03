@@ -583,7 +583,7 @@ class AgentRun(ContextGauge):
             "cataloged_at",
         })
         identity["benchmark_evidence"] = "not recorded in this run; criterion is a selection rule, not a score"
-        return "[Interact agent provenance]\n" + json.dumps(identity, sort_keys=True) + "\n[Agent content]\n"
+        return "[Galaius agent provenance]\n" + json.dumps(identity, sort_keys=True) + "\n[Agent content]\n"
 
     @classmethod
     def from_foreign(cls, raw: dict) -> "AgentRun | None":

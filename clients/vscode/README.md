@@ -300,7 +300,7 @@ run_actions(actions=[
 ], query="Did login succeed?")
 ```
 
-### Typical workflow: interact with a local server
+### Typical workflow: drive a local server
 
 ```
 navigate("http://localhost:8000", wait="networkidle")

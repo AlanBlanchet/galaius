@@ -43,7 +43,7 @@ from tests.support.paths import REPO, TESTS
 
 FIXTURES = TESTS / "fixtures" / "agents"
 PROJECT_ROOT = REPO
-CODEX_SCHEMA_CAPTURE = PROJECT_ROOT / "src/galaius/agents/transport/codex_app_server_schema"
+CODEX_SCHEMA_CAPTURE = PROJECT_ROOT / "galaius/agents/transport/codex_app_server_schema"
 
 
 @pytest.fixture
@@ -2318,7 +2318,7 @@ def test_codex_schema_capture_drives_complete_request_policy_without_handwritten
     assert refs and len(refs) == len(set(refs))
     for relative in refs:
         assert (fixture / relative.removeprefix("./")).is_file()
-    generated = Path("src/galaius/agents/transport/codex_schema.py")
+    generated = Path("galaius/agents/transport/codex_schema.py")
     assert generated.is_file()
     source = generated.read_text()
     assert hashlib.sha256(server_request_path.read_bytes()).hexdigest() in source
@@ -2419,7 +2419,7 @@ def test_codex_schema_boundary_validates_derived_requests_results_and_rejections
         entry["method"] for entry in entries
     }
 
-    module_path = Path("src/galaius/agents/transport/codex_schema.py")
+    module_path = Path("galaius/agents/transport/codex_schema.py")
     spec = importlib.util.spec_from_file_location("galaius_codex_schema_test", module_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -2606,9 +2606,9 @@ async def test_protocol_failure_immediately_reaps_owned_provider_process(
 
 def test_transport_and_cli_import_contracts_are_explicit_and_lightweight() -> None:
     """Architecture and entrypoint invariants are executable without importing provider code."""
-    transport = Path("src/galaius/agents/transport/base.py")
+    transport = Path("galaius/agents/transport/base.py")
     assert transport.exists(), "one private capability-typed transport owner must exist"
-    host_source = Path("src/galaius/agents/host.py").read_text()
+    host_source = Path("galaius/agents/host.py").read_text()
     host_tree = ast.parse(host_source)
     imported_modules = {
         node.module
@@ -2624,7 +2624,7 @@ def test_transport_and_cli_import_contracts_are_explicit_and_lightweight() -> No
     assert "run.connection ==" not in host_source
     assert "route.connection ==" not in host_source
     assert "transport_registry" in _ConversationHost.model_fields
-    tree = ast.parse(Path("src/galaius/cli/app.py").read_text())
+    tree = ast.parse(Path("galaius/cli/app.py").read_text())
     local_imports = [node for node in ast.walk(tree)
                      if isinstance(node, (ast.Import, ast.ImportFrom)) and node.col_offset > 0]
     assert not local_imports

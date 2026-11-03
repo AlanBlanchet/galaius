@@ -8,7 +8,7 @@
 
 Galaius has a public client, a shared public contracts package, and a hosted server:
 
-- `src/galaius` — the `galaius` Python import, CLI, MCP server, automation, local
+- `galaius` — the `galaius` Python import, CLI, MCP server, automation, local
   sessions, and explicit API routes.
 - `galaius-core` — the standalone dependency-light contracts package and its generated JSON Schema,
   shared by every surface; `clients/vscode` consumes the generated TypeScript form.

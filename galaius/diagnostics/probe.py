@@ -31,7 +31,7 @@ from galaius.models.registry import Model
 from galaius.models.capability import ModelCapability
 from galaius.browser.state import annotate_screenshot
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 TEST_GUI = _REPO_ROOT / "tests" / "fixtures" / "gui_app.py"
 TEST_PAGE = _REPO_ROOT / "tests" / "fixtures" / "test_page.html"
 SCENARIO_PAGE = _REPO_ROOT / "tests" / "fixtures" / "scenario_page.html"

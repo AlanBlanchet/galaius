@@ -194,7 +194,7 @@ def test_model_input_path_rejects_files_outside_machine_workspace(tmp_path: Path
 def _config(tmp_path: Path, permission_ceiling: str) -> MachineConfig:
     return MachineConfig(
         server_url="http://127.0.0.1:8817", workspace_id=uuid4(), machine_id=uuid4(),
-        token="iwm_" + "x" * 48, permission_ceiling=permission_ceiling, working_directory=tmp_path, places={"interact-files": "sandbox"},
+        token="iwm_" + "x" * 48, permission_ceiling=permission_ceiling, working_directory=tmp_path, places={"sandbox-files": "sandbox"},
     )
 
 
@@ -656,13 +656,13 @@ def _file_command(machine: UUID, op: str, path: str, inputs: dict) -> MachineCom
                           impl={"kind": "builtin", "op": op}, config={"artifact_path": path}, inputs=inputs, expires_at=datetime.now(UTC) + timedelta(minutes=5), signature="0" * 64)
 
 
-@pytest.mark.parametrize("path", ("../escape.txt", "/etc/passwd", "a/../../escape.txt", "interact-files/link/out.txt", "outside-the-roots.txt", ".bashrc", "interact-files/.ssh/id_ed25519", ".config/galaius/machine.json"))
+@pytest.mark.parametrize("path", ("../escape.txt", "/etc/passwd", "a/../../escape.txt", "sandbox-files/link/out.txt", "outside-the-roots.txt", ".bashrc", "sandbox-files/.ssh/id_ed25519", ".config/galaius/machine.json"))
 def test_a_file_op_never_leaves_the_working_directory(tmp_path: Path, path: str, monkeypatch: pytest.MonkeyPatch, directory_backend) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     root = tmp_path / "work"
     root.mkdir()
-    (root / "interact-files").mkdir()
-    (root / "interact-files" / "link").symlink_to(tmp_path)
+    (root / "sandbox-files").mkdir()
+    (root / "sandbox-files" / "link").symlink_to(tmp_path)
     config = MachineConfig(server_url="http://127.0.0.1:8817", workspace_id=uuid4(), machine_id=uuid4(), token="t" * 40, permission_ceiling="full_access", working_directory=root)
     files = CommandFiles(config=config, command=_file_command(config.machine_id, "write_artifact", path, {"value": "x"}))
     with pytest.raises(PermissionError):
@@ -685,16 +685,16 @@ def test_a_machine_saves_text_or_a_received_file_within_its_ceiling(tmp_path: Pa
     received = root / "received.bin"
     received.write_bytes(b"received bytes")
     config = MachineConfig(server_url="http://127.0.0.1:8817", workspace_id=uuid4(), machine_id=uuid4(), token="t" * 40, permission_ceiling=ceiling, working_directory=root,
-                           places={"interact-files": "sandbox"})
-    command = _file_command(config.machine_id, "write_artifact", "interact-files/saved/out.txt", {"value": str(received) if fetched else value})
+                           places={"sandbox-files": "sandbox"})
+    command = _file_command(config.machine_id, "write_artifact", "sandbox-files/saved/out.txt", {"value": str(received) if fetched else value})
     files = CommandFiles(config=config, command=command, fetched=frozenset({"value"}) if fetched else frozenset())
     if written is None:
         with pytest.raises(PermissionError):
             files.write()
         return
     receipt = files.write()
-    assert (root / "interact-files/saved/out.txt").read_bytes() == written
-    assert receipt == {"machine": str(config.machine_id), "path": "interact-files/saved/out.txt", "digest": hashlib.sha256(written).hexdigest(), "size": len(written)}
+    assert (root / "sandbox-files/saved/out.txt").read_bytes() == written
+    assert receipt == {"machine": str(config.machine_id), "path": "sandbox-files/saved/out.txt", "digest": hashlib.sha256(written).hexdigest(), "size": len(written)}
     assert json.loads((tmp_path / "config/galaius/file-audit.log").read_text().splitlines()[-1])["op"] == "write"
 
 
@@ -702,10 +702,10 @@ def test_a_machine_saves_text_or_a_received_file_within_its_ceiling(tmp_path: Pa
 def test_a_named_pipe_in_a_root_is_refused_without_hanging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, directory_backend) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     root = tmp_path / "work"
-    (root / "interact-files").mkdir(parents=True)
-    os.mkfifo(root / "interact-files" / "pipe")
+    (root / "sandbox-files").mkdir(parents=True)
+    os.mkfifo(root / "sandbox-files" / "pipe")
     config = MachineConfig(server_url="http://127.0.0.1:8817", workspace_id=uuid4(), machine_id=uuid4(), token="t" * 40, permission_ceiling="read_only", working_directory=root)
-    files = CommandFiles(config=config, command=_file_command(config.machine_id, "read_file", "interact-files/pipe", {}))
+    files = CommandFiles(config=config, command=_file_command(config.machine_id, "read_file", "sandbox-files/pipe", {}))
     with pytest.raises(PermissionError):
         files.read()
     files.inbox.mkdir(parents=True)
@@ -718,9 +718,9 @@ def test_a_named_pipe_in_a_root_is_refused_without_hanging(tmp_path: Path, monke
 def test_reading_a_folder_is_refused_and_leaks_no_descriptor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, directory_backend) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     root = tmp_path / "work"
-    (root / "interact-files" / "folder").mkdir(parents=True)
+    (root / "sandbox-files" / "folder").mkdir(parents=True)
     config = MachineConfig(server_url="http://127.0.0.1:8817", workspace_id=uuid4(), machine_id=uuid4(), token="t" * 40, permission_ceiling="read_only", working_directory=root)
-    files = CommandFiles(config=config, command=_file_command(config.machine_id, "read_file", "interact-files/folder", {}))
+    files = CommandFiles(config=config, command=_file_command(config.machine_id, "read_file", "sandbox-files/folder", {}))
     before = len(os.listdir("/proc/self/fd"))
     for _ in range(5):
         with pytest.raises(PermissionError):
@@ -763,9 +763,9 @@ def test_the_runner_reports_the_folders_workflows_may_read_as_they_are_now(tmp_p
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     runner = MachineRunner(tmp_path / "config" / "galaius" / "machine.json")
     connected = MachineConfig(server_url="http://127.0.0.1:8817", workspace_id=uuid4(), machine_id=uuid4(), token="t" * 40, permission_ceiling="read_only", working_directory=root,
-                              places={"interact-files": "sandbox", "exports/pc": "read", "linked": "read", "exports/pc/names": "see"})
+                              places={"sandbox-files": "sandbox", "exports/pc": "read", "linked": "read", "exports/pc/names": "see"})
     runner.save(connected)
-    assert runner._beat(connected)["file_roots"] == ["exports/pc", "interact-files"]
+    assert runner._beat(connected)["file_roots"] == ["exports/pc", "sandbox-files"]
     # A sandbox set over `exports` and an agent root inside it: the beat reports the new folder, the
     # settings revision, and the agent root refused (nothing a workflow writes lands where an agent starts).
     runner.update(lambda current: current.model_copy(update={"places": {"exports": "sandbox"}, "agent_roots": ("exports/pc",)}))
@@ -1027,19 +1027,19 @@ def test_script_file_runs_its_pinned_digest_and_refuses_a_changed_file(tmp_path:
 @pytest.mark.parametrize(("path", "update", "refusal"), [
     ("outside.py", {}, "outside this machine's script folders"),
     ("scripts/linked.py", {}, "outside this machine's script folders"),  # a link pointing out of the roots
-    ("interact-files/job.py", {}, "outside this machine's script folders"),  # file steps write there
-    ("interact-files/job.py", {"script_roots": ("interact-files",)}, "outside this machine's script folders"),  # a script root never overlaps a sandbox
+    ("sandbox-files/job.py", {}, "outside this machine's script folders"),  # file steps write there
+    ("sandbox-files/job.py", {"script_roots": ("sandbox-files",)}, "outside this machine's script folders"),  # a script root never overlaps a sandbox
     ("scripts/job.py", {"places": {"scripts/inbox": "write"}}, "outside this machine's script folders"),  # nor holds one
-    ("scripts/job.py", {"interpreter": "interact-files/python"}, "full path"),
+    ("scripts/job.py", {"interpreter": "sandbox-files/python"}, "full path"),
 ])
 def test_script_file_outside_the_script_roots_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str, update: dict, refusal: str) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     interpreter = update.pop("interpreter", None)
     config = _scripts_config(tmp_path, **update)
     MachineRunner().save(config)
-    for folder in ("interact-files", "scripts/inbox"):
+    for folder in ("sandbox-files", "scripts/inbox"):
         (tmp_path / folder).mkdir(parents=True, exist_ok=True)
-    for name in ("outside.py", "interact-files/job.py", "scripts/job.py"):
+    for name in ("outside.py", "sandbox-files/job.py", "scripts/job.py"):
         (tmp_path / name).write_bytes(b"print('x')\n")
     (tmp_path / "scripts" / "linked.py").symlink_to(tmp_path / "outside.py")
     spec = ScriptFile(path=path, file_digest=hashlib.sha256(b"print('x')\n").hexdigest(), interpreter=interpreter)
@@ -1053,7 +1053,7 @@ def test_the_program_running_a_script_never_lives_where_file_steps_write(tmp_pat
     MachineRunner().save(config)
     (tmp_path / "scripts").mkdir()
     (tmp_path / "scripts" / "job.py").write_text("print('x')\n", newline="")
-    planted = tmp_path / "interact-files" / "python"
+    planted = tmp_path / "sandbox-files" / "python"
     planted.parent.mkdir()
     planted.write_text("#!/bin/sh\necho planted\n", newline="")
     planted.chmod(0o755)
@@ -1072,7 +1072,7 @@ def test_file_listing_shows_script_roots_folders_and_a_file_digest_only(tmp_path
     root = tmp_path / "scripts"
     (root / "tools").mkdir(parents=True)
     (root / ".secret").mkdir()
-    (tmp_path / "interact-files").mkdir()
+    (tmp_path / "sandbox-files").mkdir()
     (root / "tools" / "a.sh").write_bytes(b"echo a\n")
     (root / "link.sh").symlink_to(root / "tools" / "a.sh")
     files = MachineFiles(config=config, area="scripts")
@@ -1080,7 +1080,7 @@ def test_file_listing_shows_script_roots_folders_and_a_file_digest_only(tmp_path
     assert [(entry.name, entry.kind) for entry in files.listing("scripts").entries] == [("tools", "folder")]
     listing = files.listing("scripts/tools/a.sh")
     assert (listing.kind, listing.size, listing.digest) == ("file", 7, hashlib.sha256(b"echo a\n").hexdigest())
-    for refused in ("..", "interact-files"):
+    for refused in ("..", "sandbox-files"):
         with pytest.raises(PermissionError):
             files.listing(refused)
 

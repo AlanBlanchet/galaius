@@ -561,7 +561,7 @@ def test_queued_reply_lookup_uses_persisted_attempt_anchor(monkeypatch):
     reply = asyncio.run(messaging.wait_for_reply(delivery))
 
     assert delivery.state == "replied" and "resumed reply" in reply
-    assert "[Interact agent provenance]" in reply
+    assert "[Galaius agent provenance]" in reply
 
 
 def test_queue_preserves_effective_policy_and_records_fresh_policy_separately(monkeypatch):

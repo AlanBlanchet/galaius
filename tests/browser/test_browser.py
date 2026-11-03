@@ -12,7 +12,7 @@ from galaius.browser.state import InteractiveElement, PageState, _visible_text, 
 from tests.support import browser_manager, interactive_element
 from tests.support.paths import REPO
 
-_ANNOTATE_JS = (REPO / "src" / "galaius" / "browser" / "js" / "annotate_elements.js").read_text()
+_ANNOTATE_JS = (REPO / "galaius" / "browser" / "js" / "annotate_elements.js").read_text()
 
 
 def _el(index: int, ref: str | None = None) -> InteractiveElement:

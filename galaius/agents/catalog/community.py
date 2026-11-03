@@ -41,7 +41,7 @@ _FRONT_MATTER = re.compile(r"\A﻿?---[ \t]*\r?\n(?:.*?\r?\n)?---[ \t]*(?:\r?\n|
 #: A credential as it is written in a login file or a header (an API or OAuth token, a bearer token): never shown quoted.
 _SECRET = re.compile(r"\bsk-[A-Za-z0-9_-]{16,}|\b(?:bearer|token)\s+[A-Za-z0-9._~+/=-]{20,}|\"(?:access|refresh)_?token\"\s*:\s*\"[^\"]+\"",
                      re.IGNORECASE)
-_FORGED = re.compile(r"\[(?=\s*(?:galaius|interact agent provenance))|^(?=\s*##)|<(?=\s*/?\s*(?:community-|system-reminder|cross-session-message))",
+_FORGED = re.compile(r"\[(?=\s*(?:galaius|\w+ agent provenance))|^(?=\s*##)|<(?=\s*/?\s*(?:community-|system-reminder|cross-session-message))",
                      re.IGNORECASE | re.MULTILINE)
 
 SHOWN = 10

@@ -169,7 +169,7 @@ class WindowsPrivateFiles(PrivateFiles):
     prefix: ClassVar[str] = "dpapi:"
     #: Mixed into every sealed value. Public (it is in this source): it keeps galaius's blobs apart
     #: from other programs' DPAPI data, never from a program of this user that reads this file.
-    entropy: ClassVar[bytes] = b"interact.private-files.v1"
+    entropy: ClassVar[bytes] = b"galaius.private-files.v1"
 
     def replace(self, temporary: Path, path: Path) -> None:
         """A file another process has open refuses the rename for that instant (`replace_held_open`)."""

@@ -255,7 +255,7 @@ def _commands(run_id: str, other: reg.AgentRun) -> bool:
 
 def content(text: str) -> str:
     """The sender's own words in a recorded message: past its provenance header when it carries one."""
-    return text.split(_CONTENT, 1)[1] if text.startswith("[Interact agent provenance]") and _CONTENT in text else text
+    return text.split(_CONTENT, 1)[1] if re.match(r"\[\w+ agent provenance\]", text) and _CONTENT in text else text
 
 
 def needs_answer(text: str) -> bool:

@@ -1,4 +1,4 @@
-"""Parametrized tests for src/galaius/vision/parsing.py."""
+"""Parametrized tests for galaius/vision/parsing.py."""
 
 from __future__ import annotations
 

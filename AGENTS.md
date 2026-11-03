@@ -22,15 +22,15 @@ Client and server:
 - User feedback arrives as GitHub issues on the public repo — `.github/ISSUE_TEMPLATE/` shapes the
   human ones, galaius's own `report_issue` tool files the agent ones.
 
-Ownership (short names map to the standalone `../galaius-core` checkout and `src/galaius`):
+Ownership (short names map to the standalone `../galaius-core` checkout and `galaius`):
 
 - `galaius-core` — provider-independent contracts and generated API models shared by every surface.
   Source of truth for tool APIs, schemas and payloads; the tool docstrings carry the behaviour. An
   old parameter or tool name survives only if `galaius-core` still declares it.
 Tool target routing is defined by `_instructions()` in
-`src/galaius/server/core.py` and individual tool docstrings.
+`galaius/server/core.py` and individual tool docstrings.
 
-- `src/galaius` — the local implementation: `server` (service lifecycle, target resolution,
+- `galaius` — the local implementation: `server` (service lifecycle, target resolution,
   capture, analysis dispatch, tool surfaces), `desktop` (isolated displays, input, windows,
   coordinates, recording, accessibility), `cli`, and `config` (typed settings plus the schema every
   front end reads).

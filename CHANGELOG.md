@@ -1,14 +1,19 @@
 # Changelog
 
-Notable changes to **galaius** (named interact before 2026-10-07). Follows [Semantic Versioning](https://semver.org) and
+Notable changes to **galaius**. Follows [Semantic Versioning](https://semver.org) and
 [Keep a Changelog](https://keepachangelog.com). Releases are cut from `main` (and `release/X.Y`
 maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
-- `galaius migrate` and the installers' move of a former interact install are removed, as 0.44.0
-  announced. A computer still holding `~/.interact` installs galaius fresh and signs in again.
-- `src/galaius` is grouped into domain packages (no source folder over 20 files); every module path
+- The `galaius` package sits at the repository root (`galaius/`), no `src/` folder; the wheel and
+  every module path are unchanged.
+- Relayed agent messages open with `[Galaius agent provenance]`; readers accept any
+  `[<name> agent provenance]` header, so transcripts written before still read as before.
+- Windows: saved keys are sealed under a new DPAPI entropy; run `galaius login` once after upgrading.
+- `galaius migrate` and the installers' move of a pre-0.44 install are removed, as 0.44.0
+  announced. A computer still holding the former install folder installs galaius fresh and signs in again.
+- `galaius` is grouped into domain packages (no source folder over 20 files); every module path
   changed (`galaius.<domain>.<module>`), the `galaius` command and MCP server names did not.
 - Windows: the PC program no longer opens console windows. Every program a galaius process with no
   console window starts gets none either (`galaius.host.windowless`), and its Python children run
@@ -37,10 +42,10 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## 0.44.0 — 2026-10-07
 
-- Renamed interact → galaius: the package, the `galaius` command, the `galaius` MCP server (tools
+- Renamed the product to galaius: the package, the `galaius` command, the `galaius` MCP server (tools
   `mcp__galaius__*`), `GALAIUS_*` settings, `~/.galaius` and the `galaius-core` dependency.
 - `galaius migrate` (run by the installers) moves a computer's former install once: its folders,
-  `config.env` keys, background service, MCP registrations, `interact` command and VS Code
+  `config.env` keys, background service, MCP registrations, former command and VS Code
   extension. It is removed in the next release.
 
 ## 0.43.0 — 2026-09-14
@@ -93,7 +98,7 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
   of `scroll` and is restored if the wheel changed it; a window that dies under the wheel reports a
   named cause with the app's own output instead of a later mystery empty sandbox. Wheel clicks go out
   as one ordered, delayed sequence rather than racing processes (#82, #88, #90).
-- **A dropped desktop `type_text` reports FAILED** instead of "typed N chars". interact already
+- **A dropped desktop `type_text` reports FAILED** instead of "typed N chars". galaius already
   verified the text never appeared and retried; it discarded that verdict (#93).
 - **Browser sessions self-recover from zero tabs**, naming whether the browser died or another caller
   closed the last tab on the shared session (#89).
@@ -159,7 +164,7 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
   is an output sink; capturing over an existing file now says "overwrote existing file" in the result,
   and analyzing a file has a first-class path (`target="file:…"`) that never writes. Fixes #44.
 - **Idle session auto-close no longer logs the agent out.** A session closed by the idle reaper
-  (`INTERACT_SESSION_IDLE_TTL`) stashes its `storage_state` (cookies/localStorage + url) and restores
+  (`GALAIUS_SESSION_IDLE_TTL`) stashes its `storage_state` (cookies/localStorage + url) and restores
   it on the next use — idle browsers still free their CPU/RAM, but a returning agent keeps its login.
   Fixes #36.
 
@@ -173,7 +178,7 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
   Understanding is *acoustic* (it hears tone/speakers/music) when the audio model can take audio in
   chat (Gemini, gpt-4o-audio), and transcript-based with a transcription-only model (Whisper,
   gpt-4o-transcribe). Routes through litellm's transcription endpoint (`litellm.atranscription`).
-- **`audio` model role + `MMAU` benchmark.** New `audio.model` setting / `INTERACT_AUDIO_MODEL`
+- **`audio` model role + `MMAU` benchmark.** New `audio.model` setting / `GALAIUS_AUDIO_MODEL`
   (auto-resolves to the best available audio model, Whisper as the transcription fallback). MMAU is
   the headline audio-understanding benchmark (the audio analogue of MMMU/Video-MME); transcription
   quality is ranked by Word Error Rate on the HF Open ASR Leaderboard.
@@ -184,7 +189,7 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 - **The `video` role no longer mirrors the image list.** It used to offer *every* vision model
   (Claude, GPT) even though those don't take video; litellm's `supports_video_input` flag never
   populates, so native-video capability is now a curated family table (Gemini / Qwen-VL / InternVL /
-  Amazon Nova) — the video picker, recommendations and default are genuinely video-capable. interact
+  Amazon Nova) — the video picker, recommendations and default are genuinely video-capable. galaius
   still drives a non-native model for a recording by sampling frames, so nothing regresses (the video
   chain falls back to a frame-sampled VLM when no native-video model is keyed).
 
@@ -227,7 +232,7 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 - **Idle browser sessions auto-close** so a long-lived MCP server (one per open editor window)
   stops accumulating Chromium instances that linger — and CPU-spin on a left-open page — for the
   whole life of the client. A background reaper closes any session whose browser has been idle past
-  `INTERACT_SESSION_IDLE_TTL` (default **900s**; `0` disables); it re-opens lazily on next use (a
+  `GALAIUS_SESSION_IDLE_TTL` (default **900s**; `0` disables); it re-opens lazily on next use (a
   non-default session starts fresh — cookies/login aren't preserved across the close). `list_sessions`
   now shows each session's idle time and the auto-close policy. The reaper also tears down a dead
   nested sandbox so no `<defunct>` Xephyr lingers.
@@ -240,7 +245,7 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
   re-render. Cause: a tab-less scan registered the element map under key `None` while `run_actions`
   read it under the hardcoded tab `0` (`None != 0`), so the lookup always missed. The element map
   now keys on the active tab consistently, `run_actions` starts on the active tab, and a ref also
-  resolves directly against the live `data-interact-ref` attribute (which persists across calls) —
+  resolves directly against the live `data-galaius-ref` attribute (which persists across calls) —
   so a ref clicks even if the server-side map was cleared. Refs are now a first-class cross-call
   handle, no re-annotate-every-call workaround needed.
 
@@ -276,7 +281,7 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ### Fixed
 
-- **The nested sandbox no longer dies under concurrent interact servers** (#33). The Xephyr/Xvfb
+- **The nested sandbox no longer dies under concurrent galaius servers** (#33). The Xephyr/Xvfb
   display number was hardcoded to `:99`, so several MCP servers (a user can have many) fought over
   it and the loser's display died seconds after `launch_app`, taking the launched app's windows
   with it. The sandbox now starts on the first FREE display (probing the X lock/socket) and retries
@@ -315,13 +320,13 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 - **Sandbox Chrome `--app` keyboard input** (#25) confirmed end-to-end on a multi-field login form
   (click field → type; each field receives its text) — the focus-by-resolved-wid + `--sync` fix
   from 0.3.2. Opt-in e2e reproductions added under `tests/test_sandbox_e2e.py`
-  (`INTERACT_LOCAL_E2E=1`).
+  (`GALAIUS_LOCAL_E2E=1`).
 
 ## [0.3.3] — 2026-06-18
 
 ### Fixed
 
-- **`data-interact-ref` is unique per snapshot** (#29). A re-render could leave a stale ref on a
+- **`data-galaius-ref` is unique per snapshot** (#29). A re-render could leave a stale ref on a
   surviving node while a new node got the same `eN`, so a click-by-ref hit Playwright's strict-mode
   "resolved to 2 elements". The DOM scan now clears all prior refs first, guaranteeing uniqueness.
 - **A multi-match selector click targets the first VISIBLE element** (#29). `:has-text('Annuler')`
@@ -359,7 +364,7 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ### Fixed
 
-- **`interact doctor` / `interact status` no longer print Linux-only advice on macOS/Windows.** They
+- **`galaius doctor` / `galaius status` no longer print Linux-only advice on macOS/Windows.** They
   used to report `maim=MISSING (apt install maim)` and `/dev/uinput NOT writable — add a udev rule`
   on any OS, which reads as "broken" to a colleague whose browser automation is actually ready. Off
   Linux they now report desktop automation as not-available-here and point at the browser path.
@@ -396,12 +401,12 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 ### Changed
 
 - **The VS Code extension no longer silently runs a local checkout.** It used to auto-detect any
-  workspace folder whose `pyproject.toml` is interact's and run *that working tree* via `uv run` —
+  workspace folder whose `pyproject.toml` is galaius's and run *that working tree* via `uv run` —
   so a colleague who merely opened a clone got an unbuilt dev version. Dev mode is now **opt-in
-  only** (the `interact.projectPath` setting or the `INTERACT_PROJECT_PATH` env var); by default
+  only** (the `galaius.projectPath` setting or the `GALAIUS_PROJECT_PATH` env var); by default
   everyone gets the published build via `uvx`, **pinned to the extension's own release tag** so the
   server matches the extension version — never `main`/dev HEAD. New `.env.example` documents this
-  and the other `INTERACT_*` overrides (the home for anything machine-specific, kept out of the
+  and the other `GALAIUS_*` overrides (the home for anything machine-specific, kept out of the
   codebase).
 
 ### Fixed
@@ -414,8 +419,8 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ### Added
 
-- `npm run package` / `npm run publish` in the extension (build an `interact-<version>.vsix` or push
-  to the Marketplace), and a README section clarifying the two VS Code paths (`interact install
+- `npm run package` / `npm run publish` in the extension (build an `galaius-<version>.vsix` or push
+  to the Marketplace), and a README section clarifying the two VS Code paths (`galaius install
   vscode` for just the tools, or the extension for the dashboard UI).
 
 ## [0.2.4] — 2026-06-15
@@ -425,33 +430,33 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 - **`record()` on a sandbox window no longer returns all-black frames.** Video capture hardcoded
   ffmpeg `x11grab` on `:0` (the real display), so recording a `nested:` window grabbed the wrong
   display while `screenshot()` worked; it now records the window's own nested display. Verified live
-  (non-black frames) ([#18](https://github.com/AlanBlanchet/interact/issues/18)).
+  (non-black frames) ([#18](https://github.com/AlanBlanchet/galaius/issues/18)).
 - **A screenshot no longer lists element refs from a screen that's no longer shown.** Cached
   interactive-element refs are now surfaced only when the live frame's content signature matches the
   frame they were detected on — after a navigation the stale refs are withheld, so a click can't
-  land on a gone target ([#19](https://github.com/AlanBlanchet/interact/issues/19)). A query
+  land on a gone target ([#19](https://github.com/AlanBlanchet/galaius/issues/19)). A query
   screenshot also writes its file *after* the VLM call (in a `finally`), so the saved frame is
-  exactly the one analysed, even on a VLM error ([#17](https://github.com/AlanBlanchet/interact/issues/17)).
+  exactly the one analysed, even on a VLM error ([#17](https://github.com/AlanBlanchet/galaius/issues/17)).
 - **Scroll and drag now reach a Flutter/GTK window.** Scroll raises + focuses the window before
   emitting wheel events (an unfocused toolkit silently drops them), and drag uses a fine,
   float-interpolated, time-spread pointer path instead of a couple of pixel-quantized teleports — so
   the toolkit recognises a drag/fling. Applies to both the real-desktop and sandbox paths
-  ([#12](https://github.com/AlanBlanchet/interact/issues/12),
-  [#13](https://github.com/AlanBlanchet/interact/issues/13)).
+  ([#12](https://github.com/AlanBlanchet/galaius/issues/12),
+  [#13](https://github.com/AlanBlanchet/galaius/issues/13)).
 - **Sandbox zombie reaping is more aggressive.** Exited apps are now reaped on every capture, not
   only on the next `launch_app`, so a long session can't accumulate `<defunct>` children between
   launches (with the v0.2.2 dead-display respawn, closes the rc=1 root cause)
-  ([#11](https://github.com/AlanBlanchet/interact/issues/11)).
+  ([#11](https://github.com/AlanBlanchet/galaius/issues/11)).
 - **The repaint heuristic handles a blur-backed bottom bar better.** The black-strip detector scans
   a band of candidate strip heights (a `ConvexAppBar` is taller than a plain nav bar), the repaint
   nudge resizes by a larger delta (enough to make Skia rebind a blurred layer, not just relayout),
   and up to two nudges are tried before a window is left alone — re-arming once it renders so a later
-  navigation that goes black is nudged again ([#14](https://github.com/AlanBlanchet/interact/issues/14),
-  [#15](https://github.com/AlanBlanchet/interact/issues/15),
-  [#16](https://github.com/AlanBlanchet/interact/issues/16),
-  [#20](https://github.com/AlanBlanchet/interact/issues/20)). A real compositor renders this class
+  navigation that goes black is nudged again ([#14](https://github.com/AlanBlanchet/galaius/issues/14),
+  [#15](https://github.com/AlanBlanchet/galaius/issues/15),
+  [#16](https://github.com/AlanBlanchet/galaius/issues/16),
+  [#20](https://github.com/AlanBlanchet/galaius/issues/20)). A real compositor renders this class
   natively; a sway-headless backend is tracked as the durable fix
-  ([#1](https://github.com/AlanBlanchet/interact/issues/1)).
+  ([#1](https://github.com/AlanBlanchet/galaius/issues/1)).
 
 ## [0.2.3] — 2026-06-13
 
@@ -474,7 +479,7 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
   `launch_app` (or `screenshot`/`run_actions` against `nested:`), exited apps are reaped so they
   don't pile up, and a `reset_sandbox` tool force-clears everything on demand. A genuine app crash
   now surfaces the app's **own stderr** in the message, so "the app failed" reads differently from
-  "the display died" ([#10](https://github.com/AlanBlanchet/interact/issues/10)).
+  "the display died" ([#10](https://github.com/AlanBlanchet/galaius/issues/10)).
 
 ## [0.2.1] — 2026-06-13
 
@@ -486,15 +491,15 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
   making untappable) the nav. `launch_app` now nudges each new window once (a 2px resize) to force a
   full repaint, which then persists; and capture self-heals — a frame that looks unrendered triggers
   one repaint + recapture. Verified live driving aino's GPU UI in the sandbox
-  ([#7](https://github.com/AlanBlanchet/interact/issues/7),
-  [#8](https://github.com/AlanBlanchet/interact/issues/8)). A genuinely pure-black/OLED UI (where
+  ([#7](https://github.com/AlanBlanchet/galaius/issues/7),
+  [#8](https://github.com/AlanBlanchet/galaius/issues/8)). A genuinely pure-black/OLED UI (where
   the repaint changes nothing) is nudged at most once, then left alone, so its scroll isn't reset on
-  every capture ([#9](https://github.com/AlanBlanchet/interact/issues/9)).
+  every capture ([#9](https://github.com/AlanBlanchet/galaius/issues/9)).
 - **Keyboard input now reaches a sandbox window.** The sandbox has no window manager, so nothing
   held the X input focus and typed text/keys went nowhere; `type`/`key` now focus the target first
   via `windowfocus` (XSetInputFocus), which works WM-less — unlike `windowactivate`, which needs
   `_NET_ACTIVE_WINDOW`, the very error that drove a consumer to drive windows by hand
-  ([#6](https://github.com/AlanBlanchet/interact/issues/6)).
+  ([#6](https://github.com/AlanBlanchet/galaius/issues/6)).
 
 ## [0.2.0] — 2026-06-13
 
@@ -504,32 +509,32 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
   each new release tag (each self-skips until its token is configured); the CLI installs from
   GitHub via the one-liner or `uv` on macOS, Linux, and Windows.
 - **`report_issue` tool** — agents (and users) can send a bug / limitation / feedback about
-  interact itself; it opens a GitHub issue (or saves locally as a fallback). The server tells
+  galaius itself; it opens a GitHub issue (or saves locally as a fallback). The server tells
   connecting clients this exists.
 - **`target="screen"` / `screen:<n>`** — capture and act on the whole virtual desktop or a single
   monitor (enumerated via `list_desktop_windows`), with correct multi-monitor input mapping.
 - **Per-step interaction video** — `run_actions(record=True)` captures a frame per step so a video
   model can explain what happened, sampled to a cost bound.
 - **`navigate` accepts a `timeout`** (ms) for slow dev servers that compile routes on first hit —
-  e.g. `timeout=60000` for a cold Next.js route ([#4](https://github.com/AlanBlanchet/interact/issues/4)).
+  e.g. `timeout=60000` for a cold Next.js route ([#4](https://github.com/AlanBlanchet/galaius/issues/4)).
 - **Target a window by id** — `target="wid:<id>"` (decimal or `0x` hex, shown by
-  `list_desktop_windows`) selects exactly when no title is unique ([#5](https://github.com/AlanBlanchet/interact/issues/5)).
+  `list_desktop_windows`) selects exactly when no title is unique ([#5](https://github.com/AlanBlanchet/galaius/issues/5)).
 - **Headless / sandboxed app driving** — `launch_app("<cmd>")` runs an app in an isolated display
   the agent owns (Xephyr, or headless Xvfb), then drive it with `target="nested:<title>"` /
   `target="nested"`. Non-intrusive (never touches the user's windows, cursor, or focus) and
-  occlusion-proof — for apps that fight the WM or won't screen-grab on the real desktop ([#1](https://github.com/AlanBlanchet/interact/issues/1)).
+  occlusion-proof — for apps that fight the WM or won't screen-grab on the real desktop ([#1](https://github.com/AlanBlanchet/galaius/issues/1)).
 - **The server steers agents to the sandbox and reports its version.** Connection instructions now
   tell agents to drive native apps with `launch_app` (never shell out to xdotool) when a window
-  fights the WM or screen-grabs black, and carry `interact vX.Y.Z` — so a stale server (one missing
+  fights the WM or screen-grabs black, and carry `galaius vX.Y.Z` — so a stale server (one missing
   the newer tools) is obvious and the fix is "reconnect," not "reimplement with raw shell."
 
 ### Changed
 
 - **Window targeting prefers an exact title** and refuses to silently guess: several partial
   matches with no exact one return the candidate list so the agent can disambiguate (`"aino"` vs
-  `"aino - Visual Studio Code"`) ([#1](https://github.com/AlanBlanchet/interact/issues/1)).
+  `"aino - Visual Studio Code"`) ([#1](https://github.com/AlanBlanchet/galaius/issues/1)).
 - **`list_desktop_windows` offers connector-name screen targets** (`screen:DP-1`) — stable across
-  sessions, unlike indices that reorder on display-manager restart ([#1](https://github.com/AlanBlanchet/interact/issues/1)).
+  sessions, unlike indices that reorder on display-manager restart ([#1](https://github.com/AlanBlanchet/galaius/issues/1)).
 
 - **Grounding strategy is derived from live model capabilities** (computer-use / GUI-grounding /
   video, read from the model catalog) instead of being hardcoded — native-coordinate models like
@@ -552,32 +557,32 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
   detects an app mid-startup. Verified driving aino's GPU UI in the sandbox.
 - **A moved or backgrounded window is now interactable.** Capture/record raise + activate the
   target window first, so it yields its own pixels instead of whatever buries it — the gap that
-  drove a consumer to run `xdotool windowactivate` by hand ([#1](https://github.com/AlanBlanchet/interact/issues/1)).
+  drove a consumer to run `xdotool windowactivate` by hand ([#1](https://github.com/AlanBlanchet/galaius/issues/1)).
 - **The client-log scan reports its coverage** and takes multiple roots (`--projects-root`
   repeatable), so the dogfood loop can't silently miss a surface a consumer runs from.
 - **VS Code usage panel now live-syncs.** It watches the usage log — which the MCP server writes
   from a separate process — and refreshes instead of freezing at open. It also reads the log under
-  the configured `interact.debug.dir` instead of a hardcoded `~/.interact`, and that setting now
-  maps to the correct `INTERACT_DEBUG_DIR` (it was wired to the screenshot-dump dir and kept in a
+  the configured `galaius.debug.dir` instead of a hardcoded `~/.galaius`, and that setting now
+  maps to the correct `GALAIUS_DEBUG_DIR` (it was wired to the screenshot-dump dir and kept in a
   duplicate env map that defeated the shared settings schema; the extension now uses the schema).
 - **`record(target="screen:N")` crashed** asking xdotool for the geometry of a synthetic screen
   window id; it now grabs the monitor's known region directly, like `screenshot`
-  ([#3](https://github.com/AlanBlanchet/interact/issues/3)).
-- **VS Code zero-config launch** — the extension now runs interact from GitHub via `uvx` instead of
-  failing to resolve it (the bare `interact` name on PyPI is an unrelated package).
+  ([#3](https://github.com/AlanBlanchet/galaius/issues/3)).
+- **VS Code zero-config launch** — the extension now runs galaius from GitHub via `uvx` instead of
+  failing to resolve it (the bare name on PyPI was an unrelated package).
 - **GPU-surface capture** (Android emulator, games, hardware-accelerated video) now reports a clear
   diagnostic instead of returning a black image.
 
 ## [0.1.0] — 2026-06-03
 
 - Initial release: MCP server for browser **and** desktop automation with optional VLM analysis, a
-  unified `interact` CLI + config TUI, and a VS Code extension — usable from any MCP client.
+  unified `galaius` CLI + config TUI, and a VS Code extension — usable from any MCP client.
 
-[Unreleased]: https://github.com/AlanBlanchet/interact/compare/v0.2.5...HEAD
-[0.2.5]: https://github.com/AlanBlanchet/interact/compare/v0.2.4...v0.2.5
-[0.2.4]: https://github.com/AlanBlanchet/interact/compare/v0.2.3...v0.2.4
-[0.2.3]: https://github.com/AlanBlanchet/interact/compare/v0.2.2...v0.2.3
-[0.2.2]: https://github.com/AlanBlanchet/interact/compare/v0.2.1...v0.2.2
-[0.2.1]: https://github.com/AlanBlanchet/interact/compare/v0.2.0...v0.2.1
-[0.2.0]: https://github.com/AlanBlanchet/interact/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/AlanBlanchet/interact/releases/tag/v0.1.0
+[Unreleased]: https://github.com/AlanBlanchet/galaius/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/AlanBlanchet/galaius/compare/v0.2.4...v0.2.5
+[0.2.4]: https://github.com/AlanBlanchet/galaius/compare/v0.2.3...v0.2.4
+[0.2.3]: https://github.com/AlanBlanchet/galaius/compare/v0.2.2...v0.2.3
+[0.2.2]: https://github.com/AlanBlanchet/galaius/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/AlanBlanchet/galaius/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/AlanBlanchet/galaius/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/AlanBlanchet/galaius/releases/tag/v0.1.0

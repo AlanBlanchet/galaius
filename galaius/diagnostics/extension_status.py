@@ -233,7 +233,7 @@ def extension_status() -> dict | None:
 
 def _extension_dir() -> Path:
     """The extension SOURCE in this checkout — where the package is built from."""
-    return Path(__file__).resolve().parents[3] / "clients" / "vscode"
+    return Path(__file__).resolve().parents[2] / "clients" / "vscode"
 
 
 def _run(argv: list[str], cwd: Path | None = None) -> tuple[int, str]:

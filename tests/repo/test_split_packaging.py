@@ -37,7 +37,7 @@ def build_cache():
 def test_root_build_configuration_targets_only_the_new_python_packages() -> None:
     configuration = tomllib.loads((ROOT / "pyproject.toml").read_text())
     assert configuration["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"] == [
-        "src/galaius",
+        "galaius",
     ]
     assert configuration["project"]["scripts"]["galaius"] == "galaius.cli.app:main"
 
@@ -47,7 +47,7 @@ def test_root_wheel_contains_only_the_local_public_import_and_cli(tmp_path: Path
     source.mkdir()
     for name in ("pyproject.toml", "README.md", "LICENSE", ".gitignore"):
         shutil.copyfile(ROOT / name, source / name)
-    shutil.copytree(ROOT / "src", source / "src", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(ROOT / "galaius", source / "galaius", ignore=shutil.ignore_patterns("__pycache__"))
     result = subprocess.run(
         ["uv", "build", "--wheel", "--cache-dir", build_cache, "--out-dir", str(tmp_path)],
         cwd=source,

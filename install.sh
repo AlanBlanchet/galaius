@@ -99,7 +99,7 @@ fetch() {
 
 describe() { printf 'Galaius install (source %s, server %s)' "${GALAIUS_REPO:-${GALAIUS_ARCHIVE:-GitHub main}}" "${GALAIUS_ADDRESS:-not named}"; }
 
-# >>> install report (src/galaius/data/install_report.sh, verbatim: tests/repo/test_install_scripts.py)
+# >>> install report (galaius/data/install_report.sh, verbatim: tests/repo/test_install_scripts.py)
 # The install-report part every Galaius install.sh shares (owner 2026-10-11: « The install script should have
 # error logs in case of errors, and if there is an error that happens we must prompt the user to ask to send »).
 # One copy: galaius/data/install_report.sh; a server inserts it into the script it serves, the repository's

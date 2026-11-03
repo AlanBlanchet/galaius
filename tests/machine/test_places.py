@@ -16,7 +16,7 @@ pytestmark = pytest.mark.usefixtures("directory_backend")
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    for folder in ("projects/app/src", "projects/secret", "Documents", ".ssh", "interact-files"):
+    for folder in ("projects/app/src", "projects/secret", "Documents", ".ssh", "sandbox-files"):
         (tmp_path / folder).mkdir(parents=True)
     (tmp_path / "projects" / "app" / "README.md").write_text("app")
     (tmp_path / "projects" / "id_ed25519").write_text("key")

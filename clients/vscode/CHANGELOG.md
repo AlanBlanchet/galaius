@@ -1,7 +1,7 @@
 # Changelog — Galaius (VS Code)
 
-The extension version tracks the [interact](https://github.com/AlanBlanchet/interact) server
-version. See the [full changelog](https://github.com/AlanBlanchet/interact/blob/main/CHANGELOG.md).
+The extension version tracks the [galaius](https://github.com/AlanBlanchet/galaius) server
+version. See the [full changelog](https://github.com/AlanBlanchet/galaius/blob/main/CHANGELOG.md).
 
 ## 0.43.0 — 2026-09-14
 
@@ -12,7 +12,7 @@ version. See the [full changelog](https://github.com/AlanBlanchet/interact/blob/
 
 ### Added
 
-- **Dashboard hot-reload** — refresh the Interact panel without reloading the VS Code window.
+- **Dashboard hot-reload** — refresh the Galaius panel without reloading the VS Code window.
 - **Benchmarks tab** grouped by Image / GUI grounding / Video, each with a task description and a
   best-model ranking from public leaderboards.
 - **Config sub-panels** (models, API keys, browser, desktop, benchmark data) and a **display
@@ -20,9 +20,9 @@ version. See the [full changelog](https://github.com/AlanBlanchet/interact/blob/
 
 ### Changed
 
-- The zero-config server launch now runs interact from GitHub via `uvx`, fixing startup when
+- The zero-config server launch now runs galaius from GitHub via `uvx`, fixing startup when
   there's no local checkout.
 
 ## [0.1.0] — 2026-06-03
 
-- Initial release: launches the interact MCP server and provides a dashboard + settings UI.
+- Initial release: launches the galaius MCP server and provides a dashboard + settings UI.

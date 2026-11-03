@@ -7,7 +7,7 @@
 
 /** Everything a RESELLER or a release process appends, in no particular order — applied to a
  *  fixpoint below, so stacking them in any sequence still collapses to one name. Python twin is
- *  _SUFFIXES in src/galaius/catalog/models.py; both held to
+ *  _SUFFIXES in galaius/catalog/models.py; both held to
  *  tests/fixtures/bare_model_names.json, since two hand-kept copies of these pairs drifted. */
 const SUFFIXES: RegExp[] = [
   /@.*$/,                                 // a revision pin: @default, @20251001
@@ -21,7 +21,7 @@ const SUFFIXES: RegExp[] = [
 ];
 
 /** The model's own name, without who is reselling it — the TWIN of _bare_model_name in
- *  src/galaius/cli/app.py, and must stay one (agentModels.test.ts asserts the same pairs that
+ *  galaius/cli/app.py, and must stay one (agentModels.test.ts asserts the same pairs that
  *  test does). Exists because the two lists speak different id namespaces: registry ranks
  *  LiteLLM ids (openrouter/anthropic/claude-opus-4.7) while the browse catalogue speaks
  *  OpenRouter (anthropic/claude-opus-4.7), so comparing them literally missed every duplicate by
@@ -254,7 +254,7 @@ export function scoreIndex(rows: readonly ScoredRow[]): Map<string, number> {
 }
 
 /** A leaderboard row's display name reduced to the model it names — the TWIN of
- *  _leaderboard_key in src/galaius/catalog/models.py, and must stay one.
+ *  _leaderboard_key in galaius/catalog/models.py, and must stay one.
  *
  *  Board dresses each model in its effort level (GPT-5.5 (xhigh)), a setting rather than a
  *  different model, so the parenthetical goes and the rest becomes the shape an id reduces to.

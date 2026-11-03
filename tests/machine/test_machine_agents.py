@@ -54,7 +54,7 @@ from galaius_core.identity.sealing import SecretsSeal
 def base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(tmp_path / "registry"))
     root = tmp_path / "dev"
-    for folder in ("interact-files", "project/src/deep", "project/.secret", "other"):
+    for folder in ("sandbox-files", "project/src/deep", "project/.secret", "other"):
         (root / folder).mkdir(parents=True)
     (root / "project" / "outside").symlink_to(tmp_path)
     return root
@@ -99,13 +99,13 @@ def _launches(monkeypatch: pytest.MonkeyPatch, run_id: UUID | None = None) -> li
 
 @pytest.mark.parametrize(("roots", "usable", "refused"), [
     (("project",), ["project"], []),
-    (("interact-files",), [], ["interact-files"]),          # the same folder as a sandbox
+    (("sandbox-files",), [], ["sandbox-files"]),          # the same folder as a sandbox
     ((".",), [], ["."]),                                     # around the sandbox (and the working directory itself)
     (("project/.secret",), [], ["project/.secret"]),         # hidden
     (("../",), [], ["../"]),                                 # above the working directory
 ])
 def test_agent_roots_never_touch_a_sandbox(base: Path, tmp_path: Path, roots, usable, refused) -> None:
-    config = _config(base, places={"interact-files": "sandbox"}).model_copy(update={"agent_roots": roots})
+    config = _config(base, places={"sandbox-files": "sandbox"}).model_copy(update={"agent_roots": roots})
     found, refusals = config.usable_agent_roots()
     assert [path.relative_to(base.resolve()).as_posix() for path in found] == usable
     assert list(refusals) == refused
@@ -1148,7 +1148,7 @@ def test_with_the_fence_on_a_web_start_carries_the_spec_its_turns_are_fenced_by(
     spec = seen[-1]["fence"]
     assert spec.start == base.resolve() / "project" and spec.levels == {"project": "write", "other": "read"} and spec.state.is_relative_to(tmp_path)
     binds = {(bind.target.relative_to(base.resolve()).as_posix(), bind.writable) for bind in spec.build().binds if bind.target.is_relative_to(base.resolve())}
-    assert ("other", False) in binds and not any(target.startswith("interact-files") for target, _ in binds)
+    assert ("other", False) in binds and not any(target.startswith("sandbox-files") for target, _ in binds)
     assert answer.fenced is True and agents.runs.read()[-1].fenced is True
 
 

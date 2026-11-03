@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT))
 
 from galaius.data import PackageData  # noqa: E402
 from galaius.catalog.upstream import UpstreamSource  # noqa: E402

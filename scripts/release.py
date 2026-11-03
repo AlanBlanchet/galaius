@@ -50,7 +50,7 @@ class Publisher:
 
     def build(self, commit: str, released_at: datetime, signer: ReleaseSigner | None) -> Release:
         self.out.mkdir(parents=True, exist_ok=True)
-        stamped = self.source / "src" / "galaius" / "data" / BuildIdentity.path
+        stamped = self.source / "galaius" / "data" / BuildIdentity.path
         version = tomllib.loads((self.source / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
         stamped.write_text(BuildIdentity(version=version, released_at=released_at, commit=commit).model_dump_json() + "\n", encoding="utf-8")
         wheels = (self.wheel(self.source), self.wheel(self.core))

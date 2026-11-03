@@ -4,7 +4,7 @@
  *  spawning and stopping. The panel is a window onto that, which is why a run's status here is
  *  whatever Python derived from the live pid — the extension never guesses liveness itself.
  *
- *  Mirrors galaius.agents.registry (src/galaius/agents/registry.py);
+ *  Mirrors galaius.agents.registry (galaius/agents/registry.py);
  *  tests/config/test_paths.py binds the directory the two agree on.
  */
 import * as fs from "fs";

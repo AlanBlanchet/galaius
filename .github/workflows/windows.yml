@@ -10,7 +10,7 @@ name: windows
 on:
   push:
     branches: [main]
-    paths: [install.ps1, pyproject.toml, uv.lock, "src/**", "tests/**", .github/workflows/windows.yml]
+    paths: [install.ps1, pyproject.toml, uv.lock, "galaius/**", "tests/**", .github/workflows/windows.yml]
   pull_request:
   workflow_dispatch:
 
@@ -153,20 +153,20 @@ jobs:
         run: |
           $password = "Aa1!" + [Guid]::NewGuid().ToString('N')
           $secure = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name interacttest -Password $secure -AccountNeverExpires | Out-Null
+          New-LocalUser -Name galaiustest -Password $secure -AccountNeverExpires | Out-Null
           # galaius's own definition, from the installed build, naming the test user instead of this one.
           $python = Join-Path (uv tool dir).Trim() 'galaius\Scripts\python.exe'
-          & $python -c "from galaius.machine.service import WindowsMachineService as S; print(S().definition().replace(S.user(), r'$env:COMPUTERNAME\interacttest'))" |
+          & $python -c "from galaius.machine.service import WindowsMachineService as S; print(S().definition().replace(S.user(), r'$env:COMPUTERNAME\galaiustest'))" |
             Out-File -Encoding unicode "$env:PUBLIC\task-user.xml"
           Get-Content "$env:PUBLIC\task-user.xml"
           $script = "try { Register-ScheduledTask -TaskName 'Galaius machine test' -Xml (Get-Content -Raw '$env:PUBLIC\task-user.xml') | Out-Null; " +
                     "`$admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole('Administrators'); " +
                     "'registered by ' + [Environment]::UserName + ', administrator: ' + `$admin | Out-File '$env:PUBLIC\result.txt'; " +
                     "Unregister-ScheduledTask -TaskName 'Galaius machine test' -Confirm:`$false } catch { 'refused: ' + `$_ | Out-File '$env:PUBLIC\result.txt' }"
-          $credential = New-Object System.Management.Automation.PSCredential("$env:COMPUTERNAME\interacttest", $secure)
+          $credential = New-Object System.Management.Automation.PSCredential("$env:COMPUTERNAME\galaiustest", $secure)
           Start-Process -FilePath powershell -ArgumentList '-NoProfile', '-Command', $script -Credential $credential -Wait -WorkingDirectory $env:PUBLIC
           Get-Content "$env:PUBLIC\result.txt" | Tee-Object -Variable result
-          if ("$result" -notmatch '^registered by interacttest, administrator: False') { throw "unelevated registration: $result" }
+          if ("$result" -notmatch '^registered by galaiustest, administrator: False') { throw "unelevated registration: $result" }
 
       - name: galaius logout removes the task and the credentials
         run: |
@@ -248,7 +248,7 @@ jobs:
         run: |
           uv sync --frozen --quiet
           $newer = New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\newer"
-          Copy-Item -Recurse src, pyproject.toml, uv.lock, README.md, LICENSE $newer
+          Copy-Item -Recurse galaius, pyproject.toml, uv.lock, README.md, LICENSE $newer
           (Get-Content -Raw "$newer\pyproject.toml") -replace '(?m)^version = "[^"]+"', 'version = "9.9.9"' | Set-Content -NoNewline "$newer\pyproject.toml"
           uv build --wheel --quiet -o "$env:RUNNER_TEMP\wheels" $newer
           uv build --wheel --quiet -o "$env:RUNNER_TEMP\wheels" $env:GALAIUS_CORE_SOURCE

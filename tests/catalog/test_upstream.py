@@ -1,4 +1,4 @@
-"""Tests for src/galaius/catalog/upstream.py."""
+"""Tests for galaius/catalog/upstream.py."""
 
 from __future__ import annotations
 

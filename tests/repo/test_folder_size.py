@@ -13,7 +13,7 @@ from tests.support.paths import REPO
 LIMIT = 20
 # Folders a tool writes, with the tool: their file count follows the upstream, not our layout.
 EXEMPT = {
-    "src/galaius/agents/transport/codex_app_server_schema": "captured upstream Codex schema, written by scripts/refresh_codex_schema_capture.py",
+    "galaius/agents/transport/codex_app_server_schema": "captured upstream Codex schema, written by scripts/refresh_codex_schema_capture.py",
 }
 
 

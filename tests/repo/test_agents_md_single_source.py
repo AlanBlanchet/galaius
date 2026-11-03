@@ -9,7 +9,7 @@ from tests.support.paths import REPO
 
 REPO_ROOT = REPO
 AGENTS_MD = REPO_ROOT / "AGENTS.md"
-CORE_PY = REPO_ROOT / "src/galaius/server/core.py"
+CORE_PY = REPO_ROOT / "galaius/server/core.py"
 
 
 def test_target_routing_rule_points_at_its_source_instead_of_restating_it():

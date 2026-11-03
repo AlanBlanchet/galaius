@@ -1252,7 +1252,7 @@ def test_real_server_two_revisions_cli_sync_and_cache_recreation(tmp_path):
     origin = f'http://127.0.0.1:{port}'
     env = {'PATH': _os.defpath, 'HOME': str(root), 'TMPDIR': str(root), 'PYTHONDONTWRITEBYTECODE': '1',
            'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': _os.devnull,
-           'PYTHONPATH': _os.pathsep.join(filter(None, (_os.environ.get('PYTHONPATH'), str(public / 'src')))),
+           'PYTHONPATH': _os.pathsep.join(filter(None, (_os.environ.get('PYTHONPATH'), str(public)))),
            'GALAIUS_CSRF_SECRET_HEX': 'ab' * 32, 'GALAIUS_MAIL_KEY_HEX': 'cd' * 32,
            'OLLAMA_DISCOVERY': '0', 'BENCHMARK_SCORES': ''}
     with (root / 'server.log').open('w+') as log:

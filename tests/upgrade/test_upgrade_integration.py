@@ -44,8 +44,8 @@ def snapshot(into: Path, version: str, public_pem: bytes) -> Path:
     into.mkdir(parents=True)
     for name in ("pyproject.toml", "uv.lock", "README.md", "LICENSE"):
         shutil.copy2(CHECKOUT / name, into / name)
-    shutil.copytree(CHECKOUT / "src", into / "src", ignore=ignore)
-    keys = into / "src" / "galaius" / "data" / "release-keys"
+    shutil.copytree(CHECKOUT / "galaius", into / "galaius", ignore=ignore)
+    keys = into / "galaius" / "data" / "release-keys"
     shutil.rmtree(keys)
     keys.mkdir()
     (keys / "test.pub").write_bytes(public_pem)

@@ -1,6 +1,6 @@
 name: desktop-host
 
-# The user's own desktop as a target, on a REAL display per OS (src/galaius/desktop/host_desktop.md):
+# The user's own desktop as a target, on a REAL display per OS (galaius/desktop/host_desktop.md):
 # open a window, wait for it, click, wait for its pixels to change and settle, type with OS-level
 # keys, wait for it to go, list monitors, capture one monitor / region / downscaled. Windows and
 # macOS runners are genuine GUI sessions; Linux gets a private Xvfb started by the test itself.
@@ -9,9 +9,9 @@ name: desktop-host
 on:
   push:
     paths:
-      - "src/galaius/desktop/**"
-      - "src/galaius/actions/**"
-      - "src/galaius/server/**"
+      - "galaius/desktop/**"
+      - "galaius/actions/**"
+      - "galaius/server/**"
       - "tests/desktop/backend/test_host_desktop*.py"
       - ".github/workflows/desktop-host.yml"
   pull_request:

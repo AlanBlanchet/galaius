@@ -3,7 +3,7 @@
  *  Deliberately dependency-free (node builtins only, no vscode): the extension host and the
  *  Python parity test (tests/config/test_paths.py) both load this, and pulling in vscode would break
  *  the latter. Mirrors Python's Config.debug_dir / Config.usage_log
- *  (src/galaius/config/settings.py) — the two MUST agree, or the dashboard charts a file
+ *  (galaius/config/settings.py) — the two MUST agree, or the dashboard charts a file
  *  nothing writes.
  */
 import * as os from "os";
