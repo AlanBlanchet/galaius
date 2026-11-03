@@ -1756,10 +1756,11 @@ async def run_agent(
             f"{LAUNCH_STAMP}{agent}; model={candidate_model}; reasoning={candidate_effort}; criterion={required_model}.\n{stale}"
             f"First progress message: [{'community' if community else agent}] followed by your concrete task; then start immediately.\n"
             "You run headless: ending your turn ends this run, and a background job's completion notice never "
-            "reaches it. Wait for a job you started (tests, deploy, generation) with a bounded foreground poll "
-            "loop of at most 10 minutes per call. Waiting on another agent: send your request and end your turn; "
-            "its reply or final report resumes this run (`handback`), so never poll another agent's run. End your "
-            "turn when your own work is finished or handed to an agent.\n\n"
+            "reaches it. Run your own job (tests, build, generation) in the foreground; only one outlasting a "
+            "10-minute call goes to the background, waited on by one foreground loop per call (at most 10 minutes), "
+            "never by repeated short reads of its output. Waiting on another agent (its run, a file it writes): send "
+            "your request and end your turn; its reply or final report resumes this run (`handback`), so never poll "
+            "another agent's run. End your turn when your own work is finished or handed to an agent.\n\n"
         )
 
         def brief_as(child_id: str) -> str:

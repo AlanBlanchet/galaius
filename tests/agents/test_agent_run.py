@@ -149,7 +149,8 @@ async def test_a_headless_run_is_told_to_end_its_turn_instead_of_polling_another
     [brief] = briefs
     assert "send your request and end your turn" in brief
     assert "never poll another agent's run" in brief
-    assert "at most 10 minutes per call" in brief
+    assert "Run your own job (tests, build, generation) in the foreground" in brief
+    assert "never by repeated short reads of its output" in brief
     assert brief.endswith("do a thing")
 
 
