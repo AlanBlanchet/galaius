@@ -366,6 +366,32 @@ async def test_the_normalised_stream_is_kept_current_while_a_run_is_alive(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_a_quiet_run_is_read_again_only_once_its_stream_moves(tmp_path, monkeypatch):
+    """Each working run was re-parsed whole every second, written to or not."""
+    from galaius.agents import registry as reg
+    from galaius.agents.run import mirror_while_alive
+
+    reg.register(run_id="r1", name="a", provider="claude", task="t", pid=None)
+    raw = reg.raw_events_path("r1")
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    line = {"type": "assistant", "session_id": "s", "message": {"role": "assistant", "content": [{"type": "text", "text": "first"}]}}
+    raw.write_text(json.dumps(line) + "\n")
+    reads = []
+    refresh = reg.StreamMirror.refresh
+    monkeypatch.setattr(reg.StreamMirror, "refresh", lambda self: (reads.append(self.run_id), refresh(self))[1])
+    alive = {"value": True}
+    task = asyncio.create_task(mirror_while_alive("r1", lambda: alive["value"], interval=0.01))
+    await asyncio.sleep(0.15)
+    assert len(reads) == 1, "fifteen ticks over an unchanged stream"
+    with raw.open("a") as f:
+        f.write(json.dumps({**line, "message": {**line["message"], "content": [{"type": "text", "text": "second"}]}}) + "\n")
+    await asyncio.sleep(0.1)
+    alive["value"] = False
+    await asyncio.wait_for(task, timeout=2)
+    assert len(reads) == 2 and "second" in reg.events_path("r1").read_text()
+
+
+@pytest.mark.asyncio
 async def test_the_pump_stops_when_the_run_does(tmp_path, monkeypatch):
     from galaius.agents import registry as reg
     from galaius.agents.run import mirror_while_alive

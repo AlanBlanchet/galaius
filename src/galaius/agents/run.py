@@ -1244,15 +1244,20 @@ async def mirror_while_alive(run_id: str, alive, *, interval: float = 1.0) -> No
     reads is produced by ``read_events``. Nothing called it during a run, so a working agent
     looked idle its whole life and "watch the responses arrive" was impossible.
 
-    Cheap by construction: ``read_events`` rewrites the mirror only when content actually changed,
-    so a quiet run costs a parse and no write. Failures are swallowed — this runs beside a live
-    agent, and a transient read must never take its stream down.
+    Read only once its raw stream or messages moved (`stream_signature`), and then only what was appended
+    (`StreamMirror`, as `_mirror_pass`): a whole re-parse each second of every working run was the PC service's
+    largest cost left (2026-11-03). Failures are swallowed — this runs beside a live agent, and a transient read must
+    never take its stream down; the failed run is read whole on its next tick.
     """
+    stream, seen = reg.StreamMirror(run_id), None
     while alive():
         try:
-            reg.read_events(run_id)
+            signature = reg.stream_signature(run_id)
+            if signature != seen:
+                stream.refresh()
+                seen = signature
         except Exception:
-            pass
+            stream, seen = reg.StreamMirror(run_id), None
         await asyncio.sleep(interval)
     with suppress(Exception):
         reg.read_events(run_id)  # last pass so the final turn is not left unmirrored
