@@ -272,7 +272,7 @@ def test_a_new_projection_rewrites_only_the_files_it_changes(tmp_path: Path) -> 
 
     assert (kept.stat().st_ino, kept.read_text()) == (before[kept], "instructions\n")
     assert changed.read_text() == "changed agents\n" and changed.stat().st_ino != before[changed]
-    assert json.loads(state.read_text())["managed"][str(changed)] == hashlib.sha256(b"changed agents\n").hexdigest()
+    assert json.loads(state.read_text())["managed"][str(changed)] == hashlib.sha256(changed.read_bytes()).hexdigest()  # the bytes as written (CRLF on Windows)
 
 
 def test_each_subscription_folder_gets_its_own_clis_projection_and_no_default_login_is_touched(tmp_path: Path) -> None:
