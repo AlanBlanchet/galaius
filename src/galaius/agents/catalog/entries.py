@@ -58,8 +58,9 @@ class AgentInstructionSet(BaseModel):
 
     @staticmethod
     def find_prompt(prompts: tuple[PromptRevision, ...], reference: PromptExecutionRef) -> PromptRevision:
+        # The digest string first: comparing `key` models first ran pydantic's __eq__ 179k times per projection compile (2026-11-03).
         for value in prompts:
-            if value.key == reference.key and value.revision == reference.revision and value.digest == reference.digest:
+            if value.digest == reference.digest and value.revision == reference.revision and value.key == reference.key:
                 return value
         raise CatalogConnectionError("agent has an unresolved exact prompt revision")
 

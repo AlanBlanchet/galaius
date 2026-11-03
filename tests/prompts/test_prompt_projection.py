@@ -253,6 +253,28 @@ def test_installer_switches_only_declared_consumers_and_rejects_unmanaged_collis
         )
 
 
+def test_a_new_projection_rewrites_only_the_files_it_changes(tmp_path: Path) -> None:
+    """Every prompt change re-installed each consumer: a file holding the same bytes is left as it is."""
+    repository = _fixture_repository(tmp_path)
+    home, vscode, state = tmp_path / "home", tmp_path / "vscode", tmp_path / "state" / "installed.json"
+    first = tmp_path / "first"
+    compile_prompt_projection(repository, "HEAD", first, tmp_path / "installed")
+    install_prompt_projection(first, home, vscode, state)
+    kept, changed = home / ".claude" / "CLAUDE.md", home / "AGENTS.md"
+    before = {path: path.stat().st_ino for path in (kept, changed)}
+    generator = repository / "generate.py"
+    generator.write_text(generator.read_text().replace("agents\\n", "changed agents\\n"))
+    commit_all(repository, "change source")
+    second = tmp_path / "second"
+    compile_prompt_projection(repository, "HEAD", second, tmp_path / "installed")
+
+    install_prompt_projection(second, home, vscode, state)
+
+    assert (kept.stat().st_ino, kept.read_text()) == (before[kept], "instructions\n")
+    assert changed.read_text() == "changed agents\n" and changed.stat().st_ino != before[changed]
+    assert json.loads(state.read_text())["managed"][str(changed)] == hashlib.sha256(b"changed agents\n").hexdigest()
+
+
 def test_each_subscription_folder_gets_its_own_clis_projection_and_no_default_login_is_touched(tmp_path: Path) -> None:
     repository = _fixture_repository(tmp_path)
     projection = tmp_path / "projection"

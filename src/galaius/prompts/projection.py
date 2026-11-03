@@ -1,6 +1,8 @@
 """Compile exact committed prompt sources into verified provider projections."""
 
+import copy
 import errno
+import functools
 import hashlib
 import json
 import os
@@ -344,12 +346,9 @@ class ProjectionMetadata(BaseModel):
     galaius: ProjectionRouting | None = None
     paths: tuple[str, ...] = ()
 
-    @classmethod
-    def from_content(cls, content: str):
-        try:
-            return cls.model_validate(_projection_metadata(content))
-        except ValueError as error:
-            raise ValueError("server projection metadata permits only name, description and typed routing") from error
+    @staticmethod
+    def from_content(content: str):
+        return _validated_metadata(content)
 
     @model_validator(mode="after")
     def valid_paths(self):
@@ -358,7 +357,27 @@ class ProjectionMetadata(BaseModel):
         return self
 
 
+#: Distinct prompt contents whose headers are remembered: one compile asked each shared skill's header once per agent
+#: naming it (2026-11-03: 1,597 parses for 112 files, 2 s of CPU at each prompt change). A catalog held 97 (467 KiB):
+#: room for the current one and the last few.
+_HEADERS_REMEMBERED = 256
+
+
+@functools.lru_cache(maxsize=_HEADERS_REMEMBERED)
+def _validated_metadata(content: str) -> ProjectionMetadata:
+    try:
+        return ProjectionMetadata.model_validate(_frontmatter(content))
+    except ValueError as error:
+        raise ValueError("server projection metadata permits only name, description and typed routing") from error
+
+
 def _projection_metadata(content: str) -> dict:
+    """`content`'s front-matter header, a copy each call: callers edit what they get."""
+    return copy.deepcopy(_frontmatter(content))
+
+
+@functools.lru_cache(maxsize=_HEADERS_REMEMBERED)
+def _frontmatter(content: str) -> dict:
     content = content.removeprefix("\ufeff").replace("\r\n", "\n")
     if not content.startswith("---\n"):
         return {}
@@ -636,6 +655,9 @@ def _install_prompt_projection(
                 parent.mkdir(directory.name)
             created_directories.append(directory)
         for index, target in enumerate(ordered):
+            payload = targets.get(target)
+            if payload is not None and _holds(observed[target], payload):
+                continue  # already these bytes: a catalog change rewrote ~90 files in each of 13 folders, 3.5 s of CPU (2026-11-03)
             _require_safe_parent(target, home, vscode_root)
             created_directories.extend(_safe_directory(target.parent, create=True))
             if observed[target] is not None:
@@ -645,7 +667,6 @@ def _install_prompt_projection(
                 if _entry_identity(backup, symlink_parent=target.parent,
                                    symlink_target=adoption.get(target, (None, None))[0]) != observed[target]:
                     raise ValueError("managed prompt target changed during install")
-            payload = targets.get(target)
             if payload is not None:
                 staged = transaction / f"new-{index}"
                 _write_prompt(staged, *payload)
@@ -763,6 +784,12 @@ def _entry_identity(path: Path, *, symlink_parent: Path | None = None, symlink_t
             info = os.fstat(stream.fileno())
             content = stream.read()
     return (info.st_dev, info.st_ino, info.st_mode, hashlib.sha256(content).hexdigest())
+
+
+def _holds(identity: tuple | None, payload: tuple[bytes, int]) -> bool:
+    """Whether a regular file of this `_entry_identity` already is `payload` (its bytes, its mode)."""
+    content, mode = payload
+    return identity is not None and len(identity) == 4 and stat.S_IMODE(identity[2]) == mode and identity[3] == hashlib.sha256(content).hexdigest()
 
 
 def _link_target(path: Path) -> str:
