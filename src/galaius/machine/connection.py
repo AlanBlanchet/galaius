@@ -31,7 +31,7 @@ import httpx
 import websockets
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, field_validator, model_validator
 
-from galaius_core import refusal_of, PcFeature, PcFeatures, AGENT_IMAGES_WIRE, MACHINE_AGENT_REQUESTS, PROJECTS_DIR, PROJECTS_ROOT, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, AgentRefusal, MachineAgentAnswer, MachineRefusal, OwnFault, OwnFaultDoing, OwnFaultKind, Refused, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
+from galaius_core import refusal_of, PcFeature, PcFeatures, AGENT_IMAGES_WIRE, MACHINE_AGENT_REQUESTS, PROJECTS_ROOT, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, AgentRefusal, MachineAgentAnswer, MachineRefusal, OwnFault, OwnFaultDoing, OwnFaultKind, Refused, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
 from galaius import USER_AGENT
 from galaius.host.atomic_file import replace_held_open
 from galaius.prompts import mirror as prompt_mirror
@@ -184,12 +184,12 @@ class MachineConfig(MachineAgentSettings):
         return named | ({PROJECTS_ROOT: projects} if (projects := self.projects_root()) is not None else {})
 
     def projects_root(self) -> Path | None:
-        """`PROJECTS_DIR` beneath the working directory, holding the projects put here from the web
-        (`PROJECTS_ROOT` on the wire; made by the first one), apart from the runner's own folders; None
-        while anything but a plain folder sits there (a link, a junction or a file is never followed)
-        or it holds or sits in one of the runner's own folders."""
-        declared = self.working_directory.resolve() / PROJECTS_DIR
-        if any(declared == folder or folder in declared.parents or declared in folder.parents for folder in self._internal()):
+        """`UserPaths.projects`, holding the projects put here from the web (`PROJECTS_ROOT` on the wire; made
+        by the first one), apart from the runner's own folders; None while anything but a plain folder sits
+        there (a link, a junction or a file is never followed) or it is, holds or sits in one of the runner's
+        own folders (the galaius folder it is made in excepted)."""
+        declared = UserPaths.projects()
+        if any(declared == folder or declared in folder.parents or (folder in declared.parents and folder != declared.parent) for folder in self._internal()):
             return None
         try:
             facts = declared.lstat()

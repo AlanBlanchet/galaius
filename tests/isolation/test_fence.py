@@ -79,8 +79,8 @@ def _spec(home: Path, tmp_path: Path, start: str = "work", levels: dict | None =
     staging = tmp_path / "staging-review"
     staging.mkdir(exist_ok=True)
     (staging / "draft.txt").write_text("draft")
-    return FenceSpec(working_directory=home, levels=LEVELS if levels is None else levels, start=home / start, staging={"review": staging},
-                     state=tmp_path / "state", reviews=tmp_path / "reviews", **{"providers": ("claude",), "egress": AGENT_HOSTS, **fields})
+    return FenceSpec(levels=LEVELS if levels is None else levels, start=home / start, staging={"review": staging},
+                     state=tmp_path / "state", reviews=tmp_path / "reviews", **{"working_directory": home, "providers": ("claude",), "egress": AGENT_HOSTS, **fields})
 
 
 def test_binds_follow_the_levels_and_nothing_else_of_home(home: Path, tmp_path: Path) -> None:
@@ -101,15 +101,16 @@ def test_the_start_folder_must_have_a_level_the_owner_set(home: Path, tmp_path: 
         _spec(home, tmp_path, start="private").build()
 
 
+@pytest.mark.parametrize("working", ["", "work"])   # the working directory: home itself, or a folder below it
 @pytest.mark.parametrize("planted", [False, True])
-def test_a_project_folder_opens_alone_and_never_through_a_link(home: Path, tmp_path: Path, planted: bool) -> None:
-    projects = home / ".galaius-projets"
+def test_a_project_folder_opens_alone_and_never_through_a_link(home: Path, tmp_path: Path, planted: bool, working: str) -> None:
+    projects = home / ".galaius" / "projects"
     (projects / "other").mkdir(parents=True)
     if planted:
         (projects / "aino").symlink_to(home / ".galaius")
     else:
         (projects / "aino").mkdir()
-    spec = _spec(home, tmp_path, start=".galaius-projets/aino", levels={}, project=projects / "aino")
+    spec = _spec(home, tmp_path, start=".galaius/projects/aino", levels={}, project=projects / "aino", working_directory=home / working)
     if planted:
         with pytest.raises(PermissionError, match="plain project folder"):
             spec.build()

@@ -312,8 +312,8 @@ class FenceSpec(BaseModel):
     #: The runner's own folders: never opened.
     internal: tuple[Path, ...] = ()
     start: Path
-    #: The project folder put on this PC from the web (beneath `PROJECTS_ROOT`) that `start` is in:
-    #: written there with no level (the hidden projects folder takes none), its siblings never bound.
+    #: The project folder put on this PC from the web (beneath `PROJECTS_ROOT`, in its owner's home) that `start`
+    #: is in: written there with no level (the hidden projects folder takes none), its siblings never bound.
     project: Path | None = None
     #: `write_on_review` folder -> its staging copy for this run.
     staging: dict[str, Path] = Field(default_factory=dict)
@@ -343,13 +343,17 @@ class FenceSpec(BaseModel):
         try:
             start_parts = self.start.resolve().relative_to(base).parts
         except ValueError:
-            raise PermissionError(f"{self.start} is outside this PC's working directory") from None
+            # A project lives in its owner's home (`UserPaths.projects`), whatever the working directory.
+            if self.project is None:
+                raise PermissionError(f"{self.start} is outside this PC's working directory") from None
+            start_parts = ()
         opened = sorted(places.in_force("read").items(), key=lambda item: len(split(item[0])))
         if self.project is not None:
             facts = self.project.lstat()
             if not stat.S_ISDIR(facts.st_mode) or PinnedDirectory.link_like(facts) or self.project.resolve() != self.project or self.project not in (self.start.resolve(), *self.start.resolve().parents):
                 raise AgentRefused("fence_closed", f"{self.start} is not inside the plain project folder {self.project}")
-            opened.append((self.project.relative_to(base).as_posix(), (self.project, "write")))
+            anchor = base if self.project.is_relative_to(base) else home
+            opened.append((self.project.relative_to(anchor).as_posix(), (self.project, "write")))
         elif start_parts and LEVEL_RANK[places.reach(start_parts)] < LEVEL_RANK["read"]:
             raise AgentRefused("fence_closed", f"no level opens {'/'.join(start_parts)} to agents; its owner sets one on this PC with `galaius machine places`")
         binds, emptied, blanked, guards = [], [], [], []

@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from typing import ClassVar
 
+from galaius_core import PROJECTS_DIR
+
 
 class UserPaths:
     """This user's galaius folders."""
@@ -43,6 +45,12 @@ class UserPaths:
         (`galaius.agents.limits.subscriptions`): `SUBSCRIPTIONS_OVERRIDE` when set, else `~/.galaius/subscriptions`."""
         override = os.environ.get(UserPaths.SUBSCRIPTIONS_OVERRIDE)
         return Path(override).expanduser() if override else Path.home() / ".galaius" / "subscriptions"
+
+    @staticmethod
+    def projects() -> Path:
+        """The folder holding the projects put on this PC from the web (`PROJECTS_ROOT` on the wire):
+        `PROJECTS_DIR` of the home folder (`~/.galaius/projects`, `%USERPROFILE%\\.galaius\\projects` on Windows)."""
+        return Path.home().resolve().joinpath(*PROJECTS_DIR.split("/"))
 
     @staticmethod
     def launcher() -> Path | None:

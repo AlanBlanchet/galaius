@@ -879,17 +879,15 @@ class MachineAgents(BaseModel):
         if self.places is None or self.reviews is None:
             raise AgentRefused("fence_broken", "the agent fence is on but this runner holds no levels")
         places, base = self.places, self.places.base
-        parts = folder.relative_to(base).parts
-        project = None
-        if root == PROJECTS_ROOT:   # one project folder written, no level (`FenceSpec.project`)
+        project, staging, review = None, {}, None
+        if root == PROJECTS_ROOT:   # one project folder written, no level (`FenceSpec.project`), in its owner's home
             inside = folder.relative_to(self.roots[root]).parts
             if not inside:
                 raise PermissionError("with the fence on, an agent starts inside one project folder, never in the projects folder itself")
             project = self.roots[root] / inside[0]
-        elif LEVEL_RANK[places.reach(parts)] < LEVEL_RANK["read"]:
+        elif LEVEL_RANK[places.reach(parts := folder.relative_to(base).parts)] < LEVEL_RANK["read"]:
             raise AgentRefused("fence_closed", f"no level opens {'/'.join(parts)} to agents; with the fence on, its owner sets one there first (`galaius machine places {root} write`)")
-        staging, review = {}, None
-        if project is None and places.reach(parts) == "write_on_review":
+        elif places.reach(parts) == "write_on_review":
             place, _ = places.place_of(parts)
             review, staging[place] = self.reviews.stage_copy(place, base.joinpath(*split(place)), origin="agent", run_id=None)
         try:

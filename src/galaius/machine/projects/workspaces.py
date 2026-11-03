@@ -38,7 +38,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict
 
 from galaius_core import (
-    PROJECTS_DIR, PROJECTS_ROOT, GitRemote, MachineWorkspaceJob, WorkspaceArchive, WorkspaceCreateRequest, WorkspaceFailure, WorkspacePack, WorkspacePackRequest,
+    PROJECTS_ROOT, GitRemote, MachineWorkspaceJob, WorkspaceArchive, WorkspaceCreateRequest, WorkspaceFailure, WorkspacePack, WorkspacePackRequest,
     WorkspacePrepareRequest, WorkspaceRefresh, WorkspaceSpec, WorkspaceUpload,
 )
 from galaius.host.file_lock import exclusive
@@ -58,7 +58,7 @@ FILE_ATTRIBUTE_HIDDEN = 0x2
 def unusable(root: str) -> str:
     """Why agent root `root` is not one here: the projects folder named by what sits in its place."""
     if root == PROJECTS_ROOT:
-        return f"the projects folder {PROJECTS_DIR} is not a plain folder on this computer (a link, a junction or a file is there, or it holds galaius's own folders)"
+        return f"the projects folder {UserPaths.projects()} is not a plain folder on this computer (a link, a junction or a file is there, or it holds galaius's own folders)"
     return f"{root!r} is not an agent folder on this computer"
 
 
@@ -178,17 +178,24 @@ class MachineWorkspaces(BaseModel):
             raise
         return measure
 
-    def _parts(self, root: str) -> tuple[str, ...]:
-        """Agent root `root`'s folder names below the working directory (PermissionError when it is none here)."""
-        base = self.roots.get(root)
-        if base is None:
+    def _walk(self, root: str) -> tuple[Path, tuple[str, ...]]:
+        """Agent root `root` as (the folder it is walked from, its folder names below it): the working directory,
+        else the home folder (the projects folder, `UserPaths.projects`). Refused when it is no agent root here."""
+        folder = self.roots.get(root)
+        anchor = next((base for base in (self.working_directory.resolve(), Path.home().resolve()) if folder is not None and base in folder.parents), None)
+        if folder is None or anchor is None:
             raise AgentRefused("folder_closed", unusable(root))
-        return base.relative_to(self.working_directory.resolve()).parts
+        return anchor, folder.relative_to(anchor).parts
+
+    def _open(self, root: str, create: bool = False) -> contextlib.AbstractContextManager[PinnedDirectory]:
+        """Agent root `root`'s folder, walked from its anchor without a link or junction (`_walk`)."""
+        anchor, parts = self._walk(root)
+        return PinnedDirectory.open(anchor, *parts, create=create)
 
     def _room(self, root: str, space: bool = True) -> None:
         """Refused when `root` is not an agent root here, or (`space`) its disk is nearly full. The
         projects folder (`PROJECTS_ROOT`) is made by the first project put there, hidden on Windows too."""
-        with PinnedDirectory.open(self.working_directory.resolve(), *self._parts(root), create=root == PROJECTS_ROOT) as folder:
+        with self._open(root, create=root == PROJECTS_ROOT) as folder:
             if folder.created and sys.platform == "win32" and not ctypes.windll.kernel32.SetFileAttributesW(str(self.roots[root]), FILE_ATTRIBUTE_HIDDEN):
                 logger.warning("the projects folder %s could not be hidden: Explorer shows it", self.roots[root])
         if space and shutil.disk_usage(self.roots[root]).free < self.disk_floor:
@@ -196,10 +203,10 @@ class MachineWorkspaces(BaseModel):
 
     def _placed(self, root: str, name: str, place: Callable[[PinnedDirectory, str], None]) -> str:
         """`place(root folder, candidate)` with the first of `WorkspaceSpec.candidates(name)` it can
-        take, the root walked from the working directory without a link or junction; the name it
+        take, the root walked without a link or junction (`_open`); the name it
         took. `place` raises FileExistsError when the candidate is taken (`PinnedDirectory.mkdir`,
         `PinnedDirectory.move`): the next one is tried, nothing is ever replaced."""
-        with PinnedDirectory.open(self.working_directory.resolve(), *self._parts(root)) as folder:
+        with self._open(root) as folder:
             for candidate in WorkspaceSpec.candidates(name):
                 try:
                     place(folder, candidate)
@@ -351,7 +358,7 @@ class MachineWorkspaces(BaseModel):
         return f".{job.id}.partial"
 
     def _discard(self, job: MachineWorkspaceJob) -> None:
-        with contextlib.suppress(OSError), PinnedDirectory.open(self.working_directory.resolve(), *self._parts(job.root)) as root:
+        with contextlib.suppress(OSError), self._open(job.root) as root:
             if self._partial(job) in root.names():
                 root.rmtree(self._partial(job))
 
@@ -428,14 +435,14 @@ class MachineWorkspaces(BaseModel):
         """The copy downloaded (`done` recorded part by part), its files written into the job's
         hidden partial folder through `PinnedDirectory`, then moved to the first free name: never
         over anything there, nothing left behind on a failure."""
-        root_parts, partial = self._parts(job.root), self._partial(job)
+        (anchor, root_parts), partial = self._walk(job.root), self._partial(job)
         received = UserPaths.data() / "transfers" / f"{archive.transfer}.tar.gz"
         try:
             received.parent.mkdir(parents=True, exist_ok=True)
             self.transfers.download(archive, received, lambda done: self.jobs.put(job.model_copy(update={"done": done})))
-            with PinnedDirectory.open(self.working_directory.resolve(), *root_parts) as root:
+            with self._open(job.root) as root:
                 root.mkdir(partial, 0o755)
-            WorkspaceArchiveReader(archive=archive, base=self.working_directory.resolve(), parts=(*root_parts, partial)).extract(received)
+            WorkspaceArchiveReader(archive=archive, base=anchor, parts=(*root_parts, partial)).extract(received)
             name = self._placed(job.root, job.name, lambda root, name: root.move(partial, root, name))
         except BaseException:
             self._discard(job)
