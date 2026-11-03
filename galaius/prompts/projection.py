@@ -786,10 +786,15 @@ def _entry_identity(path: Path, *, symlink_parent: Path | None = None, symlink_t
     return (info.st_dev, info.st_ino, info.st_mode, hashlib.sha256(content).hexdigest())
 
 
+#: The mode bits a file keeps here: Windows keeps only whether it may be written (`chmod` 0o644 reads back 0o666).
+_KEPT_MODE_BITS = stat.S_IWRITE if os.name == "nt" else 0o7777
+
+
 def _holds(identity: tuple | None, payload: tuple[bytes, int]) -> bool:
-    """Whether a regular file of this `_entry_identity` already is `payload` (its bytes, its mode)."""
+    """Whether a regular file of this `_entry_identity` already is `payload` (its bytes, its mode as this system keeps it)."""
     content, mode = payload
-    return identity is not None and len(identity) == 4 and stat.S_IMODE(identity[2]) == mode and identity[3] == hashlib.sha256(content).hexdigest()
+    return (identity is not None and len(identity) == 4 and stat.S_IMODE(identity[2]) & _KEPT_MODE_BITS == mode & _KEPT_MODE_BITS
+            and identity[3] == hashlib.sha256(content).hexdigest())
 
 
 def _link_target(path: Path) -> str:
