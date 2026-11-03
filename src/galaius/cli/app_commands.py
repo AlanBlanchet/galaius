@@ -1378,6 +1378,12 @@ def agents_models(
         print(f"{row['score']:5.1f}  {row['id']}{also}{stands_for}")
 
 
+def _switched_off(ranking: Ranking, policy: Policy) -> list[str]:
+    """Providers of this ranking that policy switches off. When it names every candidate's, the
+    role cannot start at all — said where the rule is shown, never first at the refused spawn."""
+    return list(dict.fromkeys(item.provider for item in ranking.candidates if not policy.provider_active(item.provider)))
+
+
 @agents_app.command(name="policy")
 def agents_policy(json_out: bool = False) -> None:
     """Active role policy: server catalog when configured, otherwise local policy.
@@ -1409,6 +1415,7 @@ def agents_policy(json_out: bool = False) -> None:
                 "name": agent, "rule": policy.agents[agent], "criterion": is_criterion(rule),
                 "resolves": resolves, "why": why,
                 "ranked": [candidate.model_dump() for candidate in ranking.candidates[:3]],
+                "switched_off": _switched_off(ranking, policy),
                 "dropped": [str(item) for item in ranking.dropped],
                 "providers": _per_vendor(ranking, policy) if is_criterion(rule) else {},
             })
@@ -1438,7 +1445,13 @@ def agents_policy(json_out: bool = False) -> None:
             if is_criterion(resolved):
                 try:
                     ranking = rank(resolved, dict(os.environ), providers=list(agent_providers.PROVIDERS.values()), weights=policy.weights_for(agent), role=agent, policy=policy)
-                    note = "  ranked: " + " → ".join(f"{item.provider}/{item.model}" for item in ranking.candidates[:3]) + " (availability checked at start)"
+                    off = _switched_off(ranking, policy)
+                    shown_ranked = " → ".join(f"{item.provider}/{item.model}" + (" (off)" if item.provider in off else "")
+                                              for item in ranking.candidates[:3])
+                    if off and all(item.provider in off for item in ranking.candidates):
+                        note = f"  ⇒ NOTHING CAN START: ranked {shown_ranked}; provider {', '.join(off)} switched off"
+                    else:
+                        note = f"  ranked: {shown_ranked} (availability checked at start)"
                 except ModelUnavailable as err:
                     note = "  ⇒ NOTHING (" + str(err).splitlines()[0].rstrip(":") + ")"
 

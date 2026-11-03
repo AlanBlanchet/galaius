@@ -202,6 +202,25 @@ def test_policy_shows_what_each_agent_resolves_to(cli_policy, capsys):
     assert "availability checked at start" in line
 
 
+def test_a_role_no_switched_on_provider_can_run_says_so_in_the_policy(cli_policy, capsys):
+    """2026-11-03: every coding role ranked only a Codex model while Codex was off; the policy
+    printed it as an ordinary ranking and each spawn was refused. Zero startable candidates is
+    shown where the rule is, in both the text and the panel's JSON."""
+    from galaius.agents.policy import Policy
+    from galaius.agents.providers import PROVIDERS
+    from galaius.cli.app_commands import agents_policy
+
+    for provider in PROVIDERS:
+        Policy.load(cli_policy).set_provider_active(provider, False, cli_policy)
+
+    agents_policy()
+    line = next(l for l in capsys.readouterr().out.splitlines() if l.strip().startswith("visual-critic"))
+    assert "NOTHING CAN START" in line and "(off)" in line, line
+    agents_policy(json_out=True)
+    row = next(a for a in json.loads(capsys.readouterr().out)["agents"] if a["name"] == "visual-critic")
+    assert row["switched_off"] and {c["provider"] for c in row["ranked"]} <= set(row["switched_off"])
+
+
 def test_providers_toggle_from_the_cli(cli_policy, capsys):
     """"chose if we activate the agents or not for a provider" — one command, and it persists."""
     from galaius.agents.policy import Policy

@@ -177,16 +177,22 @@ def _bench_entries(bench: Benchmark) -> list[PublishedEntry]:
     return [entry for entry in published.entries if entry.qualifies(published.freshness)]
 
 
+def _bench_row(bench: Benchmark, model: Model) -> PublishedEntry | None:
+    """The published row naming this model. Bound by its as-published name: the stored
+    `model_id` is a hand-kept second spelling (`claude-opus-5-5` while the catalog registers
+    `claude-opus-5.5`), never the key."""
+    return next((entry for entry in _bench_entries(bench)
+                 if (bound := Model.match_published(entry.model_name)) is not None and bound.id == model.id),
+                None)
+
+
 def _bench_reader(bench: Benchmark) -> Callable[[Model], float | None]:
     def read(model: Model) -> float | None:
         measured = bench.score_for(model)
         if measured is not None:
             return measured
-        for entry in _bench_entries(bench):
-            scored = Model.by_id(entry.model_id) if entry.model_id else None
-            if scored is not None and scored.id == model.id:
-                return entry.normalized_score
-        return None
+        entry = _bench_row(bench, model)
+        return entry.normalized_score if entry is not None else None
 
     return read
 
@@ -206,14 +212,8 @@ def _board_measured(model: Model) -> bool:
 
 def _bench_measured(bench: Benchmark) -> Callable[[Model], bool] | None:
     """Whether this benchmark's source or published table lists the model."""
-    from galaius.catalog.models import bare_model_name
-
     def listed(model: Model) -> bool:
-        if bench.score_for(model) is not None:
-            return True
-        key = bare_model_name(model.id)
-        return any(bare_model_name(entry.model_id or entry.model_name) == key
-                   for entry in _bench_entries(bench))
+        return bench.score_for(model) is not None or _bench_row(bench, model) is not None
 
     return listed
 
