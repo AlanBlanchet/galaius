@@ -120,13 +120,15 @@ class Runtime(BaseModel):
         except (OSError, ValidationError):
             return None
 
-    def order(self) -> ReleaseOrder | None:
-        receipt = self.receipt()
-        return receipt.build if receipt is not None else None
+    def order(self) -> BuildIdentity | None:
+        """Its build: the store's receipt, else (this process's own install, which no store made) the
+        build stamped in its wheel."""
+        if (receipt := self.receipt()) is not None:
+            return receipt.build
+        return BuildIdentity.installed() if self.path == Runtime.own().path else None
 
     def label(self) -> str:
-        receipt = self.receipt()
-        return receipt.build.label() if receipt is not None and receipt.build is not None else self.path.name
+        return order.label() if (order := self.order()) is not None else self.path.name
 
 
 #: Where a runtime's wheels came from: the signed-in server, GitHub releases, a person's own build.
@@ -166,6 +168,9 @@ class Pointer(BaseModel):
     previous: Path | None = None
     floor: ReleaseOrder | None = None
     failed: tuple[str, ...] = ()
+    #: The active runtime is a person's local choice (`galaius upgrade use`, a pin): a newer
+    #: install never takes its place by itself.
+    chosen: bool = False
     generation: int = 0
 
 
@@ -318,7 +323,7 @@ class RuntimeStore(BaseModel):
                 raise ValueError(f"{runtime.label()} is older than {current.floor.label()}, the newest release this computer ran")
             before = current.active or Runtime.own().path
             floor = order if order is not None and (current.floor is None or current.floor < order) else current.floor
-            return current.model_copy(update={"active": runtime.path, "previous": before if before != runtime.path else current.previous, "floor": floor})
+            return current.model_copy(update={"active": runtime.path, "previous": before if before != runtime.path else current.previous, "floor": floor, "chosen": explicit})
 
         pointer = self._update(change)
         self.record("activated", f"{runtime.label()} is now the active runtime" + (" (chosen locally)" if explicit else ""))

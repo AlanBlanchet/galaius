@@ -74,6 +74,7 @@ from galaius.isolation import gpu_scrub
 from galaius.inference import user_models
 from galaius.isolation.sandbox import run_pooled
 from galaius.host.paths import UserPaths
+from galaius.upgrade.release import BuildIdentity
 from galaius.upgrade.quiet import QuietPoint, UpgradeReady
 from galaius.upgrade.store import RuntimeStore
 from galaius.host.pinned_directory import PinnedDirectory
@@ -2290,9 +2291,11 @@ class MachineRunner:
     def _beat(self, connected: MachineConfig) -> dict[str, object]:
         """What every hello and heartbeat says: this PC's runtimes, resources, its file roots and
         agent settings as its machine file says NOW (a change made here reaches the server with the
-        next beat), and whether work of its own is going on (`busy`)."""
+        next beat), whether work of its own is going on (`busy`) and the build it runs (`build`: none
+        from a source checkout), so its server knows which release each PC is on."""
         current = self._current_config(connected)
-        return {"runtimes": self._runtimes(current), "accelerators": self._accelerators(), "functions": self._functions(), "resources": self._resources(current.working_directory),
+        build = BuildIdentity.installed()
+        return {"build": build.model_dump(mode="json") if build is not None else None, "runtimes": self._runtimes(current), "accelerators": self._accelerators(), "functions": self._functions(), "resources": self._resources(current.working_directory),
                 "file_roots": current.reported_file_roots(), "agent_settings": current.agent_state(self._settings_detail, self._settings_refused).model_dump(mode="json"),
                 "busy": self.busy()}
 

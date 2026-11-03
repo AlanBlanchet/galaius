@@ -99,3 +99,20 @@ def test_a_windowless_start_with_no_stdout_still_hands_off(store: RuntimeStore) 
     script = "import sys; sys.stdout = sys.stderr = None; sys.argv = ['galaius', 'machine', 'service', 'run']; from galaius.cli.app import main; main()"
     ran = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=60)
     assert ran.stdout.strip() == "0.9.0 ran machine service run", ran.stderr
+
+
+@pytest.mark.parametrize(("own_minutes", "chosen", "runs_here"), [
+    (5, False, True),   # the install line run again with a newer build: it becomes the active runtime
+    (1, False, False),  # an older install keeps handing off to the newer active runtime
+    (5, True, False),   # a runtime a person chose locally stays, whatever is installed later
+])
+def test_an_install_newer_than_the_active_runtime_takes_its_place(store: RuntimeStore, monkeypatch, own_minutes: int, chosen: bool, runs_here: bool) -> None:
+    """Owner 2026-11-03: « The windows PC has the same error as before » after the install line ran again: the
+    reinstall handed every command to the older active runtime, the broken one, which could never upgrade itself."""
+    from galaius.upgrade.handoff import Handoff
+    store.activate(fake(store, "0.9.0", 3), explicit=chosen)
+    mine = BuildIdentity(version="0.9.0", released_at=datetime(2026, 9, 1, tzinfo=UTC) + timedelta(minutes=own_minutes), commit=f"{own_minutes:07x}")
+    monkeypatch.setattr(BuildIdentity, "installed", classmethod(lambda cls: mine))
+    target = Handoff(store=store).target(("agents", "list"), long_lived=False)
+    assert (target is None) is runs_here
+    assert (store.pointer().active == Runtime.own().path) is runs_here

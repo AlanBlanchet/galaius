@@ -1,8 +1,8 @@
 """Every galaius command runs the ACTIVE runtime's code, whatever program started it.
 
-An installer puts one `galaius` on the computer (uv's tool install) and never touches it again;
-upgrades land in the runtime store. So the command line is handed to the active runtime before
-anything else runs: POSIX replaces this process (`execv`, same pid: a service manager or terminal
+An installer puts one `galaius` on the computer (uv's tool install); upgrades land in the runtime
+store. So the command line is handed to the active runtime before anything else runs, unless this
+install is the newer build (the install line run again: it becomes the active runtime): POSIX replaces this process (`execv`, same pid: a service manager or terminal
 sees nothing), Windows runs it as a child and waits, passing its exit code on, and starts it again
 when a supervisor in it asks to become a newer runtime's (`EXIT_HANDOVER`). `galaius upgrade` never
 hands off: it is how a person repairs a broken active runtime."""
@@ -73,10 +73,26 @@ class Handoff(BaseModel):
             return None
         if (back := self.store.failed_handover()) is not None:
             print(f"galaius: the newest runtime never started as a supervisor; back on {back.label()}", file=sys.stderr)
-        active = self.store.active()
-        if active.path != Runtime.own().path:
+        active, own = self.store.active(), Runtime.own()
+        if active.path != own.path and self.supersedes(own, active):
+            try:
+                self.store.activate(own)
+                active = own
+            except ValueError:  # a newer release got activated meanwhile: it runs
+                active = self.store.active()
+        if active.path != own.path:
             return active
         return active if long_lived and sys.platform == "win32" else None
+
+    def supersedes(self, own: Runtime, active: Runtime) -> bool:
+        """`own` (an install line run again, uv's tool install) is a newer build than the active
+        runtime, which a person did not choose, and not older than the newest this computer ran: it
+        becomes the active one. Otherwise the reinstall would keep running the older active runtime's
+        code, a broken one included, which then never upgrades either (its supervisor no longer starts)."""
+        mine, theirs, pointer = own.order(), active.order(), self.store.pointer()
+        if mine is None or theirs is None or pointer.chosen or not theirs < mine:
+            return False
+        return pointer.floor is None or pointer.floor <= mine
 
     @staticmethod
     def flushed() -> None:
