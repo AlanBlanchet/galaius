@@ -17,14 +17,16 @@ from tests.support.models import catalog_of, model
 NEWEST = ("claude-opus-5-5", "claude-fable-5-1", "gpt-6-astra")
 
 
-@pytest.fixture(params=["-", "."], ids=["dashed", "dotted"])
+@pytest.fixture(params=[
+    {i: i for i in NEWEST},
+    {"claude-opus-5-5": "claude-opus-5.5", "claude-fable-5-1": "claude-fable-5.1", "gpt-6-astra": "gpt-6-astra"},
+], ids=["dashed", "dotted"])
 def newest(request):
     """The newest models as each catalog spells them — the bundled table stores `claude-opus-5-5`,
     the live catalog registers `claude-opus-5.5` — keyed by the stored id. A row bound by its stored
     id alone scores only `gpt-6-astra` (no version separator to differ) under the dotted catalog:
     every `aa.coding_agent_index` role then ranks a Codex model alone (2026-11-03)."""
-    spelled = {i: "-".join(i.split("-")[:-1]) + request.param + i.split("-")[-1] if i.startswith("claude") else i
-               for i in NEWEST}
+    spelled = request.param
     with catalog_of(*(model(spelled[i], provider="p", input_cost=1.0, output_cost=2.0) for i in NEWEST)):
         yield spelled
 

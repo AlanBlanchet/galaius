@@ -44,7 +44,7 @@ from galaius.catalog import models as model_catalog
 from galaius.inference import ollama
 from galaius.models.registry import Benchmark, Model, TokenMix
 from galaius.models.capability import ModelCapability
-from galaius.catalog.published import PublishedEntry
+from galaius.catalog.published import PublishedEntry, PublishedTable
 from galaius.catalog.ttl_cache import TTLCache
 
 
@@ -165,25 +165,36 @@ def _bench_entries(bench: Benchmark) -> list[PublishedEntry]:
     its percentile reads against must come off the SAME table, or `90%` is the 90th percentile of
     a board nobody on screen was ever scored on.
     """
-    live = benchmark_tables.load_tables().get(bench.id)
-    published = (
-        live
-        if live is not None
-        and (bench.published is None or live.retrieved >= bench.published.retrieved)
-        else bench.published
-    )
+    published = _bench_table(bench)
     if published is None:
         return []
     return [entry for entry in published.entries if entry.qualifies(published.freshness)]
 
 
+def _bench_table(bench: Benchmark) -> PublishedTable | None:
+    live = benchmark_tables.load_tables().get(bench.id)
+    return (
+        live
+        if live is not None
+        and (bench.published is None or live.retrieved >= bench.published.retrieved)
+        else bench.published
+    )
+
+
+_BOUND_ROWS: dict[str, tuple[PublishedTable, dict[str, PublishedEntry]]] = {}
+
+
 def _bench_row(bench: Benchmark, model: Model) -> PublishedEntry | None:
-    """The published row naming this model. Bound by its as-published name: the stored
-    `model_id` is a hand-kept second spelling (`claude-opus-5-5` while the catalog registers
-    `claude-opus-5.5`), never the key."""
-    return next((entry for entry in _bench_entries(bench)
-                 if (bound := Model.match_published(entry.model_name)) is not None and bound.id == model.id),
-                None)
+    """The published row naming this model. Bound by its as-published name (`Model.published_key`):
+    the stored `model_id` is a hand-kept second spelling (`claude-opus-5-5` while the catalog
+    registers `claude-opus-5.5`), never the key. Every reseller copy of a model shares its row."""
+    table = _bench_table(bench)
+    if table is None:
+        return None
+    held = _BOUND_ROWS.get(bench.id)
+    if held is None or held[0] is not table:   # a live table landing after import replaces the bound one
+        held = _BOUND_ROWS[bench.id] = (table, {Model.published_key(entry.model_name): entry for entry in _bench_entries(bench)})
+    return held[1].get(model.published_id_key)
 
 
 def _bench_reader(bench: Benchmark) -> Callable[[Model], float | None]:
@@ -212,10 +223,8 @@ def _board_measured(model: Model) -> bool:
 
 def _bench_measured(bench: Benchmark) -> Callable[[Model], bool] | None:
     """Whether this benchmark's source or published table lists the model."""
-    def listed(model: Model) -> bool:
-        return bench.score_for(model) is not None or _bench_row(bench, model) is not None
-
-    return listed
+    read = _bench_reader(bench)
+    return lambda model: read(model) is not None
 
 
 def _bench_population(bench: Benchmark) -> Callable[[], list[float]]:

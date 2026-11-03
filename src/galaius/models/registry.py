@@ -377,16 +377,21 @@ class Model(RegistryMixin, BaseModel):
             return None
         return score / cost
 
+    @staticmethod
+    def published_key(name: str) -> str:
+        """The identity a published row name (`Claude Opus 5.5 (max)`) and a bare model id
+        (`claude-opus-5.5`, `claude-opus-5-5`) share: no qualifier, lowercase, letters and digits."""
+        return re.sub(r"[^a-z0-9]", "", re.sub(r"\s*\(.*$", "", name).lower())
+
+    @property
+    def published_id_key(self) -> str:
+        return self.published_key(self.id.split("/", 1)[-1])
+
     @classmethod
     def match_published(cls, name: str) -> "Model | None":
         """Match only an exact normalized model identity; substrings silently misroute models."""
-        needle = re.sub(r"\s*\(.*$", "", name).lower()
-        needle = re.sub(r"[^a-z0-9]", "", needle)
-        for m in cls.registry():
-            bare = re.sub(r"[^a-z0-9]", "", m.id.split("/", 1)[-1].lower())
-            if needle == bare:
-                return m
-        return None
+        needle = cls.published_key(name)
+        return next((m for m in cls.registry() if m.published_id_key == needle), None)
 
     @classmethod
     def by_capability(
