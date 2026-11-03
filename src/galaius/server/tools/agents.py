@@ -10,7 +10,8 @@ connected.
 import asyncio
 from pathlib import Path
 from galaius.account.caller import Caller
-from galaius_core import AgentRevisionRef, CommunityKind
+from galaius_core import CRITICALITIES, AgentRevisionRef, Criticality, CommunityKind, OwnerQuestion, QuestionOption
+from pydantic import ValidationError
 
 from galaius.agents import messaging, registry as reg
 from galaius.agents import agent_queue
@@ -392,6 +393,51 @@ async def agent_send(run_id: str, message: str, wait: bool = False, fyi: bool = 
     if delivery.state == "replied" and (answered := await asyncio.to_thread(reg.get_run, delivery.run_id)) is not None:
         await asyncio.to_thread(handback.collected, messaging.sender_id(), [handback.Report.of(answered)])
     return f"{said}\n{reply}" if waiting else reply
+
+
+def _ask(question: str, options: list[QuestionOption], recommended: int, criticality: Criticality, reason: str, allow_custom: bool) -> str:
+    """`ask_owner`'s posting (a record write): what the asking agent reads back, a refusal included. The asker is the run
+    whose process scope the caller lives in (`messaging.asking_run`): no environment variable it could clear moves it."""
+    if Caller.current().unowned():
+        return f"ERROR: {messaging.UNOWNED}"
+    if (run_id := messaging.asking_run()) is None:
+        return "ERROR: this is the owner's own conversation: he reads you here, ask him in your answer."
+    try:
+        posted = OwnerQuestion(question=question, options=tuple(options), recommended=recommended, criticality=criticality, reason=reason,
+                               allow_custom=allow_custom)
+    except ValidationError as error:
+        said = "; ".join(f"{'.'.join(map(str, problem['loc']))}: {problem['msg']}" for problem in error.errors())
+        return (f"ERROR: not asked: {said}. Only these reasons reach the owner: {', '.join(CRITICALITIES)}; anything else you decide "
+                "yourself: take the reversible, conventional option, say it in one line, keep working.")
+    try:
+        reg.ask_owner(run_id, posted)
+    except reg.QuestionRefused as refused:
+        return f"ERROR: not asked: {refused}."
+    return (f"Asked the owner: question {posted.short}, a card in his conversation with your options and a notification on his "
+            "devices. Do not wait for it: keep working on everything that does not depend on it, and end your turn when that is "
+            f"done. His answer arrives later as a message from him opening « [question {posted.short}] »; act on it then.")
+
+
+@mcp.tool(category="agents")
+@instrumented
+async def ask_owner(question: str, options: list[QuestionOption], recommended: int, criticality: Criticality, reason: str,
+                    allow_custom: bool = True) -> str:
+    """Put ONE critical question to the owner without waiting: it shows as a card in his conversation with one-tap
+    answers and notifies his devices; you keep working, and his pick reaches you later as a message from him.
+
+    Only a conversation's coordinator may ask (a sub-agent sends its question to its coordinator with agent_send and keeps
+    working), and only when the fork is critical — `criticality` one of: destructive (cannot be taken back), prod
+    (touches production), public (publishes to an audience he does not control), credential (needs one he holds),
+    new_access (opens an access that does not exist yet), spend_past_cap (spends past his cap). Every other fork you
+    decide yourself: the reversible, conventional option, said in one line.
+
+    question: one line, in his language.
+    options: 2 to 4, each {label, consequence: what happens if he picks it}; shown A, B, C, D.
+    recommended: the option you would take, 0-based.
+    reason: one line, why this cannot be decided without him.
+    allow_custom: whether he may answer in his own words instead.
+    """
+    return await asyncio.to_thread(_ask, question, options, recommended, criticality, reason, allow_custom)
 
 
 @mcp.tool(category="agents", read_only=True)

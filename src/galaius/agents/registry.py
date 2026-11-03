@@ -39,7 +39,7 @@ from uuid import UUID
 
 from pydantic import ConfigDict, BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
 from galaius.agents.limits import quota
-from galaius_core import ASKED_BY_MAX, LaunchSkipReason, ReasoningLevel, RecordedReasoning, FILE_KEY, KEPT_FILE_MAX, MACHINE_AGENT_MEDIA, MEDIA_KEY, file_key, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor
+from galaius_core import OPEN_MAX, OwnerQuestion, ASKED_BY_MAX, LaunchSkipReason, ReasoningLevel, RecordedReasoning, FILE_KEY, KEPT_FILE_MAX, MACHINE_AGENT_MEDIA, MEDIA_KEY, file_key, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor
 
 from galaius.agents.transport.events import (
     CONTEXT_FIELDS, PERSON_SENDER, TOKEN_FIELDS, AgentEvent, MessageFields, RunCut, TokenUsage, UsageLedger, answered_line, its_work, model_spoke,
@@ -473,6 +473,9 @@ class AgentRun(ContextGauge):
     #: When each run of its `asked_by` that it took over from a predecessor (`relations.succeed`) asked that predecessor
     #: what is still owed: the report reaches it until one answers that ask, never again for an ask answered before.
     inherited_asks: dict[str, float] = Field(default_factory=dict, exclude_if=lambda value: not value)
+    #: The critical questions it put to the owner that he has not answered yet (`ask_owner`), oldest first: each a card in
+    #: his conversation until a message from him carries its `answer_id` (`question_answered_locked`).
+    asking: tuple[OwnerQuestion, ...] = Field(default=(), exclude_if=lambda value: not value)
 
     status: RunStatus = "running"
 
@@ -1780,6 +1783,39 @@ def pin_revision_locked(run_id: str, ref: AgentRevisionRef) -> AgentRun | None:
     """Run `run_id`'s turns on prompt revision `ref` of its role from now on, while the caller holds `record_lock(run_id)`:
     `ResumeLaunch.of` resolves its prompt and policy from `agent_ref` at each turn (`agent_queue.MessageTurn.begin_locked`)."""
     return _merge_record_locked(run_id, {"agent_ref": ref.model_dump(mode="json")})
+
+
+class QuestionRefused(ValueError):
+    """Why a run may not put a question to the owner now (`ask_owner`)."""
+
+
+def ask_owner(run_id: str, question: OwnerQuestion) -> AgentRun:
+    """Post `question` on run `run_id` for the owner, never waiting on it. Raises QuestionRefused for a run that is not its
+    conversation's coordinator (another run launched it: it asks its coordinator instead), or one already holding
+    `OPEN_MAX` unanswered questions."""
+    with record_lock(run_id):
+        run = get_run(run_id)
+        if run is None:
+            raise QuestionRefused(f"no agent run {run_id!r}")
+        if run.parent_run_id is not None:
+            raise QuestionRefused(f"only the coordinator asks the owner: send this question to {run.root_run_id or run.parent_run_id} (agent_send) "
+                                  "and keep working on everything that does not depend on it")
+        if len(run.asking) >= OPEN_MAX:
+            raise QuestionRefused(f"{OPEN_MAX} questions already wait for the owner: decide this one yourself, or wait for an answer")
+        posted = _merge_record_locked(run_id, {"asking": [*(held.model_dump(mode="json") for held in run.asking), question.model_dump(mode="json")]})
+    if posted is None:
+        raise QuestionRefused(f"run {run_id!r}'s record could not be written")
+    return posted
+
+
+def question_answered_locked(run_id: str, message_id: str) -> OwnerQuestion | None:
+    """The question of run `run_id` a person's message `message_id` answers, closed on its record while the caller holds
+    `record_lock(run_id)`; None when it answers none."""
+    run = get_run(run_id)
+    answered = next((question for question in run.asking if question.answer_id == message_id), None) if run is not None else None
+    if answered is not None:
+        _merge_record_locked(run_id, {"asking": [held.model_dump(mode="json") for held in run.asking if held is not answered]})
+    return answered
 
 
 def note_asker_locked(run_id: str, asker: str) -> AgentRun | None:

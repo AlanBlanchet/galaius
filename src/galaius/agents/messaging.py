@@ -326,6 +326,8 @@ def _queue_message(
         recorded_id = None if entry is None else reg.record_message_event_locked(
             from_run=speaker, to_run=run.run_id, text=entry, event_id=message_id, for_run=for_run, relation=kind, **turn.event_fields(),
         )
+        if origin is None and recorded_id is not None:
+            reg.question_answered_locked(run.run_id, message_id)  # his answer to a question it put to him: its card closes
         if entry is not None and recorded_id is None:
             agent_queue.mark_locked(
                 run.run_id, item.id, "failed", error="message transcript entry was not recorded",

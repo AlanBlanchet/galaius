@@ -527,6 +527,103 @@
      }
     },
     {
+     "name": "ask_owner",
+     "description": "Put ONE critical question to the owner without waiting: it shows as a card in his conversation with one-tap\nanswers and notifies his devices; you keep working, and his pick reaches you later as a message from him.\n\nOnly a conversation's coordinator may ask (a sub-agent sends its question to its coordinator with agent_send and keeps\nworking), and only when the fork is critical — `criticality` one of: destructive (cannot be taken back), prod\n(touches production), public (publishes to an audience he does not control), credential (needs one he holds),\nnew_access (opens an access that does not exist yet), spend_past_cap (spends past his cap). Every other fork you\ndecide yourself: the reversible, conventional option, said in one line.\n\nquestion: one line, in his language.\noptions: 2 to 4, each {label, consequence: what happens if he picks it}; shown A, B, C, D.\nrecommended: the option you would take, 0-based.\nreason: one line, why this cannot be decided without him.\nallow_custom: whether he may answer in his own words instead.",
+     "inputSchema": {
+      "$defs": {
+       "QuestionOption": {
+        "additionalProperties": false,
+        "description": "One answer he can tap: what it is, and what happens when he picks it.",
+        "properties": {
+         "label": {
+          "maxLength": 60,
+          "minLength": 1,
+          "pattern": "^[^\\r\\n]*$",
+          "title": "Label",
+          "type": "string"
+         },
+         "consequence": {
+          "maxLength": 160,
+          "minLength": 1,
+          "pattern": "^[^\\r\\n]*$",
+          "title": "Consequence",
+          "type": "string"
+         }
+        },
+        "required": [
+         "label",
+         "consequence"
+        ],
+        "title": "QuestionOption",
+        "type": "object"
+       }
+      },
+      "properties": {
+       "question": {
+        "title": "Question",
+        "type": "string"
+       },
+       "options": {
+        "items": {
+         "$ref": "#/$defs/QuestionOption"
+        },
+        "title": "Options",
+        "type": "array"
+       },
+       "recommended": {
+        "title": "Recommended",
+        "type": "integer"
+       },
+       "criticality": {
+        "enum": [
+         "destructive",
+         "prod",
+         "public",
+         "credential",
+         "new_access",
+         "spend_past_cap"
+        ],
+        "title": "Criticality",
+        "type": "string"
+       },
+       "reason": {
+        "title": "Reason",
+        "type": "string"
+       },
+       "allow_custom": {
+        "default": true,
+        "title": "Allow Custom",
+        "type": "boolean"
+       }
+      },
+      "required": [
+       "question",
+       "options",
+       "recommended",
+       "criticality",
+       "reason"
+      ],
+      "title": "ask_ownerArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "ask_ownerOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "agents"
+     }
+    },
+    {
      "name": "conversation_search",
      "description": "Search the conversations this computer holds — the runs galaius started and the sessions each\nagent CLI saved (the person's editor conversations) — for every word of `query`.\n\nSearched: what was asked, what was answered, what agents told each other, each tool call by its\nleading argument. Never what a tool returned, a call searching conversations itself, or the asking\nagent's own conversation. Credentials are masked. An agent searches its own project's\nconversations (the repository its folder is in); a fenced run, a member's run on a lent PC, or a\nrun denied reading files searches none (`ConversationScope`).\n\nquery: words that must all appear in one line; \"quoted words\" must appear together.\nlimit: conversations returned, best match first: the person's own prompts, then what agents were\n    asked, answered and told each other, then tool calls (1-50).\nproject: only conversations of the project with this name (a repository's folder name).\nsince: only conversations active since this date or moment (ISO 8601, e.g. 2026-10-11; UTC unless it says).\nevery_project: the person's own session only — search every project, not just this folder's.\nRead one with conversation_read(id, around=<line>).",
      "inputSchema": {

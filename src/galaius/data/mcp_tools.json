@@ -37,6 +37,12 @@
  },
  {
   "server": "galaius",
+  "name": "ask_owner",
+  "category": "agents",
+  "description": "Put ONE critical question to the owner without waiting: it shows as a card in his conversation with one-tap answers and notifies his devices; you keep working, and his pick reaches you later as a message from him."
+ },
+ {
+  "server": "galaius",
   "name": "audit_ui",
   "category": "vision",
   "description": "Drive every interactive element through its own states and report MEASURED anomalies \u2014 no vision model, no opinion. A still screenshot cannot show a menu that closed the instant the pointer moved toward it, a tray covering its own trigger, focus that vanished, or a page that shifted when something opened; this catches exactly that class by actually hovering, focusing, pressing, opening and closing each control and comparing real geometry / hit-testing / focus / accessible-name / text-fit / settle-time before and after."
