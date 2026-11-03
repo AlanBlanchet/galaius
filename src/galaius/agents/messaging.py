@@ -178,6 +178,7 @@ def _session_id(run) -> str | None:
 def deliver_message(
     run_id: str, message: str, *, sender: str | None = None, environment: Mapping[str, str] | None = None, message_id: str | None = None,
     turn: agent_queue.QueuedTurn = agent_queue.MessageTurn(), only_if_idle: bool = False, for_run: str | None = None,
+    across_conversations: bool = False,
 ) -> Delivery:
     """Record and enqueue one message (`queue_message`); a detached per-run dispatcher performs the resume.
     A message its dispatcher could not start for is cancelled: its caller is told it failed, so it never
@@ -186,7 +187,7 @@ def deliver_message(
     `environment` is the one the dispatcher and its resumed turn run in, and names the sender
     when `sender` does not (`GALAIUS_RUN_ID`); this process's own when None."""
     delivery = queue_message(run_id, message, sender=sender, environment=environment, message_id=message_id, turn=turn,
-                             only_if_idle=only_if_idle, for_run=for_run)
+                             only_if_idle=only_if_idle, for_run=for_run, across_conversations=across_conversations)
     if delivery.state != "queued":
         return delivery
     refused = start_dispatcher(delivery.run_id, Caller.environ(environment))
@@ -219,6 +220,7 @@ PERSON_PATIENCE = 20.0
 def queue_message(
     run_id: str, message: str, *, sender: str | None = None, environment: Mapping[str, str] | None = None, message_id: str | None = None,
     turn: agent_queue.QueuedTurn = agent_queue.MessageTurn(), only_if_idle: bool = False, for_run: str | None = None,
+    across_conversations: bool = False,
 ) -> Delivery:
     """Record one message and enqueue its delivery (`queued`, with its queue id), or say why not;
     whoever called delivers it: the run's dispatcher (`deliver_message`), or a long-lived launcher
@@ -228,17 +230,20 @@ def queue_message(
     `only_if_idle`: refused when the run is at work or has a message waiting, read under its lock (a
     spawn handing its task over, `spawn_line.Spawn.hand_over`, starts a new run instead).
     `for_run`: the run it is sent for (`galaius agents spawn --for`), kept on its transcript entry and listed among
-    the recipient's `asked_by` as a message from that run would be."""
+    the recipient's `asked_by` as a message from that run would be.
+    `across_conversations`: the recipient is the run its role keeps one of (`spawn_line.Spawn.hand_over`, by the role's
+    `instances`), picked by the spawn path rather than by an id its sender names: its session is not held to the sender's
+    (`check_deliverable`)."""
     environment = dict(Caller.environ(environment))
     speaker = sender or sender_id(environment)
     with reg.lock_patience(PERSON_PATIENCE if reg.get_run(speaker) is None else None):
         return _queue_message(run_id, message, speaker=speaker, environment=environment, message_id=message_id, turn=turn,
-                              only_if_idle=only_if_idle, for_run=for_run)
+                              only_if_idle=only_if_idle, for_run=for_run, across_conversations=across_conversations)
 
 
 def _queue_message(
     run_id: str, message: str, *, speaker: str, environment: dict[str, str], message_id: str | None,
-    turn: agent_queue.QueuedTurn, only_if_idle: bool, for_run: str | None,
+    turn: agent_queue.QueuedTurn, only_if_idle: bool, for_run: str | None, across_conversations: bool = False,
 ) -> Delivery:
     """`queue_message`, its sender resolved and its patience for the run's lock set."""
     if message_id is not None:
@@ -250,7 +255,7 @@ def _queue_message(
         run_id = relations.live(named)  # a run handed off: its successor reads it
         if run_id == speaker != named:
             return Delivery(state="error", text=f"ERROR: {named[:8]} handed its work to you: you are the run it would reach.", run_id=named)
-    run, error = check_deliverable(run_id, sender=speaker, policed=turn.policed)
+    run, error = check_deliverable(run_id, sender=None if across_conversations else speaker, policed=turn.policed)
     if error:
         return Delivery(state="error", text=error, run_id=run_id)
     assert run is not None

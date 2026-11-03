@@ -307,7 +307,8 @@ OLDER = {"id": str(uuid.UUID(int=1)), "revision": str(uuid.UUID(int=2))}
 @pytest.mark.parametrize("peers, asked, continued, why", [
     pytest.param([("eng1", {})], {}, "eng1", "", id="idle-same-role-continued"),
     pytest.param([("eng1", {"parent_run_id": "lead"}), ("eng2", {"parent_run_id": "mid"})], {}, "eng1", "", id="own-child-first"),
-    pytest.param([("eng1", {"busy": True})], {}, None, "eng1 is working", id="busy-starts-new"),
+    # One run of the role at a time: one at work takes it behind its turn, never one started beside it.
+    pytest.param([("eng1", {"busy": True})], {}, "eng1", "", id="busy-queued-behind-its-turn"),
     # 2026-10-16: the coordinator's shell sat in the workspace, its engineers in a checkout below: every spawn started anew.
     pytest.param([("eng1", {"cwd": "/elsewhere"})], {}, "eng1", "", id="other-folder-read-only-continued"),
     pytest.param([("eng1", {"cwd": "/elsewhere", "permission_mode": "full_access"})], {"permission_mode": "full_access"}, "eng1", "",
@@ -330,9 +331,18 @@ OLDER = {"id": str(uuid.UUID(int=1)), "revision": str(uuid.UUID(int=2))}
     pytest.param([("eng1", {"stream": [{"type": "turn.failed", "error": {"message": "not supported"}}]})], {}, None,
                  "eng1 never got a first turn", id="never-spoke-not-resumed"),
     pytest.param([("eng1", {"agent": "code-reviewer"})], {}, None, "", id="other-role"),
-    # 2026-10-16: every web conversation of a PC shares its session id; a conversation is its launch tree.
-    pytest.param([("eng1", {"parent_run_id": "other-lead"})], {}, None, "", id="other-conversation-same-session"),
-    pytest.param([("eng1", {"session_id": "s2", "parent_run_id": None})], {"parent_run_id": None}, None, "", id="no-parent-other-session"),
+    # `per_project`: the project's run of the role, whatever conversation or session started it.
+    pytest.param([("eng1", {"parent_run_id": "other-lead"}), ("other-lead", {"agent": "main", "parent_run_id": None})], {}, "eng1", "",
+                 id="other-conversation-same-project-continued"),
+    pytest.param([("eng1", {"session_id": "s2", "parent_run_id": None})], {"parent_run_id": None}, "eng1", "", id="no-parent-other-session-continued"),
+    pytest.param([("eng1", {"session_id": "s2", "parent_run_id": None, "cwd": "/elsewhere"})], {}, None, "", id="other-project-not-a-peer"),
+    # `one`: the PC's run of the role, whatever project it works for.
+    pytest.param([("eng1", {"session_id": "s2", "parent_run_id": None, "cwd": "/elsewhere"})], {"instances": "one"}, "eng1", "",
+                 id="one-crosses-projects"),
+    # Owner 2026-11-03 « we should be able to call as many "ingenieur backend" and other agents as we want »: `many` never
+    # hands a task to a run already there, idle or at work.
+    pytest.param([("eng1", {})], {"instances": "many"}, None, "", id="many-starts-new-beside-an-idle-one"),
+    pytest.param([("eng1", {"busy": True}), ("eng2", {})], {"instances": "many"}, None, "", id="many-starts-new-beside-a-busy-one"),
     pytest.param([("eng1", {"parent_run_id": None})], {"parent_run_id": None}, "eng1", "", id="no-parent-same-session-continued"),
     # The effort a person set on its conversation stays with that conversation: the task handed on runs at its role's.
     pytest.param([("eng1", {"reasoning_set": "max"})], {}, "eng1", "", id="reused-run-drops-the-effort-set-on-its-conversation"),
@@ -349,16 +359,21 @@ OLDER = {"id": str(uuid.UUID(int=1)), "revision": str(uuid.UUID(int=2))}
     pytest.param([("eng1", {"busy": True, "context": (170_000, 233_000)})], {"single": True}, "eng1", "", id="single-busy-context-past-ceiling-queued"),
     pytest.param([("eng1", {"busy": True, "replaced_by": {"run_id": "eng9-relaunch", "provider": "claude"}})], {"single": True}, None,
                  "eng1 was refused at launch, relaunched as eng9-rel", id="single-busy-taken-over-starts-new"),
-    pytest.param([("eng1", {"busy": True})], {}, None, "eng1 is working", id="busy-not-single-starts-new"),
+    pytest.param([("eng1", {})], {"instances": "many", "single": True}, "eng1", "", id="single-many-continued-in-its-conversation"),
+    pytest.param([("eng1", {"parent_run_id": "other-lead"}), ("other-lead", {"agent": "main", "parent_run_id": None})],
+                 {"instances": "many", "single": True}, None, "", id="single-many-other-conversation-not-a-peer"),
 ])
-def test_a_spawn_continues_its_conversations_idle_agent_of_that_role(at_work, monkeypatch, tmp_path, peers, asked, continued, why):
-    """Owner 2026-10-15: no « backend engineer three » while engineer one sits idle in the conversation."""
+def test_a_spawn_goes_where_its_roles_instances_setting_says(at_work, monkeypatch, tmp_path, peers, asked, continued, why):
+    """A role keeping one run at a time (`per_project` here, unless the case names another) hands each task to that
+    run; `many` starts one per task (owner 2026-11-03)."""
     from galaius_core import AgentRevisionRef
 
     from galaius.agents.policy import Policy
 
+    instances = asked.pop("instances", "per_project")
     monkeypatch.setattr(spawn_line, "load_policy",
-                        lambda: Policy(agents={"backend-engineer": "m"}, providers={"claude": True}, defaults={"touch": "read_only"}))
+                        lambda: Policy(agents={"backend-engineer": "m"}, providers={"claude": True}, defaults={"touch": "read_only"},
+                                       instances={"backend-engineer": instances}))
     current = AgentRevisionRef(id=uuid.UUID(int=1), revision=uuid.UUID(int=3))
     monkeypatch.setattr(spawn_line, "resolve_role", lambda policy, agent, **_: (policy, agent, current))
     refusing: set[str] = set()
@@ -366,11 +381,12 @@ def test_a_spawn_continues_its_conversations_idle_agent_of_that_role(at_work, mo
     sent: list[str] = []
     texts: list[str] = []
     revisions: list[AgentRevisionRef | None] = []
-    _ended("lead", agent="main", session_id="s1", parent_run_id=None)
-    _ended("mid", agent="tech-lead", session_id="s1", parent_run_id="lead")
+    _ended("lead", agent="main", session_id="s1", parent_run_id=None, cwd=str(tmp_path))
+    _ended("mid", agent="tech-lead", session_id="s1", parent_run_id="lead", cwd=str(tmp_path))
 
-    def deliver(run_id, task, *, only_if_idle, turn, for_run):
+    def deliver(run_id, task, *, only_if_idle, turn, for_run, across_conversations):
         assert only_if_idle != reg.get_run(run_id).working() and turn.refusal(task, None) is None
+        assert across_conversations == (instances != "many")
         sent.append(run_id)
         texts.append(task)
         revisions.append(turn.agent_ref)
@@ -458,7 +474,8 @@ def test_the_run_that_takes_a_spawns_task_records_THAT_task(at_work, monkeypatch
     from galaius.agents.policy import Policy
 
     monkeypatch.setattr(spawn_line, "load_policy",
-                        lambda: Policy(agents={"backend-engineer": "m"}, providers={"claude": True}, defaults={"touch": "read_only"}))
+                        lambda: Policy(agents={"backend-engineer": "m"}, providers={"claude": True}, defaults={"touch": "read_only"},
+                                       instances={"backend-engineer": "one"}))
     current = AgentRevisionRef(id=uuid.UUID(int=1), revision=uuid.UUID(int=3))
     monkeypatch.setattr(spawn_line, "resolve_role", lambda policy, agent, **_: (policy, agent, current))
     monkeypatch.setattr(spawn_line.messaging, "deliver_message",

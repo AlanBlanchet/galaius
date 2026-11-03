@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import ClassVar, Literal, Self, TypeVar
 
 from galaius.account.caller import Caller
-from galaius_core import AgentRevisionRef
+from galaius_core import AgentInstances, AgentRevisionRef
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from galaius.agents import messaging
@@ -302,15 +302,15 @@ class Spawn(BaseModel):
             return None
 
     def _misfit(self, run: reg.AgentRun, policy: Policy, revision: AgentRevisionRef | None) -> str | None:
-        """Why `run` (same conversation, same role) cannot take this spawn's task as its next turn; None when it can.
-        Busy (`_busy`) fits only a `single` spawn, queued behind its turn whatever its revision or context: one agent of
-        the role at a time; the wake finding it idle and unfit starts a fresh one and forgets it.
+        """Why `run` (a peer of its role, `_peers`: one run of the role at a time) cannot take this spawn's task as its
+        next turn; None when it can. Busy (`_busy`), it fits, queued behind its turn whatever its revision or context;
+        the wake finding it idle and unfit starts a fresh one.
         Its `name` and `model` are not compared: a label (the continued run keeps its own) and a request the role's
         policy overrides, at a start as at a continuation. Nor its role's revision: the turn handed to it runs on the
         spawn's (`agent_queue.MessageTurn.agent_ref`), within the permissions the run was started with.
         `queue_message(only_if_idle=True)` re-reads "is working" under the run's lock."""
         busy = self._busy(run)
-        if busy and not self.single or not busy and run.status not in relations.REUSABLE:
+        if not busy and run.status not in relations.REUSABLE:
             return "is working"
         if run.replaced_by is not None:
             return f"was refused at launch, relaunched as {run.replaced_by.run_id[:8]}"
@@ -339,8 +339,17 @@ class Spawn(BaseModel):
         """At work on a turn, or a turn queued for it."""
         return run.working() or any(item.state in {"pending", "running"} for item in agent_queue.items(run.run_id))
 
-    def _peers(self, role: str) -> list[reg.AgentRun]:
-        return [run for run in self._conversation() if run.plays(role)]
+    def _peers(self, role: str, instances: AgentInstances = "many") -> list[reg.AgentRun]:
+        """The runs of `role` its task may go to: every one on this PC (`one`), every one working for its project
+        (`per_project`, `relations.project`), else its conversation's (`single`); never its caller or a run above it."""
+        if instances == "many":
+            return [run for run in self._conversation() if run.plays(role)]
+        above = set(reg.ancestors(self.parent_run_id)) if self.parent_run_id is not None else set()
+        runs = [run for run in reg.list_runs() if run.plays(role) and run.run_id not in above]
+        if instances == "one":
+            return runs
+        here = relations.project(self.parent_run_id) if self.parent_run_id is not None else relations.folder_project(self.cwd)
+        return [] if here is None else [run for run in runs if relations.project(run.run_id) == here]
 
     def forget_peers(self, keep: str) -> list[str]:
         """`single`: every other run of its role in its conversation, none busy (`_busy`), forgotten (`reg.forget`); their ids."""
@@ -371,32 +380,39 @@ class Spawn(BaseModel):
         return Continued(run=reg.task_taken(run.run_id, self.task) or run, delivery=delivery, doubt=doubt)
 
     def hand_over(self) -> Continued | StartNew:
-        """Give the task to the agent of its conversation already holding its role, between turns, as its next turn
-        (`messaging.deliver_message`: its own session, everything it did still in context) instead of starting
-        another (owner 2026-10-15: no « backend engineer three » while engineer one sits idle in the conversation).
-        Its caller's own child first, then the latest to finish; one whose turn would not start is passed over unless
-        its agent may have read the task (then kept, the doubt said: never run twice). `single`: one at work first, the
-        task queued behind its turn. A run started on another revision of the role takes it on the spawn's revision.
-        Every same-role run busy or unfit: start new, and why. Blocks up to `messaging.wait_for_start`'s timeout per run tried."""
+        """Where its task goes, by its role's `instances` (`Policy.instances_for`; owner 2026-11-03 « we should be able
+        to call as many "ingenieur backend" and other agents as we want »): `many` starts a new run every time, the PC's
+        places its only limit (`SpawnLine`); `one` / `per_project` give it to the role's run on this PC / of its project
+        (`_peers`), whatever conversation started it, as its next turn (`messaging.deliver_message`: its own session,
+        everything it did still in context) — one at work first, the task queued behind its turn. A `single` spawn does
+        so within its conversation. Its caller's own child first, then the latest to finish; one whose turn would not
+        start is passed over unless its agent may have read the task (then kept, the doubt said: never run twice). A run
+        started on another revision of the role takes it on the spawn's revision. Every peer busy-and-unfit or unfit:
+        start new, and why. Blocks up to `messaging.wait_for_start`'s timeout per run tried."""
         if (resolved := self._role()) is None:
             return StartNew()
         policy, role, revision = resolved
-        peers = self._peers(role)
+        instances = policy.instances_for(role)
+        if instances == "many" and not self.single:
+            return StartNew()
+        peers = self._peers(role, instances)
+        # The role's own run, picked by its setting rather than by an id the caller names: reached across conversations.
+        across = instances != "many"
         misfits = {run.run_id: self._misfit(run, policy, revision) for run in peers}
         why = [f"{run_id[:8]} {said}" for run_id, said in misfits.items() if said]
         fit = [run for run in peers if misfits[run.run_id] is None]
         turn = agent_queue.MessageTurn(agent_ref=revision)
-        # `single`: a fit one at work takes it as its next turn, never another started beside it.
+        # A fit one at work takes it as its next turn, never another started beside it.
         for run in sorted((run for run in fit if self._busy(run)), key=lambda run: run.started_at or 0, reverse=True):
             delivery = messaging.deliver_message(run.run_id, self._brief(run), only_if_idle=False, turn=turn,
-                                                 for_run=self.for_run)
+                                                 for_run=self.for_run, across_conversations=across)
             if delivery.state != "error":
                 return self._continued(run, delivery)
             why.append(f"{run.run_id[:8]} {delivery.text}")
         fit = [run for run in fit if not self._busy(run)]
         for run in sorted(fit, key=lambda run: (run.parent_run_id == self.parent_run_id, run.finished_at or run.started_at), reverse=True):
             delivery = messaging.deliver_message(run.run_id, self._brief(run), only_if_idle=True, turn=turn,
-                                                 for_run=self.for_run)
+                                                 for_run=self.for_run, across_conversations=across)
             refused = delivery.text if delivery.state == "error" else messaging.wait_for_start(delivery)
             if refused is None or messaging.read_by_agent(delivery):
                 reg.take_over_refused(run, parent=self.parent_run_id, at=time.time())  # the launch of its role refused before it
@@ -418,9 +434,9 @@ class Continued(BaseModel):
 
     def sentence(self) -> str:
         doubt = f" Its turn may not have gone through: {self.doubt}; agent_events tells, resend to it if not." if self.doubt else ""
-        return (f"Continued [{self.run.name}] — run_id={self.run.run_id}: the {self.run.agent} already in this conversation takes "
-                f"the task as its next turn, with everything it did still in context ({self.delivery.text}).{doubt} "
-                "Pass fresh to start a new one instead.")
+        return (f"Continued [{self.run.name}] — run_id={self.run.run_id}: the {self.run.agent} already here (its role keeps one "
+                f"run at a time) takes the task as its next turn, with everything it did still in context ({self.delivery.text}).{doubt} "
+                "Pass fresh to start a new one beside it.")
 
 
 class StartNew(BaseModel):

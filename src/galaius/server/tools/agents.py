@@ -60,8 +60,9 @@ async def agent_spawn(
     helper: bool = False,
     community: str | None = None,
 ) -> str:
-    """Start an agent to work alongside you, or hand the task to the idle one of that role already in
-    this conversation (`fresh` to always start one), and return its run id immediately.
+    """Start an agent to work alongside you and return its run id immediately. Its role's `instances` setting decides:
+    `many` (most roles) starts a new run for every task; `one` / `per_project` hand the task to the role's run on this
+    PC / of this project, queued behind its turn while it works (`fresh` to start one beside it).
 
     Runs as its own process on this machine, using the vendor CLI's own login — you never handle
     a credential. Given galaius as an MCP server, so it can call these same tools: it can spawn
@@ -106,9 +107,9 @@ async def agent_spawn(
         commissions one. Named-role delegation also honours parent pins.
     denied_tools: exact built-in or qualified MCP tool names to remove for this run and its
         continuations. Only narrows the role tool set; never changes permissions or user config.
-    fresh: start a new run even when an agent of the same role already in this conversation sits
-        between turns. Without it that agent takes the task as its next turn, its context intact,
-        and its run id comes back; a new one starts only when every such agent is busy or unfit.
+    fresh: start a new run even when the role keeps one run at a time (`instances` `one` / `per_project`). Without it
+        that run takes the task as its next turn, its context intact, and its run id comes back; a new one starts only
+        when it is unfit (context near full, another permission, folder or provider), the reason said.
     continues: the run (full or short id) the new one takes over from — a hand-off from a run whose context filled:
         what that run owed, and what is handed back or sent to it from then on, reaches the new one; it is never resumed
         again. A run of the same role under the same parent that outgrew its context is taken over without it, and so is

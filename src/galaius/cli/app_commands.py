@@ -1713,8 +1713,9 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
     supervisor that shows the run at once passes a short one.
     --fence names a file holding what the run's OS fence is built from (`galaius.isolation.fence.FenceSpec`
     JSON); every turn builds it again from the machine's levels. The machine runner writes it.
-    An agent of the same role already in this conversation, between turns, takes the task as its
-    next turn (its context intact) and its id is printed, unless its context is near full; --fresh starts a new one
+    The role's `instances` setting decides where the task goes: `many` (the default) starts a new run every time;
+    `one` / `per_project` give it to the role's run on this PC / of this project as its next turn (its context intact,
+    queued behind its turn while it works) and print its id, unless its context is near full; --fresh starts a new one
     regardless. --single keeps ONE agent of the role in the conversation (a job queue's worker): one at work is queued
     the task behind its turn instead of another started beside it, and every other one of the role not at work is
     forgotten (`agents clear`) once the task is handed over or its run started (one queued for a place keeps them).
