@@ -108,12 +108,12 @@ class TurnReviewWatch(BaseModel):
     def _answers(self, records: Sequence[reg.AgentRun], reviews: TurnReviews, marks: Marks) -> list[Ask]:
         """Per root coordinator run settled since its mark (agents back), one ask of each review whose signal what the
         person said in those turns carries; each mark moves to that end."""
-        asks = []
+        asks, asked = [], handback.Asked.of(records)
         for run in records:
             if run.agent not in reviews.coordinators or run.parent_run_id is not None or run.finished_at is None:
                 continue
             owed = [review for review in reviews.reviews if marks.reviewed.get(Marks.key(review.role, run.run_id), self.started) < run.finished_at]
-            if not owed or not _settled(run, records):
+            if not owed or not _settled(run, asked):
                 continue
             everything = _said(run, since=0.0)
             for review in owed:
@@ -164,10 +164,10 @@ def _calls(review: TurnReview, text: str, earlier: Sequence[str]) -> str | None:
     return "" if review.signal is None else review.signal.matched(text, earlier)
 
 
-def _settled(run: reg.AgentRun, records: Sequence[reg.AgentRun]) -> bool:
+def _settled(run: reg.AgentRun, asked: handback.Asked) -> bool:
     """Whether `run` ended its turn with nothing waiting for it and every agent it waits on back (`handback`)."""
     return (run.status in handback._ENDED_ITS_TURN and not handback._pending(run)
-            and not any(handback._pending(agent) for agent in handback._agents_answering(run.run_id, records)))
+            and not any(handback._agents_answering(run.run_id, asked, among=handback._pending)))
 
 
 def _launched_by_person(run: reg.AgentRun) -> bool:

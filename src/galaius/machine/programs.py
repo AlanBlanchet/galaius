@@ -43,6 +43,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 from galaius.agents.providers import PROVIDERS, LoginStatus, ProgramInstaller
 from galaius.agents.providers import AgentProvider as Program
 from galaius.agents.limits.subscriptions import Subscription, SubscriptionRefused
+from galaius.host.file_stamp import FileStamp
 from galaius.host.processes import end_process_tree, process_group_options
 from galaius.machine.sign_in_browser import SignInHandoff
 
@@ -96,6 +97,8 @@ class AgentPrograms(BaseModel):
     #: Each login's last status check that completed and when (monotonic), by program and environment (`_status`).
     _answered: dict[tuple[str, frozenset[tuple[str, str]]], tuple[float, LoginStatus]] = PrivateAttr(default_factory=dict)
     _lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
+    #: Each executable's `--version` answer, with the stamp its file had then (`version`).
+    _versions: dict[str, tuple[FileStamp, str]] = PrivateAttr(default_factory=dict)
 
     @staticmethod
     def installable() -> tuple[Program, ...]:
@@ -445,12 +448,21 @@ class AgentPrograms(BaseModel):
                                        "usage": base.usage if step == "ready" else ()})
 
     def version(self, provider: Program) -> str:
+        """What its executable says with `--version`, asked again only once that file changed (`FileStamp`): every look at
+        the programs ran each login's CLI for it, 15 at a time (2026-11-03)."""
         try:
-            done = subprocess.run([provider.executable(), "--version"], env=self.environment, capture_output=True, text=True, errors="replace",
+            executable = provider.executable()
+            stamp = FileStamp.at(executable)
+            if stamp is not None and (said := self._versions.get(executable)) is not None and said[0] == stamp:
+                return said[1]
+            done = subprocess.run([executable, "--version"], env=self.environment, capture_output=True, text=True, errors="replace",
                                   timeout=15, stdin=subprocess.DEVNULL)
         except (OSError, subprocess.TimeoutExpired):
             return ""
-        return self.last_line(done.stdout)[:80]
+        version = self.last_line(done.stdout)[:80]
+        if stamp is not None and done.returncode == 0:
+            self._versions[executable] = stamp, version
+        return version
 
     @classmethod
     def last_line(cls, text: str) -> str:

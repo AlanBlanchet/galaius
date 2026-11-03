@@ -3189,14 +3189,19 @@ def _links(run: AgentRun) -> tuple[str, ...]:
 
 def _tree_of(records: Sequence[AgentRun], root_run_ids: frozenset[str]) -> dict[str, str]:
     """Each run of `records` under one of `root_run_ids` (parent links, or a provider child's recorded root),
-    mapped to that root."""
-    tree_of, grew = {run_id: run_id for run_id in root_run_ids}, True
-    while grew:
-        grew = False
-        for run in records:
-            if run.run_id not in tree_of and (top := next(filter(None, map(tree_of.get, _links(run))), None)) is not None:
-                tree_of[run.run_id] = top
-                grew = True
+    mapped to that root: walked down from the roots, each record read once (passing over every record again until
+    none joined took ~100 ms for 99 trees in 4,900 records, at each heartbeat and each look of the web's run list)."""
+    below: dict[str, list[str]] = {}
+    for run in records:
+        for link in _links(run):
+            below.setdefault(link, []).append(run.run_id)
+    tree_of, down = {run_id: run_id for run_id in root_run_ids}, list(root_run_ids)
+    while down:
+        above = down.pop()
+        for run_id in below.get(above, ()):
+            if run_id not in tree_of:
+                tree_of[run_id] = tree_of[above]
+                down.append(run_id)
     return tree_of
 
 

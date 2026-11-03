@@ -196,12 +196,18 @@ def test_a_run_waiting_on_its_own_agents_hands_back_its_final_report_once(sent, 
     assert all("Row H live." in call["message"] for call in sent)
 
 
-def test_a_child_still_at_work_holds_the_hand_back(sent, at_work):
+def test_a_child_still_at_work_holds_the_hand_back(sent, at_work, monkeypatch):
+    """Held without reading what each ended agent owes (`owed`, its messages and its askers'): 2026-11-03 a coordinator's
+    126 agents, each of theirs read too at each end of one, kept this PC's service at 130 % CPU."""
     _ended("lead", 100.0, agent="main", provider_session_id="vendor-lead")
-    _ended("eng", 200.0, agent="backend-engineer", parent_run_id="lead")
+    for index in range(12):
+        _ended(f"eng-{index:02d}", 200.0 + index, agent="backend-engineer", parent_run_id="lead")
     at_work("rev", agent="code-reviewer", parent_run_id="lead")
+    read, owed = [], handback.owed
+    monkeypatch.setattr(handback, "owed", lambda run: read.append(run.run_id) or owed(run))
 
-    assert handback.hand_back("eng") == [] and sent == []
+    assert handback.hand_back("eng-11") == [] and sent == []
+    assert "rev" in read and len([run_id for run_id in read if run_id.startswith("eng-")]) <= 1   # the ended one's own asks
 
 
 def test_wait_returns_each_runs_final_report_once_all_ended(at_work):

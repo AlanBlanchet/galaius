@@ -344,12 +344,18 @@ def test_codex_usage_is_read_from_its_session_record_and_reported_once_sent(tmp_
         worker.wait()
 
 
-def test_a_folder_with_a_broken_state_file_still_has_its_token_masked() -> None:
+def test_a_folder_with_a_broken_state_file_still_has_its_token_masked_and_is_said_once_per_change(caplog: pytest.LogCaptureFixture) -> None:
+    """Said once per change of why: 2026-11-03 one folder never signed in here logged 9,151 lines in 3 h."""
     subscription = Subscription.create(uuid4(), "claude")
     token = "sk-ant-oat01-" + "k" * 48
     (subscription.folder / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {"accessToken": token}}))
     subscription.state_path.write_text("{not json")
-    assert Subscription.all() == () and token in Subscription.tokens()
+    with caplog.at_level("WARNING", logger="galaius.agents.limits.subscriptions"):
+        assert Subscription.all() == () and Subscription.all() == () and token in Subscription.tokens()
+        subscription.state_path.unlink()
+        assert Subscription.all() == () and Subscription.all() == ()
+    said = [record.getMessage() for record in caplog.records if "no readable state" in record.getMessage()]
+    assert len(said) == 2 and "not signed in" in said[1]
 
 
 def test_a_subscription_takes_the_owners_hooks_permissions_and_instructions_and_nothing_else() -> None:

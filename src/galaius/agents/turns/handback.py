@@ -9,12 +9,13 @@ in since its turn ended; the run mirror calls it for each run `EndWatch` sees en
 
 import json
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Self
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from galaius.agents import messaging
 from galaius.agents import agent_queue
@@ -137,11 +138,37 @@ def hand_back(run_id: str) -> list[messaging.Delivery]:
     return deliveries
 
 
-def _agents_answering(asker_id: str, records: Sequence[reg.AgentRun]) -> list[reg.AgentRun]:
-    """The runs among `records` that owe run `asker_id`, or a run it took over from (`live`), their report (`owed`)."""
-    aliases = {asker_id} | {stored.run_id for stored in records if stored.successor and live(stored.run_id) == asker_id}
-    found = [stored.run_id for stored in records if aliases & stored.askers]
-    return [run for run_id in found if (run := reg.get_run(run_id)) is not None and aliases.intersection(owed(run))]
+class Asked(BaseModel):
+    """Who asks whom among one look's run records, read once (`of`): `_agents_answering` asked for each agent of a
+    coordinator scanned every record again (2026-11-03: 126 agents x ~4,000 records at each end of one)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    #: run id -> the ids of the runs naming it among their askers (`AgentRun.askers`).
+    by_asker: Mapping[str, tuple[str, ...]]
+    #: run id -> the runs it took over from, at any distance (`live`).
+    took_over: Mapping[str, frozenset[str]]
+
+    @classmethod
+    def of(cls, records: Sequence[reg.AgentRun]) -> Self:
+        by_asker: dict[str, list[str]] = {}
+        took_over: dict[str, set[str]] = {}
+        for stored in records:
+            for asker in stored.askers:
+                by_asker.setdefault(asker, []).append(stored.run_id)
+            if stored.successor:
+                took_over.setdefault(live(stored.run_id), set()).add(stored.run_id)
+        return cls(by_asker={asker: tuple(ids) for asker, ids in by_asker.items()}, took_over={run_id: frozenset(ids) for run_id, ids in took_over.items()})
+
+
+def _agents_answering(asker_id: str, asked: Asked, *, among: Callable[[reg.AgentRun], bool] = lambda _run: True) -> Iterator[reg.AgentRun]:
+    """The runs `asked` names that owe run `asker_id`, or a run it took over from (`live`), their report (`owed`); with
+    `among`, only those passing it, tested first; one at a time, so asking whether any does stops at the first. `owed` reads each run's messages and its askers' (2026-11-03: a
+    coordinator's 126 agents, ~7 s; asking which of them still worked read every one, and each of THEIR agents, at each
+    end of one: this PC's service at 130 % CPU, the server's requests unanswered)."""
+    aliases = {asker_id} | asked.took_over.get(asker_id, frozenset())
+    found = dict.fromkeys(run_id for alias in aliases for run_id in asked.by_asker.get(alias, ()))
+    return (run for run_id in found if (run := reg.get_run(run_id)) is not None and among(run) and aliases.intersection(owed(run)))
 
 
 def _resume(asker_id: str) -> messaging.Delivery | None:
@@ -157,11 +184,14 @@ def _resume(asker_id: str) -> messaging.Delivery | None:
     asker = reg.get_run(asker_id)
     if asker is None or asker.finished_at is None or asker.status not in _ENDED_ITS_TURN or _pending(asker):
         return None
-    records = reg._stored_records()
     with one_read():
-        agents = _agents_answering(asker_id, records)
-        if any(_pending(run) or reg.self_resuming(run) or any(_pending(own) for own in _agents_answering(run.run_id, records)) for run in agents):
+        asked = Asked.of(reg._stored_records())
+
+        def holds(run: reg.AgentRun) -> bool:
+            return _pending(run) or reg.self_resuming(run) or any(_agents_answering(run.run_id, asked, among=_pending))
+        if any(_agents_answering(asker_id, asked, among=holds)):
             return None
+        agents = list(_agents_answering(asker_id, asked))
     since = relations.handback_since()
     ended = [run for run in agents if run.finished_at is not None and run.finished_at >= since]
     if not ended:

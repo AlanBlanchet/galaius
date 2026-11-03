@@ -928,6 +928,10 @@ class MachineRunner:
     policy_renew_seconds = 15
     #: How often this PC's run records are settled against their processes (`registry.settle_gone`).
     settle_seconds = 60
+    #: How long the beats reuse whether a run started for the web still works (`busy`): read from every run record
+    #: (~0.2 s for ~5,000), at each beat it took a tenth of a core (2026-11-03). The server stops an idle cloud
+    #: machine only after 15 idle minutes.
+    busy_runs_seconds = 30
     #: How often this PC looks whether its owner accepted an error report it prepared (only while one waits).
     deliver_seconds = 60
     #: How often the usage lines of runs pinned to a subscription are read (caps applied) and moved
@@ -970,6 +974,8 @@ class MachineRunner:
         logging.getLogger("galaius").addHandler(self._log_ring)
         #: Why the web runs could not be read at the last beat (`busy`), None when they could.
         self._runs_unreadable: str | None = None
+        #: (monotonic time, whether a run started for the web worked then): `busy`, renewed every `busy_runs_seconds`.
+        self._runs_working: tuple[float, bool] | None = None
         #: Tokens this runner held before a swap (`take_token_swap`): still masked in every kept line.
         self._spent_tokens: tuple[str, ...] = ()
         #: Why the last web version of the agent settings was not applied, and which one (shown on the PC's page).
@@ -1626,14 +1632,17 @@ class MachineRunner:
 
     def busy(self) -> bool:
         """Work of its own is going on here: a step, a web session's turn, a workspace being
-        prepared, or an agent run started for the web still working. Said in every beat (`busy`):
+        prepared, or an agent run started for the web still working (as read within `busy_runs_seconds`). Said in every beat (`busy`):
         a machine the server stops when idle (a cloud machine) is not stopped under it."""
         if self._executing or (self._sessions is not None and self._sessions.busy) or MachineWorkspaces.busy():
             return True
+        if (seen := self._runs_working) is not None and time.monotonic() - seen[0] < self.busy_runs_seconds:
+            return seen[1]
         try:
             working, unreadable = self.web_runs.working(), None
         except (OSError, ValueError) as error:
             working, unreadable = False, str(error)
+        self._runs_working = time.monotonic(), working
         if unreadable != self._runs_unreadable:  # said once per change, never on every beat
             if unreadable is not None:
                 logger.warning("web runs unreadable; reported not busy: %s", unreadable)

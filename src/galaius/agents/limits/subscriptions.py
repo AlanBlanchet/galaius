@@ -27,6 +27,10 @@ from galaius.host.paths import UserPaths
 
 logger = logging.getLogger(__name__)
 
+#: Each subscription folder here whose state does not read, by name, with why (`Subscription.all`): said once per change,
+#: never at each look (2026-11-03: one folder never signed in on this PC, 9,151 lines in 3 h).
+_UNREADABLE: dict[str, str] = {}
+
 
 class SubscriptionRefused(Refused[SubscriptionRefusals]):
     """A start, turn or child a subscription cannot take: its reason one of `SubscriptionRefusals`."""
@@ -125,13 +129,18 @@ class Subscription(BaseModel):
 
     @classmethod
     def all(cls) -> tuple[Self, ...]:
-        """Every subscription here whose state file reads; one that does not is logged, never silently skipped."""
-        found = []
+        """Every subscription here whose state file reads; one that does not is logged once per change of why
+        (`_UNREADABLE`), never silently skipped."""
+        found, unreadable = [], {}
         for folder in cls.folders():
             try:
                 found.append(cls.of(UUID(folder.name)))
             except (ValueError, SubscriptionRefused) as error:
-                logger.warning("subscription folder %s has no readable state: %s", folder.name, error)
+                unreadable[folder.name] = str(error)
+                if _UNREADABLE.get(folder.name) != unreadable[folder.name]:
+                    logger.warning("subscription folder %s has no readable state: %s", folder.name, error)
+        _UNREADABLE.clear()
+        _UNREADABLE.update(unreadable)
         return tuple(found)
 
     @classmethod

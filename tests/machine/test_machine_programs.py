@@ -301,3 +301,24 @@ def test_an_expired_login_reads_signed_out_never_ready_and_a_slow_check_keeps_th
     asked = AgentProvider.login_status
     monkeypatch.setattr(AgentProvider, "login_status", lambda self, env, timeout=10: asked(self, env, timeout=0.3))
     assert jobs.states()[0].step == "ready"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a shell script stands in for the CLI")
+def test_a_programs_version_is_asked_again_only_once_its_executable_changed(tmp_path: Path) -> None:
+    """Each look at the programs ran every login's CLI for `--version` (15 at a time, 2026-11-03)."""
+    asked, cli = tmp_path / "asked", tmp_path / "cli"
+    cli.write_text(f"#!/bin/sh\necho x >> {shlex.quote(str(asked))}\necho '2.1.288 (Claude Code)'\n")
+    cli.chmod(0o755)
+
+    class Located:
+        def executable(self) -> str:
+            return str(cli)
+
+    jobs = AgentPrograms(environment={"PATH": "/usr/bin:/bin"}, log_path=tmp_path / "agent-programs.log")
+    assert jobs.version(Located()) == jobs.version(Located()) == "2.1.288 (Claude Code)"
+    assert asked.read_text().count("x") == 1
+    update = tmp_path / "cli.new"   # an update puts a new file in its place
+    update.write_text(cli.read_text().replace("2.1.288", "2.1.300"))
+    update.chmod(0o755)
+    update.replace(cli)
+    assert jobs.version(Located()) == "2.1.300 (Claude Code)" and asked.read_text().count("x") == 2
