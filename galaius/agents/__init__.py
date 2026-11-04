@@ -5,4 +5,6 @@ cross-provider teamwork needs no bespoke bus — handing a spawned agent galaius
 config lets a Claude agent call the same tools a Codex agent calls, and MCP is vendor-neutral.
 
 The boundary that keeps this legal is in :mod:`galaius.agents.providers`: galaius spawns the
-vendor's own binary and reads stdout; it never touches a credential."""
+vendor's own binary and reads stdout; the vendor's own sign-in makes every credential. The one
+credential galaius carries is a subscription's held login (the CLI's own long-lived token, `setup-token`),
+written into that subscription's folder and handed only to that subscription's launches."""
