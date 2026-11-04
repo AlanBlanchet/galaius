@@ -54,7 +54,7 @@ from galaius.machine.web_runs import WebRuns
 from galaius.diagnostics.redaction import redact, secret_values
 from galaius.machine.programs import AgentPrograms
 from galaius.machine.projects.workspaces import MachineWorkspaces, WorkspaceJobs
-from galaius_core.identity.sealing import SecretsSeal
+from galaius_core.identity.sealing import LoginSeal, SecretsSeal
 from galaius_core.wire import fitted, internals, readable
 from galaius.agents.transport.events import AgentEvent
 from galaius.agents.turns.handback import EndWatch, SilenceWatch
@@ -1425,9 +1425,10 @@ class MachineRunner:
 
     @classmethod
     def features(cls) -> list[str]:
-        """What this runner's hello names (`PcFeatures`): every `PcFeature` of the galaius-core it ships with, and each
-        Script language it runs here."""
-        return PcFeatures(frozenset(PcFeature), frozenset(ScriptRuntime.languages(cls._safe_environment().get("PATH")))).said()
+        """What this runner's hello names (`PcFeatures`): every `PcFeature` of the galaius-core it ships with (held logins
+        only where a sign-in runs under a terminal: POSIX), and each Script language it runs here."""
+        features = frozenset(PcFeature) if os.name == "posix" else frozenset(PcFeature) - {PcFeature.HELD_LOGINS}
+        return PcFeatures(features, frozenset(ScriptRuntime.languages(cls._safe_environment().get("PATH")))).said()
 
     @staticmethod
     def signature(token: str, message: MachineCommand | MachineFileQuery | MachineDataRequest | MachineAgentRequest | MachineAgentSettingsUpdate | MachineTokenSwap) -> str:
@@ -1657,7 +1658,7 @@ class MachineRunner:
         return MachineAgents(roots=current.agent_roots_by_name(), permission=current.agent_permission, run_agents=current.run_agents,
                              continue_conversations=current.continue_conversations, answer_approvals=current.answer_approvals, session=MachineAgents.web_session(current.machine_id),
                              runs=self.web_runs, environment=self._safe_environment(),
-                             sessions=self._sessions, logs=self._log_ring, seal=SecretsSeal.for_token(current.token.get_secret_value()),
+                             sessions=self._sessions, logs=self._log_ring, seal=SecretsSeal.for_token(current.token.get_secret_value()), login_seal=LoginSeal.for_token(current.token.get_secret_value()),
                              workspaces=MachineWorkspaces(roots=current.agent_roots_by_name(), origins=current.clone_origins, jobs=self._workspace_jobs,
                                                           working_directory=current.working_directory, register_root=self._register_agent_root,
                                                           transfers=WorkspaceTransfers(endpoint=current.endpoint, headers=current.authorization),

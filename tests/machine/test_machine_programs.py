@@ -15,7 +15,7 @@ import httpx
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 import pytest
-from galaius.agents.limits.subscriptions import SubscriptionRefused
+from galaius.agents.limits.subscriptions import Subscription, SubscriptionRefused
 from galaius_core import AgentSignIn, AgentSignOutRequest
 
 from galaius.agents.providers import PROVIDERS, AgentProvider, LoginStatus
@@ -322,3 +322,72 @@ def test_a_programs_version_is_asked_again_only_once_its_executable_changed(tmp_
     update.chmod(0o755)
     update.replace(cli)
     assert jobs.version(Located()) == "2.1.300 (Claude Code)" and asked.read_text().count("x") == 2
+
+
+#: A held login's token, as `claude setup-token` prints it.
+HELD_TOKEN = "sk-ant-oat01-" + "Hq7_x" * 20
+
+
+def stand_in_setup_token(tmp_path: Path) -> Path:
+    """`claude setup-token` as 2.1.288 draws it, only under a terminal: words spaced by cursor moves, the address inside an
+    OSC-8 link and again as its text, « Paste code here if prompted > »; `CODE` then prints the token; another code
+    « OAuth error: … 400 » and « Press Enter to retry », waiting."""
+    claude = tmp_path / "claude"
+    address = CLAUDE_PASTE.replace("%", "%%")  # printf's own
+    link = f"\\033]8;id=x;{address}\\007\\033[38;5;246m{address}\\033[39m\\033]8;;\\007"
+    claude.write_text("#!/bin/sh\n[ \"$1\" = setup-token ] || exit 0\n[ -t 0 ] && [ -t 1 ] || { echo 'needs a terminal'; exit 3; }\n"
+                      f"printf '\\033[2GBrowser\\033[10Gdidn'\"'\"'t\\033[17Gopen?\\r\\r\\n\\r\\r\\n{link}\\r\\r\\n\\033[2GPaste\\033[8Gcode\\033[13Ghere\\033[18Gif\\033[21Gprompted\\033[30G>\\r\\r\\n'\n"
+                      "IFS= read -r code\n"
+                      f"[ \"$code\" = \"{CODE}\" ] && {{ printf '\\033[2GYour\\033[7GOAuth\\033[13Gtoken\\033[19G(valid\\033[26Gfor\\033[30G1\\033[32Gyear)\\r\\r\\n\\r\\r\\n\\033[2G{HELD_TOKEN}\\r\\r\\n'; sleep 30; }}\n"
+                      "printf '\\033[38;5;211mOAuth error: Request failed with status code 400\\033[39m\\r\\nPress Enter to retry.\\r\\n'; sleep 30\n")
+    claude.chmod(0o755)
+    return claude
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a held sign-in runs under a POSIX terminal")
+@pytest.mark.parametrize(("pasted", "ends"), [(CODE, "ready"), ("WrongCode_12345#s7s7s7s7", "code_refused")])
+def test_a_held_sign_in_keeps_its_token_in_the_folder_alone_then_hands_it_only_sealed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+                                                                                     pasted: str, ends: str) -> None:
+    """Its token command under a terminal: the address reaches the web, the code its page shows goes back once, the token
+    it prints lands in the folder (0600) and nowhere else (no log, no state, no answer); `held_take` hands it sealed to the
+    request's key alone, `held_put` puts it on another folder once (the same token again writes nothing). A refused code
+    ends the sign-in at once; a program with no token command is refused."""
+    claude = stand_in_setup_token(tmp_path)
+    monkeypatch.setattr(AgentPrograms, "_status", lambda self, provider, environment: LoginStatus(
+        signed_in=environment.get("CLAUDE_CODE_OAUTH_TOKEN") == HELD_TOKEN, login="9" * 16 if environment.get("CLAUDE_CODE_OAUTH_TOKEN") else ""))
+    monkeypatch.setattr(AgentPrograms, "poll_seconds", 0.1)
+    monkeypatch.setattr(AgentPrograms, "code_seconds", 60)  # a refused code ends on its words, never on this wait
+    monkeypatch.setattr(type(PROVIDERS["claude"]), "available", lambda self: True)
+    monkeypatch.setattr(type(PROVIDERS["claude"]), "executable", lambda self: str(claude))
+    jobs = AgentPrograms(environment={"PATH": "/usr/bin:/bin"}, log_path=tmp_path / "agent-programs.log")
+    assert jobs.install("codex", UUID(int=3), held=True).failure == "held_unsupported"
+    subscription = UUID(int=42)
+    with caplog.at_level("DEBUG"):
+        assert jobs.install("claude", subscription, held=True).step == "signing_in"
+        mine = lambda: next(item for item in jobs.states() if item.subscription_id == subscription)
+        signing(jobs, lambda _state: (item := mine()).sign_in is not None and item.sign_in.paste is not None)
+        state = mine()
+        assert state.sign_in.link == CLAUDE_PASTE
+        jobs.paste("claude", subscription, state.sign_in.paste.attempt, sealer(state.sign_in.paste.seal_key)(pasted))
+        started = time.monotonic()
+        signing(jobs, lambda _state: mine().step in ("ready", "failed"))
+        state = mine()
+        assert (state.step if ends == "ready" else state.failure) == ends and time.monotonic() - started < 15
+        held = Subscription.of(subscription)
+        if ends != "ready":
+            assert held.held is None and jobs.held_take("claude", subscription, OTHER_KEY) is None
+            return
+        assert held.held == HELD_TOKEN and (held.folder / "held-token").stat().st_mode & 0o777 == 0o600
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        public = base64.b64encode(key.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)).decode()
+        sealed = jobs.held_take("claude", subscription, public)
+        assert sealed is not None and key.decrypt(base64.b64decode(sealed), AgentPrograms.SEAL).decode() == HELD_TOKEN
+        assert jobs.held_take("claude", UUID(int=43), public) is None  # no folder here: none held
+        put = jobs.held_put("claude", UUID(int=43), HELD_TOKEN)
+        written = (Subscription.of(UUID(int=43)).folder / "held-token").stat().st_mtime_ns
+        assert put.step == "ready" and jobs.held_put("claude", UUID(int=43), HELD_TOKEN).step == "ready"
+        assert (Subscription.of(UUID(int=43)).folder / "held-token").stat().st_mtime_ns == written
+        shown = "".join(item.model_dump_json() for item in jobs.states())
+    for seen in (caplog.text, shown, jobs.log_path.read_text() if jobs.log_path.exists() else ""):
+        assert HELD_TOKEN not in seen
+    assert jobs.sign_out("claude", subscription).step == "signed_out" and not held.folder.exists()  # no vendor logout: the folder alone

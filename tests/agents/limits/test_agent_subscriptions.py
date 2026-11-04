@@ -594,3 +594,37 @@ def test_every_agent_program_is_one_cli_in_its_order() -> None:
     """One provider per agent program, in `AGENT_PROGRAMS` order (`program_providers` reads them so), each named by it."""
     assert tuple(PROVIDERS) == tuple(AGENT_PROGRAMS)
     assert [(provider.name, provider.program) for provider in program_providers()] == list(AGENT_PROGRAMS.items())
+
+
+@pytest.mark.parametrize("launch", ["held", "other", "default", "closed"])
+def test_a_held_login_reaches_only_the_launches_of_its_own_folder(launch: str) -> None:
+    """Every launch of the held folder's CLI runs with its token; every other one (another subscription, the PC's own
+    login, a lent run's closed folders) runs without it, whatever it inherited (a child of a held run)."""
+    held, other = Subscription.create(uuid4(), "claude"), Subscription.create(uuid4(), "claude")
+    token = "sk-ant-oat01-" + "Hq7_x" * 20
+    assert held.hold(token) and not held.hold(token)  # the same token again writes nothing
+    inherited = {"HOME": str(Path.home()), "PATH": os.defpath, "CLAUDE_CODE_OAUTH_TOKEN": token}
+    overlay = {"held": RunSubscription(subscription_id=held.id, limits=SubscriptionLimits()).overlay(),
+               "other": RunSubscription(subscription_id=other.id, limits=SubscriptionLimits()).overlay(),
+               "default": {}, "closed": RunSubscription(lent=True).overlay()}[launch]
+    claude, environment = PROVIDERS["claude"], {**inherited, **overlay}
+    for made in (claude.child_environment(environment, mcp_wait_seconds=0), claude.subscription_env(environment), reg.participant_environment(environment)):
+        assert made.get("CLAUDE_CODE_OAUTH_TOKEN") == (token if launch == "held" else None)
+
+
+@pytest.mark.skipif(not POSIX_MODES, reason="a link and a mode are POSIX here")
+def test_a_held_login_file_is_private_never_a_link_and_masked_in_every_output(tmp_path: Path) -> None:
+    subscription = Subscription.create(uuid4(), "claude")
+    token = "sk-ant-oat01-" + "Hq7_x" * 20
+    subscription.hold(token)
+    path = subscription.folder / "held-token"
+    assert path.stat().st_mode & 0o777 == 0o600 and token in Subscription.tokens() and token not in repr(subscription)
+    path.unlink()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.write_text(token)
+    elsewhere.chmod(0o600)
+    path.symlink_to(elsewhere)
+    assert subscription.held is None  # never read through a link
+    with pytest.raises(PermissionError, match="link"):
+        subscription.hold("sk-ant-oat01-" + "z" * 40)
+    assert elsewhere.read_text() == token

@@ -39,7 +39,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from galaius_core import (
     MODEL_ID_MAX,
     PROJECTS_ROOT, AGENT_TOUCH_SCOPES, AgentCompactRequest, ContextGauge, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, AgentFile, media_kind, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
-    AgentAllowanceRequest, AgentMoveRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentToolInstallRequest, AgentToolsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
+    AgentAllowanceRequest, AgentMoveRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentToolInstallRequest, AgentToolsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, AgentHeldTakeRequest, AgentHeldPutRequest, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
     MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, media_key, media_paths, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest, ProjectFilesBase, ProjectFilePart,
 )
 from galaius.agents import agent_queue
@@ -71,7 +71,7 @@ from galaius.machine.places.place_reviews import PlaceReviews
 from galaius.machine.places.levels import LEVEL_RANK, PlaceMap, split
 from galaius.machine.projects.project_secrets import ProjectEnv
 from cryptography.exceptions import InvalidTag
-from galaius_core.identity.sealing import SecretsSeal
+from galaius_core.identity.sealing import LoginSeal, SecretsSeal
 
 logger = logging.getLogger(__name__)
 
@@ -296,6 +296,8 @@ class MachineAgents(BaseModel):
     workspaces: MachineWorkspaces | None = None
     #: Opens project secrets sealed for this machine (`SealedSecrets`).
     seal: SecretsSeal | None = None
+    #: Opens a subscription's held login sealed for this machine (`AgentHeldPutRequest.login`).
+    login_seal: LoginSeal | None = None
     logs: LogRing | None = None
     #: Where the editor keeps its conversations (Claude Code: one JSONL file per conversation).
     editor_projects: Path = Field(default_factory=lambda: Path.home() / ".claude" / "projects")
@@ -333,7 +335,7 @@ class MachineAgents(BaseModel):
         # With agents off (or no folder) what the web started here can still be read and stopped.
         # Programs are not agents: installed and signed in whatever the agent settings say.
         if not isinstance(request, AgentRunsRequest | AgentTailRequest | AgentMediaRequest | AgentStopRequest | AgentLogsRequest | WorkspacesRequest
-                          | AgentProgramsRequest | AgentProgramInstallRequest | AgentSignOutRequest | AgentSignInCodeRequest
+                          | AgentProgramsRequest | AgentProgramInstallRequest | AgentSignOutRequest | AgentSignInCodeRequest | AgentHeldTakeRequest | AgentHeldPutRequest
                           | AgentToolsRequest | AgentToolInstallRequest):
             if not self.run_agents:
                 raise AgentRefused("agents_off", "agents are off on this computer; its owner turns them on on its page on the web, or there with `galaius machine agents on`")
@@ -401,7 +403,7 @@ class MachineAgents(BaseModel):
             case AgentProgramsRequest():
                 return MachineAgentAnswer(request_id=request.id, providers=await asyncio.to_thread(self._programs().states))
             case AgentProgramInstallRequest():
-                state = await asyncio.to_thread(self._programs().install, request.provider, request.subscription_id)
+                state = await asyncio.to_thread(self._programs().install, request.provider, request.subscription_id, held=request.held)
                 return MachineAgentAnswer(request_id=request.id, providers=(state,), detail=f"{request.provider}: {state.step}")
             case AgentSignOutRequest():
                 state = await asyncio.to_thread(self._programs().sign_out, request.provider, request.subscription_id)
@@ -409,6 +411,18 @@ class MachineAgents(BaseModel):
             case AgentSignInCodeRequest():
                 state = await asyncio.to_thread(self._programs().paste, request.provider, request.subscription_id, request.attempt, request.sealed)
                 return MachineAgentAnswer(request_id=request.id, providers=(state,), detail=f"{request.provider}: code handed to its sign-in")
+            case AgentHeldTakeRequest():
+                sealed = await asyncio.to_thread(self._programs().held_take, request.provider, request.subscription_id, request.seal_key)
+                return MachineAgentAnswer(request_id=request.id, held=sealed, detail=f"{request.provider}: {'held login sealed' if sealed else 'no held login here'}")
+            case AgentHeldPutRequest():
+                if self.login_seal is None:
+                    raise PermissionError("this computer opens no held login")
+                try:
+                    token = self.login_seal.open(request.login, request=request.id, subscription=request.subscription_id, provider=request.provider)
+                except (InvalidTag, ValueError) as error:
+                    raise PermissionError("this held login is not sealed for this computer and this request") from error
+                state = await asyncio.to_thread(self._programs().held_put, request.provider, request.subscription_id, token)
+                return MachineAgentAnswer(request_id=request.id, providers=(state,), detail=f"{request.provider}: held login put")
             case AgentToolsRequest():
                 return MachineAgentAnswer(request_id=request.id, tools=await asyncio.to_thread(MachineTools.states))
             case AgentToolInstallRequest():

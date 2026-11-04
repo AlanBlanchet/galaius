@@ -20,7 +20,7 @@ from galaius_core import AgentProvider as ProviderName, RunSubscription as WireR
 from galaius_core import CapReached, LoginIdentity, Refused, SubscriptionChoice, SubscriptionRefusals, SubscriptionUsage, SubscriptionUsageReport, UsageWindow
 from pydantic import BaseModel, ConfigDict
 
-from galaius.agents.limits import quota
+from galaius.agents.limits import held, quota
 from galaius.agents.providers import PROVIDERS, AgentProvider
 from galaius.host.atomic_file import replace_held_open
 from galaius.host.paths import UserPaths
@@ -287,9 +287,13 @@ class Subscription(BaseModel):
             raise SubscriptionCapped(cap)
 
     def identify(self, identity: LoginIdentity) -> None:
-        """Its CLI named the login its folder holds now (`AgentProvider.login_status`)."""
+        """Its CLI named the login its folder holds now (`AgentProvider.login_status`); one naming no account keeps the
+        account last named for the same login (a held login's status names none, its sign-in's screen may have)."""
         with self.WRITING:
-            if (state := self.state()).identity != identity:
+            state = self.state()
+            if not identity.account and identity.login == state.identity.login:
+                identity = identity.model_copy(update={"account": state.identity.account})
+            if state.identity != identity:
                 self._write(state.model_copy(update={"identity": identity}))
 
     def report_due(self, now: datetime) -> SubscriptionUsage | None:
@@ -305,11 +309,20 @@ class Subscription(BaseModel):
             self._write(self.state().model_copy(update={"reported": usage.windows, "reported_at": now,
                                                         "reported_identity": LoginIdentity(account=usage.account, login=usage.login)}))
 
+    @property
+    def held(self) -> str | None:
+        """Its held login (`held.token_in`); None: its CLI's own sign-in, or none."""
+        return held.token_in(self.folder)
+
+    def hold(self, token: str) -> bool:
+        """`token` kept as its held login; whether it changed (`held.hold`)."""
+        return held.hold(self.folder, token)
+
     @classmethod
     def credentials_in(cls, folder: Path) -> tuple[str, ...]:
         """The token values a CLI keeps in `folder` now, read again at each call (a refresh changes
-        them): what a run's output never shows."""
-        values: list[str] = []
+        them), and its held login: what a run's output never shows."""
+        values: list[str] = [token] if (token := held.token_in(folder)) is not None else []
         for name in cls.CREDENTIALS:
             try:
                 values += cls._strings(json.loads((folder / name).read_text(encoding="utf-8")))

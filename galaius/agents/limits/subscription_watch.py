@@ -20,7 +20,7 @@ from pydantic import BaseModel, PrivateAttr
 from galaius.agents import registry as reg
 from galaius.agents.limits import quota
 from galaius.agents.transport.events import stream_lines
-from galaius.agents.providers import PROVIDERS, AgentProvider as Program
+from galaius.agents.providers import PROVIDERS, AgentProvider as Program, held_environment
 from galaius.agents.limits.subscriptions import Subscription
 
 
@@ -59,6 +59,7 @@ class SubscriptionWatch(BaseModel):
         its usage and which login it is now as its CLI says (`identity`), one CLI at a time. Not installed: no reading;
         a CLI that could not answer leaves the last one. A subscription's go to its folder (`Subscription.observe`, as
         a run's would, `Subscription.identify`)."""
+        environment = held_environment(environment)
         for name in get_args(AgentProvider):
             provider = PROVIDERS[name]
             installed = provider.available()
@@ -72,7 +73,7 @@ class SubscriptionWatch(BaseModel):
                 self._logins[name] = reading.model_copy(update={"usage": reading.usage if usage is None else usage,
                                                                 "identity": reading.identity if identity is None else identity})
         for subscription in await asyncio.to_thread(Subscription.all):
-            overlaid = {**environment, **subscription.overlay()}
+            overlaid = held_environment({**environment, **subscription.overlay()})
             asked = time.time()
             if (usage := await subscription.program.current_usage(overlaid)) is not None:
                 await asyncio.to_thread(subscription.observe, usage, whole=True)

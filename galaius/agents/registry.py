@@ -48,7 +48,7 @@ from galaius.agents.transport.events import (
 from galaius.agents.catalog.connection import CatalogConnection
 from galaius.account.caller import Caller
 from galaius.agents.limits.ceiling import contained, end_run_scope, is_run_scope
-from galaius.agents.providers import PROVIDERS, AgentProvider, DeniedTool
+from galaius.agents.providers import PROVIDERS, AgentProvider, DeniedTool, held_environment
 from galaius.agents.limits.subscriptions import RunSubscription, Subscription, SubscriptionRefused
 from galaius.agents.catalog.community import CommunityAgent
 from galaius.isolation.fence import FenceSpec
@@ -700,9 +700,10 @@ def participant_environment(environment: Mapping[str, str]) -> dict[str, str]:
     """`environment` for a process this one starts to work on its runs (an agent's turn and the inbox
     hook it runs, a dispatcher): carrying this process's registry override, so a scrubbed environment
     (a PC runner's) never sends it to read the default registry, where it finds no run and no message;
-    its PATH reaching every agent program's own folder, which a service manager's PATH lacks."""
+    its PATH reaching every agent program's own folder, which a service manager's PATH lacks; a CLI's held login only
+    when it names that login's folder (`held_environment`: a child never inherits its parent's)."""
     override = os.environ.get(UserPaths.AGENTS_OVERRIDE)
-    found = {**environment, "PATH": AgentProvider.search_path(environment.get("PATH", os.defpath))}
+    found = {**held_environment(environment), "PATH": AgentProvider.search_path(environment.get("PATH", os.defpath))}
     return {**found, UserPaths.AGENTS_OVERRIDE: str(agents_dir())} if override else found
 
 
