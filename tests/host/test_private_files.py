@@ -40,6 +40,16 @@ def test_secret_file_refused_unless_private_plain_and_bounded(tmp_path: Path, ca
         PRIVATE_FILES.read_secret(path)
 
 
+@pytest.mark.skipif(not WINDOWS, reason="DPAPI")
+def test_a_value_sealed_before_the_rename_still_opens(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A PC signed in on a build before the product's rename sealed its keys with the former entropy;
+    the upgraded build still opens them (else it stays offline asking for a new sign-in)."""
+    monkeypatch.setattr(type(PRIVATE_FILES), "entropy", PRIVATE_FILES.former_entropies[0])
+    sealed = PRIVATE_FILES.seal("ik_before-rename")
+    monkeypatch.undo()
+    assert PRIVATE_FILES.unseal(sealed) == "ik_before-rename"
+
+
 def test_hand_written_token_is_read_as_written(tmp_path: Path) -> None:
     """A token its owner wrote (never sealed) still reads once the file is private."""
     path = tmp_path / "token"

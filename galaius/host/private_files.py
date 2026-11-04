@@ -170,6 +170,8 @@ class WindowsPrivateFiles(PrivateFiles):
     #: Mixed into every sealed value. Public (it is in this source): it keeps galaius's blobs apart
     #: from other programs' DPAPI data, never from a program of this user that reads this file.
     entropy: ClassVar[bytes] = b"galaius.private-files.v1"
+    #: What builds before the product's rename mixed in: a computer signed in then still holds such values.
+    former_entropies: ClassVar[tuple[bytes, ...]] = (b"interact.private-files.v1",)
 
     def replace(self, temporary: Path, path: Path) -> None:
         """A file another process has open refuses the rename for that instant (`replace_held_open`)."""
@@ -232,10 +234,16 @@ class WindowsPrivateFiles(PrivateFiles):
         if not stored.startswith(self.prefix):
             return stored
         try:
-            _, opened = win32crypt.CryptUnprotectData(base64.b64decode(stored[len(self.prefix):], validate=True), self.entropy, None, None, win32cryptcon.CRYPTPROTECT_UI_FORBIDDEN)
-        except (pywintypes.error, ValueError) as error:
-            raise ValueError("this key cannot be unsealed by this Windows user (password reset, or copied from another computer); run `galaius login` again") from error
-        return opened.decode("utf-8")
+            blob = base64.b64decode(stored[len(self.prefix):], validate=True)
+        except ValueError as error:
+            raise ValueError("this key is damaged; run `galaius login` again") from error
+        for entropy in (self.entropy, *self.former_entropies):
+            try:
+                _, opened = win32crypt.CryptUnprotectData(blob, entropy, None, None, win32cryptcon.CRYPTPROTECT_UI_FORBIDDEN)
+            except pywintypes.error:
+                continue
+            return opened.decode("utf-8")
+        raise ValueError("this key cannot be unsealed by this Windows user (password reset, or copied from another computer); run `galaius login` again")
 
     def _settle(self, folder: Path) -> None:
         """NTFS journals the rename; a folder cannot be opened as a file to flush it."""
