@@ -1,0 +1,131 @@
+"""Windows: a console window shown by a program of the PC service's own process tree is hidden the
+moment it appears, and named.
+
+Every spawn galaius makes hides its child's console (`galaius.host.windowless`), yet a program it
+starts can still open one of its own (a detached helper of an agent CLI, a script's `Start-Process`,
+`cmd /c start`): a black window on the person's desktop, with nothing saying where it came from
+(owner 2026-11-03: « A user's PC still has the cmd popping up without the user's consent »). The
+service's supervisor watches every window shown on its desktop through an out-of-context WinEvent
+hook (no polling, nothing injected into other programs); a console window whose process descends
+from the supervisor is hidden and recorded (`ShownConsole`: the program and its parents, never its
+command line) in `console-windows.jsonl`, which the PC's next beat tells its server. A console
+hosted by Windows Terminal belongs to the terminal's own process and is never touched."""
+
+import ctypes
+import logging
+import sys
+import threading
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import ClassVar
+
+from pydantic import BaseModel, ConfigDict, ValidationError
+
+from galaius.host.paths import UserPaths
+
+logger = logging.getLogger(__name__)
+
+#: The window classes of a console: the classic host's and the pseudo-console's.
+CONSOLE_CLASSES: frozenset[str] = frozenset({"ConsoleWindowClass", "PseudoConsoleWindow"})
+
+
+class ShownConsole(BaseModel):
+    """One console window a program of the service's tree showed (and that was hidden)."""
+
+    model_config = ConfigDict(frozen=True)
+    at: datetime
+    program: str
+    #: Its ancestors' programs, nearest first, down to the service's supervisor.
+    parents: tuple[str, ...]
+
+
+class ConsoleWatch(BaseModel):
+    """The watch of one supervisor (`root`): what it hid goes to `path`, the newest `kept` lines."""
+
+    model_config = ConfigDict(frozen=True)
+    root: int
+    path: Path
+    kept: ClassVar[int] = 20
+
+    @staticmethod
+    def default_path() -> Path:
+        return UserPaths.config() / "console-windows.jsonl"
+
+    def mine(self, lineage: tuple[tuple[int, str], ...]) -> ShownConsole | None:
+        """The window's process and its ancestors (`process_lineage`): ours when the supervisor is one
+        of them (the supervisor itself shows none: it runs with its console hidden)."""
+        pids = [pid for pid, _program in lineage]
+        if not lineage or self.root not in pids[1:]:
+            return None
+        below = lineage[:pids.index(self.root, 1)]
+        return ShownConsole(at=datetime.now(UTC), program=below[0][1], parents=tuple(program for _pid, program in below[1:]))
+
+    def record(self, shown: ShownConsole) -> None:
+        lines = [line for line in self._lines() if line][-(self.kept - 1):] + [shown.model_dump_json()]
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        logger.warning("hid a console window shown by %s (started by %s)", shown.program, " < ".join(shown.parents) or "the service")
+
+    def _lines(self) -> list[str]:
+        try:
+            return self.path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+
+    @classmethod
+    def recent(cls, path: Path | None = None) -> list[ShownConsole]:
+        """What the watch hid lately, oldest first (an unreadable line skipped)."""
+        found = []
+        for line in cls(root=0, path=path or cls.default_path())._lines():
+            try:
+                found.append(ShownConsole.model_validate_json(line))
+            except ValidationError:
+                continue
+        return found
+
+    def start(self) -> threading.Thread | None:
+        """The hook's thread (it runs while this process does); None off Windows."""
+        if sys.platform != "win32":
+            return None
+        thread = threading.Thread(target=self._watch, name="console-watch", daemon=True)
+        thread.start()
+        return thread
+
+    def _watch(self) -> None:
+        from ctypes import wintypes
+
+        from galaius.host.processes import process_lineage
+
+        user32 = ctypes.windll.user32
+        callback_type = ctypes.WINFUNCTYPE(None, wintypes.HANDLE, wintypes.DWORD, wintypes.HWND, wintypes.LONG, wintypes.LONG, wintypes.DWORD, wintypes.DWORD)
+        user32.SetWinEventHook.restype = wintypes.HANDLE
+        user32.SetWinEventHook.argtypes = (wintypes.DWORD, wintypes.DWORD, wintypes.HMODULE, callback_type, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD)
+        user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+        user32.GetClassNameW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+        user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
+
+        def shown(_hook, _event, window, object_id, child_id, _thread, _time) -> None:
+            if not window or object_id != 0 or child_id != 0:  # OBJID_WINDOW, the window itself
+                return
+            try:
+                name = ctypes.create_unicode_buffer(64)
+                user32.GetClassNameW(window, name, 64)
+                if name.value not in CONSOLE_CLASSES:
+                    return
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(window, ctypes.byref(pid))
+                if (console := self.mine(process_lineage(pid.value))) is not None:
+                    user32.ShowWindow(window, 0)  # SW_HIDE
+                    self.record(console)
+            except Exception:  # a callback that raises is only printed by ctypes: say it in the service log
+                logger.warning("the console window watch failed on one window", exc_info=True)
+
+        callback = callback_type(shown)
+        # EVENT_OBJECT_SHOW, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS
+        if not user32.SetWinEventHook(0x8002, 0x8002, None, callback, 0, 0, 0x0000 | 0x0002):
+            logger.warning("no console window watch: Windows refused the window hook")
+            return
+        message = wintypes.MSG()
+        while user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
+            user32.TranslateMessage(ctypes.byref(message))
+            user32.DispatchMessageW(ctypes.byref(message))

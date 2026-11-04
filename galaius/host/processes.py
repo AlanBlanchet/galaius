@@ -492,6 +492,24 @@ def _parent_windows(pid: int, parents: Mapping[int, int]) -> int | None:
 
 def _parents_windows() -> dict[int, int]:
     """Each process's parent pid, from one Toolhelp snapshot of every process; empty when the system refuses one."""
+    return {pid: parent for pid, (parent, _program) in _processes_windows().items()}
+
+
+def process_lineage(pid: int) -> tuple[tuple[int, str], ...]:
+    """Windows: `pid` then each ancestor, nearest first, as (pid, program file name), from one snapshot;
+    empty when `pid` is gone."""
+    processes = _processes_windows()
+    parents = {pid: parent for pid, (parent, _program) in processes.items()}
+    found: list[tuple[int, str]] = []
+    current: int | None = pid
+    while current is not None and current in processes and len(found) < 64:
+        found.append((current, processes[current][1]))
+        current = _parent_windows(current, parents)
+    return tuple(found)
+
+
+def _processes_windows() -> dict[int, tuple[int, str]]:
+    """Each process's (parent pid, program file name), from one Toolhelp snapshot; empty when the system refuses one."""
     kernel32 = ctypes.windll.kernel32
     kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
     kernel32.CreateToolhelp32Snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
@@ -504,7 +522,7 @@ def _parents_windows() -> dict[int, int]:
         entry, parents = _ProcessEntry(dwSize=ctypes.sizeof(_ProcessEntry)), {}
         found = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
         while found:
-            parents[entry.th32ProcessID] = entry.th32ParentProcessID
+            parents[entry.th32ProcessID] = (entry.th32ParentProcessID, entry.szExeFile)
             found = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
         return parents
     finally:

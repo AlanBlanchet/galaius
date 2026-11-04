@@ -37,6 +37,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from galaius.mcp.announcement import McpAnnouncement
 from galaius.upgrade.handoff import Children, Handoff
+from galaius.host.console_watch import ConsoleWatch
 from galaius.host.private_files import PRIVATE_FILES
 from galaius.host.processes import platform_signals
 from galaius.upgrade.store import EXIT_UPGRADE, Addressed, Runtime, RuntimeStore
@@ -267,6 +268,7 @@ class Passthrough(Supervisor):
 
     def run(self) -> int:
         children, lifecycle, stop = Children(), Lifecycle(self), threading.Event()
+        ConsoleWatch(root=os.getpid(), path=ConsoleWatch.default_path()).start()  # Windows: a console its tree shows is hidden
         for number in platform_signals("SIGTERM", "SIGHUP"):
             signal.signal(number, lambda *_: stop.set())
         previous_interrupt = signal.signal(signal.SIGINT, signal.SIG_IGN)  # the worker takes Ctrl-C
