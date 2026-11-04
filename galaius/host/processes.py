@@ -508,6 +508,22 @@ def process_lineage(pid: int) -> tuple[tuple[int, str], ...]:
     return tuple(found)
 
 
+def process_descendants(root: int) -> dict[int, tuple[int, str]]:
+    """Windows: every living process below `root` (a reused parent pid never counts), as pid -> (parent pid,
+    program file name), from one snapshot."""
+    processes = _processes_windows()
+    parents = {pid: parent for pid, (parent, _program) in processes.items()}
+    found: dict[int, tuple[int, str]] = {}
+    for pid, (parent, program) in processes.items():
+        current, seen = pid, 0
+        while (above := _parent_windows(current, parents)) is not None and seen < 64:
+            if above == root:
+                found[pid] = (parent, program)
+                break
+            current, seen = above, seen + 1
+    return found
+
+
 def _processes_windows() -> dict[int, tuple[int, str]]:
     """Each process's (parent pid, program file name), from one Toolhelp snapshot; empty when the system refuses one."""
     kernel32 = ctypes.windll.kernel32

@@ -35,41 +35,56 @@ def test_what_was_hidden_is_kept_newest_last_and_read_back(tmp_path: Path) -> No
     assert len(recent) == ConsoleWatch.kept and recent[-1].program == f"p{ConsoleWatch.kept + 2}.exe"
 
 
+#: Each way a console window appears: (how it is started, whether it is the service tree's).
+STARTS = {
+    "child_new_console": (["cmd.exe", "/c", "ping -n 8 127.0.0.1 >nul"], "CREATE_NEW_CONSOLE", True),
+    "grandchild_of_a_consoleless_child": (["cmd.exe", "/c", "start", "/b", "cmd.exe", "/c", "ping -n 8 127.0.0.1"], "DETACHED_PROCESS", True),
+    "outside_the_tree": (["powershell", "-NoProfile", "-Command", "Invoke-CimMethod Win32_Process -MethodName Create -Arguments @{CommandLine='cmd.exe /c ping -n 8 127.0.0.1'} | Out-Null"], "CREATE_NO_WINDOW", False),
+}
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows console windows")
-def test_a_new_console_a_child_opens_is_hidden_within_a_second(tmp_path: Path) -> None:
-    import ctypes
+@pytest.mark.parametrize("how", STARTS)
+def test_a_console_window_of_the_tree_is_hidden_and_named_and_no_other(tmp_path: Path, how: str) -> None:
+    """Classic console host and Windows Terminal alike (a GitHub Windows runner has Terminal as its default)."""
     import os
+    command, flag, ours = STARTS[how]
     watch = ConsoleWatch(root=os.getpid(), path=tmp_path / "c.jsonl")
     watch.start()
     time.sleep(0.5)  # the hook is set
-    child = subprocess.Popen(["cmd.exe", "/c", "ping -n 6 127.0.0.1 >nul"], creationflags=subprocess.CREATE_NEW_CONSOLE)
+    before = _visible_consoles()
+    child = subprocess.Popen(command, creationflags=getattr(subprocess, flag))
     try:
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and not ConsoleWatch.recent(watch.path):
-            time.sleep(0.05)
-        recent = ConsoleWatch.recent(watch.path)
-        assert recent and recent[-1].program.lower() in {"cmd.exe", "conhost.exe", "ping.exe"}, recent
-        visible = []
-        callback = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)(
-            lambda window, _: visible.append(window) or True if ctypes.windll.user32.IsWindowVisible(window) and _class(window) == "ConsoleWindowClass" and _pid(window) == child.pid else True)
-        ctypes.windll.user32.EnumWindows(callback, None)
-        assert visible == [], "the child's console window is still visible"
+        time.sleep(4)
+        appeared = _visible_consoles() - before
+        recorded = ConsoleWatch.recent(watch.path)
+        if ours:
+            assert recorded and recorded[-1].program.lower() in {"cmd.exe", "conhost.exe", "ping.exe"}, recorded
+            assert appeared == set(), f"still visible: {appeared}"
+        else:
+            assert recorded == [] and appeared, (recorded, appeared)
     finally:
         child.kill()
+        subprocess.run(["taskkill", "/F", "/IM", "ping.exe"], capture_output=True)
 
 
-def _class(window) -> str:
+def _visible_consoles() -> set[int]:
+    """Visible top-level windows of a console: classic host or Windows Terminal."""
     import ctypes
-    name = ctypes.create_unicode_buffer(64)
-    ctypes.windll.user32.GetClassNameW(ctypes.c_void_p(window), name, 64)
-    return name.value
+    from ctypes import wintypes
+    found: set[int] = set()
+    user32 = ctypes.windll.user32
+    user32.GetClassNameW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
 
+    def each(window, _param) -> bool:
+        name = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(window, name, 64)
+        if user32.IsWindowVisible(window) and name.value in {"ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS"}:
+            found.add(window)
+        return True
 
-def _pid(window) -> int:
-    import ctypes
-    pid = ctypes.c_ulong()
-    ctypes.windll.user32.GetWindowThreadProcessId(ctypes.c_void_p(window), ctypes.byref(pid))
-    return pid.value
+    user32.EnumWindows(ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)(each), 0)
+    return found
 
 
 def test_every_beat_tells_the_server_what_the_service_hid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

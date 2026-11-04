@@ -8,8 +8,12 @@ starts can still open one of its own (a detached helper of an agent CLI, a scrip
 service's supervisor watches every window shown on its desktop through an out-of-context WinEvent
 hook (no polling, nothing injected into other programs); a console window whose process descends
 from the supervisor is hidden and recorded (`ShownConsole`: the program and its parents, never its
-command line) in `console-windows.jsonl`, which the PC's next beat tells its server. A console
-hosted by Windows Terminal belongs to the terminal's own process and is never touched."""
+command line) in `console-windows.jsonl`, which the PC's next beat tells its server.
+
+Where Windows Terminal is the default terminal (Windows 11), a new console opens as a Terminal window
+owned by the terminal's process, outside the tree: its pseudo-console window is then matched to the
+tree's process attached to it (`attached`: a helper attaches to each one's console in turn), and the
+Terminal window owning it is hidden. A console the person opened is never one of them."""
 
 import ctypes
 import logging
@@ -25,8 +29,13 @@ from galaius.host.paths import UserPaths
 
 logger = logging.getLogger(__name__)
 
-#: The window classes of a console: the classic host's and the pseudo-console's.
-CONSOLE_CLASSES: frozenset[str] = frozenset({"ConsoleWindowClass", "PseudoConsoleWindow"})
+#: A classic console host's window (its process is the console program's own `conhost.exe` or itself).
+CLASSIC = "ConsoleWindowClass"
+#: The window a pseudo-console (Windows Terminal) gives its program, owned by the Terminal window shown.
+PSEUDO = "PseudoConsoleWindow"
+#: Run by `attached` with pids: each one's console window, as « pid window » lines (none: no console).
+ATTACHED = ("import ctypes, sys\nk = ctypes.windll.kernel32\nk.GetConsoleWindow.restype = ctypes.c_void_p\nk.FreeConsole()\n"
+            "for pid in sys.argv[1:]:\n    if k.AttachConsole(int(pid)):\n        print(pid, k.GetConsoleWindow() or 0, flush=True)\n        k.FreeConsole()\n")
 
 
 class ShownConsole(BaseModel):
@@ -59,6 +68,30 @@ class ConsoleWatch(BaseModel):
             return None
         below = lineage[:pids.index(self.root, 1)]
         return ShownConsole(at=datetime.now(UTC), program=below[0][1], parents=tuple(program for _pid, program in below[1:]))
+
+    def attached(self, window: int, below: dict[int, tuple[int, str]]) -> ShownConsole | None:
+        """The program of the tree (`below`: `process_descendants`) whose console is `window`, a pseudo-console window."""
+        import subprocess
+
+        from galaius.host.windowless import console_python
+
+        pids = [str(pid) for pid, (_parent, program) in below.items() if program.lower() not in {"conhost.exe", "openconsole.exe"}]
+        if not pids:
+            return None
+        try:
+            answered = subprocess.run([console_python(), "-I", "-c", ATTACHED, *pids], capture_output=True, text=True, timeout=10,
+                                      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        for line in answered.splitlines():
+            pid, _space, shown = line.partition(" ")
+            if shown.isdigit() and int(shown) == window and int(pid) in below:
+                chain, current = [], below[int(pid)][0]
+                while current in below and len(chain) < 16:
+                    chain.append(below[current][1])
+                    current = below[current][0]
+                return ShownConsole(at=datetime.now(UTC), program=below[int(pid)][1], parents=tuple(chain))
+        return None
 
     def record(self, shown: ShownConsole) -> None:
         lines = [line for line in self._lines() if line][-(self.kept - 1):] + [shown.model_dump_json()]
@@ -94,7 +127,7 @@ class ConsoleWatch(BaseModel):
     def _watch(self) -> None:
         from ctypes import wintypes
 
-        from galaius.host.processes import process_lineage
+        from galaius.host.processes import process_descendants, process_lineage
 
         user32 = ctypes.windll.user32
         callback_type = ctypes.WINFUNCTYPE(None, wintypes.HANDLE, wintypes.DWORD, wintypes.HWND, wintypes.LONG, wintypes.LONG, wintypes.DWORD, wintypes.DWORD)
@@ -103,6 +136,8 @@ class ConsoleWatch(BaseModel):
         user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
         user32.GetClassNameW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
         user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
+        user32.GetWindow.restype = wintypes.HWND
+        user32.GetWindow.argtypes = (wintypes.HWND, ctypes.c_uint)
 
         def shown(_hook, _event, window, object_id, child_id, _thread, _time) -> None:
             if not window or object_id != 0 or child_id != 0:  # OBJID_WINDOW, the window itself
@@ -110,12 +145,14 @@ class ConsoleWatch(BaseModel):
             try:
                 name = ctypes.create_unicode_buffer(64)
                 user32.GetClassNameW(window, name, 64)
-                if name.value not in CONSOLE_CLASSES:
-                    return
-                pid = wintypes.DWORD()
-                user32.GetWindowThreadProcessId(window, ctypes.byref(pid))
-                if (console := self.mine(process_lineage(pid.value))) is not None:
-                    user32.ShowWindow(window, 0)  # SW_HIDE
+                if name.value == CLASSIC:
+                    pid = wintypes.DWORD()
+                    user32.GetWindowThreadProcessId(window, ctypes.byref(pid))
+                    if (console := self.mine(process_lineage(pid.value))) is not None:
+                        user32.ShowWindow(window, 0)  # SW_HIDE
+                        self.record(console)
+                elif name.value == PSEUDO and (console := self.attached(window, process_descendants(self.root))) is not None:
+                    user32.ShowWindow(user32.GetWindow(window, 4) or window, 0)  # GW_OWNER: the Terminal window showing it
                     self.record(console)
             except Exception:  # a callback that raises is only printed by ctypes: say it in the service log
                 logger.warning("the console window watch failed on one window", exc_info=True)
