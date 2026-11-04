@@ -1120,11 +1120,12 @@ class MachineAgents(BaseModel):
         if (stopping := self._stop_editor_session(request)) is not None:
             return stopping
         run = self._require_run(request.run_id)
-        if run.status not in {"running", "waiting"}:
-            return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="already ended")
+        # An ended run is asked too: the stop holds it (`registry.AgentRun.held_at`), so its agents' reports never start it again.
         if not reg.stop(str(request.run_id), by=request.by):
+            if run.status not in {"running", "waiting"}:
+                return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="already ended")
             raise RuntimeError("the run could not be stopped")
-        return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="stopped")
+        return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="stopped" if run.status in {"running", "waiting"} else "already ended")
 
     def _stop_editor_session(self, request: AgentStopRequest) -> MachineAgentAnswer | None:
         """`request` for one of HIS live editor sessions (no run of the web's): its turn ends at its next tool call

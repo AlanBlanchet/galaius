@@ -323,6 +323,10 @@ def _queue_message(
                 state="error", text=f"ERROR: {run.name}'s message queue is full.",
                 run_id=run.run_id,
             )
+        if run.held_at is not None and (origin is None or (origin.held_at is None and speaker in run.askers)):
+            # A person's message (his « Continuer » included), or work from a run it works for that runs, releases a
+            # stop's hold: what waited is delivered first, then this. Anything else waits with it.
+            reg._merge_record_locked(run.run_id, {"held_at": None})
         if for_run is not None:
             reg.note_asker_locked(run.run_id, for_run)
         rounds.note(run.agent, maker, run.run_id, asker=asker, turn=asked_in)

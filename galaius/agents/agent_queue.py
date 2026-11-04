@@ -453,11 +453,19 @@ def _due(item: QueueItem, now: float | None = None) -> bool:
     return item.not_before is None or item.not_before <= (time.time() if now is None else now)
 
 
+def held_locked(run_id: str) -> bool:
+    """Whether a stop holds `run_id` (`registry.AgentRun.held_at`), while the caller owns its lock: what is queued for it
+    waits, no turn of it starts."""
+    run = reg.get_run(run_id)
+    return run is not None and run.held_at is not None
+
+
 def claim_next_locked(run_id: str) -> QueueItem | None:
-    """Claim the oldest pending item while the caller owns the run lock, once its pause is over (`_due`)."""
+    """Claim the oldest pending item while the caller owns the run lock, once its pause is over (`_due`); none of a run a
+    stop holds (`held_locked`)."""
     state = _state(run_id)
     item = next((item for item in _items(state) if item.state == "pending"), None)
-    if item is None or not _due(item):
+    if item is None or not _due(item) or held_locked(run_id):
         return None
     return _replace_item_locked(
         run_id, item.id, state="running", started_at=time.time(),
@@ -474,7 +482,7 @@ def claim_locked(run_id: str, item_id: str) -> QueueItem | None:
     """Claim `item_id` while the caller owns the run lock, when it is the first item waiting or
     running (one ahead of it is delivered first)."""
     first = first_active_locked(run_id)
-    if first is None or first.id != item_id or first.state != "pending" or not _due(first):
+    if first is None or first.id != item_id or first.state != "pending" or not _due(first) or held_locked(run_id):
         return None
     return _replace_item_locked(run_id, item_id, state="running", started_at=time.time(),
                                 raw_index=reg.raw_line_count(run_id), attempt_token=uuid.uuid4().hex, error="", not_before=None)
@@ -938,6 +946,11 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                     return
                 if run is None:
                     cancel_pending_locked(run_id)
+                    return
+                if run.held_at is not None and running is None and not run.working():
+                    # A stop holds it: what waits is delivered once a person releases it (`messaging`), by the
+                    # dispatcher his message hands it to.
+                    _drained_locked(run_id, dispatcher_token)
                     return
                 if run.working():
                     item = None

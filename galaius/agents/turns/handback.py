@@ -118,9 +118,10 @@ class Report(BaseModel):
 
 
 def _pending(run: reg.AgentRun) -> bool:
-    """Still to end: its process is on a turn (or starting one), or a message waits for it."""
+    """Still to end: its process is on a turn (or starting one), or a message waits for it that it reads (a run a stop
+    holds reads none until a person releases it: `registry.AgentRun.held_at`)."""
     return (run.status in ("starting", "running", "waiting") and run.process_running()) \
-        or any(item.state in {"pending", "running"} for item in agent_queue.items_seen(run.run_id))   # a look, never a wait on its lock
+        or (run.held_at is None and any(item.state in {"pending", "running"} for item in agent_queue.items_seen(run.run_id)))   # a look, never a wait on its lock
 
 
 def hand_back(run_id: str) -> list[messaging.Delivery]:
@@ -182,7 +183,8 @@ def _resume(asker_id: str) -> messaging.Delivery | None:
     and cost `asker_id` a turn, while its final report comes once they end. So does one a cut stopped that resumes
     by itself (`registry.self_resuming`): its cut is no report, its report comes once it resumed and ended."""
     asker = reg.get_run(asker_id)
-    if asker is None or asker.finished_at is None or asker.status not in _ENDED_ITS_TURN or _pending(asker):
+    # One a stop holds gets them too: queued, read once a person releases it (`registry.AgentRun.held_at`).
+    if asker is None or asker.finished_at is None or (asker.status not in _ENDED_ITS_TURN and asker.held_at is None) or _pending(asker):
         return None
     with one_read():
         asked = Asked.of(reg._stored_records())

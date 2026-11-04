@@ -309,6 +309,8 @@ class Spawn(BaseModel):
         policy overrides, at a start as at a continuation. Nor its role's revision: the turn handed to it runs on the
         spawn's (`agent_queue.MessageTurn.agent_ref`), within the permissions the run was started with.
         `queue_message(only_if_idle=True)` re-reads "is working" under the run's lock."""
+        if run.held_at is not None:
+            return "was stopped: only a person starts it again"
         busy = self._busy(run)
         if not busy and run.status not in relations.REUSABLE:
             return "is working"

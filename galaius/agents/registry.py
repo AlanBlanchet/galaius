@@ -448,6 +448,12 @@ class AgentRun(ContextGauge):
     #: Who stopped it (`stop`): the person on the web, an agent, this PC's terminal, its agents switched off, a folder
     #: narrowed under it; None when nothing did, or its own subscription cap cut it. Cleared as a new turn begins.
     stopped_by: StopActor | None = None
+    #: When a stop that holds it (`holds`: anyone's but an agent's) ended its work: no turn of it starts again until a
+    #: person writes to it (his message, his « Continuer ») or a run it works for, itself not held, sends it work; what
+    #: anything else sends it meanwhile (its agents' reports, a silence notice) waits in its queue and reaches it then
+    #: (owner 2026-11-04: « I also stopped, but when i came back it actually continues working... And a subagent was still
+    #: working... »). Kept across its ending; cleared as a new turn begins.
+    held_at: float | None = None
     #: The run that took its task after it ended before its first turn (`take_over_refused`): no stop to continue, a
     #: launch that moved on. Cleared as a new turn begins: whatever ends a resumed turn is its own ending.
     replaced_by: RunReplacement | None = None
@@ -1576,10 +1582,18 @@ def _cuts_nothing(answered: int | None, items: Iterable["QueueItem"]) -> bool:
         item.started_at is not None and (item.raw_index is None or item.raw_index > answered) for item in items)
 
 
+def holds(by: StopActor | None) -> bool:
+    """Whether a stop by `by` holds the run (`AgentRun.held_at`): a person's, his terminal's, his PC's agents switched off,
+    a place removed. An agent's never does: a coordinator ending its finished agent sends it work again later, and its own
+    subscription cap (None) is a cut, resumed by itself."""
+    return by is not None and by.kind != "agent"
+
+
 def stop(run_id: str, *, by: StopActor | None, expected_lifecycle_token: str | None = None) -> bool:
     """Ask a run to stop, recording who did (`by`; None: no one, its own subscription cap cut it). Returns False for an
     unknown run rather than raising. A run that had given its answer, no turn since, is ended and stays done
-    (`_cuts_nothing`)."""
+    (`_cuts_nothing`) when an agent stops it; a stop that `holds` reads stopped and holds it: nothing but a person starts
+    it again (`AgentRun.held_at`), whatever is queued for it."""
     # Read before the lock: `read_events` takes `record_lock` itself.
     known = _read_record(run_id)
     answered = None if known is None else _digest(known).answered
@@ -1599,13 +1613,15 @@ def stop(run_id: str, *, by: StopActor | None, expected_lifecycle_token: str | N
         # Cancel first. A failed queue write must not leave a stopped run resumable with old work.
         try:
             from galaius.agents import agent_queue
-            idle = _cuts_nothing(answered, agent_queue.items_locked(run_id))
+            # His stop reads stopped even on a turn that had ended: he stopped the work it waited on (its agents').
+            idle = not holds(by) and _cuts_nothing(answered, agent_queue.items_locked(run_id))
             agent_queue.cancel_pending_locked(run_id)
         except (ImportError, OSError, ValueError, RuntimeError):
             return False
         if stored.process_running():
             _terminate(stored.pid)
         updated = _merge_record_locked(run_id, {
+            **({"held_at": time.time()} if holds(by) else {}),
             "finished_at": stored.finished_at if idle and stored.finished_at else time.time(),
             "exit_code": 0 if idle else -signal.SIGTERM,
             "status": "done" if idle else "stopped",
@@ -1877,7 +1893,7 @@ def save_run(run: AgentRun) -> None:
 #: Record fields that describe how the run's PREVIOUS turn ended, cleared when it starts another
 #: one: a cause and hour kept from an earlier cut were read as this turn's, so a run cut off today
 #: was shown as cut off yesterday, and the one that ended cleanly after it inherited that cause.
-PREVIOUS_ENDING: dict[str, None] = dict.fromkeys(("exit_code", "finished_at", "stopped_by", "replaced_by", "interruption", "resumes", "resume_at"))
+PREVIOUS_ENDING: dict[str, None] = dict.fromkeys(("exit_code", "finished_at", "stopped_by", "held_at", "replaced_by", "interruption", "resumes", "resume_at"))
 
 
 def begin_turn(
@@ -3043,9 +3059,9 @@ def cut_cause(run: AgentRun) -> CutCause | None:
     """What cut `run` from outside its work, None when nothing did: its program's word (`RunCut`: a lost login, a
     usage limit, its provider's API never reached), its process gone without a word of its own (`process_gone`: a
     crash, the memory killer, the PC restarted or switched off), or a signal nobody it answers to sent (`killed`: an external SIGTERM / SIGKILL, a time
-    limit). Never a stop someone recorded (`stopped_by`), its own subscription cap, its own program error, a launch
+    limit). Never a stop someone recorded (`stopped_by`, `held_at`), its own subscription cap, its own program error, a launch
     another run took over (`replaced_by`, `successor`), nor a run galaius did not launch here."""
-    if (run.foreign or run.kind != "process" or run.finished_at is None or run.stopped_by is not None
+    if (run.foreign or run.kind != "process" or run.finished_at is None or run.stopped_by is not None or run.held_at is not None
             or run.replaced_by is not None or run.successor is not None
             or (run.subscription is not None and run.subscription.capped is not None)):
         return None
