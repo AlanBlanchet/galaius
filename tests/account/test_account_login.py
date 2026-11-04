@@ -329,7 +329,7 @@ def test_detach_is_a_real_detached_process_with_a_private_log(tmp_path: Path, mo
 
     monkeypatch.setattr(account_login.subprocess, "Popen", Child)
     account_login._detached(AccountLogin.at("https://galaius.example.org"), account_login.HandedOff(started=_started(), mark="m"))
-    assert seen["argv"][1:] == ["-m", "galaius", "login", "--resume", "--server", "https://galaius.example.org"]
+    assert seen["argv"][1:] == ["-I", "-m", "galaius", "login", "--resume", "--server", "https://galaius.example.org"]
     assert b"d" * 40 in seen["payload"] and b"d" * 40 not in " ".join(seen["argv"]).encode()
     if sys.platform == "win32":
         assert seen["creationflags"] & subprocess.CREATE_NO_WINDOW and seen["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP
