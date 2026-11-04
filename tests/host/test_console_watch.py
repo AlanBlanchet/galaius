@@ -58,7 +58,7 @@ def test_a_console_window_of_the_tree_is_hidden_and_named_and_no_other(tmp_path:
     child = subprocess.Popen(command, creationflags=getattr(subprocess, flag))
     children.hold(child)  # as the supervisor holds its worker: what it leaves behind stays in the job
     try:
-        time.sleep(4)
+        time.sleep(4)  # Windows Terminal not running yet shows its new window twice (2026-11-04, CI): the watch hides it each time
         appeared = _visible_consoles() - before
         recorded = ConsoleWatch.recent(watch.path)
         if ours:

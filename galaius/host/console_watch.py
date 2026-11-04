@@ -151,8 +151,16 @@ class ConsoleWatch(BaseModel):
         user32.GetWindow.restype = wintypes.HWND
         user32.GetWindow.argtypes = (wintypes.HWND, ctypes.c_uint)
 
-        def shown(_hook, _event, window, object_id, child_id, _thread, _time) -> None:
+        hidden: set[int] = set()  # Terminal windows hidden: Terminal shows a new window again once it is ready
+
+        def shown(_hook, event, window, object_id, child_id, _thread, _time) -> None:
             if not window or object_id != 0 or child_id != 0:  # OBJID_WINDOW, the window itself
+                return
+            if event == 0x8001:  # EVENT_OBJECT_DESTROY: its handle may name another window later
+                hidden.discard(window)
+                return
+            if window in hidden:
+                user32.ShowWindow(window, 0)
                 return
             try:
                 name = ctypes.create_unicode_buffer(64)
@@ -164,14 +172,16 @@ class ConsoleWatch(BaseModel):
                         user32.ShowWindow(window, 0)  # SW_HIDE
                         self.record(console)
                 elif name.value == PSEUDO and (console := self.attached(window, {**process_programs(self._in_job(job)), **process_descendants(self.root)})) is not None:
-                    user32.ShowWindow(user32.GetWindow(window, 4) or window, 0)  # GW_OWNER: the Terminal window showing it
+                    terminal = user32.GetWindow(window, 4) or window  # GW_OWNER: the Terminal window showing it
+                    hidden.add(terminal)
+                    user32.ShowWindow(terminal, 0)
                     self.record(console)
             except Exception:  # a callback that raises is only printed by ctypes: say it in the service log
                 logger.warning("the console window watch failed on one window", exc_info=True)
 
         callback = callback_type(shown)
-        # EVENT_OBJECT_SHOW, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS
-        if not user32.SetWinEventHook(0x8002, 0x8002, None, callback, 0, 0, 0x0000 | 0x0002):
+        # EVENT_OBJECT_DESTROY .. EVENT_OBJECT_SHOW, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS
+        if not user32.SetWinEventHook(0x8001, 0x8002, None, callback, 0, 0, 0x0000 | 0x0002):
             logger.warning("no console window watch: Windows refused the window hook")
             return
         message = wintypes.MSG()
