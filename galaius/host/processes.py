@@ -524,6 +524,11 @@ def process_descendants(root: int) -> dict[int, tuple[int, str]]:
     return found
 
 
+def process_programs(pids: frozenset[int]) -> dict[int, tuple[int, str]]:
+    """Windows: those of `pids` still living, as pid -> (parent pid, program file name), from one snapshot."""
+    return {pid: entry for pid, entry in _processes_windows().items() if pid in pids} if pids else {}
+
+
 def _processes_windows() -> dict[int, tuple[int, str]]:
     """Each process's (parent pid, program file name), from one Toolhelp snapshot; empty when the system refuses one."""
     kernel32 = ctypes.windll.kernel32

@@ -60,14 +60,15 @@ class ConsoleWatch(BaseModel):
     def default_path() -> Path:
         return UserPaths.config() / "console-windows.jsonl"
 
-    def mine(self, lineage: tuple[tuple[int, str], ...]) -> ShownConsole | None:
-        """The window's process and its ancestors (`process_lineage`): ours when the supervisor is one
-        of them (the supervisor itself shows none: it runs with its console hidden)."""
+    def mine(self, lineage: tuple[tuple[int, str], ...], members: frozenset[int] = frozenset()) -> ShownConsole | None:
+        """The window's process and its ancestors (`process_lineage`): ours when the supervisor is one of
+        them, or one is in the supervisor's job (`members`: what a program left behind when its parent
+        exited stays there). The supervisor itself shows none: it runs with its console hidden."""
         pids = [pid for pid, _program in lineage]
-        if not lineage or self.root not in pids[1:]:
+        if not lineage or (self.root not in pids[1:] and not members & {pid for pid in pids if pid != self.root}):
             return None
-        below = lineage[:pids.index(self.root, 1)]
-        return ShownConsole(at=datetime.now(UTC), program=below[0][1], parents=tuple(program for _pid, program in below[1:]))
+        below = lineage[:pids.index(self.root, 1)] if self.root in pids[1:] else lineage
+        return ShownConsole(at=datetime.now(UTC), program=below[0][1], parents=tuple(program for _pid, program in below[1:9]))
 
     def attached(self, window: int, below: dict[int, tuple[int, str]]) -> ShownConsole | None:
         """The program of the tree (`below`: `process_descendants`) whose console is `window`, a pseudo-console window."""
@@ -116,18 +117,29 @@ class ConsoleWatch(BaseModel):
                 continue
         return found
 
-    def start(self) -> threading.Thread | None:
-        """The hook's thread (it runs while this process does); None off Windows."""
+    def start(self, job=None) -> threading.Thread | None:
+        """The hook's thread (it runs while this process does), `job` the Windows job holding the
+        supervisor's workers (`galaius.upgrade.handoff.Children`); None off Windows."""
         if sys.platform != "win32":
             return None
-        thread = threading.Thread(target=self._watch, name="console-watch", daemon=True)
+        thread = threading.Thread(target=self._watch, args=(job,), name="console-watch", daemon=True)
         thread.start()
         return thread
 
-    def _watch(self) -> None:
+    @staticmethod
+    def _in_job(job) -> frozenset[int]:
+        if job is None:
+            return frozenset()
+        import win32job
+        try:
+            return frozenset(win32job.QueryInformationJobObject(job, win32job.JobObjectBasicProcessIdList))
+        except Exception:  # pywintypes.error: the job is closing with its supervisor
+            return frozenset()
+
+    def _watch(self, job) -> None:
         from ctypes import wintypes
 
-        from galaius.host.processes import process_descendants, process_lineage
+        from galaius.host.processes import process_descendants, process_lineage, process_programs
 
         user32 = ctypes.windll.user32
         callback_type = ctypes.WINFUNCTYPE(None, wintypes.HANDLE, wintypes.DWORD, wintypes.HWND, wintypes.LONG, wintypes.LONG, wintypes.DWORD, wintypes.DWORD)
@@ -148,10 +160,10 @@ class ConsoleWatch(BaseModel):
                 if name.value == CLASSIC:
                     pid = wintypes.DWORD()
                     user32.GetWindowThreadProcessId(window, ctypes.byref(pid))
-                    if (console := self.mine(process_lineage(pid.value))) is not None:
+                    if (console := self.mine(process_lineage(pid.value), self._in_job(job))) is not None:
                         user32.ShowWindow(window, 0)  # SW_HIDE
                         self.record(console)
-                elif name.value == PSEUDO and (console := self.attached(window, process_descendants(self.root))) is not None:
+                elif name.value == PSEUDO and (console := self.attached(window, {**process_programs(self._in_job(job)), **process_descendants(self.root)})) is not None:
                     user32.ShowWindow(user32.GetWindow(window, 4) or window, 0)  # GW_OWNER: the Terminal window showing it
                     self.record(console)
             except Exception:  # a callback that raises is only printed by ctypes: say it in the service log

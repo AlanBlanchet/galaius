@@ -268,7 +268,7 @@ class Passthrough(Supervisor):
 
     def run(self) -> int:
         children, lifecycle, stop = Children(), Lifecycle(self), threading.Event()
-        ConsoleWatch(root=os.getpid(), path=ConsoleWatch.default_path()).start()  # Windows: a console its tree shows is hidden
+        ConsoleWatch(root=os.getpid(), path=ConsoleWatch.default_path()).start(children.job)  # Windows: a console its tree shows is hidden
         for number in platform_signals("SIGTERM", "SIGHUP"):
             signal.signal(number, lambda *_: stop.set())
         previous_interrupt = signal.signal(signal.SIGINT, signal.SIG_IGN)  # the worker takes Ctrl-C

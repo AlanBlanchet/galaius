@@ -20,9 +20,10 @@ ROOT = 4100
     (((7, "cmd.exe"), (2, "explorer.exe")), None, None),       # the person's own terminal: never touched
     (((ROOT, "python.exe"), (3, "pythonw.exe")), None, None),  # the supervisor's own (hidden) console
     ((), None, None),                                          # gone before it was read
+    (((9, "cmd.exe"), (8, "explorer.exe")), "cmd.exe", ("explorer.exe",)),  # in the job: its parent exited, the pid was taken again
 ])
 def test_only_a_console_of_the_services_own_tree_is_hidden_and_named(tmp_path: Path, lineage, program, parents) -> None:
-    shown = ConsoleWatch(root=ROOT, path=tmp_path / "c.jsonl").mine(lineage)
+    shown = ConsoleWatch(root=ROOT, path=tmp_path / "c.jsonl").mine(lineage, frozenset({9, 11}))
     assert (shown.program, shown.parents) == (program, parents) if program else shown is None
 
 
@@ -49,11 +50,13 @@ def test_a_console_window_of_the_tree_is_hidden_and_named_and_no_other(tmp_path:
     """Classic console host and Windows Terminal alike (a GitHub Windows runner has Terminal as its default)."""
     import os
     command, flag, ours = STARTS[how]
-    watch = ConsoleWatch(root=os.getpid(), path=tmp_path / "c.jsonl")
-    watch.start()
+    from galaius.upgrade.handoff import Children
+    watch, children = ConsoleWatch(root=os.getpid(), path=tmp_path / "c.jsonl"), Children()
+    watch.start(children.job)
     time.sleep(0.5)  # the hook is set
     before = _visible_consoles()
     child = subprocess.Popen(command, creationflags=getattr(subprocess, flag))
+    children.hold(child)  # as the supervisor holds its worker: what it leaves behind stays in the job
     try:
         time.sleep(4)
         appeared = _visible_consoles() - before
