@@ -211,6 +211,7 @@ export interface AgentRun {
   pending_move?: RunSubscription | "own_login" | null;
   login?: string;
   stopped_by?: StopActor | null;
+  held_at?: number | null;
   replaced_by?: RunReplacement | null;
   relaunched_from?: Relaunch | null;
   community?: CommunityAgent | null;
