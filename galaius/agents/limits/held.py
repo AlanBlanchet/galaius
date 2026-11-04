@@ -43,14 +43,22 @@ def hold(folder: Path, token: str) -> bool:
     return True
 
 
+def mark(variable: str) -> str:
+    """The variable naming the folder whose held login galaius set in `variable` (`environment`): a token the person set
+    himself carries none, and is never removed."""
+    return f"GALAIUS_HELD_{variable}"
+
+
 def environment(environment: Mapping[str, str], logins: Mapping[str, str]) -> dict[str, str]:
     """`environment` with each token variable of `logins` (keyed by its CLI's login-folder variable) set from the
-    subscription folder that variable names when it holds a token, removed otherwise."""
+    subscription folder that variable names when it holds a token (marked, `mark`); a held token it inherited from
+    another launch (marked) removed; the person's own token (unmarked) kept as it is."""
     root = UserPaths.subscriptions().resolve()
     found = dict(environment)
     for home, variable in logins.items():
-        found.pop(variable, None)
+        if found.pop(mark(variable), None) is not None:
+            found.pop(variable, None)
         named = environment.get(home)
         if named and (folder := Path(named).resolve()).parent == root and (token := token_in(folder)) is not None:
-            found[variable] = token
+            found[variable], found[mark(variable)] = token, str(folder)
     return found

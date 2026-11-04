@@ -596,14 +596,25 @@ def test_every_agent_program_is_one_cli_in_its_order() -> None:
     assert [(provider.name, provider.program) for provider in program_providers()] == list(AGENT_PROGRAMS.items())
 
 
-@pytest.mark.parametrize("launch", ["held", "other", "default", "closed"])
+@pytest.mark.parametrize("launch", ["held", "other", "default", "closed", "own"])
 def test_a_held_login_reaches_only_the_launches_of_its_own_folder(launch: str) -> None:
     """Every launch of the held folder's CLI runs with its token; every other one (another subscription, the PC's own
-    login, a lent run's closed folders) runs without it, whatever it inherited (a child of a held run)."""
+    login, a lent run's closed folders) runs without it, whatever it inherited (a child of a held run). A token the
+    person set himself (unmarked) is his: a launch on his own login keeps it (code-reviewer 0a27db23)."""
+    from galaius.agents.limits.held import mark
+
     held, other = Subscription.create(uuid4(), "claude"), Subscription.create(uuid4(), "claude")
     token = "sk-ant-oat01-" + "Hq7_x" * 20
     assert held.hold(token) and not held.hold(token)  # the same token again writes nothing
-    inherited = {"HOME": str(Path.home()), "PATH": os.defpath, "CLAUDE_CODE_OAUTH_TOKEN": token}
+    if launch == "own":
+        own = "sk-ant-oat01-" + "Own_x" * 20
+        environment = {"HOME": str(Path.home()), "PATH": os.defpath, "CLAUDE_CODE_OAUTH_TOKEN": own}
+        claude = PROVIDERS["claude"]
+        # `subscription_env` keeps no token of any kind, his included, as before held logins.
+        for made in (claude.child_environment(environment, mcp_wait_seconds=0), reg.participant_environment(environment)):
+            assert made.get("CLAUDE_CODE_OAUTH_TOKEN") == own
+        return
+    inherited = {"HOME": str(Path.home()), "PATH": os.defpath, "CLAUDE_CODE_OAUTH_TOKEN": token, mark("CLAUDE_CODE_OAUTH_TOKEN"): str(held.folder)}
     overlay = {"held": RunSubscription(subscription_id=held.id, limits=SubscriptionLimits()).overlay(),
                "other": RunSubscription(subscription_id=other.id, limits=SubscriptionLimits()).overlay(),
                "default": {}, "closed": RunSubscription(lent=True).overlay()}[launch]
