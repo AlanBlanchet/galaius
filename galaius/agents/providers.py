@@ -35,7 +35,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, model_validator
 
 from galaius.account.caller import Caller
-from galaius_core import AGENT_PROGRAMS, AgentMedia, AgentProgram, ContextGauge, LoginIdentity, UsageWindow, UsageWindowName
+from galaius_core import AGENT_PROGRAMS, AgentMedia, AgentProgram, ContextGauge, HeldLoginForm, LoginIdentity, UsageWindow, UsageWindowName
 
 from galaius import installed_version
 from galaius.agents.catalog.entries import AgentCatalog
@@ -439,16 +439,16 @@ class AgentProvider(ABC):
     #: What a whole code its page shows looks like: anything else is refused before it reaches the program (which may keep
     #: waiting on a code it cannot use).
     paste_code: ClassVar[re.Pattern[str] | None] = None
-    #: Its long-lived login token command (`AgentProgramInstallRequest.held`), run under a terminal inside a subscription's
-    #: folder: the same address and pasted code as its sign-in (`paste_link`, `paste_code`), then the token on its screen
-    #: (`token_said`); empty: it has none (`held_unsupported`).
-    token_arguments: ClassVar[tuple[str, ...]] = ()
-    #: What the token looks like on that screen (its only match there).
+    #: What a held sign-in's screen (`AgentProgram.held`, read from a variable) prints its credential as (group 1, its only
+    #: match there); None: it prints none.
     token_said: ClassVar[re.Pattern[str] | None] = None
-    #: The variable its CLI reads that token from, set in every launch of the folder holding it and no other (`held_environment`).
-    token_env: ClassVar[str | None] = None
     #: What its sign-in prints when its vendor refused the pasted code and it waits for another: the sign-in ends there.
     code_refused: ClassVar[re.Pattern[str] | None] = None
+
+    @property
+    def held(self) -> HeldLoginForm | None:
+        """How its login is held by the platform (`AgentProgram.held`); None: it signs in on each PC."""
+        return self.program.held if self.program is not None else None
 
     def login_keys(self, environment: Mapping[str, str]) -> frozenset[str]:
         """The key variables this CLI's own login reads in `environment` (`fenced.keys`)."""
@@ -695,7 +695,7 @@ class AgentProvider(ABC):
             if answered is None:  # never the status answer's instead: the same login would read as another one
                 return LoginStatus(signed_in=None)
             said, identity = (answered[0] or said, answered[1]) if answered[1] else (said, identity)
-        if self.token_env is not None and (token := env.get(self.token_env)):  # a held login's status names no account: its token tells it apart
+        if (form := self.held) is not None and form.variable is not None and (token := env.get(form.variable)):  # a held login's status names no account: its token tells it apart
             identity += "\0" + hashlib.sha256(token.encode()).hexdigest()
         return LoginStatus(signed_in=True, account=said[:200], login=hashlib.sha256(identity.encode()).hexdigest()[:16])
 
@@ -1138,12 +1138,10 @@ class ClaudeCodeProvider(AgentProvider):
     #: and waits for another (2.1.288).
     paste_code = re.compile(r"^[^#\s]+#[^#\s]+$")
     logout_arguments = ("auth", "logout")
-    #: 2.1.288 under a terminal: the address (scope `user:inference`), « Paste code here if prompted > », then « Your OAuth
-    #: token (valid for 1 year) » and the token; a refused code: « OAuth error: Request failed with status code 400 »,
-    #: « Press Enter to retry ».
-    token_arguments = ("setup-token",)
+    #: Its held sign-in (`setup-token`, 2.1.288) under a terminal: the address (scope `user:inference`), « Paste code here
+    #: if prompted > », then « Your OAuth token (valid for 1 year) » and the token; a refused code: « OAuth error: Request
+    #: failed with status code 400 », « Press Enter to retry ».
     token_said = re.compile(r"\b(sk-ant-oat01-[A-Za-z0-9_-]{20,})")
-    token_env = "CLAUDE_CODE_OAUTH_TOKEN"
     code_refused = re.compile(r"OAuth error:")
     #: `rate_limit_info.unifiedWindows` keys and the window each is (utilization: a share, 0-1).
     #: `seven_day_overage_included` is the same week with the overage pool counted: not the plan's own.
@@ -2735,10 +2733,10 @@ MEDIA_PROVIDERS: dict[str, _MediaSessionProvider] = {_claude.name: _claude}
 
 
 def held_environment(environment: Mapping[str, str]) -> dict[str, str]:
-    """`environment` for one launch: each CLI's token variable (`token_env`) set from the subscription folder its login
-    variable names when that folder holds a held login, removed otherwise (`held.environment`)."""
-    return held.environment(environment, {provider.auth_home_env[0]: provider.token_env for provider in PROVIDERS.values()
-                                           if provider.token_env is not None and provider.auth_home_env})
+    """`environment` for one launch: each CLI's held variable (`HeldLoginForm.variable`) set from the subscription folder
+    its login variable names when that folder holds a held login, removed otherwise (`held.environment`)."""
+    return held.environment(environment, {provider.auth_home_env[0]: provider.held for provider in PROVIDERS.values()
+                                           if provider.held is not None and provider.held.variable is not None and provider.auth_home_env})
 
 
 def program_providers() -> tuple[AgentProvider, ...]:

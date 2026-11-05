@@ -311,18 +311,27 @@ class Subscription(BaseModel):
 
     @property
     def held(self) -> str | None:
-        """Its held login (`held.token_in`); None: its CLI's own sign-in, or none."""
-        return held.token_in(self.folder)
+        """Its held login (`held.credential_in`); None: a program holding none, or none here."""
+        form = self.program.held
+        return held.credential_in(self.folder, form) if form is not None else None
 
-    def hold(self, token: str) -> bool:
-        """`token` kept as its held login; whether it changed (`held.hold`)."""
-        return held.hold(self.folder, token)
+    def hold(self, credential: str) -> bool:
+        """`credential` kept as its held login; whether it changed (`held.hold`). Its program must hold one."""
+        form = self.program.held
+        assert form is not None, f"{self.provider} holds no login"
+        return held.hold(self.folder, form, credential)
+
+    def forget_held(self) -> None:
+        """Its held login removed (`held.forget`), the rest of its folder kept."""
+        if (form := self.program.held) is not None:
+            held.forget(self.folder, form)
 
     @classmethod
     def credentials_in(cls, folder: Path) -> tuple[str, ...]:
         """The token values a CLI keeps in `folder` now, read again at each call (a refresh changes
         them), and its held login: what a run's output never shows."""
-        values: list[str] = [token] if (token := held.token_in(folder)) is not None else []
+        values = [token for provider in PROVIDERS.values() if (form := provider.held) is not None and form.variable is not None
+                  and (token := held.credential_in(folder, form)) is not None]
         for name in cls.CREDENTIALS:
             try:
                 values += cls._strings(json.loads((folder / name).read_text(encoding="utf-8")))

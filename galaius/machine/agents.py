@@ -418,10 +418,10 @@ class MachineAgents(BaseModel):
                 if self.login_seal is None:
                     raise PermissionError("this computer opens no held login")
                 try:
-                    token = self.login_seal.open(request.login, request=request.id, subscription=request.subscription_id, provider=request.provider)
+                    credential = self.login_seal.open(request.login, request=request.id, subscription=request.subscription_id, provider=request.provider)
                 except (InvalidTag, ValueError) as error:
                     raise PermissionError("this held login is not sealed for this computer and this request") from error
-                state = await asyncio.to_thread(self._programs().held_put, request.provider, request.subscription_id, token)
+                state = await asyncio.to_thread(self._programs().held_put, request.provider, request.subscription_id, credential)
                 return MachineAgentAnswer(request_id=request.id, providers=(state,), detail=f"{request.provider}: held login put")
             case AgentToolsRequest():
                 return MachineAgentAnswer(request_id=request.id, tools=await asyncio.to_thread(MachineTools.states))

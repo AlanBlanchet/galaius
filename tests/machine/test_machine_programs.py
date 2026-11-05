@@ -16,7 +16,8 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 import pytest
 from galaius.agents.limits.subscriptions import Subscription, SubscriptionRefused
-from galaius_core import AgentSignIn, AgentSignOutRequest
+from galaius_core import AgentSignIn, AgentSignOutRequest, SealedHeld
+from galaius_core.identity.sealing import open_with
 
 from galaius.agents.providers import PROVIDERS, AgentProvider, LoginStatus
 from galaius.machine.programs import AgentPrograms, ProgramFailed
@@ -344,23 +345,36 @@ def stand_in_setup_token(tmp_path: Path) -> Path:
     return claude
 
 
+def opened(private: rsa.RSAPrivateKey, sealed: SealedHeld | None) -> str:
+    """What the platform opens a `held_take` answer to."""
+    assert sealed is not None
+    return open_with(private, sealed)
+
+
+def seal_key() -> tuple[rsa.RSAPrivateKey, str]:
+    """The platform's one-request key and its public half as `AgentHeldTakeRequest.seal_key`."""
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return key, base64.b64encode(key.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)).decode()
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="a held sign-in runs under a POSIX terminal")
-@pytest.mark.parametrize(("pasted", "ends"), [(CODE, "ready"), ("WrongCode_12345#s7s7s7s7", "code_refused")])
+@pytest.mark.parametrize(("pasted", "signs", "ends"), [(CODE, True, "ready"), ("WrongCode_12345#s7s7s7s7", True, "code_refused"),
+                                                       (CODE, False, "sign_in_failed")])  # a token signing nothing in: removed again
 def test_a_held_sign_in_keeps_its_token_in_the_folder_alone_then_hands_it_only_sealed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
-                                                                                     pasted: str, ends: str) -> None:
-    """Its token command under a terminal: the address reaches the web, the code its page shows goes back once, the token
+                                                                                     pasted: str, signs: bool, ends: str) -> None:
+    """Its held command under a terminal: the address reaches the web, the code its page shows goes back once, the token
     it prints lands in the folder (0600) and nowhere else (no log, no state, no answer); `held_take` hands it sealed to the
     request's key alone, `held_put` puts it on another folder once (the same token again writes nothing). A refused code
-    ends the sign-in at once; a program with no token command is refused."""
+    ends the sign-in at once; the default login holds none."""
     claude = stand_in_setup_token(tmp_path)
     monkeypatch.setattr(AgentPrograms, "_status", lambda self, provider, environment: LoginStatus(
-        signed_in=environment.get("CLAUDE_CODE_OAUTH_TOKEN") == HELD_TOKEN, login="9" * 16 if environment.get("CLAUDE_CODE_OAUTH_TOKEN") else ""))
+        signed_in=signs and environment.get("CLAUDE_CODE_OAUTH_TOKEN") == HELD_TOKEN, login="9" * 16 if environment.get("CLAUDE_CODE_OAUTH_TOKEN") else ""))
     monkeypatch.setattr(AgentPrograms, "poll_seconds", 0.1)
     monkeypatch.setattr(AgentPrograms, "code_seconds", 60)  # a refused code ends on its words, never on this wait
     monkeypatch.setattr(type(PROVIDERS["claude"]), "available", lambda self: True)
     monkeypatch.setattr(type(PROVIDERS["claude"]), "executable", lambda self: str(claude))
     jobs = AgentPrograms(environment={"PATH": "/usr/bin:/bin"}, log_path=tmp_path / "agent-programs.log")
-    assert jobs.install("codex", UUID(int=3), held=True).failure == "held_unsupported"
+    assert jobs.install("claude", None, held=True).failure == "held_unsupported"
     subscription = UUID(int=42)
     with caplog.at_level("DEBUG"):
         assert jobs.install("claude", subscription, held=True).step == "signing_in"
@@ -378,16 +392,73 @@ def test_a_held_sign_in_keeps_its_token_in_the_folder_alone_then_hands_it_only_s
             assert held.held is None and jobs.held_take("claude", subscription, OTHER_KEY) is None
             return
         assert held.held == HELD_TOKEN and (held.folder / "held-token").stat().st_mode & 0o777 == 0o600
-        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        public = base64.b64encode(key.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)).decode()
-        sealed = jobs.held_take("claude", subscription, public)
-        assert sealed is not None and key.decrypt(base64.b64decode(sealed), AgentPrograms.SEAL).decode() == HELD_TOKEN
+        key, public = seal_key()
+        assert opened(key, jobs.held_take("claude", subscription, public)) == HELD_TOKEN
         assert jobs.held_take("claude", UUID(int=43), public) is None  # no folder here: none held
         put = jobs.held_put("claude", UUID(int=43), HELD_TOKEN)
         written = (Subscription.of(UUID(int=43)).folder / "held-token").stat().st_mtime_ns
         assert put.step == "ready" and jobs.held_put("claude", UUID(int=43), HELD_TOKEN).step == "ready"
         assert (Subscription.of(UUID(int=43)).folder / "held-token").stat().st_mtime_ns == written
+        with pytest.raises(PermissionError):
+            jobs.held_put("claude", UUID(int=44), HELD_TOKEN + "\nOTHER=1")
         shown = "".join(item.model_dump_json() for item in jobs.states())
     for seen in (caplog.text, shown, jobs.log_path.read_text() if jobs.log_path.exists() else ""):
         assert HELD_TOKEN not in seen
     assert jobs.sign_out("claude", subscription).step == "signed_out" and not held.folder.exists()  # no vendor logout: the folder alone
+
+
+#: A held Codex login's file, as `codex login --device-auth` leaves it.
+HELD_FILE = '{"auth_mode":"chatgpt","tokens":{"access_token":"' + "Ac7_x" * 20 + '","refresh_token":"' + "Rf7_x" * 20 + '"}}'
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a held sign-in runs on POSIX")
+def test_a_held_login_file_is_the_folders_own_and_moves_only_sealed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    """A program reading its held login from a file (Codex `auth.json`): its sign-in runs on pipes, its device code
+    reaches the web, the file it leaves in the folder is the held login; `held_take` hands it sealed, `held_put` writes
+    it into another folder (0600, one step; the same file again writes nothing; never through a link, never what is not
+    a JSON object), and no launch environment carries it."""
+    codex = tmp_path / "codex"
+    codex.write_text('#!/bin/sh\n[ "$1 $2" = "login --device-auth" ] || exit 0\n[ -t 0 ] && { echo "a terminal"; exit 3; }\necho ABCD-EFGH\nsleep 1\n'
+                     f"umask 077; printf '%s' '{HELD_FILE}' > \"$CODEX_HOME/auth.json\"\nsleep 30\n")
+    codex.chmod(0o755)
+    monkeypatch.setattr(AgentPrograms, "_status", lambda self, provider, environment: LoginStatus(
+        signed_in=(Path(environment.get("CODEX_HOME", "/nonexistent")) / "auth.json").exists(), login="8" * 16))
+    monkeypatch.setattr(AgentPrograms, "poll_seconds", 0.1)
+    monkeypatch.setattr(type(PROVIDERS["codex"]), "available", lambda self: True)
+    monkeypatch.setattr(type(PROVIDERS["codex"]), "executable", lambda self: str(codex))
+    jobs = AgentPrograms(environment={"PATH": "/usr/bin:/bin"}, log_path=tmp_path / "agent-programs.log")
+    subscription = UUID(int=52)
+    with caplog.at_level("DEBUG"):
+        assert jobs.install("codex", subscription, held=True).step == "signing_in"
+        mine = lambda: next(item for item in jobs.states() if item.subscription_id == subscription)
+        signing(jobs, lambda _state: mine().step in ("ready", "failed") or (mine().sign_in is not None and mine().sign_in.code is not None))
+        assert mine().step == "ready" or mine().sign_in.code == "ABCD-EFGH"
+        signing(jobs, lambda _state: mine().step in ("ready", "failed"))
+        assert mine().step == "ready"
+        held = Subscription.of(subscription)
+        assert held.held == HELD_FILE
+        key, public = seal_key()
+        assert opened(key, jobs.held_take("codex", subscription, public)) == HELD_FILE
+        other = UUID(int=53)
+        assert jobs.held_put("codex", other, HELD_FILE).step == "ready"
+        path = Subscription.of(other).folder / "auth.json"
+        written = path.stat().st_mtime_ns
+        assert path.read_text() == HELD_FILE and path.stat().st_mode & 0o777 == 0o600
+        jobs.held_put("codex", other, HELD_FILE)
+        assert path.stat().st_mtime_ns == written
+        with pytest.raises(PermissionError):
+            jobs.held_put("codex", other, "not json")
+        launched = PROVIDERS["codex"].child_environment({"PATH": os.defpath, **Subscription.of(other).overlay()}, mcp_wait_seconds=0)
+        assert not any(HELD_FILE in value or "Ac7_x" in value for value in launched.values())
+        path.unlink()
+        elsewhere = tmp_path / "elsewhere.json"
+        elsewhere.write_text("{}")
+        elsewhere.chmod(0o600)
+        path.symlink_to(elsewhere)
+        assert Subscription.of(other).held is None
+        with pytest.raises(PermissionError, match="link"):
+            jobs.held_put("codex", other, HELD_FILE)
+        assert elsewhere.read_text() == "{}"
+        shown = "".join(item.model_dump_json() for item in jobs.states())
+    for seen in (caplog.text, shown, jobs.log_path.read_text() if jobs.log_path.exists() else ""):
+        assert "Ac7_x" not in seen

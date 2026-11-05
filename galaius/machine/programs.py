@@ -6,10 +6,10 @@ says it is signed in. A subscription's sign-in (`subscription_id`) runs the same
 subscription's own folder (`Subscription`), never touching the default login: one job per program
 and login at a time; what each stands at is `AgentProviderState`.
 
-A held sign-in (`AgentProgramInstallRequest.held`) runs the program's long-lived token command instead
-(`AgentProvider.token_arguments`), under a terminal (POSIX only), with the same address and pasted code; the token it
-then prints is kept in the folder (`Subscription.hold`), taken sealed for the platform (`held_take`) and put on his
-other PCs (`held_put`), never logged nor answered otherwise."""
+A held sign-in (`AgentProgramInstallRequest.held`) runs the program's held command instead (`AgentProgram.held`, POSIX
+only), under a terminal when it draws only on one, with the same address or device code; the credential it leaves (the
+token it prints, or its login file in the folder) is kept in the folder (`Subscription.hold`), taken sealed for the
+platform (`held_take`) and put on his other PCs (`held_put`), never logged nor answered otherwise."""
 
 import asyncio
 import base64
@@ -17,6 +17,7 @@ import codecs
 import logging
 import os
 import re
+import select
 import struct
 import subprocess
 import sys
@@ -34,6 +35,7 @@ from uuid import UUID, uuid4
 import httpx
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from galaius_core.identity.sealing import seal_to
 from galaius_core import (
     Refused,
     DEVICE_CODE,
@@ -44,14 +46,15 @@ from galaius_core import (
     AgentProviderState,
     AgentSignIn,
     AgentSignOutRequest,
-    LoginIdentity,
     PasteSignIn,
+    SealedHeld,
     UsageWindow,
 )
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
 from galaius.agents.providers import PROVIDERS, LoginStatus, ProgramInstaller, held_environment
 from galaius.agents.providers import AgentProvider as Program
+from galaius.agents.limits import held as held_login
 from galaius.agents.limits.subscriptions import Subscription, SubscriptionRefused
 from galaius.host.file_stamp import FileStamp
 from galaius.host.processes import end_process_tree, process_group_options
@@ -69,11 +72,10 @@ class ProgramFailed(Refused[AgentProgramFailure]):
 
 
 class SignInScreen(BaseModel):
-    """What a sign-in printed after its code, read by its output reader and never shown: a held sign-in's token and the
-    e-mail its screen named, or that its vendor refused the code."""
+    """What a sign-in printed after its code, read by its output reader and never shown: a held sign-in's token, or that
+    its vendor refused the code."""
 
     token: str | None = Field(default=None, repr=False)
-    account: str = ""
     refused: bool = False
 
 
@@ -89,6 +91,14 @@ class SignInProcess(BaseModel):
     COLUMNS: ClassVar[int] = 1000
     #: Line breaks and carriage returns a terminal screen is redrawn with.
     BREAKS: ClassVar[re.Pattern[str]] = re.compile(r"[\r\n]+")
+    #: How often a terminal's reader looks whether its program ended, and how long `close` waits for that reader.
+    TICK: ClassVar[float] = 0.2
+    CLOSE_SECONDS: ClassVar[float] = 5
+    #: Its reader holds its terminal (`lines`), and let go of it; `close` asked.
+    _reading: bool = PrivateAttr(default=False)
+    _read: threading.Event = PrivateAttr(default_factory=threading.Event)
+    _closing: threading.Event = PrivateAttr(default_factory=threading.Event)
+    _lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
 
     @classmethod
     def started(cls, argv: list[str], environment: dict[str, str], *, terminal: bool) -> "SignInProcess":
@@ -107,24 +117,37 @@ class SignInProcess(BaseModel):
         return cls(process=process, terminal=main)
 
     def lines(self) -> Iterator[str]:
-        """What it prints, line by line, until it ends."""
+        """What it prints, line by line, until it ends. Its terminal is read only here and closed here once read to its
+        end (`close` waits for that): closed under a read, its number could be another file's by the next one."""
         if self.terminal is None:
             assert self.process.stdout is not None
             yield from self.process.stdout
             return
-        decoder, pending = codecs.getincrementaldecoder("utf-8")("replace"), ""
-        while True:
-            try:
-                chunk = os.read(self.terminal, 65536)
-            except OSError:  # EIO: the program ended, its terminal closed
-                chunk = b""
-            pending += decoder.decode(chunk, final=not chunk)
-            *complete, pending = self.BREAKS.split(pending)
-            yield from complete
-            if not chunk:
-                if pending:
-                    yield pending
+        with self._lock:
+            if (terminal := self.terminal) is None:  # closed before its first read
                 return
+            self._reading = True
+        decoder, pending = codecs.getincrementaldecoder("utf-8")("replace"), ""
+        try:
+            while True:
+                # A program that ended leaves nothing more to read even when a helper it left keeps the terminal open.
+                ready = select.select([terminal], [], [], self.TICK)[0]
+                if not ready and self.process.poll() is None and not self._closing.is_set():
+                    continue
+                try:
+                    chunk = os.read(terminal, 65536) if ready else b""
+                except OSError:  # EIO: the program ended, its terminal closed
+                    chunk = b""
+                pending += decoder.decode(chunk, final=not chunk)
+                *complete, pending = self.BREAKS.split(pending)
+                yield from complete
+                if not chunk:
+                    if pending:
+                        yield pending
+                    return
+        finally:
+            os.close(terminal)
+            self._read.set()
 
     def write(self, code: str) -> None:
         """The code, once, as typed: a line on its pipe, then its input closed; Enter on its terminal."""
@@ -136,9 +159,17 @@ class SignInProcess(BaseModel):
         self.process.stdin.close()
 
     def close(self) -> None:
-        if self.terminal is not None:
-            os.close(self.terminal)
-            self.terminal = None
+        """Its terminal closed once its reader (`lines`) let go of it; never read, closed here. A reader still holding it
+        past `CLOSE_SECONDS` keeps it: one descriptor kept beats one read from another file."""
+        with self._lock:
+            if self.terminal is None:
+                return
+            self._closing.set()
+            if not self._reading:
+                os.close(self.terminal)
+            self.terminal, reading = None, self._reading
+        if reading and not self._read.wait(self.CLOSE_SECONDS):
+            logger.warning("a sign-in's terminal reader did not end within %g s; its terminal stays open", self.CLOSE_SECONDS)
 
 
 class AgentPrograms(BaseModel):
@@ -168,8 +199,6 @@ class AgentPrograms(BaseModel):
     redirects: ClassVar[int] = 5
     CODE: ClassVar[re.Pattern[str]] = re.compile(DEVICE_CODE)
     PASTED: ClassVar[re.Pattern[str]] = re.compile(SIGN_IN_CODE)
-    #: An e-mail a held sign-in's screen names: the account its token is.
-    EMAIL: ClassVar[re.Pattern[str]] = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
     #: How a code comes sealed to a sign-in's key (`PasteSignIn.seal_key`): what WebCrypto's RSA-OAEP with SHA-256 makes.
     SEAL: ClassVar[padding.OAEP] = padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
     #: What a terminal draws but a line never says: an OSC sequence (an OSC-8 link's target), any other escape.
@@ -215,13 +244,13 @@ class AgentPrograms(BaseModel):
             return tuple(pool.map(state, logins))
 
     def install(self, name: AgentProvider, subscription_id: UUID | None = None, *, held: bool = False) -> AgentProviderState:
-        """Starts `name`'s job (inside `subscription_id`'s folder, made now when new; `held`: its token command, under a
-        terminal) unless one runs or it is ready (held: holding its token); its state either way."""
+        """Starts `name`'s job (inside `subscription_id`'s folder, made now when new; `held`: its held command,
+        `AgentProgram.held`) unless one runs or it is ready (held: holding its credential); its state either way."""
         provider = PROVIDERS[name]
         subscription = Subscription.create(subscription_id, name) if subscription_id is not None else None
         key = self._key(provider, subscription)
         refused = ("unsupported_system" if provider.installer() is None
-                   else "held_unsupported" if held and (subscription is None or not provider.token_arguments or os.name != "posix") else None)
+                   else "held_unsupported" if held and (subscription is None or provider.held is None or os.name != "posix") else None)
         if refused is not None:
             return self._base(provider, subscription).model_copy(update={"step": "failed", "failure": refused, "changed_at": datetime.now(UTC)})
         with self._lock:
@@ -283,17 +312,17 @@ class AgentPrograms(BaseModel):
         login = self._logins.get(key)
         return None if login is None else login[0].process
 
-    def held_take(self, name: AgentProvider, subscription_id: UUID, seal_key: str) -> str | None:
-        """`subscription_id`'s held login here sealed to `seal_key` (RSA-OAEP, SHA-256; SubjectPublicKeyInfo DER, base64:
-        the key the platform made for this request alone), base64; None: no held login here. Refused (PermissionError)
-        when `seal_key` is no RSA key of 2048 bits or more, or the folder is another program's."""
+    def held_take(self, name: AgentProvider, subscription_id: UUID, seal_key: str) -> SealedHeld | None:
+        """`subscription_id`'s held login here sealed to `seal_key` (`seal_to`: SubjectPublicKeyInfo DER, base64, the key
+        the platform made for this request alone); None: no held login here. Refused (PermissionError) when `seal_key` is
+        no RSA key of 2048 bits or more, or the folder is another program's."""
         try:
             subscription = Subscription.of(subscription_id).runs(name)
         except SubscriptionRefused as refused:
             if refused.refusal.reason == "not_signed_in":
                 return None
             raise
-        if (token := subscription.held) is None:
+        if (credential := subscription.held) is None:
             return None
         try:
             key = serialization.load_der_public_key(base64.b64decode(seal_key, validate=True))
@@ -301,18 +330,19 @@ class AgentPrograms(BaseModel):
             raise PermissionError("not a key to seal a held login to") from error
         if not isinstance(key, rsa.RSAPublicKey) or key.key_size < 2048:
             raise PermissionError("a held login is sealed only to an RSA key of 2048 bits or more")
-        return base64.b64encode(key.encrypt(token.encode(), self.SEAL)).decode()
+        return seal_to(seal_key, credential)
 
-    def held_put(self, name: AgentProvider, subscription_id: UUID, token: str) -> AgentProviderState:
-        """`token` kept as `subscription_id`'s held login here, its folder made when absent (another program's refused);
-        the same token again writes nothing. That login's state after (its status asked with the token)."""
+    def held_put(self, name: AgentProvider, subscription_id: UUID, credential: str) -> AgentProviderState:
+        """`credential` kept as `subscription_id`'s held login here, its folder made when absent (another program's
+        refused); the same one again writes nothing. That login's state after (its status asked with it). Refused
+        (PermissionError) when it is not what its CLI reads (`held.fits`)."""
         provider = PROVIDERS[name]
-        if provider.token_env is None or provider.token_said is None:
-            raise ProgramFailed("held_unsupported", f"{name} has no long-lived login token")
-        if not provider.token_said.fullmatch(token):
-            raise PermissionError(f"not a {name} login token")
+        if (form := provider.held) is None:
+            raise ProgramFailed("held_unsupported", f"{name} has no held login")
+        if not held_login.fits(form, credential):
+            raise PermissionError(f"not a {name} held login")
         subscription = Subscription.create(subscription_id, name)
-        subscription.hold(token)
+        subscription.hold(credential)
         return self._now(provider, None, subscription)
 
     def sign_out(self, name: AgentProvider, subscription_id: UUID) -> AgentProviderState:
@@ -410,23 +440,26 @@ class AgentPrograms(BaseModel):
         wherever he is, and the code its page then shows comes back once (`paste`); this PC opens no browser. Codex prints
         a device code the web shows. A program with neither: the address it handed `BROWSER` (`SignInHandoff`), to open
         on this PC; none after `terminal_seconds`: the command to run it by hand in a terminal here. A subscription's runs
-        inside its folder, and is undone when the default login no longer names the same login after it. `held`: its token
-        command under a terminal instead (`token_arguments`), done once the token it prints is kept in the folder and
-        signs its status in; never a terminal command (a token printed there would never reach the folder)."""
+        inside its folder, and is undone when the default login no longer names the same login after it. `held`: its held
+        command instead (`AgentProgram.held`, under a terminal when it asks one), done once its credential is in the
+        folder and signs its status in: a token it prints kept there (removed again when it signs nothing in; never a
+        terminal command, whose screen never reaches here), or its login file there."""
         key, environment = self._key(provider, subscription), self._environment(subscription)
         status = self._status(provider, environment)
         if status.signed_in and (not held or (subscription is not None and subscription.held is not None)):
             self._update(key, step="ready", signed_in=True, expired=False, account=status.account, login=status.login, sign_in=None)
             return
         default = self._status(provider, self.environment).login if subscription is not None else ""
+        form = provider.held if held else None
+        printed = form is not None and form.variable is not None  # its credential is a token on its screen
         deadline = datetime.now(UTC) + timedelta(seconds=self.sign_in_seconds)
         self._update(key, step="signing_in", signed_in=False, expired=False, sign_in=AgentSignIn(expires_at=deadline))
         terminal, handed, screen = time.monotonic() + self.terminal_seconds, 0.0, SignInScreen()
         # 0700 on POSIX; on Windows a helper still holding the file never hides how the sign-in ended.
         with tempfile.TemporaryDirectory(prefix="galaius-sign-in-", ignore_cleanup_errors=True) as folder:
             handoff = SignInHandoff(link_file=Path(folder) / "link", browser=environment.get("BROWSER", ""), opens=provider.paste_link is None)
-            arguments = provider.token_arguments if held else provider.login_arguments
-            login = SignInProcess.started([provider.executable(), *arguments], {**environment, **handoff.environment()}, terminal=held)
+            arguments = form.command if form is not None else provider.login_arguments
+            login = SignInProcess.started([provider.executable(), *arguments], {**environment, **handoff.environment()}, terminal=form is not None and form.terminal)
             attempt, private = uuid4(), rsa.generate_private_key(public_exponent=65537, key_size=2048)
             with self._lock:
                 self._logins[key] = login, attempt, private
@@ -441,24 +474,25 @@ class AgentPrograms(BaseModel):
                         pass
                     elif heard.paste is None and heard.link is None and (link := handoff.link()) is not None and (provider.paste_link is None or waited):
                         self._signing(key, link=link)  # no address for any browser printed: this PC's own
-                    elif waited and heard.command is None and not held:  # beside any address: the web shows it when it cannot show the address
+                    elif waited and heard.command is None and not printed:  # beside any address: the web shows it when it cannot show the address
                         self._signing(key, command=provider.login_command(subscription.overlay() if subscription is not None else {}))
-                    if held and screen.token is not None and subscription is not None:
+                    if printed and screen.token is not None and subscription is not None:
                         subscription.hold(screen.token)
                         status = self._status(provider, self._environment(subscription))
                         if status.signed_in is False:  # unknown (a slow check): asked again at the next poll
+                            subscription.forget_held()  # never handed on (`held_take`)
                             raise ProgramFailed("sign_in_failed", "the token its sign-in printed does not sign it in")
-                    elif held:
+                    elif printed:
                         status = LoginStatus(signed_in=False)  # its folder signs in only once the token is kept there
                     else:
                         status = self._status(provider, environment)
+                        if status.signed_in and form is not None and subscription is not None and subscription.held is None:
+                            raise ProgramFailed("sign_in_failed", f"signed in, but its sign-in left no {form.file} in its folder")
                     if status.signed_in:
                         if subscription is not None and self._status(provider, self.environment).login != default:
                             self._logout(subscription)
                             raise ProgramFailed("sign_in_failed", "the sign-in changed this computer's default login; the subscription was signed out again")
-                        if subscription is not None and screen.account:
-                            subscription.identify(LoginIdentity(account=screen.account, login=status.login))
-                        self._update(key, step="ready", signed_in=True, account=screen.account or status.account, login=status.login, sign_in=None)
+                        self._update(key, step="ready", signed_in=True, account=status.account, login=status.login, sign_in=None)
                         return
                     if screen.refused:
                         raise ProgramFailed("code_refused", "its vendor refused the code")
@@ -481,13 +515,13 @@ class AgentPrograms(BaseModel):
                         login.process.wait(timeout=5)
                     except subprocess.TimeoutExpired:
                         login.process.kill()
-                login.close()
+                login.close()  # once its reader let go of its terminal
 
     def _read_output(self, provider: Program, key: tuple[str, UUID | None], login: SignInProcess, attempt: UUID, seal: str, screen: SignInScreen) -> None:
         """What the sign-in prints for the person, onto its state while it still waits: a device code, or the address any
         browser signs in at (`paste_link`, then waiting for the code its page shows). After the code nothing it prints
         reaches the web (it may echo it): only onto `screen`, never shown, its vendor refusing the code (`code_refused`),
-        or a held sign-in's token (`token_said`) and the e-mail beside it. Its output is never logged (threat M4)."""
+        or a held sign-in's token (`token_said`). Its output is never logged (threat M4)."""
         for line in login.lines():
             word = self.ANSI.sub("", self.MOVED.sub(" ", line)).strip()
             if (heard := self._heard(key)) is not None and heard.paste is not None and heard.paste.pasted:
@@ -495,8 +529,6 @@ class AgentPrograms(BaseModel):
                     screen.refused = True
                 elif provider.token_said is not None and screen.token is None and (token := provider.token_said.search(word)) is not None:
                     screen.token = token.group(1)
-                elif not screen.account and (email := self.EMAIL.search(word)) is not None:
-                    screen.account = email.group(0)[:200]
                 continue
             if self.CODE.match(word):
                 self._signing(key, code=word)
@@ -565,7 +597,7 @@ class AgentPrograms(BaseModel):
         """Its program's own sign-out inside its folder, then the folder. A sign-out that fails keeps
         the folder (refused, saying why): where the login also lives outside it (macOS keychain, keyed
         by the folder's path), removing the folder alone would orphan it. A held login's folder: the folder alone (its
-        CLI kept nothing of it, outside or in)."""
+        credential is kept there, and its vendor's sign-out could end it on every PC holding it)."""
         if subscription.program.logout_arguments and subscription.held is None and subscription.program.available():
             try:
                 done = subprocess.run([subscription.program.executable(), *subscription.program.logout_arguments], env=self._environment(subscription),

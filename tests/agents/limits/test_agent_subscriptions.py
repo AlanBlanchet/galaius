@@ -596,29 +596,40 @@ def test_every_agent_program_is_one_cli_in_its_order() -> None:
     assert [(provider.name, provider.program) for provider in program_providers()] == list(AGENT_PROGRAMS.items())
 
 
-@pytest.mark.parametrize("launch", ["held", "other", "default", "closed", "own"])
+@pytest.mark.parametrize("launch", ["held", "other", "default", "closed", "own", "own_other", "fenced"])
 def test_a_held_login_reaches_only_the_launches_of_its_own_folder(launch: str) -> None:
     """Every launch of the held folder's CLI runs with its token; every other one (another subscription, the PC's own
     login, a lent run's closed folders) runs without it, whatever it inherited (a child of a held run). A token the
-    person set himself (unmarked) is his: a launch on his own login keeps it (code-reviewer 0a27db23)."""
+    person set himself (unmarked) is his: a launch on his own login keeps it (code-reviewer 0a27db23), one naming any
+    subscription folder drops it (it would outrank that folder's login, f2d1551c). Its mark is never secret-shaped: the
+    fence's own environment filter keeps both the token and its mark (f2d1551c N1)."""
     from galaius.agents.limits.held import mark
+    from galaius.isolation.fence import SECRET_SUFFIXES
 
     held, other = Subscription.create(uuid4(), "claude"), Subscription.create(uuid4(), "claude")
-    token = "sk-ant-oat01-" + "Hq7_x" * 20
+    token, own = "sk-ant-oat01-" + "Hq7_x" * 20, "sk-ant-oat01-" + "Own_x" * 20
     assert held.hold(token) and not held.hold(token)  # the same token again writes nothing
-    if launch == "own":
-        own = "sk-ant-oat01-" + "Own_x" * 20
-        environment = {"HOME": str(Path.home()), "PATH": os.defpath, "CLAUDE_CODE_OAUTH_TOKEN": own}
-        claude = PROVIDERS["claude"]
+    claude = PROVIDERS["claude"]
+    for provider in PROVIDERS.values():
+        if provider.held is not None and provider.held.variable is not None:  # read off its screen, marked unstripped
+            assert provider.token_said is not None and not mark(provider.held.variable).upper().endswith(SECRET_SUFFIXES)
+    base = {"HOME": str(Path.home()), "PATH": os.defpath}
+    inherited = {**base, "CLAUDE_CODE_OAUTH_TOKEN": token, mark("CLAUDE_CODE_OAUTH_TOKEN"): str(held.folder)}
+    held_overlay = RunSubscription(subscription_id=held.id, limits=SubscriptionLimits()).overlay()
+    other_overlay = RunSubscription(subscription_id=other.id, limits=SubscriptionLimits()).overlay()
+    if launch == "fenced":
+        made = claude.child_environment({**base, **held_overlay}, mcp_wait_seconds=0)
+        inside = {name: value for name, value in made.items() if name in claude.fenced.keys or not name.upper().endswith(SECRET_SUFFIXES)}
+        assert (inside.get("CLAUDE_CODE_OAUTH_TOKEN"), inside.get(mark("CLAUDE_CODE_OAUTH_TOKEN"))) == (token, str(held.folder.resolve()))
+        return
+    if launch in ("own", "own_other"):
+        environment = {**base, "CLAUDE_CODE_OAUTH_TOKEN": own, **(other_overlay if launch == "own_other" else {})}
         # `subscription_env` keeps no token of any kind, his included, as before held logins.
         for made in (claude.child_environment(environment, mcp_wait_seconds=0), reg.participant_environment(environment)):
-            assert made.get("CLAUDE_CODE_OAUTH_TOKEN") == own
+            assert made.get("CLAUDE_CODE_OAUTH_TOKEN") == (own if launch == "own" else None)
         return
-    inherited = {"HOME": str(Path.home()), "PATH": os.defpath, "CLAUDE_CODE_OAUTH_TOKEN": token, mark("CLAUDE_CODE_OAUTH_TOKEN"): str(held.folder)}
-    overlay = {"held": RunSubscription(subscription_id=held.id, limits=SubscriptionLimits()).overlay(),
-               "other": RunSubscription(subscription_id=other.id, limits=SubscriptionLimits()).overlay(),
-               "default": {}, "closed": RunSubscription(lent=True).overlay()}[launch]
-    claude, environment = PROVIDERS["claude"], {**inherited, **overlay}
+    overlay = {"held": held_overlay, "other": other_overlay, "default": {}, "closed": RunSubscription(lent=True).overlay()}[launch]
+    environment = {**inherited, **overlay}
     for made in (claude.child_environment(environment, mcp_wait_seconds=0), claude.subscription_env(environment), reg.participant_environment(environment)):
         assert made.get("CLAUDE_CODE_OAUTH_TOKEN") == (token if launch == "held" else None)
 

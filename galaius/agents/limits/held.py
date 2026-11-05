@@ -1,64 +1,97 @@
-"""A subscription's held login: its CLI's long-lived token (`AgentProvider.token_arguments`), signed in once and put on
-each of the owner's PCs, kept in that subscription's folder (`HELD`: private to this user, written in one step, never
-through a link). Every launch whose environment names that folder for its CLI runs with the token; every other launch
-(another subscription, the PC's own login, a lent or closed folder, whatever it inherited) runs without it
-(`environment`)."""
+"""A subscription's held login: the credential its CLI's held sign-in leaves (`AgentProgram.held`, a `HeldLoginForm`),
+signed in once and put on each of the owner's PCs, kept in that subscription's folder (`path`: private to this user,
+written in one step, never through a link). A credential read from a variable (Claude Code's token) lives in `HELD`
+and is set only in the launches whose environment names that folder for its CLI (`environment`); one read from a file
+(Codex's `auth.json`) is that file of the folder, read by the CLI itself."""
 
+import json
 import logging
 import os
+import re
 from collections.abc import Mapping
 from pathlib import Path
+
+from galaius_core import HeldLoginForm
 
 from galaius.host.paths import UserPaths
 from galaius.host.private_files import PRIVATE_FILES
 
 logger = logging.getLogger(__name__)
 
-#: The token's file inside a subscription's folder.
+#: A variable-read credential's file inside a subscription's folder.
 HELD = "held-token"
+#: A variable-read credential: one printable word, never a second line or variable smuggled in.
+WORD = re.compile(r"[\x21-\x7e]{16,4096}")
 
 
-def token_in(folder: Path) -> str | None:
-    """The token `folder` holds; None: none, or a file that is a link or not private to this user (never read through,
-    said once in the log by its folder, never its value)."""
-    path = folder / HELD
-    if not os.path.lexists(path):
+def path(folder: Path, form: HeldLoginForm) -> Path:
+    """Where `form`'s credential lives in `folder`: its CLI's own file, else `HELD`."""
+    return folder / (form.file or HELD)
+
+
+def fits(form: HeldLoginForm, credential: str) -> bool:
+    """Whether `credential` is what `form`'s CLI reads: one word (`WORD`) from a variable, a JSON object from a file."""
+    if form.variable is not None:
+        return WORD.fullmatch(credential) is not None
+    try:
+        return isinstance(json.loads(credential), dict)
+    except ValueError:
+        return False
+
+
+def credential_in(folder: Path, form: HeldLoginForm) -> str | None:
+    """The credential `folder` holds; None: none, or a file that is a link or not private to this user (never read
+    through, said once in the log by its folder, never its value)."""
+    where = path(folder, form)
+    if not os.path.lexists(where):
         return None
     try:
-        return PRIVATE_FILES.read_secret(path)
-    except ValueError:
+        return PRIVATE_FILES.read_secret(where) if form.variable is not None else PRIVATE_FILES.read_text(where)
+    except (OSError, ValueError):
         logger.warning("subscription folder %s: its held login is a link or not private; not used", folder.name)
         return None
 
 
-def hold(folder: Path, token: str) -> bool:
-    """`token` kept in `folder`; whether it changed (the same token again writes nothing). Refused (PermissionError)
+def hold(folder: Path, form: HeldLoginForm, credential: str) -> bool:
+    """`credential` kept in `folder`; whether it changed (the same one again writes nothing). Refused (PermissionError)
     when the file there is a link: whoever made it could point the write anywhere."""
-    path = folder / HELD
-    if path.is_symlink():
+    where = path(folder, form)
+    if where.is_symlink():
         raise PermissionError(f"subscription folder {folder.name}: its held login file is a link; remove the subscription and connect it again")
-    if token_in(folder) == token:
+    if credential_in(folder, form) == credential:
         return False
-    PRIVATE_FILES.write_secret(path, token)
+    if form.variable is not None:
+        PRIVATE_FILES.write_secret(where, credential)
+    else:  # its CLI reads it as written: never sealed
+        PRIVATE_FILES.write_text(where, credential)
     return True
+
+
+def forget(folder: Path, form: HeldLoginForm) -> None:
+    """`folder`'s held credential removed (one that failed its check is never handed on)."""
+    path(folder, form).unlink(missing_ok=True)
 
 
 def mark(variable: str) -> str:
     """The variable naming the folder whose held login galaius set in `variable` (`environment`): a token the person set
-    himself carries none, and is never removed."""
-    return f"GALAIUS_HELD_{variable}"
+    himself carries none. Never secret-shaped (`fence.SECRET_SUFFIXES`): the fence would strip it and keep the token."""
+    return f"{variable}_HELD_FOLDER"
 
 
-def environment(environment: Mapping[str, str], logins: Mapping[str, str]) -> dict[str, str]:
-    """`environment` with each token variable of `logins` (keyed by its CLI's login-folder variable) set from the
-    subscription folder that variable names when it holds a token (marked, `mark`); a held token it inherited from
-    another launch (marked) removed; the person's own token (unmarked) kept as it is."""
+def environment(environment: Mapping[str, str], logins: Mapping[str, HeldLoginForm]) -> dict[str, str]:
+    """`environment` with each variable-read credential of `logins` (keyed by its CLI's login-folder variable) set from
+    the subscription folder that variable names when it holds one (marked, `mark`). Removed otherwise when galaius set it
+    (marked: inherited from another launch) or when the launch names any subscription folder (a token outranks that
+    folder's own login). The person's own token (unmarked) stays only on launches naming no subscription folder: a child
+    of a held run launched on his own login runs with neither."""
     root = UserPaths.subscriptions().resolve()
     found = dict(environment)
-    for home, variable in logins.items():
-        if found.pop(mark(variable), None) is not None:
-            found.pop(variable, None)
+    for home, form in logins.items():
+        assert form.variable is not None
         named = environment.get(home)
-        if named and (folder := Path(named).resolve()).parent == root and (token := token_in(folder)) is not None:
-            found[variable], found[mark(variable)] = token, str(folder)
+        folder = Path(named).resolve() if named else None
+        if found.pop(mark(form.variable), None) is not None or (folder is not None and folder.parent == root):
+            found.pop(form.variable, None)
+        if folder is not None and folder.parent == root and (token := credential_in(folder, form)) is not None:
+            found[form.variable], found[mark(form.variable)] = token, str(folder)
     return found
