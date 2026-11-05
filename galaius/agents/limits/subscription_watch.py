@@ -12,7 +12,6 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import get_args
 
 from galaius_core import AgentProvider, LoginIdentity, LoginUsage, SubscriptionUsageReport, UsageWindow
 from pydantic import BaseModel, PrivateAttr
@@ -60,8 +59,7 @@ class SubscriptionWatch(BaseModel):
         a CLI that could not answer leaves the last one. A subscription's go to its folder (`Subscription.observe`, as
         a run's would, `Subscription.identify`)."""
         environment = held_environment(environment)
-        for name in get_args(AgentProvider):
-            provider = PROVIDERS[name]
+        for name, provider in PROVIDERS.items():
             installed = provider.available()
             asked = time.time()
             usage = await provider.current_usage(environment) if installed else ()
