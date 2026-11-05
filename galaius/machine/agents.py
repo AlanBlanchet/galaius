@@ -15,6 +15,7 @@ import asyncio
 import base64
 import functools
 import hashlib
+import itertools
 import json
 import logging
 import os
@@ -1036,12 +1037,17 @@ class MachineAgents(BaseModel):
         """The runs a cut stopped here (`registry.cut_resume`), each resumed once by itself with `RESUME_BRIEF`, as
         « Continuer » does (its dispatcher, the launcher's environment for its folder): a process cut (gone, the PC
         restarted, killed by the system or a signal nobody it answers to sent) at once, a provider usage limit at its
-        reset, a lost login once that login is signed in again here (its status asked once per login). Every run of a
+        reset, a lost login once a login of its account is signed in here: its own again, else another of the same
+        account (`AgentPrograms.signed_in_as`, this PC's own first), its session carried there (`registry.carry`) — the
+        same subscription signed in twice keeps one login alive when the other dies (2026-11-05: three runs waited on a
+        subscription folder's dead copy while this PC's own login of that account worked). Each status asked once per login
+        and account. Every run of a
         tree the cut stopped resumes, deepest first (`registry.deepest_first`): its agents are at work again before a
         launcher reads where they stand, and its brief names them (`AGENTS_RESUMED`). A resume refused before its turn
         starts becomes the run's failure, with why (never resumed by itself again). Returns the ids it resumed."""
         claimed: list[tuple[reg.AgentRun, str, str]] = []
         signed_in: dict[tuple[str, UUID | None], bool | None] = {}
+        accounts: dict[tuple[str, str], tuple[UUID | None, ...]] = {}
         # A lost login pausing this PC's turns (`quota.login_pause`) lifts once signed in again, held turns starting then.
         for login in await asyncio.to_thread(quota.lost_logins):
             if self.programs is not None and login not in signed_in:
@@ -1060,7 +1066,9 @@ class MachineAgents(BaseModel):
                 if self.programs is not None and login not in signed_in:
                     signed_in[login] = await asyncio.to_thread(self.programs.signed_in, *login)
                 if not (ready := bool(signed_in.get(login))):
-                    continue
+                    if (carried := await asyncio.to_thread(self._to_account_login, run, accounts)) is None:
+                        continue
+                    run, ready = carried, True
             if await asyncio.to_thread(reg.claim_resume, run.run_id, signed_in=ready) is not None:
                 claimed.append((run, *_RESUMED_AFTER[cut.cause]))
         resumed: list[str] = [run.run_id for run in relaunching if await self._relaunch(run)]
@@ -1068,6 +1076,27 @@ class MachineAgents(BaseModel):
             if await self._resume(run, sender, after, agents=await asyncio.to_thread(self._cut_with, run.run_id, resumed)):
                 resumed.append(run.run_id)
         return resumed
+
+    def _to_account_login(self, run: reg.AgentRun, accounts: dict[tuple[str, str], tuple[UUID | None, ...]]) -> reg.AgentRun | None:
+        """Run `run`, its own login lost, carried to another login of its account signed in here (`signed_in_as`, asked
+        once per account in a pass: `accounts`, its first or none) and pinned there from now on; None when none is, or the move is refused
+        (said in the log: it waits for a sign-in as before)."""
+        if self.programs is None or not run.login:
+            return None
+        key = run.provider, run.login
+        if key not in accounts:
+            accounts[key] = tuple(itertools.islice(self.programs.signed_in_as(run.provider, run.login, besides=(run.subscription_id,)), 1))
+        if not accounts[key]:
+            return None
+        target = accounts[key][0]
+        pinned = None if target is None else RunSubscription(subscription_id=target, **({"limits": run.subscription.limits} if run.subscription is not None else {}))
+        try:
+            moved = reg.carry(run, pinned)
+        except (SubscriptionRefused, PermissionError, OSError) as error:
+            logger.warning("run %s, its login lost, not moved to %s of its account: %s", run.run_id[:8], target or "this PC's own login", error)
+            return None
+        logger.info("run %s, its login lost, resumes on %s, signed in as its account", run.run_id[:8], target or "this PC's own login")
+        return moved
 
     async def _relaunch(self, run: reg.AgentRun) -> bool:
         """Claimed run `run`'s brief started again on the next ranked model (`SpawnLine.relaunch`), in the launcher's

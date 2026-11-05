@@ -275,6 +275,19 @@ class AgentPrograms(BaseModel):
             return False
         return self._status(PROVIDERS[name], self._environment(subscription)).signed_in
 
+    def signed_in_as(self, name: str, login: str, *, besides: tuple[UUID | None, ...] = ()) -> Iterator[UUID | None]:
+        """Each login of `name` here signed in now as account `login` (`LoginStatus.login`: one account signed in in two
+        folders is one login), but `besides`: this PC's own (None) first, then each subscription of `name`, each asked only
+        once the one before did not answer as it. A held login's digest names its token too: it matches only itself."""
+        program = PROVIDERS[name]
+        for subscription in (None, *(found for found in Subscription.all() if found.provider == name)):
+            here = subscription.id if subscription is not None else None
+            if here in besides:
+                continue
+            status = self._status(program, self._environment(subscription))
+            if status.signed_in and status.login == login:
+                yield here
+
     def paste(self, name: AgentProvider, subscription_id: UUID | None, attempt: UUID, sealed: str) -> AgentProviderState:
         """The code its vendor's page showed the person (`AgentSignIn.paste`), `sealed` in his browser to sign-in `attempt`'s
         own key, opened here and written once to that program of `name` waiting here (`subscription_id`'s; None: the default

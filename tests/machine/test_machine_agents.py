@@ -42,7 +42,7 @@ from galaius.agents.limits.subscriptions import SubscriptionCapped
 from galaius.machine.projects.workspaces import KeptJob, MachineWorkspaces, WorkspaceJobs
 from galaius.machine.projects.workspace_git import CloneFailure, Git
 from galaius.machine.projects.workspace_copy import WorkspaceTransfers
-from galaius.agents.providers import PROJECT_SETTINGS_OFF, UNTRUSTED_FOLDERS, ClaudeCodeProvider
+from galaius.agents.providers import PROJECT_SETTINGS_OFF, UNTRUSTED_FOLDERS, ClaudeCodeProvider, LoginStatus
 from galaius.machine.places.place_reviews import PlaceReviews
 from galaius.host.private_files import PRIVATE_FILES
 from galaius.host.processes import detached_options
@@ -1498,6 +1498,50 @@ def test_a_tree_any_cut_stopped_resumes_whole_by_itself_deepest_first_once(base:
         reg._merge_record_locked(run_id, {"finished_at": reg.get_run(run_id).resumed_at + 10})
     assert asyncio.run(agents.resume_paused()) == [] and len(sent) == 3, "looped on a cut that did not come back"
     assert not any(reg.get_run(run_id).resumes for run_id, _, _ in tree)
+
+
+#: Two accounts' login digests (`LoginStatus.login`).
+ACCOUNT, OTHER_ACCOUNT = "ed1067c105a80a9a", "0123456789abcdef"
+
+
+@pytest.mark.parametrize("signed_in, lands", [
+    pytest.param({"own": ACCOUNT}, "own", id="this-pcs-own-login-of-its-account"),
+    pytest.param({"spare": ACCOUNT}, "spare", id="another-subscription-of-its-account"),
+    pytest.param({"own": ACCOUNT, "spare": ACCOUNT}, "own", id="both-this-pcs-own-first"),
+    pytest.param({"own": OTHER_ACCOUNT, "spare": OTHER_ACCOUNT}, None, id="only-another-account-waits"),
+    pytest.param({}, None, id="none-signed-in-waits"),
+])
+def test_a_run_its_login_lost_resumes_on_any_login_of_its_account_signed_in_here(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                                                 signed_in: dict[str, str], lands: str | None) -> None:
+    """Owner 2026-11-05 « you're allowed to work right now because you have the subscription, so it's working. Yet I have a
+    message in another project saying this : "Claude déconnecté …" »: three runs waited on a subscription folder's dead copy
+    of a login while this PC's own login of the same account worked. A lost login's run resumes on the first login of its
+    account signed in here, its session carried there and pinned there; one of another account never takes it."""
+    reg.cut_resume_since(now=1000.0)
+    dead, spare = Subscription.create(uuid4(), "claude"), Subscription.create(uuid4(), "claude")
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    folders = {"own": ClaudeCodeProvider().auth_home({"HOME": os.environ["HOME"]}), "spare": spare.folder}
+    run_id, cwd = "cut-login", base / "project"
+    reg.register(run_id=run_id, pid=431, provider="claude", name="w", agent="app-engineer", model="claude-opus-5-5", cwd=str(cwd), login=ACCOUNT,
+                 subscription=RunSubscription(subscription_id=dead.id, limits=SubscriptionLimits(weekly_percent=80)))
+    _cut(run_id, "login_lost", pid=431, at=time.time() - 86400)
+    session = ClaudeCodeProvider().session_files(dead.folder, cwd, reg.get_run(run_id).provider_session_id or run_id)[0]
+    session.parent.mkdir(parents=True)
+    session.write_text('{"type": "user"}\n')
+    by_folder = {str(folder): signed_in.get(name) for name, folder in folders.items()}
+    monkeypatch.setattr(AgentPrograms, "_status", lambda self, program, environment: (
+        LoginStatus(signed_in=bool(account), login=account or "") if (account := by_folder.get(environment.get("CLAUDE_CONFIG_DIR", str(folders["own"])))) is not None
+        else LoginStatus(signed_in=False)))
+    sent: list[str] = []
+    monkeypatch.setattr("galaius.machine.agents.deliver_message", lambda run_id, text, *, sender, environment: sent.append(run_id) or SimpleNamespace(state="queued", text=""))
+    agents = _agents(base, tmp_path).model_copy(update={"programs": AgentPrograms(environment={"HOME": os.environ["HOME"]}, log_path=tmp_path / "programs.log")})
+    assert asyncio.run(agents.resume_paused()) == ([run_id] if lands else [])
+    run = reg.get_run(run_id)
+    if lands is None:
+        assert (run.resumes, run.subscription_id, sent) == ("sign_in", dead.id, []), "resumed on no login of its account"
+        return
+    assert run.subscription_id == (None if lands == "own" else spare.id) and run.resumes is None
+    assert (folders[lands] / session.relative_to(dead.folder)).read_text() == session.read_text(), "its session not carried where it resumes"
 
 
 def test_a_run_its_limit_refused_before_it_did_anything_starts_again_on_the_next_model_and_its_launcher_reads_that(
