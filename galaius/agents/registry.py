@@ -1590,11 +1590,13 @@ def holds(by: StopActor | None) -> bool:
     return by is not None and by.kind != "agent"
 
 
-def stop(run_id: str, *, by: StopActor | None, expected_lifecycle_token: str | None = None) -> bool:
+def stop(run_id: str, *, by: StopActor | None, expected_lifecycle_token: str | None = None, item_id: str | None = None) -> bool:
     """Ask a run to stop, recording who did (`by`; None: no one, its own subscription cap cut it). Returns False for an
     unknown run rather than raising. A run that had given its answer, no turn since, is ended and stays done
     (`_cuts_nothing`) when an agent stops it; a stop that `holds` reads stopped and holds it: nothing but a person starts
-    it again (`AgentRun.held_at`), whatever is queued for it."""
+    it again (`AgentRun.held_at`), whatever is queued for it. `item_id`: only the turn that queue item opened stops, that
+    item alone cancelled (`agent_queue.WITHDRAWN_ERROR`, his take-back): what waits behind it stays queued, and the run is
+    held only when nothing does."""
     # Read before the lock: `read_events` takes `record_lock` itself.
     known = _read_record(run_id)
     answered = None if known is None else _digest(known).answered
@@ -1616,13 +1618,17 @@ def stop(run_id: str, *, by: StopActor | None, expected_lifecycle_token: str | N
             from galaius.agents import agent_queue
             # His stop reads stopped even on a turn that had ended: he stopped the work it waited on (its agents').
             idle = not holds(by) and _cuts_nothing(answered, agent_queue.items_locked(run_id))
-            agent_queue.cancel_pending_locked(run_id)
+            if item_id is None:
+                agent_queue.cancel_pending_locked(run_id)
+            elif agent_queue.mark_locked(run_id, item_id, "cancelled", error=agent_queue.WITHDRAWN_ERROR) is None:
+                return False
+            waiting = item_id is not None and any(item.state == "pending" for item in agent_queue.items_locked(run_id))
         except (ImportError, OSError, ValueError, RuntimeError):
             return False
         if stored.process_running():
             _terminate(stored.pid)
         updated = _merge_record_locked(run_id, {
-            **({"held_at": time.time()} if holds(by) else {}),
+            **({"held_at": time.time()} if holds(by) and not waiting else {}),
             "finished_at": stored.finished_at if idle and stored.finished_at else time.time(),
             "exit_code": 0 if idle else -signal.SIGTERM,
             "status": "done" if idle else "stopped",

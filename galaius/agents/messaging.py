@@ -440,34 +440,42 @@ async def wait_for_reply(delivery: Delivery) -> str:
 
 def retract(run_id: str, message_id: str, *, by: StopActor | None) -> RetractOutcome:
     """Take back message `message_id` its person sent run `run_id` (owner 2026-11-04 « i wanted to stop / remove that
-    message or do something, but i couldn't »): still waiting → never read (`unread`); read by the turn running now →
-    that turn stops, as by his stop (`stopped`: held until he writes again); read by a turn that ended → `after`. Once
-    read, the agents started on it (under the run, between its read and the next turn's) stop too, and the run's next
-    turn is told (`agent_queue.withdrawn_note_locked`). Asked again: the outcome it had, nothing stopped twice.
+    message or do something, but i couldn't »): still waiting → never read (`unread`); the one that opened the turn at
+    work now → that turn alone stops (`stopped`: what waits behind it stays queued, the run held only when nothing does),
+    with the agents it started (under the run, before the next message was read); read otherwise (by a turn at work on
+    another ask, or a turn that ended) → `after`. Once read, the run is told at its next step or turn
+    (`agent_queue.withdrawn_note_locked`). Asked again: the same outcome, a stop that did not land tried again.
     `unknown`: no message of that id reached the run here."""
     run_id = reg.resolve_run_id(run_id) or run_id
     with reg.record_lock(run_id):
         run = reg.get_run(run_id)
         if run is None:
             return "unknown"
-        record, item, made = agent_queue.withdraw_locked(run_id, message_id, working=run.working())
-        later = [queued.started_at for queued in agent_queue.items_locked(run_id)
-                 if item is not None and item.started_at is not None and queued.started_at is not None and queued.started_at > item.started_at]
-    if record is None:
-        return "unknown"
-    if made and record.outcome != "unread" and item is not None and item.started_at is not None:
-        since, until = item.started_at, min(later, default=float("inf"))
-        tree = reg.stored_tree(reg.conversation_of(run_id))
-        below, frontier = set(), {run_id}
-        while frontier:
-            frontier = {other.run_id for other in tree if other.parent_run_id in frontier and other.run_id not in below}
-            below |= frontier
-        for other in tree:
-            if other.run_id in below and since <= other.started_at < until and other.working():
-                reg.stop(other.run_id, by=by)
-        if record.outcome == "stopped":
-            reg.stop(run_id, by=by)
-    return record.outcome
+        record, item, _made = agent_queue.withdraw_locked(run_id, message_id, working=run.working())
+        if record is None or item is None:
+            return "unknown"
+        if record.outcome != "stopped":
+            return record.outcome
+        current = agent_queue.item_locked(run_id, item.id)
+        # Its own turn still at work (the same attempt): stopped now, under the lock, never a turn claimed since.
+        if current is None or current.state != "running" or current.attempt_token != item.attempt_token or not run.working() or not reg.stop(
+                run_id, by=by, expected_lifecycle_token=run.lifecycle_token, item_id=item.id):
+            if current is None or current.state == "running":
+                record = record.model_copy(update={"outcome": "after"})   # its turn ended before the stop: nothing stopped
+                agent_queue.keep_withdrawn_locked(run_id, message_id, record)
+            return record.outcome
+        since = item.started_at or record.at
+        until = min((other.started_at for other in agent_queue.items_locked(run_id) if other.started_at is not None and other.started_at > since), default=float("inf"))
+    # The agents its turn started on it, each under its own lock once the run's is released (sorted locks elsewhere).
+    tree = reg.stored_tree(reg.conversation_of(run_id))
+    below, frontier = set(), {run_id}
+    while frontier:
+        frontier = {other.run_id for other in tree if other.parent_run_id in frontier and other.run_id not in below}
+        below |= frontier
+    for other in tree:
+        if other.run_id in below and since <= other.started_at < until and other.working():
+            reg.stop(other.run_id, by=by)
+    return "stopped"
 
 
 #: Why a process `systemd-run` started may not send or spawn as no run (`Caller.unowned`).

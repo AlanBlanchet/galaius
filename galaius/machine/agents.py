@@ -169,6 +169,12 @@ class MachineSessions:
         self._read: dict[str, deque[UUID]] = {}
         #: Each message being handed over now, by its id.
         self._sending: dict[UUID, asyncio.Future[str]] = {}
+        #: What each message read said, kept as long as `_read` keeps its id: quoted when he takes it back.
+        self._said: dict[UUID, str] = {}
+        #: The messages taken back after they were read, per session, quoted to its next turn (`agent_queue.withdrawn_note`).
+        self._withdrawn: dict[str, list[str]] = {}
+        #: How far each message taken back had got (`retract`): its answer when asked again.
+        self._taken: dict[UUID, RetractOutcome] = {}
 
     async def send(self, run_id: str, text: str, message_id: UUID, media: tuple[Path, ...] = ()) -> str:
         """"sent", or "queued" when the session is still working on a turn: it gets the message
@@ -227,27 +233,42 @@ class MachineSessions:
                 self._queued.pop(run_id, None)
 
     async def _hand(self, run_id: str, text: str, message_id: UUID, media: tuple[Path, ...] = ()) -> None:
-        """A turn of session `run_id` opened on `text` and the images at `media`, and `message_id` recorded as read."""
-        await (await self.host()).send(run_id, text, media)
-        self._read.setdefault(run_id, deque(maxlen=MACHINE_AGENT_READ)).append(message_id)
+        """A turn of session `run_id` opened on `text` and the images at `media`, and `message_id` recorded as read; what he
+        took back since its last turn said first (`retract`)."""
+        note = agent_queue.withdrawn_note(self._withdrawn.get(run_id, []))
+        await (await self.host()).send(run_id, f"{note}\n\n{text}" if self._withdrawn.get(run_id) else text, media)
+        self._withdrawn.pop(run_id, None)
+        read = self._read.setdefault(run_id, deque(maxlen=MACHINE_AGENT_READ))
+        if len(read) == read.maxlen:
+            self._said.pop(read[0], None)
+        read.append(message_id)
+        self._said[message_id] = text
 
     async def retract(self, run_id: str, message_id: UUID) -> RetractOutcome:
         """Message `message_id` taken back: still waiting for its turn → dropped (`unread`); the one its turn now running
-        opened on → that turn cancelled (`stopped`); read earlier → `after`. A session has no queue its next turn is told from."""
+        opened on → that turn cancelled (`stopped`); read earlier → `after`. Once read, its next turn is told (`_hand`).
+        Asked again: the same. `unknown`: read before this runner started, or never sent here: it cannot say which."""
+        if (kept := self._taken.get(message_id)) is not None:
+            return kept
         waiting = self._queued.get(run_id, [])
+        outcome: RetractOutcome = "unknown"
         if any(queued == message_id for queued, _, _ in waiting):
             self._queued[run_id] = [entry for entry in waiting if entry[0] != message_id]
-            return "unread"
-        read = self._read.get(run_id, ())
-        if message_id not in read:
-            return "unknown"
-        if read[-1] == message_id and self._host is not None and self._host.busy:
-            try:
-                await self._host.cancel(run_id)
-                return "stopped"
-            except ConversationRefused:
-                pass   # its turn had ended meanwhile
-        return "after"
+            outcome = "unread"
+        elif message_id in (read := self._read.get(run_id, ())) and (said := self._said.pop(message_id, None)) is not None:
+            text = " ".join(said.split())
+            quote = text if len(text) <= agent_queue.WITHDRAWN_QUOTE else f"{text[:agent_queue.WITHDRAWN_QUOTE - 1]}…"
+            self._withdrawn.setdefault(run_id, []).append(f"- « {quote} »")
+            outcome = "after"
+            if read[-1] == message_id and self._host is not None and self._host.busy:
+                try:
+                    await self._host.cancel(run_id)
+                    outcome = "stopped"
+                except ConversationRefused:
+                    pass   # its turn had ended meanwhile
+        if outcome != "unknown":
+            self._taken[message_id] = outcome
+        return outcome
 
     def read(self, run_id: str) -> tuple[UUID, ...]:
         """The messages session `run_id` has read since this runner started, the latest first."""

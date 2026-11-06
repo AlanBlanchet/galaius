@@ -79,6 +79,35 @@ def test_taken_back_while_read_stops_the_turn_and_its_agents_and_the_next_turn_i
     assert WRONG not in provider.messages[-1]   # told once
 
 
+def test_taking_back_the_message_a_turn_opened_on_keeps_his_later_words_queued(monkeypatch):
+    """His follow-up written behind it is never dropped: only that turn stops, the run is not held, the follow-up goes next
+    (code-reviewer 74d9e07b B2: a whole-run stop cancelled it and held the run)."""
+    provider = setup_queue(monkeypatch)
+    message = _sent()
+    _reading(monkeypatch)
+    _sent("and the footer too")
+
+    assert messaging.retract("r1", message, by=HIM) == "stopped"
+    assert [item.state for item in agent_queue.items("r1")] == ["cancelled", "pending"] and reg.get_run("r1").held_at is None
+    reg._merge_record_locked("r1", {"pid": 999999})   # its process gone
+    agent_queue.dispatch("r1")
+    assert "and the footer too" in provider.messages[-1] and f"« {WRONG} »" in provider.messages[-1]
+
+
+def test_a_message_read_mid_turn_never_stops_the_turn_at_work_on_an_earlier_ask(monkeypatch):
+    """Read by a turn at work on another ask (`inject`): that turn goes on, told at its next step (B2)."""
+    setup_queue(monkeypatch)
+    _sent("the earlier ask")
+    killed = _reading(monkeypatch)
+    message = _sent()
+    assert any(WRONG in text for text in agent_queue.inject("r1"))   # read at its next step
+
+    assert messaging.retract("r1", message, by=HIM) == "after"
+    assert killed == [] and reg.get_run("r1").status == "running"
+    told = agent_queue.inject("r1")   # its next step, nothing else pending
+    assert told and f"« {WRONG} »" in told[0] and agent_queue.inject("r1") == []
+
+
 def test_taken_back_after_its_turn_ended_tells_the_next_turn(monkeypatch):
     provider = setup_queue(monkeypatch)
     message = _sent()
