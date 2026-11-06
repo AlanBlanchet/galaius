@@ -1,10 +1,10 @@
 """Staged-content secret scan: every finding class, the redaction, and the commit hook."""
+import importlib.util
 import os
 import shutil
 import stat
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -331,29 +331,41 @@ def test_confidential_term_file_is_private_and_redacted(git_repo: Path, shared: 
     assert expected in result.stderr
 
 
-def test_confidential_term_file_rejects_same_inode_mutation(git_repo: Path):
+def test_confidential_term_file_rejects_same_inode_mutation(git_repo: Path, monkeypatch: pytest.MonkeyPatch):
+    """The file's times move between the gate's open and its last fstat: refused, at any clock resolution."""
     terms = git_repo / ".git" / "confidential-terms"
-    terms.write_bytes(b"unmatched-confidential-term\n" * 200000)
+    terms.write_bytes(b"unmatched-confidential-term\n")
     PRIVATE_FILES.restrict(terms)
-    git_out(git_repo, "config", "--local", "galaius.confidentialTermsFile", "confidential-terms")
-    stage(git_repo, "candidate.txt", b"ordinary content\n")
-    running = threading.Event()
-    running.set()
+    gate_module = _load_gate_module()
+    real_fdopen = os.fdopen
 
-    def mutate_metadata():
-        while running.is_set():
-            os.utime(terms, None)
+    def fdopen_then_touch(descriptor: int, *args, **kwargs):
+        stream = real_fdopen(descriptor, *args, **kwargs)
+        real_read = stream.read
 
-    writer = threading.Thread(target=mutate_metadata)
-    writer.start()
-    try:
-        result = run_gate(git_repo, "scan-staged")
-    finally:
-        running.clear()
-        writer.join()
+        def read_then_touch(*read_args):
+            content = real_read(*read_args)
+            moved = os.stat(terms).st_mtime_ns + 10_000_000_000
+            os.utime(terms, ns=(moved, moved))
+            return content
 
-    assert result.returncode == 1
-    assert "changed during validation" in result.stderr
+        stream.read = read_then_touch
+        return stream
+
+    monkeypatch.setattr(os, "fdopen", fdopen_then_touch)
+    gate = gate_module.RepositoryGate(root=git_repo)
+
+    with pytest.raises(gate_module._GateError, match="changed during validation"):
+        gate._read_stable_file(terms, terms.lstat(), "confidential-term")
+
+
+def _load_gate_module():
+    spec = importlib.util.spec_from_file_location("repository_gate_under_test", GATE)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_scanner_fails_closed_when_git_is_unavailable(git_repo: Path):
