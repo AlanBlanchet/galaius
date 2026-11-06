@@ -461,6 +461,7 @@ def retract(run_id: str, message_id: str, *, by: StopActor | None) -> RetractOut
         stopped = current is not None and current.state == "cancelled" and current.error == agent_queue.WITHDRAWN_STOPPED   # by an earlier call
         # Else its own turn still at work (the same attempt): stopped now, under the lock, never a turn claimed since.
         if not stopped and not (current is not None and current.state == "running" and current.attempt_token == item.attempt_token and run.working()
+                                and agent_queue.alone_in_turn(current, agent_queue.items_locked(run_id))   # a retry: it read none since
                                 and reg.stop(run_id, by=by, expected_lifecycle_token=run.lifecycle_token, item_id=item.id)):
             # Nothing stopped (its turn ended first, or a call cut off before its stop): it reads read, the run told.
             agent_queue.keep_withdrawn_locked(run_id, message_id, record := record.model_copy(update={"outcome": "after"}))

@@ -569,6 +569,13 @@ def opened_turn(item: QueueItem, items: list[QueueItem]) -> bool:
         and (other.finished_at is None or other.finished_at > item.started_at) for other in items)
 
 
+def alone_in_turn(item: QueueItem, items: list[QueueItem]) -> bool:
+    """Whether no message was read after `item` (`inject`, or a later turn): stopping the turn `item` opened then stops
+    nothing but what he took back."""
+    return not any(other.id != item.id and other.started_at is not None and item.started_at is not None and other.started_at > item.started_at
+                   for other in items)
+
+
 def withdraw_locked(run_id: str, message_id: str, *, working: bool) -> tuple[Withdrawn | None, QueueItem | None, bool]:
     """Take message `message_id` back from the run's queue while the caller owns the run lock: still pending → cancelled
     (`WITHDRAWN_ERROR`), never read (`unread`); never attempted (failed or cancelled before a turn took it) → `unread`; the
@@ -591,9 +598,7 @@ def withdraw_locked(run_id: str, message_id: str, *, working: bool) -> tuple[Wit
     elif item.started_at is None:
         record = Withdrawn(outcome="unread", at=now, note="none")
     else:
-        # Only a turn it alone is in: one that read another message since (`inject`) holds an ask he did not take back.
-        alone = not any(other.id != item.id and other.started_at is not None and other.started_at > item.started_at for other in items)
-        stops = item.state == "running" and working and opened_turn(item, items) and alone
+        stops = item.state == "running" and working and opened_turn(item, items) and alone_in_turn(item, items)
         record = Withdrawn(outcome="stopped" if stops else "after", at=now, note="pending")
     keep_withdrawn_locked(run_id, message_id, record)
     return record, item, True

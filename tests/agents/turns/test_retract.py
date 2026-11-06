@@ -134,6 +134,21 @@ def test_a_take_back_cut_off_before_its_stop_reads_after_once_its_turn_ended(mon
     assert messaging.retract("r1", message, by=HIM) == "after"
 
 
+def test_a_retried_take_back_never_stops_a_turn_that_read_another_message_since(monkeypatch):
+    """Cut off after it was recorded `stopped`; the turn reads B meanwhile; asked again → `after`, B's turn goes on (R1)."""
+    setup_queue(monkeypatch)
+    message = _sent()
+    killed = _reading(monkeypatch)
+    with monkeypatch.context() as cut, pytest.raises(SystemExit):
+        cut.setattr(reg, "stop", lambda *_args, **_kwargs: (_ for _ in ()).throw(SystemExit("cut off")))
+        messaging.retract("r1", message, by=HIM)
+    _sent("and the footer too")
+    assert agent_queue.inject("r1")
+
+    assert messaging.retract("r1", message, by=HIM) == "after"
+    assert killed == [] and reg.get_run("r1").status == "running"
+
+
 def test_taken_back_after_its_turn_ended_tells_the_next_turn(monkeypatch):
     provider = setup_queue(monkeypatch)
     message = _sent()
