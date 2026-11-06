@@ -445,7 +445,8 @@ def retract(run_id: str, message_id: str, *, by: StopActor | None) -> RetractOut
     with the agents it started (under the run, before the next message was read); read otherwise (by a turn at work on
     another ask, or a turn that ended) → `after`. Once read, the run is told at its next step or turn
     (`agent_queue.withdrawn_note_locked`). Asked again: the same outcome, a stop that did not land tried again.
-    `unknown`: no message of that id reached the run here."""
+    `stopped` only once its item reads stopped (`agent_queue.WITHDRAWN_STOPPED`); the agents its turn started are swept
+    again on each call. `unknown`: no message of that id reached the run here."""
     run_id = reg.resolve_run_id(run_id) or run_id
     with reg.record_lock(run_id):
         run = reg.get_run(run_id)
@@ -457,12 +458,12 @@ def retract(run_id: str, message_id: str, *, by: StopActor | None) -> RetractOut
         if record.outcome != "stopped":
             return record.outcome
         current = agent_queue.item_locked(run_id, item.id)
-        # Its own turn still at work (the same attempt): stopped now, under the lock, never a turn claimed since.
-        if current is None or current.state != "running" or current.attempt_token != item.attempt_token or not run.working() or not reg.stop(
-                run_id, by=by, expected_lifecycle_token=run.lifecycle_token, item_id=item.id):
-            if current is None or current.state == "running":
-                record = record.model_copy(update={"outcome": "after"})   # its turn ended before the stop: nothing stopped
-                agent_queue.keep_withdrawn_locked(run_id, message_id, record)
+        stopped = current is not None and current.state == "cancelled" and current.error == agent_queue.WITHDRAWN_STOPPED   # by an earlier call
+        # Else its own turn still at work (the same attempt): stopped now, under the lock, never a turn claimed since.
+        if not stopped and not (current is not None and current.state == "running" and current.attempt_token == item.attempt_token and run.working()
+                                and reg.stop(run_id, by=by, expected_lifecycle_token=run.lifecycle_token, item_id=item.id)):
+            # Nothing stopped (its turn ended first, or a call cut off before its stop): it reads read, the run told.
+            agent_queue.keep_withdrawn_locked(run_id, message_id, record := record.model_copy(update={"outcome": "after"}))
             return record.outcome
         since = item.started_at or record.at
         until = min((other.started_at for other in agent_queue.items_locked(run_id) if other.started_at is not None and other.started_at > since), default=float("inf"))

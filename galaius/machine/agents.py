@@ -268,6 +268,8 @@ class MachineSessions:
                     pass   # its turn had ended meanwhile
         if outcome != "unknown":
             self._taken[message_id] = outcome
+            while len(self._taken) > MACHINE_AGENT_READ:   # kept as long as the ids it read are
+                del self._taken[next(iter(self._taken))]
         return outcome
 
     def read(self, run_id: str) -> tuple[UUID, ...]:

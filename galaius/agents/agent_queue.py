@@ -516,6 +516,8 @@ def cancel_pending_locked(run_id: str) -> None:
 
 #: An item its person took back before it was read (`withdraw_locked`): cancelled with this error.
 WITHDRAWN_ERROR = "withdrawn by its sender before it was read"
+#: The item a turn opened on, taken back while that turn read it: cancelled with this error as the turn stops (`registry.stop`).
+WITHDRAWN_STOPPED = "withdrawn by its sender while its turn read it: that turn stopped"
 #: The longest quote of a withdrawn message its run's next turn is shown (`withdrawn_note_locked`).
 WITHDRAWN_QUOTE = 300
 
@@ -570,7 +572,8 @@ def opened_turn(item: QueueItem, items: list[QueueItem]) -> bool:
 def withdraw_locked(run_id: str, message_id: str, *, working: bool) -> tuple[Withdrawn | None, QueueItem | None, bool]:
     """Take message `message_id` back from the run's queue while the caller owns the run lock: still pending → cancelled
     (`WITHDRAWN_ERROR`), never read (`unread`); never attempted (failed or cancelled before a turn took it) → `unread`; the
-    one that opened the turn at work now (`working`: the run's process is at work) → `stopped`, its stop the caller's (a
+    one that opened the turn at work now, no other message read by it since (`working`: the run's process is at work) →
+    `stopped`, its stop the caller's (a
     stop that does not happen makes it `after`: `keep_withdrawn_locked`); anything else read → `after`, the run told at
     its next step or turn. Returns its record, the item it was, and whether this call made it (False: taken back before,
     the same record). (None, None, False): no message of that id reached this queue."""
@@ -588,7 +591,9 @@ def withdraw_locked(run_id: str, message_id: str, *, working: bool) -> tuple[Wit
     elif item.started_at is None:
         record = Withdrawn(outcome="unread", at=now, note="none")
     else:
-        stops = item.state == "running" and working and opened_turn(item, items)
+        # Only a turn it alone is in: one that read another message since (`inject`) holds an ask he did not take back.
+        alone = not any(other.id != item.id and other.started_at is not None and other.started_at > item.started_at for other in items)
+        stops = item.state == "running" and working and opened_turn(item, items) and alone
         record = Withdrawn(outcome="stopped" if stops else "after", at=now, note="pending")
     keep_withdrawn_locked(run_id, message_id, record)
     return record, item, True

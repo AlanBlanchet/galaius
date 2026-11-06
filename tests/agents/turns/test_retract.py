@@ -108,6 +108,32 @@ def test_a_message_read_mid_turn_never_stops_the_turn_at_work_on_an_earlier_ask(
     assert told and f"« {WRONG} »" in told[0] and agent_queue.inject("r1") == []
 
 
+def test_taking_back_the_message_a_turn_opened_on_never_stops_it_once_it_read_another(monkeypatch):
+    """A opens the turn, the turn reads B mid-turn: taking A back stops nothing, B goes on (code-reviewer 39589295 N1)."""
+    setup_queue(monkeypatch)
+    message = _sent()
+    killed = _reading(monkeypatch)
+    _sent("and the footer too")
+    assert agent_queue.inject("r1")   # B read at its next step
+
+    assert messaging.retract("r1", message, by=HIM) == "after"
+    assert killed == [] and reg.get_run("r1").status == "running" and reg.get_run("r1").held_at is None
+    assert [item.state for item in agent_queue.items("r1")] == ["running", "running"]
+
+
+def test_a_take_back_cut_off_before_its_stop_reads_after_once_its_turn_ended(monkeypatch):
+    """Recorded `stopped`, then its call cut off before the stop; its turn ends; asked again → `after`, never a stop that
+    did not happen (N3)."""
+    setup_queue(monkeypatch)
+    message = _sent()
+    _reading(monkeypatch)
+    with monkeypatch.context() as cut, pytest.raises(SystemExit):
+        cut.setattr(reg, "stop", lambda *_args, **_kwargs: (_ for _ in ()).throw(SystemExit("cut off")))
+        messaging.retract("r1", message, by=HIM)
+    reg._merge_record_locked("r1", {"status": "done", "pid": 999999})   # its turn over, its process gone
+    assert messaging.retract("r1", message, by=HIM) == "after"
+
+
 def test_taken_back_after_its_turn_ended_tells_the_next_turn(monkeypatch):
     provider = setup_queue(monkeypatch)
     message = _sent()

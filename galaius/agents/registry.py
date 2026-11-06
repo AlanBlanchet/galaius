@@ -1595,7 +1595,7 @@ def stop(run_id: str, *, by: StopActor | None, expected_lifecycle_token: str | N
     unknown run rather than raising. A run that had given its answer, no turn since, is ended and stays done
     (`_cuts_nothing`) when an agent stops it; a stop that `holds` reads stopped and holds it: nothing but a person starts
     it again (`AgentRun.held_at`), whatever is queued for it. `item_id`: only the turn that queue item opened stops, that
-    item alone cancelled (`agent_queue.WITHDRAWN_ERROR`, his take-back): what waits behind it stays queued, and the run is
+    item alone cancelled (`agent_queue.WITHDRAWN_STOPPED`, his take-back): what waits behind it stays queued, and the run is
     held only when nothing does."""
     # Read before the lock: `read_events` takes `record_lock` itself.
     known = _read_record(run_id)
@@ -1620,7 +1620,7 @@ def stop(run_id: str, *, by: StopActor | None, expected_lifecycle_token: str | N
             idle = not holds(by) and _cuts_nothing(answered, agent_queue.items_locked(run_id))
             if item_id is None:
                 agent_queue.cancel_pending_locked(run_id)
-            elif agent_queue.mark_locked(run_id, item_id, "cancelled", error=agent_queue.WITHDRAWN_ERROR) is None:
+            elif agent_queue.mark_locked(run_id, item_id, "cancelled", error=agent_queue.WITHDRAWN_STOPPED) is None:
                 return False
             waiting = item_id is not None and any(item.state == "pending" for item in agent_queue.items_locked(run_id))
         except (ImportError, OSError, ValueError, RuntimeError):
