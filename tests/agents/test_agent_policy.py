@@ -160,12 +160,11 @@ def test_the_allow_list_reaches_the_vendor_command():
     argv = claude.command("t", cwd=".", model=None, mcp_config=None, run_id="r",
                           agent="fixture", agent_prompt="Pinned fixture role",
                           allowed_tools=["mcp__galaius__screenshot", "mcp__galaius__navigate"])
-    assert "--allowedTools" not in argv
+    assert argv[argv.index("--allowedTools") + 1] == "mcp__galaius", "the permission grant, never the toolset"
     assert json.loads(argv[argv.index("--agents") + 1])["fixture"]["tools"] == [
         "mcp__galaius__screenshot", "mcp__galaius__navigate"]
-    # No toolset configured: no flag at all, so an unrestricted agent stays unrestricted.
-    assert "--allowedTools" not in claude.command(
-        "t", cwd=".", model=None, mcp_config=None, run_id="r")
+    # No toolset configured: no `--agents` list, so an unrestricted agent stays unrestricted (the grant narrows nothing).
+    assert "--agents" not in claude.command("t", cwd=".", model=None, mcp_config=None, run_id="r")
 
 
 # ── the CLI surface: "from galaius", not from a JSON file ─────────────────────────────────────

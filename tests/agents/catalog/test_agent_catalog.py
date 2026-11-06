@@ -314,7 +314,7 @@ async def test_common_launcher_uses_one_catalog_for_prompt_and_policy(catalog_ho
     assert captured[1][1]["allowed_tools"] == (None if provider_type is CodexProvider else ["Write"])
     if provider_type is ClaudeCodeProvider:
         assert captured[1][1]["agent"] == "fixture-worker"
-        assert "--agents" in captured[1][2] and "--allowedTools" not in captured[1][2]
+        assert "--agents" in captured[1][2] and captured[1][2][captured[1][2].index("--allowedTools") + 1] == "mcp__galaius"  # the grant, never the toolset
     else:
         assert captured[1][1]["agent"] == "fixture-worker" and "--agent" not in captured[1][2]
         actual_task = captured[1][2][-1]  # the task is last, after "--"

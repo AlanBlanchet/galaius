@@ -1418,17 +1418,19 @@ class ClaudeCodeProvider(AgentProvider):
     FENCED_GRANT: ClassVar[tuple[str, ...]] = ("Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch")
 
     def _permission_flag(self, mode: str | None, fence_decides: bool = False, allowed_tools: list[str] | None = None) -> list[str]:
-        """A read-only run (`plan`) also granted galaius's tools: plan refuses every MCP tool it is not granted, and of
-        those granted, every one not marked `readOnlyHint` (2.1.288: « Cannot call mcp__galaius__launch_app while in plan
-        mode »), so it calls exactly galaius's read-only ones (`_SessionScopedMCP.tool`'s `read_only`) — within its role's
-        tools, minus its denied ones (`--disallowedTools` wins over a grant). `fence_decides`: inside a fence that refuses
+        """Every run is granted galaius's tools, whatever its mode: a headless Claude refuses each MCP tool no rule grants
+        (« Claude requested permissions to use mcp__galaius__ext__galaius__note_save, but you haven't granted it yet »:
+        every galaius call of every `workspace_write` run on one PC, 2026-11-05). A grant only lets a tool run; which
+        tools a run has stays its role's (`--agents` tools) minus its denied ones (`--disallowedTools` wins over a grant).
+        A read-only run (`plan`) then calls only galaius's read-only ones: plan refuses every granted tool not marked
+        `readOnlyHint` (2.1.288: « Cannot call mcp__galaius__launch_app while in plan mode »; `_SessionScopedMCP.tool`'s
+        `read_only`). `fence_decides`: inside a fence that refuses
         its writes, `dontAsk` granted its role's `allowed_tools` (`FENCED_GRANT` for a role naming none) — every tool of its
         role runs, galaius's app tools too, and a write fails in the kernel."""
         if fence_decides:
             granted = (*(self.FENCED_GRANT if allowed_tools is None else allowed_tools), _GALAIUS_MCP_PREFIX.removesuffix("__"))
             return [*super()._permission_flag("dontAsk"), "--allowedTools", ",".join(dict.fromkeys(granted))]
-        grant = ["--allowedTools", _GALAIUS_MCP_PREFIX.removesuffix("__")] if self.touch_of(mode) is TouchScope.READ_ONLY else []
-        return super()._permission_flag(mode) + grant
+        return [*super()._permission_flag(mode), "--allowedTools", _GALAIUS_MCP_PREFIX.removesuffix("__")]
 
     def validate_tool_policy(self, allowed_tools: list[str] | None, denied_tools: tuple[str, ...], *,
                              coarse_accepted: bool = False) -> None:
