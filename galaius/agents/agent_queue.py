@@ -514,6 +514,91 @@ def cancel_pending_locked(run_id: str) -> None:
                     if item.state in ACTIVE else None)
 
 
+#: An item its person took back before it was read (`withdraw_locked`): cancelled with this error.
+WITHDRAWN_ERROR = "withdrawn by its sender before it was read"
+#: The longest quote of a withdrawn message its run's next turn is shown (`withdrawn_note_locked`).
+WITHDRAWN_QUOTE = 300
+
+
+class Withdrawn(BaseModel):
+    """A message its person took back (`messaging.retract`), kept under its run's queue file's `withdrawn` by message id:
+    how far it had got (`galaius_core.RetractOutcome` but `unknown`), when, and whether a turn of the run was told. The
+    queue file carries no text: what it said is read from the run's transcript when its next turn is told. A galaius older
+    than this key leaves it as written (`_state` reads only its own keys)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    outcome: Literal["unread", "stopped", "after"]
+    at: float
+    #: A turn of the run was shown it (`withdrawn_note_locked`); `unread` never needs to be.
+    told: bool = False
+
+
+def _withdrawn(state: dict) -> dict[str, Withdrawn]:
+    """The messages taken back, by message id, as `state` keeps them; an entry this galaius cannot read is skipped."""
+    kept = state.get("withdrawn")
+    found: dict[str, Withdrawn] = {}
+    for message_id, raw in (kept.items() if isinstance(kept, dict) else ()):
+        try:
+            found[str(message_id)] = Withdrawn.model_validate(raw)
+        except (TypeError, ValueError):
+            continue
+    return found
+
+
+def withdrawn_seen(run_id: str) -> dict[str, Withdrawn]:
+    """The messages to `run_id` its person took back, by message id, read WITHOUT its lock (safe as `items_seen`)."""
+    return _withdrawn(_state(run_id))
+
+
+def withdraw_locked(run_id: str, message_id: str, *, working: bool) -> tuple[Withdrawn | None, QueueItem | None, bool]:
+    """Take message `message_id` back from the run's queue while the caller owns the run lock: still pending → cancelled
+    (`WITHDRAWN_ERROR`), never read (`unread`); read by the turn running now (`working`: the run's process is at work) →
+    `stopped`, its stop the caller's; read by a turn that ended → `after`; never handed over (failed, cancelled) →
+    `unread`. Returns its record, the item it was, and whether this call made it (False: taken back before, the same
+    record). (None, None, False): no message of that id reached this queue."""
+    state = _state(run_id)
+    item = next((queued for queued in _items(state) if queued.message_id == message_id), None)
+    if (kept := _withdrawn(state).get(message_id)) is not None:
+        return kept, item, False
+    if item is None:
+        return None, None, False
+    now = time.time()
+    if item.state == "pending":
+        _replace_item_locked(run_id, item.id, state="cancelled", finished_at=now, error=WITHDRAWN_ERROR)
+        outcome = "unread"
+    elif item.state in {"failed", "cancelled"}:
+        outcome = "unread"
+    else:
+        outcome = "stopped" if item.state == "running" and working else "after"
+    record = Withdrawn(outcome=outcome, at=now, told=outcome == "unread")
+    state = _state(run_id)
+    state["withdrawn"] = {**(state.get("withdrawn") if isinstance(state.get("withdrawn"), dict) else {}),
+                          message_id: record.model_dump(mode="json")}
+    _write_state(run_id, state)
+    return record, item, True
+
+
+def withdrawn_note_locked(run_id: str) -> str:
+    """What the run's turn starting now is told of the messages its person took back since a turn of it was last told
+    (owner 2026-11-04 « i wanted to stop / remove that message »), each then marked told; "" when none. While the caller
+    owns the run lock."""
+    state = _state(run_id)
+    untold = {message_id: kept for message_id, kept in _withdrawn(state).items() if not kept.told}
+    if not untold:
+        return ""
+    lines = []
+    for message_id, kept in sorted(untold.items(), key=lambda pair: pair[1].at):
+        said = reg.message_for(run_id, message_id)
+        text = " ".join((said.text if said is not None else "").split())
+        quote = text if len(text) <= WITHDRAWN_QUOTE else f"{text[:WITHDRAWN_QUOTE - 1]}…"
+        lines.append(f"- « {quote} »" + (" — the turn working on it was stopped." if kept.outcome == "stopped" else ""))
+        state["withdrawn"][message_id] = kept.model_copy(update={"told": True}).model_dump(mode="json")
+    _write_state(run_id, state)
+    return (f"[Taken back by {OPERATOR}: do not act on it any further and do not answer it; what you already did on it stays as "
+            "it is unless they ask.]\n" + "\n".join(lines))
+
+
 def reads_next_step(run: reg.AgentRun) -> bool:
     """Whether a turn running on `run` reads a mid-turn message at its next step (`inject`, through the inbox hook): its
     CLI reads mid-turn and the run is unfenced (the hook cannot claim a message from inside the fence)."""
@@ -774,7 +859,12 @@ def inject(run_id: str) -> list[str]:
     # The person's words first and where it stands last: hook context opening with the person's own heading is theirs
     # (`inbox_hook.NOTE`), and the agents' messages after it keep the order they came in.
     persons = HEADING.format(who=OPERATOR)
-    return [*sorted((text for _, text in said), key=lambda text: not text.startswith(persons)), card(run, mid_turn=True)] if said else []
+    if not said:
+        return []
+    with reg.record_lock(run_id):
+        note = withdrawn_note_locked(run_id)
+    # After the messages: hook context opening with the person's own heading is theirs (`inbox_hook.NOTE`).
+    return [*sorted((text for _, text in said), key=lambda text: not text.startswith(persons)), *([note] if note else []), card(run, mid_turn=True)]
 
 
 #: What a turn has read of the messages sent to it: handed to that turn, or a turn opened on it.
@@ -977,6 +1067,8 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                         item = claim_next_locked(run_id) if admitted else None
                         if item is not None:
                             prompt = item.turn.prompt(run, item.message_id)
+                            if prompt is not None and isinstance(item.turn, MessageTurn) and (note := withdrawn_note_locked(run_id)):
+                                prompt = f"{note}\n\n{prompt}"
                             if prompt is None:
                                 _replace_item_locked(
                                     run_id, item.id, state="failed", finished_at=time.time(),

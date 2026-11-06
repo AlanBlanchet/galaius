@@ -680,8 +680,11 @@ def _his_words(run: reg.AgentRun) -> str:
     """What the person said that starts this turn of `run`: his messages since its last turn ended, or the words that
     started it; "" when the turn is no answer to him."""
     since = run.finished_at or 0.0
+    # Circular layers: agent_queue imports this module (`card`, `heading`).
+    from galaius.agents import agent_queue
+    taken_back = agent_queue.withdrawn_seen(run.run_id)   # never what he took back (`messaging.retract`)
     words = " ".join(event.text for event in reg.read_messages(run.run_id)
-                     if event.from_run == reg.PERSON_SENDER and event.to_run == run.run_id and event.at > since)
+                     if event.from_run == reg.PERSON_SENDER and event.to_run == run.run_id and event.at > since and event.event_id not in taken_back)
     if run.finished_at is None and run.parent_run_id is None and not run.asked_by:
         words = f"{run.task} {words}"
     return words.strip()

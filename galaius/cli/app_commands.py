@@ -1000,6 +1000,19 @@ def agents_stop(run_id: str) -> None:
     print(f"Stopped {resolved[:8]}." if reg.stop(resolved, by=reg.caller_stop_actor(os.environ)) else f"No agent run {run_id!r}.")
 
 
+@agents_app.command(name="retract")
+def agents_retract(run_id: str, message_id: str) -> None:
+    """Take back message MESSAGE_ID its person sent run RUN_ID: never read when it still waits; its turn stopped when an
+    agent is reading it; the run's next turn told. Prints `Withdrawn: <unread|stopped|after|unknown>.` Only the person
+    takes a message back: an agent asking is refused."""
+
+    by = reg.caller_stop_actor(os.environ)
+    if by.kind == "agent":
+        print("ERROR: only the person who sent a message takes it back.", file=sys.stderr)
+        raise SystemExit(1)
+    print(f"Withdrawn: {messaging.retract(run_id, message_id, by=by)}.")
+
+
 def refresh_live_data() -> None:
     """Re-fetch the live model catalog and benchmark scores the dashboard reads.
 

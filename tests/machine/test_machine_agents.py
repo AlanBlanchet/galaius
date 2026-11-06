@@ -497,6 +497,25 @@ def test_a_message_is_answered_once_durably_queued_and_its_dispatcher_gets_the_m
         _answer(agents, request)
 
 
+def test_a_message_taken_back_from_the_web_before_it_is_read_never_reaches_its_agent(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """« Retirer » on his message (owner 2026-11-04): the web's retract of a message still waiting answers `unread`, the
+    item is cancelled, asked again the same; a run the web did not start stays unreachable."""
+    agents = _agents(base, tmp_path)
+    run_id, foreign = str(uuid4()), str(uuid4())
+    for run in (run_id, foreign):
+        reg.save_run(reg.AgentRun(run_id=run, provider="claude", agent="tester", name="r", cwd=str(base / "project"), started_at=1.0, exit_code=0))
+    agents.runs.add(WebRun(run_id=run_id, root="project"))
+    monkeypatch.setattr(messaging, "policy_for_continuation", lambda run, provider, environment: (None, "criterion", "model", "high"))
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
+    sent = _request("send", run_id=run_id, text="wrong conversation")
+    _answer(agents, sent)
+    retract = _request("retract", run_id=run_id, message_id=str(sent.id), by={"kind": "person", "name": "Alan"})
+    assert _answer(agents, retract).retracted == "unread" and _answer(agents, retract).retracted == "unread"
+    assert [item.state for item in agent_queue.items(run_id)] == ["cancelled"]
+    with pytest.raises(PermissionError, match="not started from the web"):
+        _answer(agents, _request("retract", run_id=foreign, message_id=str(sent.id)))
+
+
 def test_a_message_setting_its_conversation_s_effort_holds_for_the_agent_s_next_turns(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Owner 2026-10-26 « Can we chose the effort ? »: a message naming an effort records it on the agent's run, which its
     next turns run at over its role's; an editor's continued conversation runs at its editor's, refused rather than ignored."""

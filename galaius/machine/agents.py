@@ -40,7 +40,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from galaius_core import (
     MODEL_ID_MAX,
     PROJECTS_ROOT, AGENT_TOUCH_SCOPES, AgentCompactRequest, ContextGauge, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, AgentFile, media_kind, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
-    AgentAllowanceRequest, AgentMoveRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentToolInstallRequest, AgentToolsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, AgentHeldTakeRequest, AgentHeldPutRequest, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
+    AgentAllowanceRequest, AgentMoveRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentToolInstallRequest, AgentToolsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, AgentHeldTakeRequest, AgentHeldPutRequest, AgentRetractRequest, RetractOutcome, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
     MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, media_key, media_paths, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest, ProjectFilesBase, ProjectFilePart,
 )
 from galaius.agents import agent_queue
@@ -50,7 +50,7 @@ from galaius.agents.assembly import _TransportRegistry
 from galaius.agents.host import ConversationHost, ConversationRefused
 from galaius.agents.turns.session_stops import SessionStops
 from galaius.agents.turns.followup import FollowUps
-from galaius.agents.messaging import deliver_message
+from galaius.agents.messaging import deliver_message, retract
 from galaius.agents.providers import PROJECT_SETTINGS_OFF, PROVIDERS, UNTRUSTED_FOLDERS, program_providers, provider_for
 from galaius.agents.limits.subscriptions import RunSubscription, Subscription, SubscriptionRefused
 from galaius.agents.run import launch_editor_turn, load_policy, rank_candidates, run_agent
@@ -231,6 +231,24 @@ class MachineSessions:
         await (await self.host()).send(run_id, text, media)
         self._read.setdefault(run_id, deque(maxlen=MACHINE_AGENT_READ)).append(message_id)
 
+    async def retract(self, run_id: str, message_id: UUID) -> RetractOutcome:
+        """Message `message_id` taken back: still waiting for its turn → dropped (`unread`); the one its turn now running
+        opened on → that turn cancelled (`stopped`); read earlier → `after`. A session has no queue its next turn is told from."""
+        waiting = self._queued.get(run_id, [])
+        if any(queued == message_id for queued, _, _ in waiting):
+            self._queued[run_id] = [entry for entry in waiting if entry[0] != message_id]
+            return "unread"
+        read = self._read.get(run_id, ())
+        if message_id not in read:
+            return "unknown"
+        if read[-1] == message_id and self._host is not None and self._host.busy:
+            try:
+                await self._host.cancel(run_id)
+                return "stopped"
+            except ConversationRefused:
+                pass   # its turn had ended meanwhile
+        return "after"
+
     def read(self, run_id: str) -> tuple[UUID, ...]:
         """The messages session `run_id` has read since this runner started, the latest first."""
         return tuple(reversed(self._read.get(run_id, ())))
@@ -335,7 +353,7 @@ class MachineAgents(BaseModel):
         thread (files, the launcher's CLI)."""
         # With agents off (or no folder) what the web started here can still be read and stopped.
         # Programs are not agents: installed and signed in whatever the agent settings say.
-        if not isinstance(request, AgentRunsRequest | AgentTailRequest | AgentMediaRequest | AgentStopRequest | AgentLogsRequest | WorkspacesRequest
+        if not isinstance(request, AgentRunsRequest | AgentTailRequest | AgentMediaRequest | AgentStopRequest | AgentRetractRequest | AgentLogsRequest | WorkspacesRequest
                           | AgentProgramsRequest | AgentProgramInstallRequest | AgentSignOutRequest | AgentSignInCodeRequest | AgentHeldTakeRequest | AgentHeldPutRequest
                           | AgentToolsRequest | AgentToolInstallRequest):
             if not self.run_agents:
@@ -372,6 +390,8 @@ class MachineAgents(BaseModel):
                 return await self._send(request)
             case AgentStopRequest():
                 return await asyncio.to_thread(self._stop, request)
+            case AgentRetractRequest():
+                return await self._retract(request)
             case AgentAnswerRequest():
                 raise PermissionError("only a session asks before acting; this run is not one")
             case AgentSessionsRequest():
@@ -1169,6 +1189,16 @@ class MachineAgents(BaseModel):
                 return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="already ended")
             raise RuntimeError("the run could not be stopped")
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="stopped" if run.status in {"running", "waiting"} else "already ended")
+
+    async def _retract(self, request: AgentRetractRequest) -> MachineAgentAnswer:
+        """His message taken back (`messaging.retract`; a session's: `MachineSessions.retract`, whose next turn is not told)."""
+        await asyncio.to_thread(self._require_run, request.run_id)
+        if self._kind(request.run_id) == "session":
+            assert self.sessions is not None
+            outcome = await self.sessions.retract(str(request.run_id), request.message_id)
+        else:
+            outcome = await asyncio.to_thread(retract, str(request.run_id), str(request.message_id), by=request.by)
+        return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, retracted=outcome, detail=f"withdrawn: {outcome}")
 
     def _stop_editor_session(self, request: AgentStopRequest) -> MachineAgentAnswer | None:
         """`request` for one of HIS live editor sessions (no run of the web's): its turn ends at its next tool call

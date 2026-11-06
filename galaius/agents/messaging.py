@@ -11,7 +11,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from galaius.account.caller import Caller
-from galaius_core import refusal_of, Coded, MachineRefusal, ReadsAt
+from galaius_core import refusal_of, Coded, MachineRefusal, ReadsAt, RetractOutcome, StopActor
 
 from galaius.agents import agent_queue
 from galaius.agents.catalog import community
@@ -436,6 +436,38 @@ async def wait_for_reply(delivery: Delivery) -> str:
     origin = reg.get_run(delivery.run_id)
     header = origin.handoff_header() if origin is not None else ""
     return f"{delivery.text}\n{header}{community.shown(origin, replies[-1])}"
+
+
+def retract(run_id: str, message_id: str, *, by: StopActor | None) -> RetractOutcome:
+    """Take back message `message_id` its person sent run `run_id` (owner 2026-11-04 « i wanted to stop / remove that
+    message or do something, but i couldn't »): still waiting → never read (`unread`); read by the turn running now →
+    that turn stops, as by his stop (`stopped`: held until he writes again); read by a turn that ended → `after`. Once
+    read, the agents started on it (under the run, between its read and the next turn's) stop too, and the run's next
+    turn is told (`agent_queue.withdrawn_note_locked`). Asked again: the outcome it had, nothing stopped twice.
+    `unknown`: no message of that id reached the run here."""
+    run_id = reg.resolve_run_id(run_id) or run_id
+    with reg.record_lock(run_id):
+        run = reg.get_run(run_id)
+        if run is None:
+            return "unknown"
+        record, item, made = agent_queue.withdraw_locked(run_id, message_id, working=run.working())
+        later = [queued.started_at for queued in agent_queue.items_locked(run_id)
+                 if item is not None and item.started_at is not None and queued.started_at is not None and queued.started_at > item.started_at]
+    if record is None:
+        return "unknown"
+    if made and record.outcome != "unread" and item is not None and item.started_at is not None:
+        since, until = item.started_at, min(later, default=float("inf"))
+        tree = reg.stored_tree(reg.conversation_of(run_id))
+        below, frontier = set(), {run_id}
+        while frontier:
+            frontier = {other.run_id for other in tree if other.parent_run_id in frontier and other.run_id not in below}
+            below |= frontier
+        for other in tree:
+            if other.run_id in below and since <= other.started_at < until and other.working():
+                reg.stop(other.run_id, by=by)
+        if record.outcome == "stopped":
+            reg.stop(run_id, by=by)
+    return record.outcome
 
 
 #: Why a process `systemd-run` started may not send or spawn as no run (`Caller.unowned`).
