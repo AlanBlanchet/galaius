@@ -43,7 +43,7 @@ def test_claude_role_tools_and_denials_are_available_tool_restrictions_on_every_
     assert definition["prompt"] == "Pinned role instructions"
     assert definition["tools"] == options["allowed_tools"]
     assert command[command.index("--agent") + 1] == "visual-critic"
-    assert command[command.index("--disallowedTools") + 1] == "mcp__galaius__report_issue"
+    assert command[command.index("--disallowedTools") + 1] == "Agent,Task,mcp__galaius__report_issue"
     assert command[command.index("--allowedTools") + 1] == "mcp__galaius", "a grant lets galaius's tools run; the role's list still decides which"
     assert "--permission-mode" not in command
 
@@ -53,11 +53,12 @@ def test_claude_role_tools_and_denials_are_available_tool_restrictions_on_every_
 def test_every_claude_run_is_granted_galaius_tools_whatever_its_mode(resume, permission_mode):
     """A headless Claude refuses each MCP tool no rule grants: a `workspace_write` run could call no galaius tool at all
     (note_save, agent_spawn, ask_owner: « … but you haven't granted it yet », 2026-11-05). Plan, granted, runs only the
-    ones marked `readOnlyHint`."""
+    ones marked `readOnlyHint`. Claude's own subagent tool is never offered: a run delegates through `agent_spawn`."""
     provider = ClaudeCodeProvider()
     command = provider.resume_command("s", "Review", permission_mode=permission_mode) if resume else provider.command(
         "Review", cwd="/tmp", model=None, mcp_config=None, run_id="r", permission_mode=permission_mode)
     assert command[command.index("--allowedTools") + 1] == "mcp__galaius"
+    assert command[command.index("--disallowedTools") + 1] == "Agent,Task"
     if permission_mode in ("read_only", "plan"):
         assert command[command.index("--permission-mode") + 1] == "plan"
 

@@ -1432,6 +1432,11 @@ class ClaudeCodeProvider(AgentProvider):
             return [*super()._permission_flag("dontAsk"), "--allowedTools", ",".join(dict.fromkeys(granted))]
         return [*super()._permission_flag(mode), "--allowedTools", _GALAIUS_MCP_PREFIX.removesuffix("__")]
 
+    #: Claude's own subagent tools, removed from every run (`role_arguments`): a subagent they start runs inside this run,
+    #: outside galaius's run records, agent places and role policy. A run delegates through galaius's `agent_spawn` (or
+    #: `galaius agents spawn`), which launches each role on the model its policy names.
+    NATIVE_DELEGATION: ClassVar[tuple[str, ...]] = ("Agent", "Task")
+
     def validate_tool_policy(self, allowed_tools: list[str] | None, denied_tools: tuple[str, ...], *,
                              coarse_accepted: bool = False) -> None:
         # Claude enforces the FULL list itself (`--agents`/`--allowedTools`/`--disallowedTools`
@@ -1459,9 +1464,7 @@ class ClaudeCodeProvider(AgentProvider):
             # No tool at all: no built-in one, and no MCP server — not even one the person configured for himself
             # (2.1.288: `--tools ""` alone keeps every MCP server's tools; `--strict-mcp-config` with no config loads none).
             arguments += ["--tools", "", "--strict-mcp-config"]
-        if denied_tools:
-            arguments += ["--disallowedTools", ",".join(denied_tools)]
-        return arguments
+        return arguments + ["--disallowedTools", ",".join(dict.fromkeys((*self.NATIVE_DELEGATION, *denied_tools)))]
 
     @staticmethod
     def _mcp_arguments(mcp_config: str | None, allowed_tools: list[str] | None, strict: bool = False) -> list[str]:
