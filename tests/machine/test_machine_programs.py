@@ -158,7 +158,7 @@ def test_claude_signs_in_from_any_browser_with_the_code_its_page_shows(tmp_path:
     monkeypatch.setattr(type(PROVIDERS["claude"]), "available", lambda self: True)
     monkeypatch.setattr(type(PROVIDERS["claude"]), "executable", lambda self: str(claude))
     told = []
-    jobs = AgentPrograms(environment={"PATH": "/usr/bin:/bin", "BROWSER": str(opener)}, log_path=tmp_path / "agent-programs.log", signed_in=lambda: told.append(True))
+    jobs = AgentPrograms(environment={"PATH": "/usr/bin:/bin", "BROWSER": str(opener)}, log_path=tmp_path / "agent-programs.log", signed_in_listeners=[lambda: told.append(True)])
     assert jobs.install("claude").step == "signing_in"
     state = signing(jobs, lambda state: state.sign_in is not None and (state.sign_in.paste is not None if pasted is not None else state.sign_in.link is not None if opens else state.sign_in.command is not None))
     if pasted is not None:

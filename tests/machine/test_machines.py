@@ -1262,9 +1262,13 @@ def test_a_sign_in_ending_signed_in_asks_every_logins_usage_at_once(tmp_path: Pa
         loop = asyncio.create_task(runner._ask_usage())
         await asyncio.sleep(0.05)
         assert len(asked) == 1
-        await asyncio.to_thread(runner.programs.signed_in)  # from the sign-in's own thread
+        (listener,) = runner.programs.signed_in_listeners
+        await asyncio.to_thread(listener)  # from the sign-in's own thread
         await asyncio.sleep(0.05)
         assert len(asked) == 2 and asked[1] - asked[0] < runner.usage_ask_seconds / 100
         loop.cancel()
-    asyncio.run(scenario())
-    runner.programs.signed_in()  # its loop closed: nothing raised into the sign-in
+        await asyncio.sleep(0)
+        assert runner.programs.signed_in_listeners == []  # a connection gone listens no more
+        return listener
+    listener = asyncio.run(scenario())
+    listener()  # its loop closed: nothing raised into the sign-in

@@ -1191,17 +1191,20 @@ class MachineRunner:
                 loop.call_soon_threadsafe(wanted.set)
             except RuntimeError:
                 pass
-        self.programs.signed_in = signed_in
-        while True:
-            try:
-                await self._subscriptions.ask(self.programs.environment)
-            except Exception:  # never the connection's end: the next pass asks again
-                logger.exception("asking the logins' usage failed")
-            try:
-                await asyncio.wait_for(wanted.wait(), self.usage_ask_seconds)
-            except TimeoutError:
-                pass
-            wanted.clear()
+        self.programs.signed_in_listeners.append(signed_in)
+        try:
+            while True:
+                try:
+                    await self._subscriptions.ask(self.programs.environment)
+                except Exception:  # never the connection's end: the next pass asks again
+                    logger.exception("asking the logins' usage failed")
+                try:
+                    await asyncio.wait_for(wanted.wait(), self.usage_ask_seconds)
+                except TimeoutError:
+                    pass
+                wanted.clear()
+        finally:  # this connection's own: the next one listens for itself
+            self.programs.signed_in_listeners.remove(signed_in)
 
     async def _report_usage(self, socket) -> None:
         """Every `subscription_seconds` while connected, the subscriptions whose usage moved enough
