@@ -236,7 +236,7 @@ def community_search(need: str, kind: CommunityKind | None = None) -> str:
     agent_spawn(community=<id>, task=...): it runs as your child, under your control.
 
     need: what you want done, in a few words; entries holding more of them rank first.
-    kind: "agent", "skill" or "prompt" only; every kind when omitted.
+    kind: "agent", "skill", "prompt", "mcp" or "pipeline" only; every kind when omitted.
     """
     try:
         return CommunityAgent.search(need, kind)
