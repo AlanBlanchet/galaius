@@ -228,10 +228,12 @@ async def agent_spawn(
 @instrumented
 @offloaded
 def community_search(need: str, kind: CommunityKind | None = None) -> str:
-    """Search the community library — agents, skills and prompts published by people or imported from public repositories
-    under their licence — for one made for `need` (a few words: « reverse engineer a binary », « write release notes »).
-    Lists the best matches (id, kind, title, what it is for, source and licence) and the repositories listed by link only.
-    Start one with agent_spawn(community=<id>, task=...): it runs as your child, under your control.
+    """Search the community library — agents, skills, prompts, MCP servers and pipelines published by people, imported
+    from public repositories under their licence, or found by searching GitHub, npm and the MCP registry — for one made
+    for `need` (a few words naming the domain: « reverse engineer a binary », « write release notes »). Search before
+    starting work in a domain, and again for each sub-domain a plan adds. Lists the best matches (id, kind, title, what it
+    is for, author, stars or downloads, last update, licence, source); a listed one is shown by link only. Start one with
+    agent_spawn(community=<id>, task=...): it runs as your child, under your control.
 
     need: what you want done, in a few words; entries holding more of them rank first.
     kind: "agent", "skill" or "prompt" only; every kind when omitted.
