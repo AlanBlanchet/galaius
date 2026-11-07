@@ -360,14 +360,20 @@ class AgentProvider(ABC):
             return {}
         return {self.effort_env: self.provider_thinking_level(effort) or effort}
 
-    def meshed(self) -> bool:
-        """Whether this CLI's own config already registers galaius as an MCP server: a spawned child then gets no second
-        registration (`galaius install` set it up; attribution rides GALAIUS_PARENT_RUN_ID in the child's env). A config
-        it cannot read is not registered: a doubled server is annoying, a refused spawn worse."""
+    def meshed(self, environment: Mapping[str, str]) -> bool:
+        """Whether this CLI's own config, the one a run in `environment` reads, already registers galaius as an MCP server:
+        a spawned child then gets no second registration (`galaius install` set it up; attribution rides
+        GALAIUS_PARENT_RUN_ID in the child's env). A config it cannot read is not registered: a doubled server is annoying,
+        a refused spawn worse. A run on a held login reads its subscription folder's config (`auth_home_env`), which
+        registers none (`Subscription.adopt` copies no `.claude.json`): read from the home folder instead, every such run
+        was handed no MCP server at all (2026-11-07: 37 of 37 runs on one held login, scraper and critics without their
+        browser)."""
         if self.mcp_config is None:
             return False
+        named = next((environment[name] for name in self.auth_home_env if environment.get(name)), None)
+        config = Path(named) / Path(self.mcp_config).name if named else Path(environment.get("HOME") or Path.home()) / self.mcp_config
         try:
-            servers = json.loads((Path.home() / self.mcp_config).read_text()).get("mcpServers")
+            servers = json.loads(config.read_text()).get("mcpServers")
         except (OSError, ValueError, AttributeError):
             return False
         return isinstance(servers, dict) and "galaius" in servers

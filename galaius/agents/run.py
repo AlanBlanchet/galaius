@@ -47,7 +47,7 @@ from galaius.agents.limits.ceiling import contained
 from galaius.agents.transport.events import model_spoke, stream_lines
 from galaius.isolation.fence import MEDIA_SOCKET, FenceSpec, available, fenced, inside_environment
 from galaius.host.processes import process_group_options, spawnable
-from galaius.agents.policy import Policy, policy_path
+from galaius.agents.policy import TOOL_PREFIX, Policy, policy_path
 from galaius.agents.catalog.profiles import overlay_for, profiles_from
 from galaius.agents.providers import PROVIDERS, AgentProvider, program_providers, ClaudeTurnSettings, UnsupportedToolPolicy, fits_argv, validate_denied_tools, _safe_process_detail
 from galaius.agents.catalog.vocabulary import TouchScope
@@ -752,6 +752,30 @@ def mesh_config(*, run_id: str, role: str | None, fence: FenceSpec | None = None
     })
 
 
+def mesh_handed(provider: AgentProvider, environment: Mapping[str, str], *, mesh: bool, alone: bool) -> bool:
+    """Whether a run is handed galaius's own MCP server (`mesh_config`): asked (`mesh`), and either `alone` (its fence decides:
+    the person's entry starts a program the fence does not hold; or isolated, `--strict-mcp-config` drops every entry of
+    his) or its CLI's config, the one `environment` makes it read, registers none (`AgentProvider.meshed`). Once, never
+    twice: a doubled registration is what this skips."""
+    return mesh and (alone or not provider.meshed(environment))
+
+
+class RoleToolMissing(RuntimeError):
+    """A role whose tools name galaius's (`AgentRevision.harness_tools`, `mcp__galaius__…`: a browser, an app, a gateway
+    tool) launched where its run would reach no galaius server: refused, never a run that cannot do its job while its
+    parent says it works (2026-11-07: a scraper started with no browser on a held login)."""
+
+
+def require_galaius(role: str | None, tools: list[str] | None, provider: AgentProvider, environment: Mapping[str, str], *,
+                    handed: bool, alone: bool) -> None:
+    """Raises `RoleToolMissing` when `tools` (a role's, None: unrestricted, so it declares none) name galaius's and the
+    run reaches no galaius server: none `handed` (`mesh_handed`) and, `alone` or not, none its CLI's own config registers."""
+    needed = [tool for tool in tools or () if tool.startswith(TOOL_PREFIX)]
+    if needed and not handed and (alone or not provider.meshed(environment)):
+        raise RoleToolMissing(f"{role or 'this agent'} needs galaius's tools ({', '.join(needed[:3])}{', …' if len(needed) > 3 else ''}) "
+                              f"and its {provider.name} run would reach no galaius MCP server: not started")
+
+
 def fence_decides(provider: AgentProvider, fence: FenceSpec | None, permission_mode: str | None) -> bool:
     """Whether a turn's writes are the fence's to refuse, not its CLI's: a read-only run inside a fence that writes
     nothing but its scratch folder (`FenceSpec.writes_nothing`). Its CLI then runs every tool its role has (`fence_decides`
@@ -983,7 +1007,8 @@ class ResumeLaunch(AheadLaunch):
             allowed_tools=policy.tools_for(run.agent), denied_tools=run.denied_tools,
             agent_prompt=(run.community.prompt(run.agent, run.parent_run_id or "") if run.community is not None
                           else _role_prompt(catalog, run.agent, provider, env) if catalog is not None else None),
-            mcp_config=mesh_config(run_id=run.run_id, role=run.agent, fence=run.fence) if run.mesh_enabled and (decides or not provider.meshed()) else None,
+            mcp_config=mesh_config(run_id=run.run_id, role=run.agent, fence=run.fence)
+            if mesh_handed(provider, environment, mesh=run.mesh_enabled, alone=decides or run.community is not None) else None,
             coarse_accepted=coarse_accepted, base_url=routed.get("OPENAI_BASE_URL"),
             **AheadLaunch.turn_arguments(provider, run.run_id, run.fence, role=run.agent,
                                          isolated=run.community is not None),
@@ -1802,13 +1827,12 @@ async def run_agent(
         stdin_images = bool(kept) and candidate_provider.stdin_images
         if kept and not stdin_images:
             command_kwargs["image_paths"] = kept
+        alone = bool(command_kwargs["fence_decides"]) or community is not None
+        handed = mesh_handed(candidate_provider, env, mesh=mesh, alone=alone)
+        require_galaius(agent, None if allowed_tools is None else [tool for tool in allowed_tools if tool not in denied_tools],
+                        candidate_provider, env, handed=handed, alone=alone)
         launch = ChildLaunch(
-            provider=candidate_provider, cwd=cwd, environment=env, arguments=command_kwargs,
-            # Once, never twice: skip the mesh when the provider's own config already registers
-            # galaius — else the child would carry two registrations of the same server. A run its fence decides gets
-            # its own, alone (`--strict-mcp-config`): the person's entry starts a program the fence does not hold and
-            # knows nothing of the run's scratch folder.
-            meshed=mesh and (bool(command_kwargs["fence_decides"]) or not candidate_provider.meshed()), fence=candidate_fence,
+            provider=candidate_provider, cwd=cwd, environment=env, arguments=command_kwargs, meshed=handed, fence=candidate_fence,
             role=None if community else agent,
             isolated=community is not None,
         )

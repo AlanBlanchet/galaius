@@ -265,16 +265,16 @@ def test_a_child_is_not_handed_galaius_twice(tmp_path, monkeypatch):
 
     cfg = tmp_path / ".claude.json"
     cfg.write_text('{"mcpServers": {"galaius": {"command": "/usr/local/bin/galaius"}}}')
-    assert PROVIDERS["claude"].meshed() is True
+    assert PROVIDERS["claude"].meshed({}) is True
 
 
 def test_a_machine_without_galaius_registered_still_gets_the_mesh(tmp_path, monkeypatch):
     """The mesh exists for exactly this case: a provider with no galaius of its own."""
     from galaius.agents.providers import PROVIDERS
 
-    assert PROVIDERS["claude"].meshed() is False
+    assert PROVIDERS["claude"].meshed({}) is False
     (tmp_path / ".claude.json").write_text('{"mcpServers": {}}')
-    assert PROVIDERS["claude"].meshed() is False
+    assert PROVIDERS["claude"].meshed({}) is False
 
 
 def test_a_broken_provider_config_never_blocks_the_spawn(tmp_path, monkeypatch):
@@ -283,7 +283,7 @@ def test_a_broken_provider_config_never_blocks_the_spawn(tmp_path, monkeypatch):
     from galaius.agents.providers import PROVIDERS
 
     (tmp_path / ".claude.json").write_text("{ not json")
-    assert PROVIDERS["claude"].meshed() is False
+    assert PROVIDERS["claude"].meshed({}) is False
 
 
 def test_a_cli_whose_mesh_is_always_its_own_is_never_meshed_already(tmp_path, monkeypatch):
@@ -291,4 +291,45 @@ def test_a_cli_whose_mesh_is_always_its_own_is_never_meshed_already(tmp_path, mo
     from galaius.agents.providers import PROVIDERS
 
     (tmp_path / ".claude.json").write_text('{"mcpServers": {"galaius": {"command": "/usr/local/bin/galaius"}}}')
-    assert (PROVIDERS["claude"].meshed(), PROVIDERS["codex"].meshed()) == (True, False)
+    assert (PROVIDERS["claude"].meshed({}), PROVIDERS["codex"].meshed({})) == (True, False)
+
+
+_REGISTERED = '{"mcpServers": {"galaius": {"command": "/usr/local/bin/galaius"}}}'
+_BROWSER_ROLE = ["Read", "Bash", "mcp__galaius__navigate", "mcp__galaius__run_actions"]
+
+
+@pytest.mark.parametrize(("login", "mesh", "alone", "tools", "outcome"), [
+    # A held login reads its subscription folder's config, which registers no galaius: the run gets its own
+    # (2026-11-07: 37 of 37 held-login runs started with no MCP server, the home config read instead).
+    ("held", True, False, _BROWSER_ROLE, "handed"),
+    # The default login reads the home config, which registers galaius: not handed twice, still reached.
+    ("default", True, False, _BROWSER_ROLE, "reached"),
+    # Alone (fence decides, or isolated with `--strict-mcp-config`): the person's entry never loads, so its own.
+    ("default", True, True, _BROWSER_ROLE, "handed"),
+    # No mesh asked and no config of the run registering galaius: a role naming galaius's tools is refused.
+    ("held", False, False, _BROWSER_ROLE, "refused"),
+    ("default", False, True, _BROWSER_ROLE, "refused"),
+    ("default", False, False, _BROWSER_ROLE, "reached"),
+    # A role naming none of galaius's tools, or unrestricted (None: it declares none), always starts.
+    ("held", False, False, ["Read", "Bash"], "reached"),
+    ("held", False, False, None, "reached"),
+    ("held", False, False, [], "reached"),
+])
+def test_a_run_reaches_galaius_or_is_refused(tmp_path, monkeypatch, login, mesh, alone, tools, outcome):
+    """A role whose tools name galaius's (a browser) starts only where its run reaches a galaius server."""
+    from galaius.agents.providers import PROVIDERS
+    from galaius.agents.run import RoleToolMissing, mesh_handed, require_galaius
+
+    (tmp_path / ".claude.json").write_text(_REGISTERED)
+    held = tmp_path / "subscriptions" / "one"
+    held.mkdir(parents=True)
+    (held / ".claude.json").write_text('{"projects": {}}')
+    environment = {"HOME": str(tmp_path), **({"CLAUDE_CONFIG_DIR": str(held)} if login == "held" else {})}
+    claude = PROVIDERS["claude"]
+    handed = mesh_handed(claude, environment, mesh=mesh, alone=alone)
+    if outcome == "refused":
+        with pytest.raises(RoleToolMissing, match=r"scraper needs galaius's tools \(mcp__galaius__navigate"):
+            require_galaius("scraper", tools, claude, environment, handed=handed, alone=alone)
+        return
+    require_galaius("scraper", tools, claude, environment, handed=handed, alone=alone)
+    assert handed is (outcome == "handed")
