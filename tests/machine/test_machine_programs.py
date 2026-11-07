@@ -157,7 +157,8 @@ def test_claude_signs_in_from_any_browser_with_the_code_its_page_shows(tmp_path:
     monkeypatch.setattr(AgentPrograms, "terminal_seconds", 0.5)
     monkeypatch.setattr(type(PROVIDERS["claude"]), "available", lambda self: True)
     monkeypatch.setattr(type(PROVIDERS["claude"]), "executable", lambda self: str(claude))
-    jobs = AgentPrograms(environment={"PATH": "/usr/bin:/bin", "BROWSER": str(opener)}, log_path=tmp_path / "agent-programs.log")
+    told = []
+    jobs = AgentPrograms(environment={"PATH": "/usr/bin:/bin", "BROWSER": str(opener)}, log_path=tmp_path / "agent-programs.log", signed_in=lambda: told.append(True))
     assert jobs.install("claude").step == "signing_in"
     state = signing(jobs, lambda state: state.sign_in is not None and (state.sign_in.paste is not None if pasted is not None else state.sign_in.link is not None if opens else state.sign_in.command is not None))
     if pasted is not None:
@@ -189,6 +190,8 @@ def test_claude_signs_in_from_any_browser_with_the_code_its_page_shows(tmp_path:
         by_hand.set()
     state = signing(jobs, lambda state: state.step in ("ready", "failed"))
     assert state.step == ends
+    # Owner 2026-11-07 « slash usage … it shows you the usage »: signed in, its usage is asked at once (`_ask_usage` wakes).
+    assert told == ([True] if ends == "ready" else [])
     if ends == "failed":
         assert state.failure == "code_refused"
     assert not opened.exists()  # Claude Code's sign-in opens in the person's browser, wherever he is: nothing pops up on this PC

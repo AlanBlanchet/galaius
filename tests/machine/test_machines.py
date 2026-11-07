@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import time
 import traceback
 import logging
 import os
@@ -1244,3 +1245,26 @@ def test_the_link_never_connects_through_an_address_only_this_computer_has(
     public = runner.public_enrollment(runner.load())
     assert public.server_url == expected, "the address this run connects to"
     assert runner.load().server_url == saved, "the address the next boot starts on"
+
+
+def test_a_sign_in_ending_signed_in_asks_every_logins_usage_at_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Owner 2026-11-07 « when you use Claude Code and you do slash usage to view the usage, it shows you the usage »: a login
+    signed in here is read at once (`AgentPrograms.signed_in` wakes `_ask_usage`), never at the next 2-minute pass; a sign-in
+    ending after its connection went never breaks."""
+    runner = MachineRunner(tmp_path / "machine.json")
+    asked = []
+
+    async def ask(_watch, _environment) -> None:
+        asked.append(time.monotonic())
+    monkeypatch.setattr(type(runner._subscriptions), "ask", ask)
+
+    async def scenario() -> None:
+        loop = asyncio.create_task(runner._ask_usage())
+        await asyncio.sleep(0.05)
+        assert len(asked) == 1
+        await asyncio.to_thread(runner.programs.signed_in)  # from the sign-in's own thread
+        await asyncio.sleep(0.05)
+        assert len(asked) == 2 and asked[1] - asked[0] < runner.usage_ask_seconds / 100
+        loop.cancel()
+    asyncio.run(scenario())
+    runner.programs.signed_in()  # its loop closed: nothing raised into the sign-in

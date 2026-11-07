@@ -1181,14 +1181,27 @@ class MachineRunner:
             await asyncio.sleep(self.subscription_seconds)
 
     async def _ask_usage(self) -> None:
-        """Every `usage_ask_seconds` while connected, each login's usage as its CLI says (`SubscriptionWatch.ask`); a
-        failed pass is tried again next time."""
+        """Every `usage_ask_seconds` while connected, and at once after a sign-in here ends signed in
+        (`AgentPrograms.signed_in`), each login's usage as its CLI says (`SubscriptionWatch.ask`; reported within
+        `subscription_seconds`); a failed pass is tried again next time."""
+        wanted, loop = asyncio.Event(), asyncio.get_running_loop()
+
+        def signed_in() -> None:  # the sign-in's own thread; a connection already gone asks at its next one
+            try:
+                loop.call_soon_threadsafe(wanted.set)
+            except RuntimeError:
+                pass
+        self.programs.signed_in = signed_in
         while True:
             try:
                 await self._subscriptions.ask(self.programs.environment)
             except Exception:  # never the connection's end: the next pass asks again
                 logger.exception("asking the logins' usage failed")
-            await asyncio.sleep(self.usage_ask_seconds)
+            try:
+                await asyncio.wait_for(wanted.wait(), self.usage_ask_seconds)
+            except TimeoutError:
+                pass
+            wanted.clear()
 
     async def _report_usage(self, socket) -> None:
         """Every `subscription_seconds` while connected, the subscriptions whose usage moved enough

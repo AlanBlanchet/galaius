@@ -186,6 +186,9 @@ class AgentPrograms(BaseModel):
     active: Callable[[str], bool] = Field(default=lambda _name: True)
     #: Each program's default login's last usage reading here (the runner's `SubscriptionWatch.login_usage`).
     usage: Callable[[str], tuple[UsageWindow, ...]] = Field(default=lambda _name: ())
+    #: Told (from the sign-in's thread) each time a sign-in here ends signed in: its login's usage is asked at once, never at
+    #: the next timed pass (owner 2026-11-07 « when you use Claude Code and you do slash usage … it shows you the usage »).
+    signed_in: Callable[[], None] = Field(default=lambda: None)
     #: How downloads reach the network (a test's own transport; None: the system's).
     transport: httpx.BaseTransport | None = None
     install_seconds: ClassVar[float] = 600
@@ -506,6 +509,7 @@ class AgentPrograms(BaseModel):
                             self._logout(subscription)
                             raise ProgramFailed("sign_in_failed", "the sign-in changed this computer's default login; the subscription was signed out again")
                         self._update(key, step="ready", signed_in=True, account=status.account, login=status.login, sign_in=None)
+                        self.signed_in()
                         return
                     if screen.refused:
                         raise ProgramFailed("code_refused", "its vendor refused the code")
