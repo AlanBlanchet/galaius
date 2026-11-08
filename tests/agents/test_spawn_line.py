@@ -362,18 +362,22 @@ OLDER = {"id": str(uuid.UUID(int=1)), "revision": str(uuid.UUID(int=2))}
     pytest.param([("eng1", {})], {"instances": "many", "single": True}, "eng1", "", id="single-many-continued-in-its-conversation"),
     pytest.param([("eng1", {"parent_run_id": "other-lead"}), ("other-lead", {"agent": "main", "parent_run_id": None})],
                  {"instances": "many", "single": True}, None, "", id="single-many-other-conversation-not-a-peer"),
+    # Owner 2026-11-08 « many to many »: a run of an `N-N` role (a critic shared by makers) takes another caller's task.
+    pytest.param([("eng1", {})], {"instances": "many", "callers": "many"}, "eng1", "", id="n-n-continued-in-its-conversation"),
+    pytest.param([("eng1", {})], {"instances": "many", "callers": "many", "fresh": True}, None, "", id="n-n-fresh-starts-new"),
 ])
 def test_a_spawn_goes_where_its_roles_instances_setting_says(at_work, monkeypatch, tmp_path, peers, asked, continued, why):
     """A role keeping one run at a time (`per_project` here, unless the case names another) hands each task to that
     run; `many` starts one per task (owner 2026-11-03)."""
-    from galaius_core import AgentRevisionRef
+    from galaius_core import AgentRelation, AgentRevisionRef
 
     from galaius.agents.policy import Policy
 
     instances = asked.pop("instances", "per_project")
+    callers = {"callers": asked.pop("callers")} if "callers" in asked else {}
     monkeypatch.setattr(spawn_line, "load_policy",
                         lambda: Policy(agents={"backend-engineer": "m"}, providers={"claude": True}, defaults={"touch": "read_only"},
-                                       instances={"backend-engineer": instances}))
+                                       relations={"backend-engineer": (AgentRelation(callees=instances, **callers),)}))
     current = AgentRevisionRef(id=uuid.UUID(int=1), revision=uuid.UUID(int=3))
     monkeypatch.setattr(spawn_line, "resolve_role", lambda policy, agent, **_: (policy, agent, current))
     refusing: set[str] = set()
@@ -469,13 +473,13 @@ def test_the_run_that_takes_a_spawns_task_records_THAT_task(at_work, monkeypatch
     hands its agent back as « the task your run was launched with » (`galaius.brief_hook`).
     2026-10-23: a spawn's task went to the librarian of the conversation and its recorded task was
     still a brief it had finished on 2026-10-06."""
-    from galaius_core import AgentRevisionRef
+    from galaius_core import AgentRelation, AgentRevisionRef
 
     from galaius.agents.policy import Policy
 
     monkeypatch.setattr(spawn_line, "load_policy",
                         lambda: Policy(agents={"backend-engineer": "m"}, providers={"claude": True}, defaults={"touch": "read_only"},
-                                       instances={"backend-engineer": "one"}))
+                                       relations={"backend-engineer": (AgentRelation(callees="one"),)}))
     current = AgentRevisionRef(id=uuid.UUID(int=1), revision=uuid.UUID(int=3))
     monkeypatch.setattr(spawn_line, "resolve_role", lambda policy, agent, **_: (policy, agent, current))
     monkeypatch.setattr(spawn_line.messaging, "deliver_message",
@@ -536,3 +540,78 @@ def test_a_child_that_never_got_its_task_is_ended_instead_of_run(monkeypatch, tm
 
 async def _answer(value):
     return value
+
+
+#: (the role's relations, the caller's role — None the person —, runs of the role already there as (parent, at work),
+#: spawns of it already in line under `lead`, the run it takes over, the refusal's words or None when it takes a place). Owner 2026-11-08 « the
+#: deployer is unique, that, uh, only, it can only be called once. A bit like a database relationship … one to many, many
+#: to one, et cetera, many to many ».
+RELATION_ROWS = [
+    pytest.param(({"callees": "one"},), "backend-engineer", [("other-lead", True)], 0, None, "keeps one run on this PC", id="n-1-second-at-work-refused"),
+    pytest.param(({"callees": "one"},), "backend-engineer", [], 1, None, "keeps one run on this PC", id="n-1-second-in-line-refused"),
+    pytest.param(({"callees": "one"},), None, [("other-lead", True)], 0, None, "keeps one run on this PC", id="n-1-the-person-too"),
+    pytest.param(({"callees": "one"},), "main", [("lead", False)], 0, None, None, id="n-1-none-at-work-starts"),
+    pytest.param(({"callees": "one"},), "main", [("lead", True)], 0, "dep0", None, id="n-1-its-own-hand-off-starts"),
+    pytest.param((), "main", [("lead", True), ("lead", True)], 0, None, None, id="1-n-third-starts"),
+    pytest.param(({"caller": "main", "max_live": 2},), "main", [("lead", True)], 1, None, "may run 2 deployer at once", id="max-live-reached"),
+    pytest.param(({"caller": "main", "max_live": 2},), "main", [("other-lead", True), ("lead", False)], 0, None, None, id="max-live-counts-its-callers-at-work"),
+    pytest.param(({"caller": "main"},), "tester", [], 0, None, "tester may not call deployer: its callers are main", id="unnamed-caller-refused"),
+    pytest.param(({"caller": "main"},), None, [], 0, None, None, id="unnamed-person-starts"),
+]
+
+
+@pytest.mark.parametrize("written, caller, there, lined, continues, refused", RELATION_ROWS)
+def test_a_spawn_takes_a_place_only_as_its_roles_relation_allows(at_work, started, monkeypatch, tmp_path, written, caller, there, lined, continues, refused):
+    """Who may call a role and how many of its runs answer (`AgentRelation`), checked once where a spawn takes its place
+    (`SpawnLine.enter`, under the line's lock): a refused spawn takes none and says why in one line."""
+    from galaius_core import AgentRelation, AgentRevisionRef
+
+    from galaius.agents.policy import Policy
+
+    relations = {"deployer": tuple(AgentRelation(**relation) for relation in written)} if written else {}
+    monkeypatch.setattr(spawn_line, "load_policy", lambda: Policy(agents={"deployer": "m"}, providers={"claude": True}, relations=relations))
+    monkeypatch.setattr(spawn_line, "resolve_role", lambda policy, agent, **_: (policy, agent, AgentRevisionRef(id=uuid.UUID(int=1), revision=uuid.UUID(int=3))))
+    monkeypatch.setattr(spawn_line.messaging, "asking_run", lambda: None)
+    parent = "lead" if caller is not None else None
+    if parent is not None:
+        _ended("lead", agent=caller, session_id="s1", parent_run_id=None, cwd=str(tmp_path))
+    for index, (above, working) in enumerate(there):
+        fields = {"agent": "deployer", "session_id": "s1", "parent_run_id": above, "cwd": str(tmp_path)}
+        (at_work if working else _ended)(f"dep{index}", **fields)
+    spawn = Spawn(task="ship it", cwd=str(tmp_path), agent="deployer", parent_run_id=parent, session_id="s1", continues=continues)
+    line = SpawnLine(limit=8, waiting_flag_minutes=5, waiting_gap_seconds=60)
+    for _ in range(lined):
+        line.enter(Spawn(task="ship that", cwd=str(tmp_path), agent="deployer", parent_run_id="lead", session_id="s1"))
+    if refused is None:
+        assert line.enter(spawn).ahead is None   # a place taken, starting now
+        return
+    with pytest.raises(spawn_line.RelationRefused, match=refused):
+        line.enter(spawn)
+
+
+
+@pytest.mark.parametrize("role, thread, unowned, allowed", [
+    pytest.param("deployer", False, False, True, id="the-deployer"),
+    pytest.param("backend-engineer", False, False, False, id="another-role"),
+    pytest.param(None, False, False, True, id="the-person"),
+    pytest.param(None, True, False, False, id="an-editor-conversation"),
+    pytest.param(None, False, True, False, id="a-systemd-run-unit"),
+])
+def test_an_act_reserved_to_a_role_passes_its_runs_and_the_person_only(monkeypatch, capsys, tmp_path, role, thread, unowned, allowed):
+    """`galaius agents require-role deployer`, run first by `deploy.sh` (owner 2026-11-08 « it's only the service for the agent
+    that's supposed to deploy that's deploying »): refused, it says who asks in one line and exits 3."""
+    from galaius.account.caller import Caller
+    from galaius.cli.app_commands import agents_require_role
+
+    if role is not None:
+        register_run(run_id="asker", agent=role)
+    monkeypatch.setattr(spawn_line.messaging, "asking_run", lambda: "asker" if role is not None else None)
+    monkeypatch.setattr(Caller, "unowned", lambda self: unowned)
+    environment = {Caller.THREAD[-1]: "conversation"} if thread else {}
+    monkeypatch.setattr(Caller, "current", classmethod(lambda cls: Caller(environment=environment, cwd=tmp_path, pid=os.getpid())))
+    if allowed:
+        agents_require_role("deployer")
+        return
+    with pytest.raises(SystemExit) as refused:
+        agents_require_role("deployer")
+    assert refused.value.code == 3 and capsys.readouterr().err.startswith("REFUSED: only the deployer does this")

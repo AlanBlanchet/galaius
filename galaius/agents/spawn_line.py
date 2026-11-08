@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import ClassVar, Literal, Self, TypeVar
 
 from galaius.account.caller import Caller
-from galaius_core import AgentInstances, AgentRevisionRef
+from galaius_core import AgentInstances, AgentRelation, AgentRevisionRef
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from galaius.agents import messaging
@@ -115,6 +115,9 @@ class Spawn(BaseModel):
     #: One agent of its role in its conversation (`galaius agents spawn --single`): one at work is queued the task behind
     #: its turn rather than another started beside it, and every other one of the role is forgotten (`forget_peers`).
     single: bool = False
+    #: A new run asked even where its relation hands the task to one at work (`galaius agents spawn --fresh`); a role
+    #: keeping one run still never gets a second beside a live one (`relation_refusal`).
+    fresh: bool = False
     #: The person at a terminal hands off across projects on purpose (`galaius agents spawn --cross-project`):
     #: `relations.foreign_project` is not asked.
     cross_project: bool = False
@@ -127,7 +130,7 @@ class Spawn(BaseModel):
     community: CommunityAgent | None = None
     #: Its fields `start` passes to `run_agent` other than by their own names.
     NOT_RUN_ARGUMENTS: ClassVar[frozenset[str]] = frozenset({"task", "provider", "session_id", "for_run", "single", "continues", "helper",
-                                                             "cross_project", "relaunches"})
+                                                             "cross_project", "relaunches", "fresh"})
 
     @classmethod
     def relaunching(cls, run: reg.AgentRun) -> Spawn:
@@ -287,6 +290,48 @@ class Spawn(BaseModel):
                      if peer.plays(role) and peer.parent_run_id == self.parent_run_id
                      and peer.successor is None and relations.outgrown(peer) and not self._busy(peer)), None)
 
+    def _caller_role(self) -> str | None:
+        """The role of the run asking (`_asker`); None for the person, or a run of no role (a community entry's)."""
+        run = reg.get_run(asker) if (asker := self._asker()) is not None else None
+        return run.agent if run is not None and run.community is None else None
+
+    def _project(self) -> Path | None:
+        """The project it works for: its conversation's (`relations.project`), else its folder's."""
+        return relations.project(self.parent_run_id) if self.parent_run_id is not None else relations.folder_project(self.cwd)
+
+    def relation_refusal(self, places: Sequence[Place]) -> str | None:
+        """Why the relation its call runs under (`Policy.relation`; owner 2026-11-08 « the deployer is unique, that, uh, only,
+        it can only be called once. A bit like a database relationship ») refuses it, the spawns in line being `places`: its
+        caller's role is not among the role's callers; the role keeps one run (`AgentRelation.keeps_one`) and one is at work
+        or in line, other than the run it takes over; its caller already has `max_live` runs of the role at work or in line.
+        Checked once, in `SpawnLine.enter` under the line's lock: two spawns asked together never both pass. None: it may start."""
+        if (resolved := self._role()) is None:
+            return None
+        policy, role, _ = resolved
+        caller = self._caller_role()
+        if (relation := policy.relation(role, caller)) is None:
+            callers = ", ".join(relation.caller for relation in policy.relations.get(role, ())) or "nobody"
+            return f"{caller} may not call {role}: its callers are {callers}; ask one of them to"
+        gone = {predecessor.run_id} if (predecessor := self.taking_over()) is not None else set()
+        lined = [place for place in places if place.spawn is not None and place.state != "failed" and place.spawn._role_name() == role]
+        if relation.keeps_one:
+            here = self._project()
+            live = [run.run_id for run in self._peers(role, relation.callees) if run.run_id not in gone and self._busy(run)]
+            live += [place.run_id for place in lined if relation.callees == "one" or place.spawn._project() == here]
+            if live:
+                scope = "on this PC" if relation.callees == "one" else "per project"
+                return (f"{role} keeps one run {scope} ({relation.kind}), and {', '.join(reg.short_id(run_id) for run_id in live)} is at "
+                        f"work or waiting to start: a second never starts beside it; send it your task (agent_send) or wait for it")
+        if relation.max_live is not None and self.parent_run_id is not None:
+            mine = [run.run_id for run in self._conversation()
+                    if run.plays(role) and run.parent_run_id == self.parent_run_id and run.run_id not in gone and self._busy(run)]
+            mine += [place.run_id for place in lined if place.parent_run_id == self.parent_run_id]
+            if len(mine) >= relation.max_live:
+                return (f"{caller or 'you'} may run {relation.max_live} {role} at once ({relation.kind}), and "
+                        f"{', '.join(reg.short_id(run_id) for run_id in mine)} are at work or waiting to start: send one of them "
+                        "your task (agent_send) or wait for one to finish")
+        return None
+
     def _role_name(self) -> str | None:
         """The role it would run as (`_role`), else the agent it names."""
         return resolved[1] if (resolved := self._role()) is not None else self.agent
@@ -382,24 +427,26 @@ class Spawn(BaseModel):
         return Continued(run=reg.task_taken(run.run_id, self.task) or run, delivery=delivery, doubt=doubt)
 
     def hand_over(self) -> Continued | StartNew:
-        """Where its task goes, by its role's `instances` (`Policy.instances_for`; owner 2026-11-03 « we should be able
-        to call as many "ingenieur backend" and other agents as we want »): `many` starts a new run every time, the PC's
-        places its only limit (`SpawnLine`); `one` / `per_project` give it to the role's run on this PC / of its project
-        (`_peers`), whatever conversation started it, as its next turn (`messaging.deliver_message`: its own session,
-        everything it did still in context) — one at work first, the task queued behind its turn. A `single` spawn does
-        so within its conversation. Its caller's own child first, then the latest to finish; one whose turn would not
-        start is passed over unless its agent may have read the task (then kept, the doubt said: never run twice). A run
-        started on another revision of the role takes it on the spawn's revision. Every peer busy-and-unfit or unfit:
-        start new, and why. Blocks up to `messaging.wait_for_start`'s timeout per run tried."""
+        """Where its task goes, by the relation its call runs under (`Policy.relation`; owner 2026-11-03 « we should be able
+        to call as many "ingenieur backend" and other agents as we want », 2026-11-08 « one to many, many to one, et cetera,
+        many to many »): `1-N` starts a new run every time, the PC's places its only limit (`SpawnLine`); `N-1` gives it to
+        the role's run on this PC / of its project (`_peers`), whatever conversation started it, as its next turn
+        (`messaging.deliver_message`: its own session, everything it did still in context) — one at work first, the task
+        queued behind its turn; `N-N`, and a `single` spawn, do so within its conversation. Its caller's own child first,
+        then the latest to finish; one whose turn would not start is passed over unless its agent may have read the task
+        (then kept, the doubt said: never run twice). A run started on another revision of the role takes it on the spawn's
+        revision. Every peer busy-and-unfit or unfit: start new, and why (a role keeping one run refuses that start at the
+        line, `relation_refusal`). `fresh`, `continues`, and a call its relation refuses start new here. Blocks up to
+        `messaging.wait_for_start`'s timeout per run tried."""
         if (resolved := self._role()) is None:
             return StartNew()
         policy, role, revision = resolved
-        instances = policy.instances_for(role)
-        if instances == "many" and not self.single:
+        relation = policy.relation(role, self._caller_role())
+        if relation is None or self.fresh or self.continues or (relation.callers == "one" and not self.single):
             return StartNew()
-        peers = self._peers(role, instances)
-        # The role's own run, picked by its setting rather than by an id the caller names: reached across conversations.
-        across = instances != "many"
+        peers = self._peers(role, relation.callees)
+        # The role's own run, picked by its relation rather than by an id the caller names: reached across conversations.
+        across = relation.keeps_one
         misfits = {run.run_id: self._misfit(run, policy, revision) for run in peers}
         why = [f"{run_id[:8]} {said}" for run_id, said in misfits.items() if said]
         fit = [run for run in peers if misfits[run.run_id] is None]
@@ -422,6 +469,10 @@ class Spawn(BaseModel):
             why.append(f"{run.run_id[:8]} {refused}")
         return StartNew(why=f"{role} already here, not continued: {'; '.join(why)}" if peers else "")
 
+
+
+class RelationRefused(ValueError):
+    """A spawn its relation refuses (`Spawn.relation_refusal`): the sentence says why and what to do instead."""
 
 
 class Continued(BaseModel):
@@ -769,9 +820,12 @@ class SpawnLine(BaseModel):
 
     def enter(self, spawn: Spawn) -> Admission:
         """Take a place for `spawn`: `starting` when it may start now (the caller starts it, then `leave`s), else
-        `waiting` behind every spawn already waiting, held by a waiter started here."""
+        `waiting` behind every spawn already waiting, held by a waiter started here. Its relation refusing it
+        (`Spawn.relation_refusal`): `RelationRefused`, no place taken."""
         run_id, me = str(uuid.uuid4()), Caller.current().pid  # the caller asking: a client gone frees its place
         with self._places() as places:
+            if (refused := spawn.relation_refusal(places)) is not None:
+                raise RelationRefused(refused)
             ahead = sum(place.queued() for place in places)
             load = self.load(places)
             starts = self._admits(places, spawn.parent_run_id, first=ahead == 0)

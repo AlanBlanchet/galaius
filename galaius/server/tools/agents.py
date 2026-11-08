@@ -60,9 +60,11 @@ async def agent_spawn(
     helper: bool = False,
     community: str | None = None,
 ) -> str:
-    """Start an agent to work alongside you and return its run id immediately. Its role's `instances` setting decides:
-    `many` (most roles) starts a new run for every task; `one` / `per_project` hand the task to the role's run on this
-    PC / of this project, queued behind its turn while it works (`fresh` to start one beside it).
+    """Start an agent to work alongside you and return its run id immediately. The role's relation to yours (its
+    `relations`: who may call it, how many of its runs answer) decides: `1-N` (most roles) starts a new run for every
+    task; `N-1` (a role keeping one run, the deployer) hands the task to its run on this PC / of this project, queued
+    behind its turn while it works, and refuses a second beside a live one; `N-N` hands it to an idle run of the role in
+    this conversation; `max_live` caps how many you run at once. A role whose relations do not name yours is refused.
 
     Runs as its own process on this machine, using the vendor CLI's own login — you never handle
     a credential. Given galaius as an MCP server, so it can call these same tools: it can spawn
@@ -107,9 +109,10 @@ async def agent_spawn(
         commissions one. Named-role delegation also honours parent pins.
     denied_tools: exact built-in or qualified MCP tool names to remove for this run and its
         continuations. Only narrows the role tool set; never changes permissions or user config.
-    fresh: start a new run even when the role keeps one run at a time (`instances` `one` / `per_project`). Without it
-        that run takes the task as its next turn, its context intact, and its run id comes back; a new one starts only
-        when it is unfit (context near full, another permission, folder or provider), the reason said.
+    fresh: start a new run instead of handing the task to one of the role (`N-N`); a role keeping one run (`N-1`) still
+        refuses a second beside a live one. Without it that run takes the task as its next turn, its context intact, and
+        its run id comes back; a new one starts only when it is unfit (context near full, another permission, folder or
+        provider) and, for `N-1`, not at work, the reason said.
     continues: the run (full or short id) the new one takes over from — a hand-off from a run whose context filled:
         what that run owed, and what is handed back or sent to it from then on, reaches the new one; it is never resumed
         again. A run of the same role under the same parent that outgrew its context is taken over without it, and so is
@@ -175,11 +178,11 @@ async def agent_spawn(
                 task=task, cwd=cwd or str(Caller.current().cwd), provider=provider, agent=agent, name=name, model=model,
                 permission_mode=permission_mode, profile=profile, agent_ref=agent_ref, delegate=delegate,
                 image_paths=tuple(Path(path) for path in (image_paths or ())), denied_tools=tuple(denied_tools or ()),
-                session_id=owner, continues=continues, for_run=for_run, helper=helper, community=started_from,
+                session_id=owner, continues=continues, for_run=for_run, helper=helper, community=started_from, fresh=fresh,
             )
             if (refused := spawn.naming_refusal()) is not None:
                 return f"ERROR: {refused}."
-            handover = StartNew() if fresh or continues else await asyncio.to_thread(spawn.hand_over)
+            handover = await asyncio.to_thread(spawn.hand_over)
             if isinstance(handover, Continued):
                 return handover.sentence()
             line = SpawnLine.here()

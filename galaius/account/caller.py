@@ -76,6 +76,10 @@ class Caller(BaseModel):
         """Whether this process works for every run (`serve_none`)."""
         return cls._for_no_run
 
+    def in_agent_conversation(self) -> bool:
+        """Whether an agent CLI's conversation runs it (`THREAD`): an agent's shell, never the person's own terminal."""
+        return any(self.environment.get(name) for name in self.THREAD)
+
     def unowned(self) -> bool:
         """Whether its process runs in a service `systemd-run` started (`processes.transient_service`), whatever name it
         was given: it may act as no run and is not the person either (2026-10-21: an agent sent a message as the person
