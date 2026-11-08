@@ -58,6 +58,20 @@ UserConfig.PATH = Path(__file__).resolve().parents[1] / "out" / "tests" / "no-us
 
 
 @pytest.fixture(autouse=True)
+def _signals_only_what_it_started(monkeypatch):
+    """A test signals only processes it started (`tests/support/signals.py`): any other signal is never sent and fails it."""
+    if os.name != "posix":   # Windows has no group broadcast: os.kill there ends one process the caller names
+        yield
+        return
+    from tests.support.signals import SignalGuard
+    guard = SignalGuard(os.kill, os.killpg)
+    monkeypatch.setattr(os, "kill", guard.kill)
+    monkeypatch.setattr(os, "killpg", guard.killpg)
+    yield
+    assert not guard.refused, "signals this test never started a process for:\n" + "\n".join(guard.refused)
+
+
+@pytest.fixture(autouse=True)
 def _addressed_per_test(monkeypatch):
     """What a test hands its process (`Addressed`) is its own: never what an earlier test was handed."""
     from galaius.upgrade.store import Addressed

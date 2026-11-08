@@ -12,6 +12,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from types import EllipsisType
 
 from galaius.agents import messaging
 from galaius.agents import registry as reg
@@ -20,6 +21,7 @@ from galaius.agents import run as _run_module
 from galaius.agents.policy import Policy
 from galaius.agents.providers import AgentProvider, ClaudeCodeProvider
 from galaius.agents.catalog.relations import CARD_HEADING
+from tests.support.signals import alive_pid
 
 def said(prompt: str) -> str:
     """What a turn's prompt says past the turn card (`relations.card`) it opens with, for a test judging the message."""
@@ -106,7 +108,7 @@ def use_policy(monkeypatch, *targets, **fields) -> Policy:
 def register_run(
     run_id: str = "r1",
     *,
-    pid: int | None = 1,
+    pid: int | None | EllipsisType = ...,
     provider: str = "claude",
     name: str = "tester",
     task: str = "do it",
@@ -115,8 +117,10 @@ def register_run(
     provider_session_id: str | None = None,
     **rest,
 ) -> reg.AgentRun:
+    """A run record; its process, unless `pid` names one, a running child of this test process (`signals.alive_pid`):
+    a stop of it ends that child alone (2026-11-08: a default pid 1 made a stop `kill(-1)`, every process of the user)."""
     return reg.register(
-        run_id=run_id, pid=pid, provider=provider, name=name, task=task, cwd=cwd,
+        run_id=run_id, pid=alive_pid() if pid is ... else pid, provider=provider, name=name, task=task, cwd=cwd,
         agent=agent, provider_session_id=provider_session_id, **rest,
     )
 

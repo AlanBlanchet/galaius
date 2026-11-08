@@ -40,3 +40,42 @@ def signalled(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int]]:
 def test_ending_a_tree_signals_that_tree_only(signalled, pid, expected, ended):
     assert processes.end_process_tree(pid) is ended
     assert signalled == expected
+
+
+GONE = 2**22 + 7   # above Linux's and macOS's pid ceiling: no process holds it
+
+
+@pytest.mark.parametrize(("call", "target", "outcome"), [
+    pytest.param("kill", "started", "sent", id="a-process-it-started"),
+    pytest.param("killpg", "started", "sent", id="the-group-a-started-process-leads"),
+    pytest.param("kill", "self", "sent", id="itself"),
+    pytest.param("kill", 1, "refused", id="pid-1"),
+    pytest.param("killpg", 1, "refused", id="group-1-every-process"),
+    pytest.param("kill", -1, "refused", id="kill-minus-1"),
+    pytest.param("kill", 0, "refused", id="kill-0-its-own-group"),
+    pytest.param("killpg", "own-group", "refused", id="its-own-group"),
+    pytest.param("kill", "parent", "refused", id="a-live-process-it-did-not-start"),
+    pytest.param("kill", GONE, "gone", id="a-pid-no-process-holds"),
+])
+def test_a_test_signals_only_what_it_started(call, target, outcome):
+    """`tests/support/signals.py`: the guard every test runs under (`tests/conftest.py`). Its kill / killpg here are
+    recorders: nothing is ever sent."""
+    from tests.support.signals import SignalGuard, alive_pid
+
+    sent: list[tuple[str, int, int]] = []
+
+    def kill(pid: int, sig: int) -> None:
+        if sig == 0 and pid == GONE:
+            raise ProcessLookupError
+        sent.append(("kill", pid, sig))
+
+    guard = SignalGuard(kill, lambda group, sig: sent.append(("killpg", group, sig)))
+    pid = {"started": alive_pid(), "self": os.getpid(), "own-group": os.getpgrp(), "parent": os.getppid()}.get(target, target)
+    raised = {"sent": None, "refused": PermissionError, "gone": ProcessLookupError}[outcome]
+    if raised is None:
+        getattr(guard, call)(pid, 15)
+    else:
+        with pytest.raises(raised):
+            getattr(guard, call)(pid, 15)
+    assert [entry for entry in sent if entry[2] != 0] == ([(call, pid, 15)] if outcome == "sent" else [])
+    assert bool(guard.refused) is (outcome == "refused")

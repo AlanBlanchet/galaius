@@ -835,7 +835,7 @@ def test_foreign_runs_are_excluded_by_default(monkeypatch):
      {"kind": "person", "name": "Alan", "run_id": None, "account_id": "1ec9ef8b-4e07-4f90-9e87-5e07384c635b"}),
 ])
 def test_stopping_records_who_stopped_it_until_its_next_turn(monkeypatch, environment, expected):
-    register_run()
+    run = register_run()
     register_run("boss", pid=2, agent="main")
     killed = []
     monkeypatch.setattr(reg, "_terminate", lambda pid: killed.append(pid) or True)
@@ -843,7 +843,7 @@ def test_stopping_records_who_stopped_it_until_its_next_turn(monkeypatch, enviro
     assert reg.stop("r1", by=reg.caller_stop_actor(environment)) is True
     monkeypatch.setattr(reg, "_alive", lambda pid: False)
     stopped = reg.get_run("r1")
-    assert (stopped.status, killed) == ("stopped", [1])
+    assert (stopped.status, killed) == ("stopped", [run.pid])
     assert json.loads(reg._record_path("r1").read_text())["stopped_by"] == expected
     assert reg.begin_turn("r1", pid=os.getpid()).stopped_by is None
 
