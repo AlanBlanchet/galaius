@@ -16,6 +16,8 @@ import gzip
 import hashlib
 import io
 import json
+import os
+import platform
 import py_compile
 import shutil
 import subprocess
@@ -83,6 +85,9 @@ class Target(BaseModel):
     wheels: str
     #: sha256 of `Interpreter.asset(triple)`, from the release's SHA256SUMS.
     interpreter_sha256: str
+    #: `<sys.platform>-<platform.machine()>` of a computer that runs it: there the built program is started once
+    #: before it is packed.
+    native: str
     layout: Layout = POSIX
 
     @property
@@ -98,11 +103,11 @@ class Target(BaseModel):
 
 INTERPRETER = Interpreter()
 TARGETS: tuple[Target, ...] = (
-    Target(name="linux-x86_64", triple="x86_64-unknown-linux-gnu", wheels="x86_64-manylinux_2_28",
+    Target(name="linux-x86_64", triple="x86_64-unknown-linux-gnu", wheels="x86_64-manylinux_2_28", native="linux-x86_64",
            interpreter_sha256="459ed79967acc207bef2ff5124dac35d74d5108528e37b15395d14e2922f2c92"),
-    Target(name="windows-x86_64", triple="x86_64-pc-windows-msvc", wheels="x86_64-pc-windows-msvc", layout=WINDOWS,
+    Target(name="windows-x86_64", triple="x86_64-pc-windows-msvc", wheels="x86_64-pc-windows-msvc", native="win32-AMD64", layout=WINDOWS,
            interpreter_sha256="7c3159205dda0289a47e6dd1226c4e5800b1f99a03146cdc25a41fed8ef74f5a"),
-    Target(name="macos-arm64", triple="aarch64-apple-darwin", wheels="aarch64-apple-darwin",
+    Target(name="macos-arm64", triple="aarch64-apple-darwin", wheels="aarch64-apple-darwin", native="darwin-arm64",
            interpreter_sha256="795a5aeeb050f00aa8a2214d779bad9f1b9113edb6923317a80c042a11a087d7"),
 )
 
@@ -207,6 +212,13 @@ class Bundler(BaseModel):
             (target.scripts(root) / ".empty").unlink(missing_ok=True)
             # The folder is never edited once unpacked: bytecode is checked by nothing but its presence.
             compileall.compile_dir(root, quiet=2, workers=0, invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
+            if target.native == f"{sys.platform}-{platform.machine()}":
+                # Started as a person's computer starts it: its own command, no variable of this builder's.
+                command = root / Launcher.commands / target.layout.program("galaius")
+                clean = {name: value for name, value in os.environ.items() if not name.startswith(("PYTHON", "VIRTUAL_ENV", "UV_"))}
+                said = subprocess.run([str(command), "--version"], env=clean, capture_output=True, text=True, timeout=120, check=False)
+                if said.returncode != 0 or said.stdout.strip() != release.version:
+                    raise SystemExit(f"the built program does not start: {command} --version said {(said.stdout + said.stderr).strip()[-500:]!r}")
             return self.packed(root, self.out / target.archive)
         finally:
             shutil.rmtree(work, ignore_errors=True)
