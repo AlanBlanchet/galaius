@@ -41,6 +41,14 @@ from galaius.cli import app_commands
 CONVERSATIONS = [f"mcp__galaius__{name}" for name in CONVERSATION_TOOLS]
 
 
+@pytest.fixture(autouse=True)
+def _galaius_in_its_cli_config(monkeypatch):
+    """Each run launched here reaches galaius as on an installed computer (its CLI's own config registers it,
+    `AgentProvider.meshed`), never read from this computer's home: a role given the conversation tools is otherwise
+    refused (`run.require_galaius`), and these rows passed on a PC set up with galaius but failed on every CI runner."""
+    monkeypatch.setattr(AgentProvider, "meshed", lambda self, environment: True)
+
+
 def snapshot(version=1, tools=None, unrestricted=False, **worker_fields):
     prompts = tuple(PromptRevision(
         key=PromptKey(namespace="fixture", slug=slug), revision=uuid4(),
