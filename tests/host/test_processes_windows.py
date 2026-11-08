@@ -3,8 +3,10 @@ either (`galaius.host.windowless`); a caller asking for a console of its own kee
 
 import asyncio
 import ctypes
+import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -83,7 +85,7 @@ def test_the_service_logs_from_a_hidden_console(tmp_path: Path, monkeypatch: pyt
     """A worker in a hidden console has a stdout nobody sees: the service still writes its log."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setattr("galaius.machine.service.windowless_process", lambda: True)
-    monkeypatch.setattr(WindowsMachineService, "held_children", staticmethod(lambda: type("Job", (), {"Close": lambda self: None})()))
+    monkeypatch.setattr(WindowsMachineService, "held_children", staticmethod(lambda: 0))
     monkeypatch.setattr("galaius.machine.service.MachineService.run", lambda self: print("connecting"))
     stdout, stderr = sys.stdout, sys.stderr
     try:
@@ -99,3 +101,33 @@ def test_a_child_left_its_parents_streams_still_writes_to_them(seen: list[int], 
     """Its hidden console would swallow what it prints: it writes to this process's stdout."""
     subprocess.run([sys.executable, "-c", "print('heard')"], check=True)
     assert "heard" in capfd.readouterr().out and seen == [subprocess.CREATE_NO_WINDOW]
+
+
+@pytest.mark.parametrize(("leaving", "code"), [("UpgradeReady('newer runtime active')", 75), ("RuntimeError('crashed')", 1), ("SystemExit(0)", 0)])
+def test_the_service_exits_with_its_own_code_and_its_programs_end_with_it(tmp_path: Path, leaving: str, code: int) -> None:
+    """The service's job ends what it started only once it has exited with its own code: closed before,
+    it killed the service itself with 0, so a worker leaving for an upgrade (75) or crashing (1) read to
+    its supervisor as stopped on purpose and the service never came back."""
+    started = tmp_path / "child.pid"
+    script = (
+        "import subprocess, sys\n"
+        "from galaius.machine.service import MachineService, WindowsMachineService\n"
+        "from galaius.upgrade.quiet import UpgradeReady\n"
+        "def leave(self):\n"
+        "    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+        f"    open({str(started)!r}, 'w').write(str(child.pid))\n"
+        f"    raise {leaving}\n"
+        "MachineService.run = leave\n"
+        "try:\n"
+        "    WindowsMachineService().run()\n"
+        "except UpgradeReady:\n"
+        "    raise SystemExit(75)\n")
+    environment = {**os.environ, "XDG_CONFIG_HOME": str(tmp_path)}
+    assert subprocess.run([sys.executable, "-c", script], env=environment, timeout=120, capture_output=True, check=False).returncode == code
+    child = int(started.read_text())
+    for _ in range(100):
+        alive = subprocess.run(["tasklist", "/FI", f"PID eq {child}", "/NH"], capture_output=True, text=True, check=False).stdout
+        if str(child) not in alive:
+            break
+        time.sleep(0.1)
+    assert str(child) not in alive

@@ -328,8 +328,8 @@ class WindowsMachineService(MachineService):
 
     def run(self) -> None:
         """What the task starts: its output in `log_path` first (no console window: an early
-        failure must still be readable), its programs held in a job that closes with it, then the
-        restarting connection."""
+        failure must still be readable), its programs held in a job that ends them when it exits,
+        then the restarting connection."""
         if windowless_process():  # pythonw, or a worker in a hidden console: its output is seen only in the log
             path = self.log_path()
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -337,19 +337,21 @@ class WindowsMachineService(MachineService):
                 replace_held_open(path, path.with_suffix(".log.1"))
             sys.stdout = sys.stderr = open(path, "a", encoding="utf-8", buffering=1)  # noqa: SIM115 - lives as long as the process
         try:
-            job = self.held_children()
-            try:
-                super().run()
-            finally:
-                job.Close()  # the last handle: every program still in the job ends with it
+            self.held_children()
+            super().run()
+        except UpgradeReady:
+            raise  # leaving for the newer runtime: the CLI exits EXIT_UPGRADE, its supervisor starts it
         except BaseException:
             traceback.print_exc()
             raise
 
     @staticmethod
-    def held_children():
-        """A job holding this process: every program it starts closes with it (stopping the task
-        stops them) once the returned handle closes, i.e. when this process ends."""
+    def held_children() -> int:
+        """A job holding this process: every program it starts ends with it (stopping the task
+        stops them). Its handle is detached, so Windows closes it only once this process has exited
+        with its own code. Closed earlier, the job kills this process too, with exit code 0: a worker
+        leaving for an upgrade (`EXIT_UPGRADE`) or crashing then reads to its supervisor as stopped on
+        purpose, and the whole service ends (Windows PCs offline after every release, 2026-11-04 to 11-08)."""
         job = win32job.CreateJobObject(None, "")
         limits = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
         limits["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
@@ -359,7 +361,7 @@ class WindowsMachineService(MachineService):
             restrictions |= getattr(win32job, f"JOB_OBJECT_UILIMIT_{limit}")
         win32job.SetInformationJobObject(job, win32job.JobObjectBasicUIRestrictions, {"UIRestrictionsClass": restrictions})
         win32job.AssignProcessToJobObject(job, win32api.GetCurrentProcess())
-        return job
+        return job.Detach()
 
 
 class LaunchdMachineService(MachineService):
