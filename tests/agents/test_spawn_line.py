@@ -562,6 +562,30 @@ def _asker(caller: str | None) -> Asker:
     return Asker(kind="person") if caller == "person" else Asker(kind="anonymous") if caller is None else Asker(kind="run", run_id="lead", role=caller)
 
 
+def _no_record_lock_under_the_line(monkeypatch) -> None:
+    """2026-11-08: the relation check read a run's queue under its record lock while holding the line's lock; that run's
+    dispatcher held the record lock and waited for the line to start its queued turn: both waited (a spawn hung 580 s).
+    Fails a test that takes a record lock (`agent_queue.items`) while the line's lock is held."""
+    held = {"line": False}
+    places, items = SpawnLine._places, spawn_line.agent_queue.items
+
+    @contextlib.contextmanager
+    def watched(self):
+        with places(self) as listed:
+            held["line"] = True
+            try:
+                yield listed
+            finally:
+                held["line"] = False
+
+    def guarded(run_id):
+        assert not held["line"], "a run's record lock taken under the line's lock"
+        return items(run_id)
+
+    monkeypatch.setattr(SpawnLine, "_places", watched)
+    monkeypatch.setattr(spawn_line.agent_queue, "items", guarded)
+
+
 def _deployer_policy(monkeypatch, written) -> None:
     relations = {"deployer": tuple(AgentRelation(**relation) for relation in written)} if written else {}
     monkeypatch.setattr(spawn_line, "load_policy", lambda: Policy(agents={"deployer": "m"}, providers={"claude": True}, relations=relations))
@@ -573,6 +597,7 @@ def test_a_spawn_takes_a_place_only_as_its_roles_relation_allows(at_work, starte
     """Who may call a role and how many of its runs answer (`AgentRelation`), checked where a spawn takes its place
     (`SpawnLine.enter`, under the line's lock): a refused spawn takes none and says why in one line."""
     _deployer_policy(monkeypatch, written)
+    _no_record_lock_under_the_line(monkeypatch)
     parent = "lead" if caller not in (None, "person") else None
     if parent is not None:
         _ended("lead", agent=caller, session_id="s1", parent_run_id=None, cwd=str(tmp_path))
@@ -594,6 +619,7 @@ def test_a_waiting_spawn_of_a_role_keeping_one_run_is_refused_as_it_starts_once_
     """code-reviewer r1 M1: the deployer idle, a `fresh` spawn of it waits in line; the idle one takes a task meanwhile.
     Asked again as the waiting place starts (`SpawnLine._turn`), the relation fails that place: never two at work."""
     _deployer_policy(monkeypatch, ({"callees": "one"},))
+    _no_record_lock_under_the_line(monkeypatch)
     _ended("dep0", agent="deployer", session_id="s1", parent_run_id=None, cwd=str(tmp_path))
     at_work("busy")
     line = SpawnLine(limit=1, waiting_flag_minutes=5, waiting_gap_seconds=60)
