@@ -54,8 +54,10 @@ GONE = 2**22 + 7   # above Linux's and macOS's pid ceiling: no process holds it
     pytest.param("kill", -1, "refused", id="kill-minus-1"),
     pytest.param("kill", 0, "refused", id="kill-0-its-own-group"),
     pytest.param("killpg", "own-group", "refused", id="its-own-group"),
-    pytest.param("kill", "parent", "refused", id="a-live-process-it-did-not-start"),
-    pytest.param("kill", GONE, "gone", id="a-pid-no-process-holds"),
+    pytest.param("kill", "parent", "refused", id="a-live-process-it-did-not-start",
+                 marks=pytest.mark.skipif(not sys.platform.startswith("linux"), reason="lineage read from /proc")),
+    pytest.param("kill", GONE, "gone", id="a-pid-no-process-holds",
+                 marks=pytest.mark.skipif(not sys.platform.startswith("linux"), reason="lineage read from /proc")),
 ])
 def test_a_test_signals_only_what_it_started(call, target, outcome):
     """`tests/support/signals.py`: the guard every test runs under (`tests/conftest.py`). Its kill / killpg here are
