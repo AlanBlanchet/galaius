@@ -5,13 +5,13 @@ import importlib
 import os
 import uuid
 from pathlib import Path
-from typing import Literal, NotRequired, Required
+from typing import Literal, Required
 
-from galaius_core import TokenCounts
 from pydantic import PrivateAttr, TypeAdapter
 from typing_extensions import TypedDict
 
 from galaius.agents.limits import quota
+from galaius.usage_dialects import LITELLM
 from galaius.agents.transport.events import AgentEvent
 from galaius.agents.registry import AgentRun
 from galaius.agents.transport.base import (
@@ -35,14 +35,8 @@ class _CompletionChoice(TypedDict):
     message: _CompletionMessage
 
 
-class _CompletionUsage(TypedDict, total=False):
-    prompt_tokens: int
-    completion_tokens: int
-
-
 class _CompletionPayload(TypedDict, total=False):
     choices: Required[list[_CompletionChoice]]
-    usage: NotRequired[_CompletionUsage]
 
 
 _COMPLETION = TypeAdapter(_CompletionPayload)
@@ -169,13 +163,13 @@ class _CompletionTransport(_ConversationTransport):
                 num_retries=0,
                 timeout=30,
             )
-            payload = _COMPLETION.validate_python(response.model_dump())
+            dumped = response.model_dump()
+            payload = _COMPLETION.validate_python(dumped)
             if not payload["choices"]:
                 raise ValueError("completion has no choice")
             text = payload["choices"][0]["message"]["content"]
             if text is None or not text.strip():
                 raise ValueError("completion has no text")
-            usage = payload.get("usage", {})
             quota.served(self.provider, model)  # it answered: no earlier refusal holds against it
             return (
                 AgentEvent(
@@ -185,8 +179,7 @@ class _CompletionTransport(_ConversationTransport):
                 AgentEvent(
                     kind="done", event_id=f"{turn_id}:done", turn_id=turn_id,
                     agent_run_id=run_id, text=text,
-                    usage=None if usage.get("prompt_tokens") is None and usage.get("completion_tokens") is None
-                    else TokenCounts.of_prompt(usage.get("prompt_tokens"), usage.get("completion_tokens")), status="completed",
+                    usage=LITELLM.read(dumped), status="completed",
                 ),
             )
         except asyncio.CancelledError:

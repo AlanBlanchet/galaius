@@ -6,12 +6,12 @@ from pathlib import Path
 from typing import Literal
 
 from galaius_core import TokenCounts
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field
 
-from galaius.older_tokens import older_tokens
+from galaius.usage_dialects import OlderTokens
 
 
-class UsageEntry(BaseModel):
+class UsageEntry(OlderTokens):
     """Canonical on-disk media accounting row, owned by its only writer."""
 
     timestamp: datetime
@@ -26,12 +26,6 @@ class UsageEntry(BaseModel):
     incremental_cost_usd: float | None = None
     api_equivalent_cost_usd: float | None = None
     cost: float | None = 0.0
-
-    @model_validator(mode="before")
-    @classmethod
-    def older_row(cls, data: object) -> object:
-        """A row an older runtime appended: its whole-prompt token fields, read as its `usage` (`older_tokens`)."""
-        return older_tokens(data)
 
     def append(self, log: Path) -> None:
         log.parent.mkdir(parents=True, exist_ok=True)

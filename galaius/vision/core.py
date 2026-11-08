@@ -29,7 +29,8 @@ from galaius.vision.types import (
     VLMResult,
     compile_response_schema,
 )
-from galaius.vision.usage import log_api_attempt, response_usage
+from galaius.vision.usage import log_api_attempt
+from galaius.usage_dialects import LITELLM
 from galaius.vision.workspace import _MediaWorkspace
 
 litellm = deferred("litellm")
@@ -406,7 +407,7 @@ async def _vision_completion(
         billing="metered_api",
         incremental_cost_usd=cost,
         api_equivalent_cost_usd=cost,
-        usage=response_usage(response),
+        usage=LITELLM.read(response),
     )
 
 
@@ -742,7 +743,7 @@ async def transcribe_audio(
         billing="metered_api",
         incremental_cost_usd=cost,
         api_equivalent_cost_usd=cost,
-        usage=response_usage(response),
+        usage=LITELLM.read(response),
     )
 
 

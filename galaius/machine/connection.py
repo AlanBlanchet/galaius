@@ -2133,7 +2133,7 @@ class MachineRunner:
                     if event.kind not in FORWARDED_EVENT_KINDS:
                         continue
                     payload = {"kind": event.kind, "text": event.text[:2000], "tool": event.tool, "tool_input": event.tool_input[:2000], "tool_id": event.tool_id,
-                               "usage": event.usage and event.usage.model_dump(mode="json", exclude_none=True), "cost_usd": event.cost_usd}
+                               "usage": event.usage.model_dump(mode="json", exclude_none=True) or None, "cost_usd": event.cost_usd}
                     await self._event(socket, command_id, "progress", {key: value for key, value in payload.items() if value not in (None, "")})
 
             while handle.process.returncode is None:

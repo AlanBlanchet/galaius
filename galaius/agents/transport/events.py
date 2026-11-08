@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from galaius_core import CompactionTrigger, ContextGauge, TokenCounts, UsageWindow
 
-from galaius.older_tokens import older_tokens
+from galaius.usage_dialects import OlderTokens
 
 
 EventKind = Literal[
@@ -265,11 +265,11 @@ class UsageLedger(BaseModel):
         self.reasoning = cumulative
         return grown
 
-    def observe(self, key: str | None, usage: TokenCounts) -> TokenCounts | None:
-        """A live figure, or None when this message's usage was already counted."""
+    def observe(self, key: str | None, usage: TokenCounts) -> TokenCounts:
+        """A live figure; none when this message's usage was already counted."""
         if key is not None:
             if key in self.seen:
-                return None
+                return TokenCounts()
             self.seen.add(key)
         self.live += usage
         return usage
@@ -323,7 +323,7 @@ class MessageFields(TypedDict, total=False):
     relation: Relation | None
 
 
-class AgentEvent(ContextGauge):
+class AgentEvent(OlderTokens, ContextGauge):
     """A single thing that happened inside an agent run, provider-agnostic."""
 
     kind: EventKind
@@ -373,8 +373,8 @@ class AgentEvent(ContextGauge):
     # impact remain separate typed facts; subscription usage may be included, limited, credited, or charged.
     cost_usd: float | None = None
     #: The tokens it counted. Summed over a run's events they give the run's totals: a checkpoint event carries only
-    #: what live events had not yet counted. Left out when None.
-    usage: TokenCounts | None = Field(default=None, exclude_if=lambda value: value is None)
+    #: what live events had not yet counted. Left out when it reports none.
+    usage: TokenCounts = Field(default_factory=TokenCounts, exclude_if=lambda value: not value.reported)
     raw_type: str = ""
     #: For an "error": what cut its turn from outside its work (`RunCut`); left out when None.
     cut: RunCut | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -396,13 +396,12 @@ class AgentEvent(ContextGauge):
     compaction: CompactionTrigger | None = None
     compacted_from: int | None = None
 
-    @model_validator(mode="before")
     @classmethod
-    def _older_line(cls, data: object) -> object:
-        """A line an older runtime wrote: its rate-limit windows under `usage`, its tokens in whole-prompt fields."""
-        if isinstance(data, dict) and isinstance(windows := data.get("usage"), list | tuple):
-            data = {**{key: item for key, item in data.items() if key != "usage"}, "windows": windows}
-        return older_tokens(data)
+    def _older(cls, data: dict[str, Any]) -> dict[str, Any]:
+        """A line an older runtime wrote kept its rate-limit windows under `usage`."""
+        if isinstance(windows := data.get("usage"), list | tuple):
+            return {**{key: item for key, item in data.items() if key != "usage"}, "windows": windows}
+        return data
 
     @model_validator(mode="after")
     def _one_compaction(self) -> Self:

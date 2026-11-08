@@ -509,7 +509,7 @@ async def subscription_media_completion(
                 if failure_events:
                     events = list(failure_events)
                     # A run's usage is the SUM of its events (agents.events.UsageLedger).
-                    usage = sum((event.usage for event in events if event.usage is not None), TokenCounts())
+                    usage = sum((event.usage for event in events), TokenCounts())
                 session_id = next((event.session_id for event in events if event.session_id), None)
                 log_session_attempt(
                     VLMResult(

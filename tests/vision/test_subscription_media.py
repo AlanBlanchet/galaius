@@ -153,7 +153,7 @@ async def test_post_parse_failures_retain_only_typed_facts(tmp_path: Path, mode:
     facts = caught.value.events
     assert facts and facts[0].session_id == "session-failed"
     # Only a result line measures output; an assistant line's output_tokens is a stream-start value.
-    counted = sum((fact.usage for fact in facts if fact.usage is not None), TokenCounts())
+    counted = sum((fact.usage for fact in facts), TokenCounts())
     assert counted.prompt == 17 and (counted.output or 0) == (9 if mode == "no_message" else 0)
     assert all(not event.text and not event.tool_input for event in facts)
 

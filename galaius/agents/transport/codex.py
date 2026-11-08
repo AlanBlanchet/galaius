@@ -8,7 +8,7 @@ import time
 import uuid
 from collections import deque
 from pathlib import Path
-from typing import Literal, NotRequired, Required
+from typing import ClassVar, Literal, NotRequired, Required
 
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import (
@@ -24,6 +24,8 @@ from typing_extensions import TypedDict
 
 from galaius.account.caller import Caller
 from galaius_core import CompactionTrigger, ContextGauge, TokenCounts
+
+from galaius.usage_dialects import UsageDialect
 
 from galaius.agents.transport.codex_schema import (
     REJECTED_REQUEST_POLICIES,
@@ -180,6 +182,10 @@ class _CodexTransport(_ConversationTransport):
     ] = PrivateAttr(
         default_factory=dict
     )
+    #: `TokenUsageBreakdown` (codex app-server schema): a thread's cumulative counts in OpenAI's meaning — cached and
+    #: cache-write tokens inside `inputTokens`, reasoning inside `outputTokens`.
+    USAGE: ClassVar[UsageDialect] = UsageDialect(input=("inputTokens",), output=("outputTokens",), cache_read=("cachedInputTokens",),
+                                                 cache_write=("cacheWriteInputTokens",), whole_prompt=True)
     _usage_totals: dict[str, TokenCounts] = PrivateAttr(default_factory=dict)
     #: Each thread's newest context size (`thread/tokenUsage/updated` `last`), the size a compaction starts from.
     _context_tokens: dict[str, int] = PrivateAttr(default_factory=dict)
@@ -380,7 +386,7 @@ class _CodexTransport(_ConversationTransport):
         conversation_id = run.provider_session_id or run.run_id
         conversation_id = self.identifier(conversation_id)
         self._runs[conversation_id] = run.model_copy(deep=True)
-        self._usage_totals[conversation_id] = run.usage or TokenCounts()
+        self._usage_totals[conversation_id] = run.usage
 
     def has_conversation(self, conversation_id: str) -> bool:
         return self.identifier(conversation_id) in self._runs
@@ -521,13 +527,9 @@ class _CodexTransport(_ConversationTransport):
         total = token_usage.get("total") if isinstance(token_usage, dict) else None
         if turn_id is None or not isinstance(total, dict):
             raise ValueError("token usage notification is malformed")
-        # `TokenUsageBreakdown` (codex app-server schema): the thread's cumulative counts in
-        # OpenAI's meaning — cached and cache-write tokens inside `inputTokens`, reasoning inside
-        # `outputTokens`. `cacheWriteInputTokens` is the one optional field.
-        counts = (total.get("inputTokens"), total.get("outputTokens"), total.get("cachedInputTokens", 0), total.get("cacheWriteInputTokens", 0))
-        if not all(isinstance(value, int) and not isinstance(value, bool) for value in counts):
+        current = self.USAGE.read(total)
+        if current.input is None or current.output is None:
             raise TypeError("token usage notification is malformed")
-        current = TokenCounts.of_prompt(*counts)
         delta = current.since(self._usage_totals.get(thread_id, TokenCounts()))
         self._usage_totals[thread_id] = current
         # `last.totalTokens`: what the thread holds after its newest model call (the prompt it read and what

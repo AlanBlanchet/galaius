@@ -40,6 +40,7 @@ from galaius_core import AGENT_PROGRAMS, AgentMedia, AgentProgram, ContextGauge,
 from galaius import installed_version
 from galaius.agents.catalog.entries import AgentCatalog
 from galaius.agents.transport.events import AgentEvent, CompactionTrigger, RunCut, UsageLedger, instant, stream_lines
+from galaius.usage_dialects import WHOLE_PROMPT_SNAKE, UsageDialect
 from galaius.agents.limits import held
 from galaius.agents.limits.quota import REFUSAL
 from galaius.agents.catalog.profiles import overlay_for
@@ -178,7 +179,7 @@ def _failure_event_facts(events: list[AgentEvent]) -> tuple[AgentEvent, ...]:
             usage=event.usage,
         )
         for event in events
-        if event.session_id is not None or event.cost_usd is not None or event.usage is not None
+        if event.session_id is not None or event.cost_usd is not None or event.usage.reported
     )
 
 
@@ -1352,7 +1353,7 @@ class ClaudeCodeProvider(AgentProvider):
         costs = [event.cost_usd for event in events if event.cost_usd is not None]
         return _MediaResult(
             text=text,
-            usage=sum((event.usage for event in events if event.usage is not None), TokenCounts()),
+            usage=sum((event.usage for event in events), TokenCounts()),
             reported_cost_usd=sum(costs) if costs else None,
         )
 
@@ -1651,31 +1652,15 @@ class ClaudeCodeProvider(AgentProvider):
             "--verbose",
         ] + (["--model", model] if model else []) + self._permission_flag(permission_mode, fence_decides, allowed_tools) + self._setting_sources() + (turn.arguments() if turn else []) + self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools) + self._mcp_arguments(mcp_config, allowed_tools, strict=fence_decides)
 
-    #: Claude's two usage dialects: ``message.usage`` / ``result.usage`` (snake) and
-    #: ``result.modelUsage[model]`` (camel). Each reports the UNCACHED prompt remainder, cache
-    #: reads and cache writes as three ADDITIVE parts — a fully cached 102k prompt says 2 in
-    #: ``input_tokens`` — `TokenCounts`' own shape.
-    _USAGE_KEYS: ClassVar[dict[Literal["snake", "camel"], tuple[str, str, str, str]]] = {
-        "snake": ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
-                  "output_tokens"),
-        "camel": ("inputTokens", "cacheReadInputTokens", "cacheCreationInputTokens",
-                  "outputTokens"),
-    }
+    #: Claude's two usage dialects: ``message.usage`` / ``result.usage`` and ``result.modelUsage[model]``. Each reports
+    #: the UNCACHED prompt remainder, cache reads and cache writes as three ADDITIVE parts — a fully cached 102k prompt
+    #: says 2 in ``input_tokens`` — `TokenCounts`' own shape.
+    USAGE: ClassVar[UsageDialect] = UsageDialect(input=("input_tokens",), output=("output_tokens",), cache_read=("cache_read_input_tokens",),
+                                                 cache_write=("cache_creation_input_tokens",), whole_prompt=False)
+    MODEL_USAGE: ClassVar[UsageDialect] = UsageDialect(input=("inputTokens",), output=("outputTokens",), cache_read=("cacheReadInputTokens",),
+                                                       cache_write=("cacheCreationInputTokens",), whole_prompt=False)
 
-    @classmethod
-    def _usage(
-        cls, report: object, dialect: Literal["snake", "camel"] = "snake"
-    ) -> TokenCounts | None:
-        """One Claude usage object (already `TokenCounts`' additive shape), or None when it reports no prompt part at
-        all (zero would read as a measured empty context rather than an absence)."""
-        if not isinstance(report, dict):
-            return None
-        uncached, read, write, output = (part if isinstance(part := report.get(key), int) else None for key in cls._USAGE_KEYS[dialect])
-        if uncached is None and read is None and write is None:
-            return None
-        return TokenCounts(input=uncached, cache_read=read, cache_write=write, output=output)
-
-    def _settle_result(self, raw: dict, ledger: UsageLedger) -> tuple[TokenCounts | None, float | None]:
+    def _settle_result(self, raw: dict, ledger: UsageLedger) -> tuple[TokenCounts, float | None]:
         """The invocation's share of the truth, from its ``result`` line.
 
         ``result.usage`` covers only the main thread of THIS invocation; ``result.modelUsage``
@@ -1683,17 +1668,17 @@ class ClaudeCodeProvider(AgentProvider):
         summary) and subagents that never stream an ``assistant`` line — cumulatively across a
         resumed session when Claude restored its counters. The ledger reconciles the two.
         """
-        local = self._usage(raw.get("usage"))
+        local = self.USAGE.read(raw.get("usage"))
         per_model = {
             model: usage for model, report in (raw.get("modelUsage") or {}).items()
-            if (usage := self._usage(report, "camel")) is not None
+            if (usage := self.MODEL_USAGE.read(report)).prompt
         }
-        if not per_model and local is not None:
+        if not per_model and local.prompt:
             per_model = {ledger.primary or "": local}
         cost = raw.get("total_cost_usd")
         cost = float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None
         if not per_model:
-            return None, cost
+            return TokenCounts(), cost
         return ledger.settle(per_model, cost, local)
 
     transcript_glob = "projects/*/*.jsonl"
@@ -1790,13 +1775,10 @@ class ClaudeCodeProvider(AgentProvider):
             # Claude repeats one message's usage on the line of EVERY content block, and its
             # output_tokens there is the stream-start value. Only the prompt side is a live
             # figure, counted once per message id; the result line settles the rest.
-            usage = self._usage(msg.get("usage"))
-            observed = None if usage is None else ledger.observe(
-                msg.get("id") if isinstance(msg.get("id"), str) else None,
-                usage.model_copy(update={"output": None}),
-            )
-            live: dict[str, object] = {} if observed is None else {"usage": observed}
-            if usage is not None and raw.get("parent_tool_use_id") is None:
+            usage = self.USAGE.read(msg.get("usage"))
+            live: dict[str, object] = {"usage": ledger.observe(msg.get("id") if isinstance(msg.get("id"), str) else None,
+                                                               usage.model_copy(update={"output": None}))}
+            if usage.prompt and raw.get("parent_tool_use_id") is None:
                 live["context_tokens"] = usage.prompt  # a subagent's call says nothing of this conversation
             if tool:
                 return AgentEvent(kind="tool", tool=tool, tool_input=tool_input, tool_id=tool_id,
@@ -2676,11 +2658,9 @@ class CodexProvider(AgentProvider):
             # turn again (monotonic in all 615 recorded turns) — in OpenAI's meaning: cached and
             # cache-write tokens inside `input_tokens`, reasoning inside `output_tokens`.
             usage = raw.get("usage")
-            settled = None
-            if isinstance(usage, dict) and isinstance(usage.get("input_tokens"), int):
-                counts = (value if isinstance(value := usage.get(field), int) else None
-                          for field in ("input_tokens", "output_tokens", "cached_input_tokens", "cache_write_input_tokens"))
-                settled, _ = ledger.settle({"": TokenCounts.of_prompt(*counts)}, None)
+            settled = TokenCounts()
+            if (counts := WHOLE_PROMPT_SNAKE.read(usage)).reported:
+                settled, _ = ledger.settle({"": counts}, None)
             return AgentEvent(
                 kind="done",
                 session_id=session_id, turn_id=turn_id,
