@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Literal, Self
 
 import jsonschema
+from galaius_core import TokenCounts
 from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
 from galaius.browser.state import bytes_to_b64
@@ -41,8 +42,7 @@ class VLMResult(BaseModel):
     billing: Literal["session_usage", "metered_api", "none"] = "none"
     incremental_cost_usd: float | None = None
     api_equivalent_cost_usd: float | None = None
-    input_tokens: int = 0
-    output_tokens: int = 0
+    usage: TokenCounts = Field(default_factory=TokenCounts)
     session_id: str | None = None
     request_id: str | None = None
     video_sampled: bool | None = None

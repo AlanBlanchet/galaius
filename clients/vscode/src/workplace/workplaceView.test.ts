@@ -25,10 +25,10 @@ const STATE = {
   workers: [
     { run_id: "a", name: "reviewer", agent: "code-reviewer", status: "running" as const,
       zone: "code" as const, activity: "reading registry.py", parent_run_id: null,
-      project: "galaius", cost_usd: 1, input_tokens: 100, idle_seconds: 1 },
+      project: "galaius", cost_usd: 1, usage: { input: 100 }, idle_seconds: 1 },
     { run_id: "b", name: "researcher", agent: "researcher", status: "running" as const,
       zone: "web" as const, activity: "searching the web", parent_run_id: "a",
-      project: "galaius", cost_usd: 0, input_tokens: 10, idle_seconds: 0 },
+      project: "galaius", cost_usd: 0, usage: { input: 10 }, idle_seconds: 0 },
   ],
 };
 

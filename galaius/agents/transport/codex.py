@@ -23,7 +23,7 @@ from pydantic import (
 from typing_extensions import TypedDict
 
 from galaius.account.caller import Caller
-from galaius_core import CompactionTrigger, ContextGauge
+from galaius_core import CompactionTrigger, ContextGauge, TokenCounts
 
 from galaius.agents.transport.codex_schema import (
     REJECTED_REQUEST_POLICIES,
@@ -32,9 +32,7 @@ from galaius.agents.transport.codex_schema import (
     validate_request,
 )
 from galaius.agents.transport.events import (
-    TOKEN_FIELDS,
     AgentEvent,
-    TokenUsage,
     ConversationInteraction,
     InteractionField,
     InteractionKind,
@@ -182,7 +180,7 @@ class _CodexTransport(_ConversationTransport):
     ] = PrivateAttr(
         default_factory=dict
     )
-    _usage_totals: dict[str, TokenUsage] = PrivateAttr(default_factory=dict)
+    _usage_totals: dict[str, TokenCounts] = PrivateAttr(default_factory=dict)
     #: Each thread's newest context size (`thread/tokenUsage/updated` `last`), the size a compaction starts from.
     _context_tokens: dict[str, int] = PrivateAttr(default_factory=dict)
     #: Each thread's compaction under way, from its request (`compact_conversation`) or its `contextCompaction`
@@ -382,9 +380,7 @@ class _CodexTransport(_ConversationTransport):
         conversation_id = run.provider_session_id or run.run_id
         conversation_id = self.identifier(conversation_id)
         self._runs[conversation_id] = run.model_copy(deep=True)
-        self._usage_totals[conversation_id] = TokenUsage(
-            **{field: getattr(run, field) or 0 for field in TOKEN_FIELDS}
-        )
+        self._usage_totals[conversation_id] = run.usage or TokenCounts()
 
     def has_conversation(self, conversation_id: str) -> bool:
         return self.identifier(conversation_id) in self._runs
@@ -528,17 +524,11 @@ class _CodexTransport(_ConversationTransport):
         # `TokenUsageBreakdown` (codex app-server schema): the thread's cumulative counts in
         # OpenAI's meaning — cached and cache-write tokens inside `inputTokens`, reasoning inside
         # `outputTokens`. `cacheWriteInputTokens` is the one optional field.
-        counts = {
-            "input_tokens": total.get("inputTokens"),
-            "output_tokens": total.get("outputTokens"),
-            "cached_input_tokens": total.get("cachedInputTokens", 0),
-            "cache_write_input_tokens": total.get("cacheWriteInputTokens", 0),
-        }
-        if not all(isinstance(value, int) and not isinstance(value, bool)
-                   for value in counts.values()):
+        counts = (total.get("inputTokens"), total.get("outputTokens"), total.get("cachedInputTokens", 0), total.get("cacheWriteInputTokens", 0))
+        if not all(isinstance(value, int) and not isinstance(value, bool) for value in counts):
             raise TypeError("token usage notification is malformed")
-        current = TokenUsage(**counts)
-        delta = current.since(self._usage_totals.get(thread_id, TokenUsage()))
+        current = TokenCounts.of_prompt(*counts)
+        delta = current.since(self._usage_totals.get(thread_id, TokenCounts()))
         self._usage_totals[thread_id] = current
         # `last.totalTokens`: what the thread holds after its newest model call (the prompt it read and what
         # it wrote); during a compaction, the size it compacted to (`inputTokens` 0; 0.155.1, captured live).
@@ -550,9 +540,9 @@ class _CodexTransport(_ConversationTransport):
             self._context_tokens[thread_id] = gauge["context_tokens"]
         return AgentEvent(
             kind="other",
-            event_id=f"{turn_id}:usage:{current.input_tokens}:{current.output_tokens}",
+            event_id=f"{turn_id}:usage:{current.prompt}:{current.output}",
             turn_id=turn_id, agent_run_id=run_id,
-            **delta.model_dump(), **gauge,
+            usage=delta, **gauge,
             raw_type="thread/tokenUsage/updated", status="running",
         )
 

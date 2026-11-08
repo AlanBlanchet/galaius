@@ -638,7 +638,7 @@ class GalaiusTUI(App):
             f"  desktop    target={UserConfig.get('desktop.target') or 'local'}",
             "",
             f"[b]Usage[/b] (30 days): {report.entries} calls, ${report.total_cost:.4f}, "
-            f"{report.total_input + report.total_output:,} tokens",
+            f"{report.usage.counted:,} tokens",
             f"[dim]Config: {UserConfig.PATH}[/dim]",
         ])
 
@@ -877,7 +877,7 @@ class GalaiusTUI(App):
         self.query_one("#usage-summary", Static).update(
             f"All-time: {report.entries} calls · observed metered API spend "
             f"${report.total_cost:.4f}{session_note} · "
-            f"{report.total_input:,} input + {report.total_output:,} output tokens"
+            f"{report.usage.prompt:,} input + {report.usage.output or 0:,} output tokens"
         )
         table = self.query_one("#usage-table", DataTable)
         table.clear(columns=True)
@@ -893,8 +893,8 @@ class GalaiusTUI(App):
             table.add_row(
                 group.name,
                 str(group.calls),
-                f"{group.input_tokens:,}",
-                f"{group.output_tokens:,}",
+                f"{group.usage.prompt:,}",
+                f"{group.usage.output or 0:,}",
                 shown,
             )
 

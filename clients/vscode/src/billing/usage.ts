@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import { ModelsData, RangeId } from "../shared";
 import { DIM_FOREGROUND } from "../view/themeTokens";
+import { olderWritten, promptTokens } from "./tokenCounts.ts";
 import {
   aggregateUsageProviders,
   observedCost,
@@ -38,7 +39,7 @@ export async function readUsageLog(logFile: string): Promise<UsageEntry[]> {
     for (const line of content.split("\n")) {
       if (!line.trim()) continue;
       try {
-        entries.push(JSON.parse(line));
+        entries.push(olderWritten(JSON.parse(line)));
       } catch {}
     }
     return entries;
@@ -150,8 +151,8 @@ export function aggregateTokensByModel(
   const byModel = new Map<string, { input: number; output: number }>();
   for (const e of entries) {
     const cur = byModel.get(e.model) ?? { input: 0, output: 0 };
-    cur.input += e.input_tokens ?? 0;
-    cur.output += e.output_tokens ?? 0;
+    cur.input += promptTokens(e.usage) ?? 0;
+    cur.output += e.usage?.output ?? 0;
     byModel.set(e.model, cur);
   }
   return [...byModel.entries()]

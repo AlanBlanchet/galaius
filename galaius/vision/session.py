@@ -22,6 +22,7 @@ from typing import Literal
 
 import jsonschema
 from jsonschema.exceptions import SchemaError, ValidationError
+from galaius_core import TokenCounts
 from pydantic import BaseModel
 
 from galaius.isolation.fence import without_secrets
@@ -470,8 +471,7 @@ async def subscription_media_completion(
             warnings += _warn_extra_usage_once(config, provider_name)
             started = time.monotonic()
             events = []
-            input_tokens = 0
-            output_tokens = 0
+            usage = TokenCounts()
             reported_cost = None
             try:
                 if _dispatch_state is not None:
@@ -485,8 +485,7 @@ async def subscription_media_completion(
                 )
                 parsed = provider.media_result(events)
                 text = _validated_text(parsed.text, response_format)
-                input_tokens = parsed.input_tokens
-                output_tokens = parsed.output_tokens
+                usage = parsed.usage
                 reported_cost = parsed.reported_cost_usd
             except (asyncio.CancelledError, KeyboardInterrupt):
                 session_id = next((event.session_id for event in events if event.session_id), None)
@@ -510,8 +509,7 @@ async def subscription_media_completion(
                 if failure_events:
                     events = list(failure_events)
                     # A run's usage is the SUM of its events (agents.events.UsageLedger).
-                    input_tokens = sum(event.input_tokens or 0 for event in events)
-                    output_tokens = sum(event.output_tokens or 0 for event in events)
+                    usage = sum((event.usage for event in events if event.usage is not None), TokenCounts())
                 session_id = next((event.session_id for event in events if event.session_id), None)
                 log_session_attempt(
                     VLMResult(
@@ -527,8 +525,7 @@ async def subscription_media_completion(
                             if reported_cost is not None and reported_cost > 0
                             else None
                         ),
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
+                        usage=usage,
                         request_id=request_id,
                         session_id=session_id,
                     ),
@@ -563,8 +560,7 @@ async def subscription_media_completion(
                 api_equivalent_cost_usd=(
                     reported_cost if reported_cost is not None and reported_cost > 0 else None
                 ),
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
+                usage=usage,
                 session_id=session_id,
                 request_id=request_id,
                 video_sampled=any(item.media_type == "video" for item in media) or None,

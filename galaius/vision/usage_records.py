@@ -5,7 +5,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from galaius_core import TokenCounts
+from pydantic import BaseModel, Field, model_validator
+
+from galaius.older_tokens import older_tokens
 
 
 class UsageEntry(BaseModel):
@@ -13,8 +16,7 @@ class UsageEntry(BaseModel):
 
     timestamp: datetime
     model: str
-    input_tokens: int = 0
-    output_tokens: int = 0
+    usage: TokenCounts = Field(default_factory=TokenCounts)
     backend: Literal["session", "api", "none"]
     provider: str = Field(min_length=1)
     billing: Literal["session_usage", "metered_api", "none"]
@@ -24,6 +26,12 @@ class UsageEntry(BaseModel):
     incremental_cost_usd: float | None = None
     api_equivalent_cost_usd: float | None = None
     cost: float | None = 0.0
+
+    @model_validator(mode="before")
+    @classmethod
+    def older_row(cls, data: object) -> object:
+        """A row an older runtime appended: its whole-prompt token fields, read as its `usage` (`older_tokens`)."""
+        return older_tokens(data)
 
     def append(self, log: Path) -> None:
         log.parent.mkdir(parents=True, exist_ok=True)

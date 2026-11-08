@@ -4,6 +4,7 @@
 the ACCOUNT for a period, so hearing it once must spare every later launch the same dead child.
 """
 
+from galaius_core import TokenCounts
 import json
 import time
 from datetime import UTC, datetime
@@ -197,9 +198,9 @@ def test_only_the_model_answering_clears_its_block(tmp_path, monkeypatch):
     assert quota.blocked_until("claude", "claude-opus-5-5") is not None
     reg.append_event("r1", AgentEvent(kind="rate_limit", text="five_hour limit: allowed"))
     reg.append_event("r1", AgentEvent(kind="rate_limit", text="seven_day limit: allowed_warning"))
-    reg.append_event("r1", AgentEvent(kind="text", text="You've hit your weekly limit", input_tokens=0))
+    reg.append_event("r1", AgentEvent(kind="text", text="You've hit your weekly limit", usage=TokenCounts(input=0)))
     assert quota.blocked_until("claude", "claude-opus-5-5") is not None
-    reg.append_event("r1", AgentEvent(kind="text", text="Looking at the code now.", input_tokens=1200))
+    reg.append_event("r1", AgentEvent(kind="text", text="Looking at the code now.", usage=TokenCounts(input=1200)))
     assert quota.blocked_until("claude", "claude-opus-5-5") is None
 
 

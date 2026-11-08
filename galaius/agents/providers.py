@@ -35,11 +35,11 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, model_validator
 
 from galaius.account.caller import Caller
-from galaius_core import AGENT_PROGRAMS, AgentMedia, AgentProgram, ContextGauge, HeldLoginForm, LoginIdentity, UsageWindow, UsageWindowName
+from galaius_core import AGENT_PROGRAMS, AgentMedia, AgentProgram, ContextGauge, HeldLoginForm, LoginIdentity, TokenCounts, UsageWindow, UsageWindowName
 
 from galaius import installed_version
 from galaius.agents.catalog.entries import AgentCatalog
-from galaius.agents.transport.events import TOKEN_FIELDS, AgentEvent, CompactionTrigger, RunCut, TokenUsage, UsageLedger, instant, stream_lines
+from galaius.agents.transport.events import AgentEvent, CompactionTrigger, RunCut, UsageLedger, instant, stream_lines
 from galaius.agents.limits import held
 from galaius.agents.limits.quota import REFUSAL
 from galaius.agents.catalog.profiles import overlay_for
@@ -146,8 +146,7 @@ class PermissionMode:
 @dataclass(frozen=True)
 class _MediaResult:
     text: str
-    input_tokens: int
-    output_tokens: int
+    usage: TokenCounts
     reported_cost_usd: float | None
 
 
@@ -176,12 +175,10 @@ def _failure_event_facts(events: list[AgentEvent]) -> tuple[AgentEvent, ...]:
             kind="other",
             session_id=event.session_id,
             cost_usd=event.cost_usd,
-            **{field: getattr(event, field) for field in TOKEN_FIELDS},
+            usage=event.usage,
         )
         for event in events
-        if event.session_id is not None
-        or event.cost_usd is not None
-        or any(getattr(event, field) is not None for field in TOKEN_FIELDS)
+        if event.session_id is not None or event.cost_usd is not None or event.usage is not None
     )
 
 
@@ -482,7 +479,7 @@ class AgentProvider(ABC):
         return Path(named) if named else Path(environment.get("HOME") or Path.home()) / self.home_folder
 
     def usage(self, line: dict) -> tuple[UsageWindow, ...]:
-        """The usage windows one stream line reports (`AgentEvent.usage`); none for a CLI that reports none."""
+        """The usage windows one stream line reports (`AgentEvent.windows`); none for a CLI that reports none."""
         return ()
 
     def usage_command(self) -> tuple[list[str], tuple[dict, ...]] | None:
@@ -1355,8 +1352,7 @@ class ClaudeCodeProvider(AgentProvider):
         costs = [event.cost_usd for event in events if event.cost_usd is not None]
         return _MediaResult(
             text=text,
-            input_tokens=sum(event.input_tokens or 0 for event in events),
-            output_tokens=sum(event.output_tokens or 0 for event in events),
+            usage=sum((event.usage for event in events if event.usage is not None), TokenCounts()),
             reported_cost_usd=sum(costs) if costs else None,
         )
 
@@ -1658,7 +1654,7 @@ class ClaudeCodeProvider(AgentProvider):
     #: Claude's two usage dialects: ``message.usage`` / ``result.usage`` (snake) and
     #: ``result.modelUsage[model]`` (camel). Each reports the UNCACHED prompt remainder, cache
     #: reads and cache writes as three ADDITIVE parts — a fully cached 102k prompt says 2 in
-    #: ``input_tokens`` — so the contract's prompt total is their sum.
+    #: ``input_tokens`` — `TokenCounts`' own shape.
     _USAGE_KEYS: ClassVar[dict[Literal["snake", "camel"], tuple[str, str, str, str]]] = {
         "snake": ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
                   "output_tokens"),
@@ -1669,22 +1665,17 @@ class ClaudeCodeProvider(AgentProvider):
     @classmethod
     def _usage(
         cls, report: object, dialect: Literal["snake", "camel"] = "snake"
-    ) -> TokenUsage | None:
-        """One Claude usage object, or None when it reports no prompt part at all (zero would
-        read as a measured empty context rather than an absence)."""
+    ) -> TokenCounts | None:
+        """One Claude usage object (already `TokenCounts`' additive shape), or None when it reports no prompt part at
+        all (zero would read as a measured empty context rather than an absence)."""
         if not isinstance(report, dict):
             return None
-        uncached, read, write, output = (report.get(key) for key in cls._USAGE_KEYS[dialect])
-        if not any(isinstance(part, int) for part in (uncached, read, write)):
+        uncached, read, write, output = (part if isinstance(part := report.get(key), int) else None for key in cls._USAGE_KEYS[dialect])
+        if uncached is None and read is None and write is None:
             return None
-        read, write = (part if isinstance(part, int) else 0 for part in (read, write))
-        return TokenUsage(
-            input_tokens=(uncached if isinstance(uncached, int) else 0) + read + write,
-            cached_input_tokens=read, cache_write_input_tokens=write,
-            output_tokens=output if isinstance(output, int) else 0,
-        )
+        return TokenCounts(input=uncached, cache_read=read, cache_write=write, output=output)
 
-    def _settle_result(self, raw: dict, ledger: UsageLedger) -> tuple[TokenUsage | None, float | None]:
+    def _settle_result(self, raw: dict, ledger: UsageLedger) -> tuple[TokenCounts | None, float | None]:
         """The invocation's share of the truth, from its ``result`` line.
 
         ``result.usage`` covers only the main thread of THIS invocation; ``result.modelUsage``
@@ -1802,11 +1793,11 @@ class ClaudeCodeProvider(AgentProvider):
             usage = self._usage(msg.get("usage"))
             observed = None if usage is None else ledger.observe(
                 msg.get("id") if isinstance(msg.get("id"), str) else None,
-                usage.model_copy(update={"output_tokens": 0}),
+                usage.model_copy(update={"output": None}),
             )
-            live = {} if observed is None else observed.model_dump(exclude={"output_tokens"})
+            live: dict[str, object] = {} if observed is None else {"usage": observed}
             if usage is not None and raw.get("parent_tool_use_id") is None:
-                live["context_tokens"] = usage.input_tokens  # a subagent's call says nothing of this conversation
+                live["context_tokens"] = usage.prompt  # a subagent's call says nothing of this conversation
             if tool:
                 return AgentEvent(kind="tool", tool=tool, tool_input=tool_input, tool_id=tool_id,
                                   session_id=sid, raw_type=kind, **live)
@@ -1859,7 +1850,7 @@ class ClaudeCodeProvider(AgentProvider):
             reopens = info.get("resetsAt") if status == "rejected" else None
             if isinstance(reopens, (int, float)) and not isinstance(reopens, bool):
                 line += f"; resets {datetime.fromtimestamp(reopens, UTC).isoformat()}"
-            return AgentEvent(kind="rate_limit", session_id=sid, raw_type=kind, text=line, usage=self.usage(raw))
+            return AgentEvent(kind="rate_limit", session_id=sid, raw_type=kind, text=line, windows=self.usage(raw))
 
         if kind == "result":
             settled, cost = self._settle_result(raw, ledger)
@@ -1887,9 +1878,8 @@ class ClaudeCodeProvider(AgentProvider):
                 session_id=sid, raw_type=kind,
                 text=detail, cut=self.cut_of(detail, raw.get("api_error_status")) if failed else None,
                 cost_usd=cost,
-                final_text=has_final,
+                final_text=has_final, usage=settled,
                 **ContextGauge.reported({"context_window": window, "thinking_tokens": thought}),
-                **({} if settled is None else settled.model_dump()),
             )
 
         return AgentEvent(kind="other", session_id=sid, raw_type=kind)
@@ -2625,7 +2615,7 @@ class CodexProvider(AgentProvider):
         if event is None or "rate_limits" not in line or not (usage := self.usage(json.loads(line))):
             return event
         said = ", ".join(f"{window.window} {window.used_percent:g}%" for window in usage)
-        return event.model_copy(update={"usage": usage, **({"kind": "rate_limit", "text": f"usage: {said}"} if event.kind == "other" else {})})
+        return event.model_copy(update={"windows": usage, **({"kind": "rate_limit", "text": f"usage: {said}"} if event.kind == "other" else {})})
 
     def _parse_line(self, line: str, ledger: UsageLedger | None = None) -> AgentEvent | None:
         line = line.strip()
@@ -2688,16 +2678,14 @@ class CodexProvider(AgentProvider):
             usage = raw.get("usage")
             settled = None
             if isinstance(usage, dict) and isinstance(usage.get("input_tokens"), int):
-                settled, _ = ledger.settle({"": TokenUsage(**{
-                    field: value for field in TOKEN_FIELDS
-                    if isinstance(value := usage.get(field), int)
-                })}, None)
+                counts = (value if isinstance(value := usage.get(field), int) else None
+                          for field in ("input_tokens", "output_tokens", "cached_input_tokens", "cache_write_input_tokens"))
+                settled, _ = ledger.settle({"": TokenCounts.of_prompt(*counts)}, None)
             return AgentEvent(
                 kind="done",
                 session_id=session_id, turn_id=turn_id,
-                raw_type=kind,
+                raw_type=kind, usage=settled,
                 **ContextGauge.reported({"thinking_tokens": ledger.reasoned(usage.get("reasoning_output_tokens")) if isinstance(usage, dict) else None}),
-                **({} if settled is None else settled.model_dump()),
             )
         return AgentEvent(kind="other", raw_type=kind, text=_clip(line, 200))
 

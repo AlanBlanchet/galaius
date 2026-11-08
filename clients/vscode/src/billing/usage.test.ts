@@ -15,8 +15,7 @@ const mixed: UsageEntry[] = [
     provider: "claude",
     billing: "session_usage",
     outcome: "succeeded",
-    input_tokens: 12,
-    output_tokens: 3,
+    usage: { input: 12, output: 3 },
     cost: null,
   },
   {
@@ -26,8 +25,7 @@ const mixed: UsageEntry[] = [
     provider: "openai",
     billing: "metered_api",
     outcome: "succeeded",
-    input_tokens: 8,
-    output_tokens: 2,
+    usage: { input: 8, output: 2 },
     cost: 0.25,
   },
 ];
@@ -54,7 +52,7 @@ test("dashboard summary separates observed API dollars from unknown session acco
   const failedApi: UsageEntry = {
     timestamp: "2026-08-27T10:00:00Z", model: "openai/example", provider: "openai",
     backend: "api", billing: "metered_api", outcome: "failed",
-    input_tokens: 0, output_tokens: 0, cost: null,
+    usage: { input: 0, output: 0 }, cost: null,
   };
   assert.deepEqual(summarizeUsage([...mixed, failedApi]), {
     observedMeteredApiCost: 0.25,

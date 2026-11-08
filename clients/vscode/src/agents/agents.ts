@@ -18,6 +18,7 @@ import type {
   AgentRun as GeneratedAgentRun,
 } from "../generated/types";
 import { decodeAgentEvent, decodeAgentRun } from "../generated/types";
+import { olderWritten } from "../billing/tokenCounts.ts";
 
 /** Python owns every persisted field. The panel adds only the required display status, including
  * its synthetic declared roster row; no second wire contract lives here. */
@@ -68,7 +69,7 @@ export function readAgentRuns(): AgentRun[] {
   const runs: AgentRun[] = [];
   for (const name of names) {
     try {
-      const raw = decodeAgentRun(JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")));
+      const raw = decodeAgentRun(olderWritten(JSON.parse(fs.readFileSync(path.join(dir, name), "utf8"))));
       if (!agentFile(raw.run_id, ".json")) continue;
       const run: AgentRun = {
         ...raw,
@@ -87,7 +88,7 @@ export function readAgentRuns(): AgentRun[] {
         run.status === "running" ? streamEnded(run.run_id) : false,
         // Did it ever say anything? A vanished run that wrote a transcript finished; one that
         // wrote nothing is what a crash looks like. Only consulted when the stream cannot tell.
-        Boolean(run.last) || Boolean(run.output_tokens),
+        Boolean(run.last) || Boolean(run.usage?.output),
       );
       runs.push(run);
     } catch {
@@ -127,7 +128,7 @@ export type AgentActivity = GeneratedAgentEvent & Required<Pick<GeneratedAgentEv
 
 function decodeActivity(line: string): AgentActivity | null {
   try {
-    const event = decodeAgentEvent(JSON.parse(line));
+    const event = decodeAgentEvent(olderWritten(JSON.parse(line)));
     return { ...event, text: event.text ?? "" };
   } catch {
     return null;

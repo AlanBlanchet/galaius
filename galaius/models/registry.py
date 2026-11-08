@@ -6,6 +6,7 @@ import logging
 import os
 from typing import TYPE_CHECKING, ClassVar, Literal, Self
 
+from galaius_core import TokenCounts
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from galaius.catalog.published import PublishedTable
@@ -117,6 +118,13 @@ class TokenMix(BaseModel):
         if self.input + self.cache_read + self.cache_write + self.output <= 0:
             raise ValueError("a token mix needs at least one token")
         return self
+
+    @classmethod
+    def of(cls, counts: TokenCounts) -> Self | None:
+        """A workload's measured tokens as its mix; None before its first counted token."""
+        if counts.counted <= 0:
+            return None
+        return cls(input=counts.input or 0, cache_read=counts.cache_read or 0, cache_write=counts.cache_write or 0, output=counts.output or 0)
 
     def __str__(self) -> str:
         names = ("input", "cache read", "cache write", "output")

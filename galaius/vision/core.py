@@ -29,7 +29,7 @@ from galaius.vision.types import (
     VLMResult,
     compile_response_schema,
 )
-from galaius.vision.usage import log_api_attempt
+from galaius.vision.usage import log_api_attempt, response_usage
 from galaius.vision.workspace import _MediaWorkspace
 
 litellm = deferred("litellm")
@@ -406,8 +406,7 @@ async def _vision_completion(
         billing="metered_api",
         incremental_cost_usd=cost,
         api_equivalent_cost_usd=cost,
-        input_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
-        output_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
+        usage=response_usage(response),
     )
 
 
@@ -734,7 +733,6 @@ async def transcribe_audio(
     if text is None and isinstance(response, dict):
         text = response.get("text")
     cost = log_api_attempt(model, provider, response, effective_config)
-    usage = getattr(response, "usage", None)
     return VLMResult(
         text=text or "",
         elapsed=elapsed,
@@ -744,8 +742,7 @@ async def transcribe_audio(
         billing="metered_api",
         incremental_cost_usd=cost,
         api_equivalent_cost_usd=cost,
-        input_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
-        output_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
+        usage=response_usage(response),
     )
 
 

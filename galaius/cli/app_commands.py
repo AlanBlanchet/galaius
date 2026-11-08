@@ -476,8 +476,8 @@ def usage(
     )
     print(
         f"galaius usage ({window}) — {report.entries} calls, observed metered API spend "
-        f"${report.total_cost:.4f}{unknown}, {report.total_input:,} in / "
-        f"{report.total_output:,} out tokens\n"
+        f"${report.total_cost:.4f}{unknown}, {report.usage.prompt:,} in / "
+        f"{report.usage.output or 0:,} out tokens\n"
     )
     print(f"  {'model':<40} {'calls':>6} {'in':>10} {'out':>10} {'cost':>10}")
     for group in report.by_model:
@@ -489,8 +489,8 @@ def usage(
             else f"${group.cost:.4f}"
         )
         print(
-            f"  {group.name:<40} {group.calls:>6} {group.input_tokens:>10,} "
-            f"{group.output_tokens:>10,} {cost:>10}"
+            f"  {group.name:<40} {group.calls:>6} {group.usage.prompt:>10,} "
+            f"{group.usage.output or 0:>10,} {cost:>10}"
         )
     if len(report.by_provider) > 1:
         print("\n  by provider:")

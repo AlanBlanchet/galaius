@@ -11,7 +11,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Self
 
-from pydantic import BaseModel, ValidationError
+from galaius_core import TokenCounts
+from pydantic import BaseModel, Field, ValidationError
 
 from galaius.vision.usage_records import UsageEntry
 
@@ -28,16 +29,14 @@ class Group(BaseModel):
 
     name: str
     calls: int = 0
-    input_tokens: int = 0
-    output_tokens: int = 0
+    usage: TokenCounts = Field(default_factory=TokenCounts)
     cost: float = 0.0
     unknown_cost_calls: int = 0
     session_usage_calls: int = 0
 
     def add(self, entry: UsageEntry) -> None:
         self.calls += 1
-        self.input_tokens += entry.input_tokens
-        self.output_tokens += entry.output_tokens
+        self.usage += entry.usage
         if entry.cost is None:
             self.unknown_cost_calls += 1
         else:
@@ -50,8 +49,7 @@ class UsageReport(BaseModel):
     since_days: int | None
     entries: int
     total_cost: float
-    total_input: int
-    total_output: int
+    usage: TokenCounts
     unknown_cost_calls: int
     session_usage_calls: int
     by_model: list[Group]
@@ -92,8 +90,7 @@ class UsageReport(BaseModel):
             since_days=since_days,
             entries=len(entries),
             total_cost=sum(e.cost or 0 for e in entries),
-            total_input=sum(e.input_tokens for e in entries),
-            total_output=sum(e.output_tokens for e in entries),
+            usage=sum((e.usage for e in entries), TokenCounts()),
             unknown_cost_calls=sum(e.cost is None for e in entries),
             session_usage_calls=sum(e.billing == "session_usage" for e in entries),
             by_model=by_cost(models),

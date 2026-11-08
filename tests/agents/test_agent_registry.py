@@ -30,10 +30,10 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from galaius_core import StopActor
+from galaius_core import StopActor, TokenCounts
 from galaius.agents import registry as reg
 from galaius.agents.limits import quota
-from galaius.agents.transport.events import TOKEN_FIELDS, AgentEvent
+from galaius.agents.transport.events import AgentEvent
 from galaius.host.pinned_directory import DescriptorDirectory
 from galaius.host.private_files import PRIVATE_FILES
 from galaius.host.processes import process_exited
@@ -778,8 +778,8 @@ def test_the_tree_spans_providers():
 
 def test_cost_totals_come_from_the_events():
     register_run()
-    reg.append_event("r1", reg.AgentEvent(kind="text", output_tokens=10))
-    reg.append_event("r1", reg.AgentEvent(kind="done", cost_usd=0.25, output_tokens=4))
+    reg.append_event("r1", reg.AgentEvent(kind="text", usage=TokenCounts(output=10)))
+    reg.append_event("r1", reg.AgentEvent(kind="done", cost_usd=0.25, usage=TokenCounts(output=4)))
     run = reg.list_runs()[0]
     assert run.cost_usd == pytest.approx(0.25)
 
@@ -1506,15 +1506,11 @@ def test_token_use_accumulates_so_context_size_is_visible(tmp_path, monkeypatch)
     """"context" — you cannot see how much a running agent has consumed without this."""
     reg.register(run_id="r1", name="a", provider="claude", task="t", pid=None)
     for _ in range(2):
-        reg.append_event("r1", AgentEvent(kind="text", text="x", input_tokens=100,
-                                          output_tokens=20, cached_input_tokens=60,
-                                          cache_write_input_tokens=30))
+        reg.append_event("r1", AgentEvent(kind="text", text="x", usage=TokenCounts(input=10, output=20, cache_read=60, cache_write=30)))
     folded = reg.get_run("r1")
     healed = reg.list_runs()[0]
-    assert (healed.input_tokens, healed.output_tokens) == (200, 40)
-    assert (healed.cached_input_tokens, healed.cache_write_input_tokens) == (120, 60)
-    assert all(getattr(folded, f) == getattr(healed, f) for f in TOKEN_FIELDS), \
-        "the live fold and the self-heal must agree on every token field"
+    assert healed.usage == TokenCounts(input=20, output=40, cache_read=120, cache_write=60)
+    assert folded.usage == healed.usage, "the live fold and the self-heal must agree on every token figure"
 
 
 def test_tokens_accumulate_for_a_run_with_a_raw_vendor_stream(tmp_path, monkeypatch):
@@ -1539,7 +1535,7 @@ def test_tokens_accumulate_for_a_run_with_a_raw_vendor_stream(tmp_path, monkeypa
     raw.write_text("\n".join([block_line, block_line, result_line]) + "\n")
     assert reg.finish("r1", exit_code=0, first=0)
     stored = reg.get_run("r1")  # complete at termination, before anything lists runs
-    assert (stored.input_tokens, stored.cached_input_tokens, stored.output_tokens) == (800, 300, 40)
+    assert (stored.usage.prompt, stored.usage.cache_read, stored.usage.output) == (800, 300, 40)
     assert stored.cost_usd == 0.5
 
 
@@ -2086,7 +2082,7 @@ def test_an_attempt_is_read_from_its_anchor_as_the_whole_run_reads_it_past_there
         raw.write('{ not json\n{"type":"assistant","message":{"id":"half"')  # a corrupt line, then one being written
     lines = reg.raw_line_count("r1")
     assert lines == len(reg.raw_events_path("r1").read_text(encoding="utf-8").split("\n"))
-    ledger = {*TOKEN_FIELDS, "usage", "cost_usd", "context_window", "at"}
+    ledger = {"usage", "cost_usd", "context_window", "at"}
     every = [event.model_dump(exclude=ledger) for event in reg.events_from("r1", 0)]
     assert not reg.events_path("r1").exists()
     whole = reg.read_events("r1")

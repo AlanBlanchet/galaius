@@ -1,3 +1,4 @@
+from galaius_core import TokenCounts
 import asyncio
 import hashlib
 import hmac
@@ -327,7 +328,7 @@ def test_run_agent_forwards_tool_calls_with_arguments_results_and_the_final_toke
         AgentEvent(kind="tool", tool="Bash", tool_input="ls -la", tool_id="t1"),
         AgentEvent(kind="tool_result", text="total 8", tool_id="t1"),
         AgentEvent(kind="other", text="ignored"),
-        AgentEvent(kind="done", text="finished", final_text=True, input_tokens=1200, output_tokens=300, cost_usd=0.01),
+        AgentEvent(kind="done", text="finished", final_text=True, usage=TokenCounts(input=1200, output=300), cost_usd=0.01),
     ]
 
     class Process:
@@ -361,7 +362,7 @@ def test_run_agent_forwards_tool_calls_with_arguments_results_and_the_final_toke
         {"kind": "log", "level": "info", "logger": "galaius.machine.connection", "text": "agent run run-1 started", "agent_run_id": "run-1"},
         {"kind": "tool", "tool": "Bash", "tool_input": "ls -la", "tool_id": "t1"},
         {"kind": "tool_result", "text": "total 8", "tool_id": "t1"},
-        {"kind": "done", "text": "finished", "input_tokens": 1200, "output_tokens": 300, "cost_usd": 0.01},
+        {"kind": "done", "text": "finished", "usage": {"input": 1200, "output": 300}, "cost_usd": 0.01},
     ]
 
 

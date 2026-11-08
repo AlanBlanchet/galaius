@@ -66,7 +66,7 @@ function person(over: Partial<Worker> = {}): Worker {
     parent_run_id: null,
     project: "p",
     cost_usd: null,
-    input_tokens: null,
+    usage: null,
     idle_seconds: 0,
     ...over,
   } as Worker;

@@ -17,9 +17,9 @@ import tomllib
 from pathlib import Path
 
 import pytest
-from galaius_core import ContextGauge
+from galaius_core import ContextGauge, TokenCounts
 
-from galaius.agents.transport.events import TOKEN_FIELDS, AgentEvent, UsageLedger
+from galaius.agents.transport.events import AgentEvent, UsageLedger
 from galaius.agents.providers import (
     PROJECT_SETTINGS_OFF,
     PROVIDERS, ClaudeCodeProvider, CodexProvider, UnsupportedToolPolicy, provider_for,
@@ -640,8 +640,8 @@ def test_cost_and_tokens_come_off_the_result_event():
     # Claude Code reports API-equivalent cost even on a subscription run — this is what makes
     # per-agent cost real rather than a guess.
     assert done.cost_usd is not None and done.cost_usd > 0
-    assert done.output_tokens is not None
-    assert sum(e.input_tokens or 0 for e in events) == 106591, \
+    assert done.usage is not None and done.usage.output is not None
+    assert sum((e.usage for e in events if e.usage is not None), TokenCounts()).prompt == 106591, \
         "run accounting includes cached prompt tokens"
 
 
@@ -996,12 +996,8 @@ def test_session_usage_sums_to_vendor_truth(provider, stream, truth):
     ledger = UsageLedger()
     events = [e for line in stream if (e := PROVIDERS[provider].parse(json.dumps(line), ledger))]
     costs = [e.cost_usd for e in events if e.cost_usd is not None]
-    summed = tuple(sum(getattr(e, field) or 0 for e in events)
-                   for field in ("input_tokens", "cached_input_tokens",
-                                 "cache_write_input_tokens", "output_tokens"))
-    assert set(TOKEN_FIELDS) == {"input_tokens", "cached_input_tokens",
-                                 "cache_write_input_tokens", "output_tokens"}
-    assert summed == truth[:4]
+    usage = sum((e.usage for e in events if e.usage is not None), TokenCounts())
+    assert (usage.prompt, usage.cache_read or 0, usage.cache_write or 0, usage.output or 0) == truth[:4]
     assert (round(sum(costs), 8) if costs else None) == truth[4]
 
 
@@ -1013,7 +1009,7 @@ def test_no_usage_at_all_reports_nothing_rather_than_zero():
         "type": "assistant", "session_id": "s",
         "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
     }))
-    assert event.input_tokens is None
+    assert event.usage is None
 
 
 # ── A machine-readable list of definitions ──────────────────────────────────────────────────

@@ -60,7 +60,7 @@ def tree(folder: Path) -> str:
 def test_usage_windows_come_from_the_vendors_own_lines(provider: str, line: str, windows: list) -> None:
     event = PROVIDERS[provider].parse(line)
     assert event.kind == "rate_limit"
-    assert [(window.window, window.used_percent, window.resets_at.timestamp()) for window in event.usage] == windows
+    assert [(window.window, window.used_percent, window.resets_at.timestamp()) for window in event.windows] == windows
 
 
 def test_a_subscription_signs_in_and_out_in_its_own_folder_and_the_default_logins_never_change(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

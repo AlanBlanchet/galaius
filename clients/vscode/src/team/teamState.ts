@@ -4,7 +4,9 @@
  *  there because they're fetching a page right now. This is the pure half of that — no I/O, no
  *  rendering — so the mapping can be argued with in tests, not eyeballed on a canvas.
  */
+import type { TokenCounts } from "../generated/types";
 import type { Link, TeamState, Worker, ZoneId } from "./team";
+import { addCounts } from "../billing/tokenCounts.ts";
 
 /** One recorded step, as the panel already reads them. */
 export interface Step {
@@ -175,7 +177,7 @@ export interface RunLike {
   status: string;
   project?: string;
   cost_usd?: number | null;
-  input_tokens?: number | null;
+  usage?: TokenCounts | null;
   parent_run_id?: string | null;
   finished_at?: number | null;
   started_at?: number;
@@ -374,8 +376,7 @@ export function buildTeam(
       // rest made the map's team total disagree with the dashboard's on one screen.
       cost_usd: held.some((r) => r.cost_usd != null)
         ? held.reduce((sum, r) => sum + (r.cost_usd ?? 0), 0) : null,
-      input_tokens: held.some((r) => r.input_tokens != null)
-        ? held.reduce((sum, r) => sum + (r.input_tokens ?? 0), 0) : null,
+      usage: held.reduce<TokenCounts | null>((sum, r) => r.usage == null ? sum : sum == null ? r.usage : addCounts(sum, r.usage), null),
       idle_seconds: Math.max(0, now - since),
       started_at: run.started_at ?? null,
       finished_at: run.finished_at ?? null,

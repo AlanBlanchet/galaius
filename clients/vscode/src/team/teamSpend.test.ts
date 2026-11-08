@@ -49,11 +49,11 @@ test("it counts who is still working, since that is what is still spending", () 
 test("terminal lifecycle and known accounting survive either snapshot order", () => {
   const known = {
     run_id: "root", status: "done", cost_usd: 2.5,
-    input_tokens: 20, output_tokens: 10,
+    usage: { input: 20, output: 10 },
   } as AgentRun;
   const stale = {
     run_id: "root", status: "running", cost_usd: null,
-    input_tokens: 4, output_tokens: 2,
+    usage: { input: 4, output: 2 },
   } as AgentRun;
   for (const [stored, current] of [[known, stale], [stale, known]] as const) {
     const spend = teamSpend([stored], "root", [current]);

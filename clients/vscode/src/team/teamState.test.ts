@@ -80,13 +80,13 @@ import { buildTeam } from "./teamState.ts";
 
 const RUNS = [
   { run_id: "lead", name: "reviewer", agent: "code-reviewer", status: "running",
-    project: "galaius", cost_usd: 1.2, input_tokens: 90000, parent_run_id: null,
+    project: "galaius", cost_usd: 1.2, usage: { input: 90000 }, parent_run_id: null,
     started_at: 1000, last: "" },
   { run_id: "sub", name: "researcher", agent: "researcher", status: "running",
-    project: "galaius", cost_usd: 0.1, input_tokens: 5000, parent_run_id: "lead",
+    project: "galaius", cost_usd: 0.1, usage: { input: 5000 }, parent_run_id: "lead",
     started_at: 1000, last: "" },
   { run_id: "old", name: "perf", agent: null, status: "done", project: "galaius",
-    cost_usd: 0.5, input_tokens: 100, parent_run_id: null, started_at: 1, last: "" },
+    cost_usd: 0.5, usage: { input: 100 }, parent_run_id: null, started_at: 1, last: "" },
 ] as any[];
 
 const STEPS: Record<string, any> = {
@@ -589,14 +589,14 @@ test("one body carries the cost of ALL its errands", () => {
      its SPEAKING run's cost, silently dropping every other errand's. One agent, one body, the sum
      of everything it was asked to do. */
   const runs = [
-    { run_id: "a", name: "x", agent: "x", status: "done", started_at: 1, cost_usd: 2.5, input_tokens: 100 },
-    { run_id: "b", name: "x", agent: "x", status: "done", started_at: 2, cost_usd: 1.5, input_tokens: 50 },
+    { run_id: "a", name: "x", agent: "x", status: "done", started_at: 1, cost_usd: 2.5, usage: { input: 100 } },
+    { run_id: "b", name: "x", agent: "x", status: "done", started_at: 2, cost_usd: 1.5, usage: { input: 50, cache_read: 400 } },
   ];
   const team = buildTeam(runs as never[], () => [], 100, [], () => [], () => null,
     () => ({ id: "x", label: "x" }));
   assert.equal(team.workers.length, 1);
   assert.equal(team.workers[0].cost_usd, 4, "half the money vanished with the dedup");
-  assert.equal(team.workers[0].input_tokens, 150);
+  assert.deepEqual(team.workers[0].usage, { input: 150, output: null, cache_read: 400, cache_write: null, reasoning: null });
 });
 
 test("the speaking run never flickers between renders", () => {

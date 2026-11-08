@@ -54,7 +54,7 @@ def test_usage_aggregation_and_window(tmp_path: Path) -> None:
     # by_model sorted by cost desc; the big old gemini row dominates all-time
     assert report.by_model[0].name == "gemini/gemini-3-pro"
     gpt = next(g for g in report.by_model if g.name == "openai/gpt-4o")
-    assert gpt.calls == 2 and gpt.input_tokens == 3000 and round(gpt.cost, 2) == 0.30
+    assert gpt.calls == 2 and gpt.usage.prompt == 3000 and round(gpt.cost, 2) == 0.30
 
     windowed = UsageReport.build(since_days=7, path=log, now=now)
     assert windowed.entries == 3, "the 40-day-old row is excluded"

@@ -12,19 +12,14 @@ from collections.abc import Mapping
 from contextlib import suppress
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Literal, Self, TypedDict
+from typing import Any, Literal, Self, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from galaius_core import CompactionTrigger, ContextGauge, UsageWindow
+from galaius_core import CompactionTrigger, ContextGauge, TokenCounts, UsageWindow
 
-from galaius.lazy import deferred
+from galaius.older_tokens import older_tokens
 
-if TYPE_CHECKING:
-    from galaius.models.registry import TokenMix
-
-#: Loaded at its first use: the model registry stays out of every CLI start (`galaius --help` included).
-registry = deferred("galaius.models.registry")
 
 EventKind = Literal[
     "started",     # session is up (id, cwd, tools known)
@@ -199,55 +194,12 @@ class ConversationInteraction(BaseModel):
         return validated
 
 
-class TokenUsage(BaseModel):
-    """Token counts in the ONE meaning every provider is normalised to.
-
-    ``input_tokens`` is every prompt token the model processed, cache reads AND cache writes
-    included; ``cached_input_tokens`` and ``cache_write_input_tokens`` are subsets of it.
-    ``output_tokens`` includes reasoning / thinking.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    input_tokens: int = 0
-    cached_input_tokens: int = 0
-    cache_write_input_tokens: int = 0
-    output_tokens: int = 0
-
-    def __add__(self, other: "TokenUsage") -> "TokenUsage":
-        return TokenUsage(**{f: getattr(self, f) + getattr(other, f) for f in TOKEN_FIELDS})
-
-    def __sub__(self, other: "TokenUsage") -> "TokenUsage":
-        return TokenUsage(**{f: getattr(self, f) - getattr(other, f) for f in TOKEN_FIELDS})
-
-    def covers(self, other: "TokenUsage") -> bool:
-        """Every counter at least ``other``'s — true of a cumulative report and its past."""
-        return all(getattr(self, f) >= getattr(other, f) for f in TOKEN_FIELDS)
-
-    def since(self, previous: "TokenUsage") -> "TokenUsage":
-        """Growth of a cumulative counter; a counter that went BACKWARDS restarted from zero."""
-        return self - previous if self.covers(previous) else self
-
-    def mix(self) -> "TokenMix | None":
-        """These tokens as a `TokenMix` — how a workload splits between fresh input, cache reads,
-        cache writes and output; None before the first counted token."""
-        if self.input_tokens + self.output_tokens <= 0:
-            return None
-        fresh = self.input_tokens - self.cached_input_tokens - self.cache_write_input_tokens
-        return registry.TokenMix(input=max(fresh, 0), cache_read=self.cached_input_tokens,
-                        cache_write=self.cache_write_input_tokens, output=self.output_tokens)
-
-
-#: The token fields shared by :class:`TokenUsage`, :class:`AgentEvent` and the run record. Every
-#: fold, heal and persisted-field list iterates THIS tuple, so a field cannot be summed on one
-#: path and dropped on another.
-TOKEN_FIELDS: tuple[str, ...] = tuple(TokenUsage.model_fields)
 #: The context gauge fields shared by :class:`AgentEvent` and the run record (`AgentEvent.gauge_onto` folds them).
 CONTEXT_FIELDS: tuple[str, ...] = tuple(ContextGauge.model_fields)
 
 
 class _UsageCheckpoint(BaseModel):
-    usage: dict[str, TokenUsage]
+    usage: dict[str, TokenCounts]
     cost_usd: float | None
 
 
@@ -284,7 +236,7 @@ class UsageLedger(BaseModel):
     #: the turn's result: what caps the model's own window when the turn did not ask.
     compact_window: int | None = None
     seen: set[str] = Field(default_factory=set)
-    live: TokenUsage = TokenUsage()
+    live: TokenCounts = TokenCounts()
     checkpoints: list[_UsageCheckpoint] = Field(default_factory=list)
     #: Thinking tokens its CLI estimated for the turn in progress (Claude's `thinking_tokens` lines, their deltas
     #: summed: each thinking stretch restarts its own running total); the turn's end settles them (`settle_thinking`).
@@ -313,7 +265,7 @@ class UsageLedger(BaseModel):
         self.reasoning = cumulative
         return grown
 
-    def observe(self, key: str | None, usage: TokenUsage) -> TokenUsage | None:
+    def observe(self, key: str | None, usage: TokenCounts) -> TokenCounts | None:
         """A live figure, or None when this message's usage was already counted."""
         if key is not None:
             if key in self.seen:
@@ -323,14 +275,10 @@ class UsageLedger(BaseModel):
         return usage
 
     def settle(
-        self, cumulative: dict[str, TokenUsage], cost_usd: float | None,
-        local: TokenUsage | None = None,
-    ) -> tuple[TokenUsage, float | None]:
+        self, cumulative: dict[str, TokenCounts], cost_usd: float | None,
+        local: TokenCounts | None = None,
+    ) -> tuple[TokenCounts, float | None]:
         """This checkpoint's share of the stream's truth: tokens and API-equivalent cost."""
-        floor = {
-            key: usage - local if local is not None and key == self.primary else usage
-            for key, usage in cumulative.items()
-        }
 
         def restored_from(past: _UsageCheckpoint) -> bool:
             if cost_usd is not None and past.cost_usd is not None \
@@ -338,24 +286,17 @@ class UsageLedger(BaseModel):
                 return False
             if past.usage == cumulative:
                 return True  # one process reporting again (queued turns), nothing grew
-            return all(key in floor and floor[key].covers(usage)
+            return all(key in cumulative and cumulative[key].covers(usage + local if local is not None and key == self.primary else usage)
                        for key, usage in past.usage.items())
 
         baseline = next(
             (past for past in reversed(self.checkpoints) if restored_from(past)),
             _UsageCheckpoint(usage={}, cost_usd=None),
         )
-        grown = sum(
-            (usage - baseline.usage.get(key, TokenUsage()) for key, usage in cumulative.items()),
-            TokenUsage(),
-        )
+        grown = sum((usage - baseline.usage.get(key, TokenCounts()) for key, usage in cumulative.items()), TokenCounts())
         cost = None if cost_usd is None else cost_usd - (baseline.cost_usd or 0.0)
         self.checkpoints.append(_UsageCheckpoint(usage=cumulative, cost_usd=cost_usd))
-        delta = TokenUsage(**{
-            field: max(0, getattr(grown, field) - getattr(self.live, field))
-            for field in TOKEN_FIELDS
-        })
-        self.live = TokenUsage()
+        delta, self.live = grown - self.live, TokenCounts()
         return delta, cost
 
 
@@ -431,12 +372,9 @@ class AgentEvent(ContextGauge):
     # API-equivalent cost estimates usage VALUE, not billed spend. Charge path and account
     # impact remain separate typed facts; subscription usage may be included, limited, credited, or charged.
     cost_usd: float | None = None
-    #: Token figures in :class:`TokenUsage`'s meaning. Summed over a run's events they give the
-    #: run's totals: a checkpoint event carries only what live events had not yet counted.
-    input_tokens: int | None = None
-    output_tokens: int | None = None
-    cached_input_tokens: int | None = None
-    cache_write_input_tokens: int | None = None
+    #: The tokens it counted. Summed over a run's events they give the run's totals: a checkpoint event carries only
+    #: what live events had not yet counted. Left out when None.
+    usage: TokenCounts | None = Field(default=None, exclude_if=lambda value: value is None)
     raw_type: str = ""
     #: For an "error": what cut its turn from outside its work (`RunCut`); left out when None.
     cut: RunCut | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -452,11 +390,19 @@ class AgentEvent(ContextGauge):
     #: animation once at the right moment instead of guessing.
     at: float | None = None
     #: A `rate_limit` event's usage windows as the vendor reported them (`AgentProvider.usage`).
-    usage: tuple[UsageWindow, ...] = ()
+    windows: tuple[UsageWindow, ...] = ()
     #: A `compacted` event's trigger and its context size before (None when the provider does not say);
     #: its `context_tokens` is the size it left.
     compaction: CompactionTrigger | None = None
     compacted_from: int | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _older_line(cls, data: object) -> object:
+        """A line an older runtime wrote: its rate-limit windows under `usage`, its tokens in whole-prompt fields."""
+        if isinstance(data, dict) and isinstance(windows := data.get("usage"), list | tuple):
+            data = {**{key: item for key, item in data.items() if key != "usage"}, "windows": windows}
+        return older_tokens(data)
 
     @model_validator(mode="after")
     def _one_compaction(self) -> Self:

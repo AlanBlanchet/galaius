@@ -7,6 +7,7 @@
  *  CONTRACT only: no rendering, no I/O, so view and data can be built at the same time without
  *  drifting.
  */
+import type { TokenCounts } from "../generated/types";
 
 /** Where a worker stands. Zones are places, not tool categories: AT the library, not that they
  *  called a read tool. */
@@ -59,7 +60,8 @@ export interface Worker {
   parent_run_id: string | null;
   project: string;
   cost_usd: number | null;
-  input_tokens: number | null;
+  /** Its tokens over every errand it held; null before any was counted. */
+  usage: TokenCounts | null;
   /** Seconds since last activity — fades the ones who've stopped. */
   idle_seconds: number;
   /** Registry's own clock, carried so no view invents one. Optional: a fixture or old record may

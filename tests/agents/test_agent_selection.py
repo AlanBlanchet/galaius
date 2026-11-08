@@ -6,6 +6,7 @@ PATH, provider switched on, logged in, the requested mode and attachments unders
 or a failure once the child could act is the run's outcome, never a reason to try the next.
 """
 
+from galaius_core import TokenCounts
 import asyncio
 import json
 import os
@@ -230,7 +231,7 @@ def test_the_policy_bounds_and_the_roles_measured_mix_decide(team, scored, monke
     assert str(drop) == ("edge: near scores 59, less than 2 points below 60.5, for $4.00 vs $20.00 "
                          "per M tokens (over 1.5x)")
     run = register_run("writer", agent="tester")
-    reg.save_run(run.model_copy(update={"input_tokens": 100, "output_tokens": 900}))
+    reg.save_run(run.model_copy(update={"usage": TokenCounts(input=100, output=900)}))
     assert reg.token_mix("tester").shares == (0.1, 0.0, 0.0, 0.9)
     with scored("aa.coding_index", [("vendor-a", "cheap-in", 41, 1, 30), ("vendor-a", "cheap-out", 40, 30, 1)]):
         chat = rank("aa.coding_index", {}, providers=[alpha, beta])
@@ -247,7 +248,7 @@ def test_every_role_keeps_its_own_mix_however_busy_the_others(team, monkeypatch)
     monkeypatch.setattr(reg, "TOKEN_MIX_WINDOW", 2)
     def record(agent, when, input_tokens, output_tokens):
         run = register_run(f"{agent}-{when}", agent=agent)
-        reg.save_run(run.model_copy(update={"input_tokens": input_tokens, "output_tokens": output_tokens}))
+        reg.save_run(run.model_copy(update={"usage": TokenCounts(input=input_tokens, output=output_tokens)}))
         os.utime(reg.agents_dir() / f"{run.run_id}.json", ns=(when * 10**9, when * 10**9))
     record("tester", 1, 100, 900)
     for when, (fresh, out) in enumerate([(900, 100), (500, 500), (500, 500)], start=10):

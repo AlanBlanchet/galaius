@@ -15,8 +15,10 @@ import type {
   ConversationInteraction,
   ConversationRoute,
   InteractionSubmission,
+  TokenCounts,
 } from "../../generated/types";
 import type { BillingPresentation } from "../../billing/billingPresentation";
+import { latestCounts, promptTokens } from "../../billing/tokenCounts.ts";
 import type { TeamSpend } from "../../team/teamSpend";
 
 export interface Turn {
@@ -604,8 +606,7 @@ export interface ChatRun {
   cwd?: string;
   pid?: number | null;
   cost_usd?: number | null;
-  input_tokens?: number | null;
-  output_tokens?: number | null;
+  usage?: TokenCounts | null;
   /** How much this run was allowed to do on its own, in the words a person chose it by. Absent
    *  when nobody chose, which is not the same as unrestricted and must not read like it. */
   permission?: { label: string; unrestricted: boolean } | null;
@@ -749,8 +750,7 @@ export function mergeConversationRunSnapshot(
       finished_at: previous.finished_at,
       exit_code: previous.exit_code,
       cost_usd: previous.cost_usd ?? incoming.cost_usd,
-      input_tokens: Math.max(previous.input_tokens ?? 0, incoming.input_tokens ?? 0) || undefined,
-      output_tokens: Math.max(previous.output_tokens ?? 0, incoming.output_tokens ?? 0) || undefined,
+      usage: latestCounts(previous.usage, incoming.usage),
     } as AgentRun;
   }
   return {
@@ -758,8 +758,7 @@ export function mergeConversationRunSnapshot(
     ...incoming,
     status: nextStatus ?? previousStatus,
     cost_usd: incoming.cost_usd ?? previous.cost_usd,
-    input_tokens: Math.max(previous.input_tokens ?? 0, incoming.input_tokens ?? 0) || undefined,
-    output_tokens: Math.max(previous.output_tokens ?? 0, incoming.output_tokens ?? 0) || undefined,
+    usage: latestCounts(previous.usage, incoming.usage),
   } as AgentRun;
 }
 
@@ -1059,7 +1058,7 @@ function activityNode(view: ConversationActivityView, depth: number): string {
     ["Duration", durationOf(run) ?? (run.status === "running" ? "running" : "unknown")],
     ["Current tool", view.current_tool ?? "none"],
     ["Tools", tools],
-    ["Usage", `${run.input_tokens ?? "?"} in · ${run.output_tokens ?? "?"} out`],
+    ["Usage", `${promptTokens(run.usage) ?? "?"} in · ${run.usage?.output ?? "?"} out`],
     ["Billing", `${run.charge_path ?? "unknown"} · ${run.cost_certainty ?? "unknown"}`],
   ];
   const details = facts.map(([label, value]) =>
@@ -2230,7 +2229,7 @@ export function renderDetails(
   rows.push(["provider", [run.provider, run.model].filter(Boolean).join(" · ") || "—"]);
   rows.push([
     "context",
-    `${tokens(run.input_tokens)} in · ${tokens(run.output_tokens)} out` +
+    `${tokens(promptTokens(run.usage))} in · ${tokens(run.usage?.output)} out` +
       (run.cost_usd != null ? ` · ~$${run.cost_usd.toFixed(2)}` : ""),
   ]);
   if (run.cwd) rows.push(["working dir", run.cwd]);

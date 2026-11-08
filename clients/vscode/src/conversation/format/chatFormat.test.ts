@@ -134,7 +134,7 @@ const RUN = {
   name: "code-reviewer", provider: "claude", model: "sonnet", status: "running",
   agent: "code-reviewer", task: "Review the diff for correctness",
   cwd: "/tmp/project/dev/galaius", project: "galaius", pid: 4242,
-  cost_usd: 1.25, input_tokens: 120000, output_tokens: 8000,
+  cost_usd: 1.25, usage: { input: 120000, output: 8000 },
 } as any;
 
 test("the system prompt is reachable as a link", () => {

@@ -1,3 +1,4 @@
+from galaius_core import TokenCounts
 import ast
 import asyncio
 import hashlib
@@ -1593,8 +1594,7 @@ async def test_collaboration_is_discrete_idempotent_and_enriched_out_of_order(
         assert child["requested_model"] == "openai/example-child"
         assert child["status"] == "done"
         assert child["tools"] == ["commandExecution"]
-        assert child["input_tokens"] == 11
-        assert child["output_tokens"] == 7
+        assert (TokenCounts.model_validate(child["usage"]).prompt, child["usage"]["output"]) == (11, 7)
         assert child["started_at"] == 1.0
         assert child["finished_at"] == 2.0
         transcript = [json.loads(line) for line in child_path.with_suffix(".jsonl").read_text().splitlines()]
@@ -2088,8 +2088,7 @@ async def test_cumulative_usage_survives_turns_and_duplicate_snapshots(
 ) -> None:
     """The second turn applies cumulative input/output/cache totals exactly once."""
     _, stored = await _fragmented_two_turn_result(console_workspace)
-    assert (stored.input_tokens, stored.output_tokens) == (20, 10)
-    assert (stored.cached_input_tokens, stored.cache_write_input_tokens) == (4, 2)
+    assert (stored.usage.prompt, stored.usage.output, stored.usage.cache_read, stored.usage.cache_write) == (20, 10, 4, 2)
 
 
 async def test_cumulative_usage_survives_console_process_restart(
@@ -2122,8 +2121,7 @@ async def test_cumulative_usage_survives_console_process_restart(
         await _event(second, "done")
         stored = reg.get_run(started["run"]["run_id"])
         assert stored is not None
-        assert (stored.input_tokens, stored.output_tokens, stored.cached_input_tokens,
-                stored.cache_write_input_tokens) == (20, 10, 4, 2)
+        assert (stored.usage.prompt, stored.usage.output, stored.usage.cache_read, stored.usage.cache_write) == (20, 10, 4, 2)
     finally:
         await _stop_console(second)
 
@@ -2255,7 +2253,7 @@ def test_new_root_turn_ignores_stale_frames_from_prior_turn(console_workspace) -
     reg.save_run(reg.AgentRun(
         run_id=run_id, kind="conversation", provider="codex", name="root",
         cwd=str(workspace), root_run_id=run_id, provider_turn_id="turn-1",
-        status="done", finished_at=10, input_tokens=7, last="turn one complete",
+        status="done", finished_at=10, usage=TokenCounts(input=7), last="turn one complete",
     ))
     reg.append_event(run_id, AgentEvent(
         kind="started", status="running", turn_id="turn-2", at=20,
@@ -2264,7 +2262,7 @@ def test_new_root_turn_ignores_stale_frames_from_prior_turn(console_workspace) -
     assert before is not None
     reg.append_event(run_id, AgentEvent(
         kind="text", text="stale prior answer", status="running", turn_id="turn-1",
-        input_tokens=100, at=21,
+        usage=TokenCounts(input=100), at=21,
     ))
     after = reg.get_run(run_id)
     assert after is not None

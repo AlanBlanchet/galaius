@@ -90,7 +90,7 @@ export function fixture(at = Date.UTC(2026, 7, 18, 14, 3, 22)): TeamState {
       parent_run_id: parent ? `run-${parent}` : null,
       project,
       cost_usd: cost,
-      input_tokens: cost === null ? null : Math.round(cost * 42000),
+      usage: cost === null ? null : { input: Math.round(cost * 42000) },
       idle_seconds: idle,
       department: dept ?? undefined,
       room: dept ? ROOMS[dept] : undefined,

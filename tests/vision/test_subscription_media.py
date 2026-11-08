@@ -5,6 +5,7 @@ security boundary (argv, environment, staging, parsing, cancellation) without sp
 credits or reading either vendor's credential store.
 """
 
+from galaius_core import TokenCounts
 import asyncio
 import base64
 import json
@@ -112,7 +113,7 @@ async def test_failed_claude_process_retains_typed_events_and_process_facts(tmp_
         )
     failure = caught.value
     assert failure.events[0].session_id == "session-parsed"
-    assert failure.events[0].input_tokens == 17
+    assert failure.events[0].usage.prompt == 17
     assert all("RAW_SECRET_PROMPT" not in event.text for event in failure.events)
     assert failure.exit_code == 9 and failure.stderr_bytes > 0
     assert re.fullmatch(r"[0-9a-f]{64}", failure.stderr_sha256 or "")
@@ -121,10 +122,10 @@ async def test_failed_claude_process_retains_typed_events_and_process_facts(tmp_
 def test_media_result_is_a_normalized_typed_value() -> None:
     result = ClaudeCodeProvider().media_result([
         AgentEvent(kind="text", text="answer"),
-        AgentEvent(kind="done", input_tokens=3, output_tokens=2, cost_usd=0.1),
+        AgentEvent(kind="done", usage=TokenCounts(input=3, output=2), cost_usd=0.1),
     ])
     assert isinstance(result, _MediaResult)
-    assert result.text == "answer" and result.input_tokens == 3
+    assert result.text == "answer" and result.usage.prompt == 3
 
 
 def test_session_failure_fact_is_one_frozen_typed_shape() -> None:
@@ -152,8 +153,8 @@ async def test_post_parse_failures_retain_only_typed_facts(tmp_path: Path, mode:
     facts = caught.value.events
     assert facts and facts[0].session_id == "session-failed"
     # Only a result line measures output; an assistant line's output_tokens is a stream-start value.
-    assert sum(fact.input_tokens or 0 for fact in facts) == 17
-    assert sum(fact.output_tokens or 0 for fact in facts) == (9 if mode == "no_message" else 0)
+    counted = sum((fact.usage for fact in facts if fact.usage is not None), TokenCounts())
+    assert counted.prompt == 17 and (counted.output or 0) == (9 if mode == "no_message" else 0)
     assert all(not event.text and not event.tool_input for event in facts)
 
 
@@ -169,7 +170,7 @@ async def test_failed_claude_attempt_logs_retained_session_and_tokens_once(
     rows = [json.loads(line) for line in config.usage_log.read_text().splitlines()]
     assert len(rows) == 1
     assert rows[0]["session_id"] == "session-parsed"
-    assert rows[0]["input_tokens"] == 17 and rows[0]["output_tokens"] == 0
+    assert TokenCounts.model_validate(rows[0]["usage"]).prompt == 17 and not rows[0]["usage"].get("output")
 
 
 @pytest.mark.asyncio
@@ -1289,7 +1290,7 @@ async def test_transcription_api_usage_is_metered_in_the_selected_config(
     assert result.incremental_cost_usd == 0.031
     assert entry["backend"] == "api" and entry["provider"] == "openai"
     assert entry["billing"] == "metered_api" and entry["outcome"] == "succeeded"
-    assert entry["cost"] == 0.031 and entry["input_tokens"] == 23
+    assert entry["cost"] == 0.031 and TokenCounts.model_validate(entry["usage"]) == TokenCounts(input=23, output=4)
 
 
 @pytest.mark.asyncio

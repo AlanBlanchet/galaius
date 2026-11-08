@@ -37,12 +37,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, ClassVar, Literal, NamedTuple, Self, Unpack
 from uuid import UUID
 
-from pydantic import ConfigDict, BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
+from pydantic import ConfigDict, BaseModel, Field, PrivateAttr, ValidationInfo, field_validator, model_validator
 from galaius.agents.limits import quota
-from galaius_core import OPEN_MAX, OwnerQuestion, ASKED_BY_MAX, LaunchSkipReason, ReasoningLevel, RecordedReasoning, FILE_KEY, KEPT_FILE_MAX, MACHINE_AGENT_MEDIA, MEDIA_KEY, file_key, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor
+from galaius.older_tokens import older_tokens
+from galaius_core import OPEN_MAX, OwnerQuestion, ASKED_BY_MAX, LaunchSkipReason, ReasoningLevel, RecordedReasoning, FILE_KEY, KEPT_FILE_MAX, MACHINE_AGENT_MEDIA, MEDIA_KEY, file_key, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor, TokenCounts
 
 from galaius.agents.transport.events import (
-    CONTEXT_FIELDS, PERSON_SENDER, TOKEN_FIELDS, AgentEvent, MessageFields, RunCut, TokenUsage, UsageLedger, answered_line, its_work, model_spoke,
+    CONTEXT_FIELDS, PERSON_SENDER, AgentEvent, MessageFields, RunCut, UsageLedger, answered_line, its_work, model_spoke,
     received, stream_lines,
 )
 from galaius.agents.catalog.connection import CatalogConnection
@@ -236,7 +237,8 @@ class StreamDigest(BaseModel):
     #: The raw stream line its newest turn's answer sits on (`answered_line`); None mid-work.
     answered: int | None = None
     cost_usd: float | None = None
-    tokens: dict[str, int] = Field(default_factory=dict)
+    #: The tokens its events count (`AgentEvent.usage`, summed); None when none counted any.
+    usage: TokenCounts | None = None
     #: The context gauge its events fold to (`AgentEvent.gauge_onto`).
     context: ContextGauge = ContextGauge()
     #: `AgentRun.compacted_to` as its events say it.
@@ -248,7 +250,7 @@ class StreamDigest(BaseModel):
     def of(cls, source: str, events: Iterable[AgentEvent], viewer: str) -> Self:
         """Folded as the events come (`StreamReader`), none held but the newest ones its last line may need: a digest
         costs a line's memory, whatever the run's transcript grew to."""
-        seen, cost, tokens, context = False, None, {}, ContextGauge()
+        seen, cost, usage, context = False, None, None, ContextGauge()
         work = answer = None  # its newest event about its own work (`ending_of`), the same past the messages sent to it (`answered_line`)
         compacted: int | None = None
         said: list[AgentEvent] = []  # its newest event that summarises to something without a lookup, then the messages after it
@@ -256,9 +258,8 @@ class StreamDigest(BaseModel):
             seen = True
             if event.cost_usd is not None:
                 cost = (0 if cost is None else cost) + event.cost_usd
-            for field in TOKEN_FIELDS:
-                if (used := getattr(event, field)) is not None:
-                    tokens[field] = tokens.get(field, 0) + used
+            if event.usage is not None:
+                usage = event.usage if usage is None else usage + event.usage
             context = context.model_copy(update=event.gauge_onto(context))
             if its_work(event, viewer):
                 work = event
@@ -277,7 +278,7 @@ class StreamDigest(BaseModel):
             ending_text=(ending.text or "") if ending is not None else "",
             cut=ending.cut if ending is not None else None,
             answered=answer.raw_index if answer is not None and answer.kind == "done" else None,
-            cost_usd=cost, tokens=tokens,
+            cost_usd=cost, usage=usage,
             last=next((line for e in reversed(said) if (line := e.summary(viewer=viewer))), None),
             compacted_to=compacted,
         )
@@ -554,6 +555,12 @@ class AgentRun(ContextGauge):
         """A run id or nothing: a record edited by hand never names a successor nothing can resolve."""
         return value if isinstance(value, str) and _is_run_id(value) else None
 
+    @model_validator(mode="before")
+    @classmethod
+    def older_record(cls, data: object) -> object:
+        """A record an older runtime wrote: its tokens in whole-prompt fields, read as its `usage` (`older_tokens`)."""
+        return older_tokens(data)
+
     @field_validator("status", mode="before")
     @classmethod
     def settled_word(cls, value: object) -> object:
@@ -563,12 +570,9 @@ class AgentRun(ContextGauge):
     #: by ``charge_path`` and ``cost_certainty`` and remains unknown without provider evidence.
     cost_usd: float | None = None
     #: Cumulative token use — how much CONTEXT this run has consumed, which is invisible from a
-    #: cost figure alone (two models at the same price consume very differently). Same meaning
-    #: as :class:`galaius.agents.transport.events.TokenUsage`; always the sum over the run's events.
-    input_tokens: int | None = None
-    output_tokens: int | None = None
-    cached_input_tokens: int | None = None
-    cache_write_input_tokens: int | None = None
+    #: cost figure alone (two models at the same price consume very differently); always the sum
+    #: over the run's events (`AgentEvent.usage`). None before its first counted token.
+    usage: TokenCounts | None = None
     last: str = ""
     stream_digest: StreamDigest | None = None
 
@@ -1500,7 +1504,7 @@ def finish(
             else "failed" if exit_code is not None
             else _status_for(stored)
         )
-        if status == "done" and (stored.output_tokens or 0) > 0:
+        if status == "done" and ((stored.usage and stored.usage.output) or 0) > 0:
             quota.served(stored.provider, stored.model, subscription=stored.subscription_id)  # it answered: nothing holds against it
         # What its turn's own lines say of the run, as a stream reader writes it (`read_events`): no other reader may run
         # here (a computer with no run-mirror holder), and a provider that names its session only in its stream is resumed by it.
@@ -1762,7 +1766,7 @@ def subscription_heard(run: AgentRun, events: list[AgentEvent]) -> None:
     At a cap they reach (this run's allowance counted), the cap goes on the run (`RunSubscription.capped`)
     and, at `cut`, the run is stopped there; at `finish` its turn ends as it would, and its next turn
     is refused while the window stays at the cap (`RunSubscription.check`)."""
-    windows = tuple(window for event in events for window in event.usage)
+    windows = tuple(window for event in events for window in event.windows)
     if not windows or run.subscription is None or run.subscription.subscription_id is None:
         return
     try:
@@ -1786,7 +1790,7 @@ def _merge_record_locked(run_id: str, updates: dict) -> AgentRun | None:
         raw = json.loads(payload)
         if not isinstance(raw, dict) or raw.get("run_id") != run_id:
             return None
-        merged = {**raw, **updates}
+        merged = older_tokens({**raw, **updates})  # an older record is written back in the one spelling
         validated = AgentRun.model_validate(merged)
     except (TypeError, ValueError, json.JSONDecodeError):
         return None
@@ -1888,7 +1892,7 @@ def _write(run: AgentRun) -> None:
             raw = json.loads(payload)
         except (TypeError, ValueError, json.JSONDecodeError):
             raw = {}
-        merged = {**raw, **run.model_dump(mode="json")}
+        merged = older_tokens({**raw, **run.model_dump(mode="json")})
         _replace_private(_record_path(run.run_id), json.dumps(merged, ensure_ascii=False).encode())
 
 
@@ -1980,7 +1984,7 @@ def append_event(run_id: str, event: AgentEvent) -> None:
             # error can no longer shorten what the rate-limit line already wrote (`record_refusal`
             # never lowers a live block), so hearing both is strictly better than hearing one.
             _remember_vendor_refusal(stored, event.text, cut=event.cut)
-        elif event.kind in ("text", "tool", "thinking") and (event.input_tokens or 0) > 0:
+        elif event.kind in ("text", "tool", "thinking") and event.usage is not None and event.usage.prompt > 0:
             # The MODEL answering — a turn that read tokens; the CLI's own notice reads none:
             # whatever an earlier refusal left against it is over, whatever reset it named. An
             # `allowed` rate-limit line proves nothing: one pool can allow while another refuses.
@@ -2003,10 +2007,8 @@ def append_event(run_id: str, event: AgentEvent) -> None:
             updates["cost_usd"] = (stored.cost_usd or 0.0) + event.cost_usd
         if event.kind == "tool" and event.tool is not None and event.tool not in stored.tools:
             updates["tools"] = [*stored.tools, event.tool]
-        for field in TOKEN_FIELDS:
-            used = getattr(event, field)
-            if used is not None:
-                updates[field] = (getattr(stored, field) or 0) + used
+        if event.usage is not None:
+            updates["usage"] = (event.usage if stored.usage is None else stored.usage + event.usage).model_dump(mode="json", exclude_none=True)
         updates.update(event.gauge_onto(stored))
         if event.kind == "compacted":
             updates["compacted_to"] = event.context_tokens
@@ -2833,7 +2835,8 @@ def _derive(run: AgentRun) -> AgentRun:
     if digest.events:
         # Tokens beside cost: cost alone hides how much CONTEXT a run consumed, and two models at
         # the same price consume very differently.
-        for field, used in (digest.tokens | digest.context.model_dump()).items():
+        run.usage = digest.usage
+        for field, used in digest.context.model_dump().items():
             setattr(run, field, used)
         run.cost_usd, run.last = digest.cost_usd, digest.last if digest.last is not None else run.last
         run.compacted_to = digest.compacted_to
@@ -2841,7 +2844,7 @@ def _derive(run: AgentRun) -> AgentRun:
     # Persist whatever we healed — status included. The panel reads these files directly and does
     # its own (downgrade-only) liveness check, so a status left stale on disk reappears there as
     # "interrupted" no matter what Python worked out in memory.
-    owned = {"project", "status", "finished_at", "cost_usd", *TOKEN_FIELDS, *CONTEXT_FIELDS, "last", "unit", "interruption",
+    owned = {"project", "status", "finished_at", "cost_usd", "usage", *CONTEXT_FIELDS, "last", "unit", "interruption",
              "stream_digest"}
     healed = run.model_dump(mode="json", include=owned)
     updates = {field: value for field, value in healed.items() if value != original.get(field)}
@@ -2871,7 +2874,7 @@ def _derive(run: AgentRun) -> AgentRun:
             # model's answer proves the model serves — as `finish` says for a reaped one — but only
             # against what was heard before that answer.
             elif (ending == "done" and original.get("status") not in ("done", "waiting")
-                    and (run.output_tokens or 0) > 0 and (answered := vendor_said_at(run)) is not None):
+                    and ((run.usage and run.usage.output) or 0) > 0 and (answered := vendor_said_at(run)) is not None):
                 quota.served(run.provider, run.model, subscription=run.subscription_id, at=answered)
     return run
 
@@ -3400,11 +3403,11 @@ TOKEN_MIX_WINDOW = 300
 
 #: Each record's role and tokens, keyed by run id with the (mtime_ns, size) they were read at —
 #: so a fresh process re-parses only the records written since, never the whole history.
-TOKEN_INDEX_NAME = "token-mix.index"
+USAGE_INDEX_FILE = "token-counts.index"
 
 #: (run folder, its mtime_ns, window) -> each role's summed tokens. Every record write replaces a
 #: file in the folder, which moves the folder's mtime: ONE stat says whether anything changed.
-_TOKEN_TOTALS: tuple[tuple[str, int, int], dict[str, TokenUsage]] | None = None
+_TOKEN_TOTALS: tuple[tuple[str, int, int], dict[str, TokenCounts]] | None = None
 class TokenIndexEntry(BaseModel):
     """One run record as the token index read it: its (mtime_ns, size) then, its role and tokens.
     `settled` is False when it was read inside the racy window: a later process re-reads it, since
@@ -3413,7 +3416,7 @@ class TokenIndexEntry(BaseModel):
     size: int
     settled: bool
     agent: str | None = None
-    tokens: TokenUsage = Field(default_factory=TokenUsage)
+    usage: TokenCounts = Field(default_factory=TokenCounts)
 
 
 class TokenIndex(BaseModel):
@@ -3428,7 +3431,7 @@ _TOKEN_INDEX: TokenIndex | None = None
 _RACY_NS = 100_000_000
 
 
-def _token_totals() -> dict[str, TokenUsage]:
+def _token_totals() -> dict[str, TokenCounts]:
     """Each role's tokens over its `TOKEN_MIX_WINDOW` newest runs on this machine. One stat when
     nothing changed; else a stat of each record, re-reading only those the token index has not
     seen at their current size and mtime, and the index rewritten when it moved."""
@@ -3442,7 +3445,7 @@ def _token_totals() -> dict[str, TokenUsage]:
     key = (str(folder), moved, TOKEN_MIX_WINDOW)  # read BEFORE listing: a write during it re-lists next call
     if _TOKEN_TOTALS is not None and _TOKEN_TOTALS[0] == key:
         return _TOKEN_TOTALS[1]
-    index_path = folder / TOKEN_INDEX_NAME
+    index_path = folder / USAGE_INDEX_FILE
     if _TOKEN_INDEX is None:
         try:
             _TOKEN_INDEX = TokenIndex.model_validate_json(_read_private(index_path) or b"{}")
@@ -3460,19 +3463,19 @@ def _token_totals() -> dict[str, TokenUsage]:
             run = _read_record(path.stem) if racy else _stat_cached_record(path)
             entry = TokenIndexEntry(mtime_ns=stat.st_mtime_ns, size=stat.st_size, settled=not racy,
                                     agent=run.agent if run is not None else None,
-                                    tokens=TokenUsage(**{name: (getattr(run, name) or 0) if run is not None else 0 for name in TOKEN_FIELDS}))
+                                    usage=(run.usage if run is not None else None) or TokenCounts())
         index.entries[path.stem] = entry
     if index.entries != known:
         with suppress(OSError):
             _replace_private(index_path, index.model_dump_json().encode())
     _TOKEN_INDEX = index
-    totals: dict[str, TokenUsage] = {}
+    totals: dict[str, TokenCounts] = {}
     counted: dict[str, int] = {}
     for entry in sorted(index.entries.values(), key=lambda entry: entry.mtime_ns, reverse=True):
         if not entry.agent or counted.get(entry.agent, 0) >= TOKEN_MIX_WINDOW:
             continue
         counted[entry.agent] = counted.get(entry.agent, 0) + 1
-        totals[entry.agent] = totals.get(entry.agent, TokenUsage()) + entry.tokens
+        totals[entry.agent] = totals.get(entry.agent, TokenCounts()) + entry.usage
     _TOKEN_TOTALS = (key, totals) if moved < now - _RACY_NS else None
     return totals
 
@@ -3480,7 +3483,7 @@ def _token_totals() -> dict[str, TokenUsage]:
 def token_mix(agent: str | None) -> TokenMix:
     """How `agent`'s recent runs on this machine spent their tokens, summed — the workload its model
     prices are read at. The default mix for no agent, or one with no counted token."""
-    return _token_totals().get(agent or "", TokenUsage()).mix() or TokenMix()
+    return TokenMix.of(_token_totals().get(agent or "", TokenCounts())) or TokenMix()
 
 
 def forget(run_id: str) -> bool:

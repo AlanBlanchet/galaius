@@ -7,6 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Literal, NotRequired, Required
 
+from galaius_core import TokenCounts
 from pydantic import PrivateAttr, TypeAdapter
 from typing_extensions import TypedDict
 
@@ -184,8 +185,8 @@ class _CompletionTransport(_ConversationTransport):
                 AgentEvent(
                     kind="done", event_id=f"{turn_id}:done", turn_id=turn_id,
                     agent_run_id=run_id, text=text,
-                    input_tokens=usage.get("prompt_tokens"),
-                    output_tokens=usage.get("completion_tokens"), status="completed",
+                    usage=None if usage.get("prompt_tokens") is None and usage.get("completion_tokens") is None
+                    else TokenCounts.of_prompt(usage.get("prompt_tokens"), usage.get("completion_tokens")), status="completed",
                 ),
             )
         except asyncio.CancelledError:
