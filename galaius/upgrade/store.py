@@ -94,14 +94,14 @@ class Runtime(BaseModel):
 
     @property
     def python(self) -> Path:
-        """Its interpreter: a virtual environment's, else (the self-contained program, an interpreter
-        folder of its own) the one at its root. On Windows the console `python.exe` even under pythonw:
-        a child's console is hidden (`galaius.host.windowless`) and shared by what it starts, which a
-        windowless child's is not."""
-        if sys.platform == "win32":
-            venv = self.path / "Scripts" / "python.exe"
-            return venv if venv.is_file() else self.path / "python.exe"
-        return self.path / "bin" / "python"
+        """Its interpreter: a virtual environment's, else that of an interpreter folder of its own (the
+        self-contained program, or the system Python a development install's environment was made from,
+        which may carry only `python3`). On Windows the console `python.exe` even under pythonw: a child's
+        console is hidden (`galaius.host.windowless`) and shared by what it starts, which a windowless
+        child's is not."""
+        candidates = (self.path / "Scripts" / "python.exe", self.path / "python.exe") if sys.platform == "win32" \
+            else (self.path / "bin" / "python", self.path / "bin" / "python3")
+        return next((candidate for candidate in candidates if candidate.is_file()), candidates[0])
 
     def command(self, arguments: tuple[str, ...]) -> list[str]:
         """`galaius <arguments>` in this runtime, isolated (`-I`): the working directory, user site

@@ -26,7 +26,7 @@ import urllib.request
 import zipfile
 from importlib.metadata import PathDistribution
 from pathlib import Path, PurePosixPath
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -52,10 +52,28 @@ class Interpreter(BaseModel):
         return f"https://github.com/astral-sh/python-build-standalone/releases/download/{self.build}/{self.asset(triple).replace('+', '%2B')}"
 
 
+class Layout(BaseModel):
+    """How one family of systems lays out an interpreter folder, and how a launcher there starts it."""
+
+    model_config = ConfigDict(frozen=True)
+    #: `site-packages`, relative to the folder; `{minor}` is the interpreter's `X.Y`.
+    site: str
+    #: Where `sysconfig` puts the interpreter's programs (galaius's `Uv.find`, its sign-in helper look there).
+    scripts: str
+    suffix: str
+    #: The launcher format: a POSIX shell script, or distlib's Windows console launcher.
+    launcher: Literal["posix", "windows"]
+
+    def program(self, name: str) -> str:
+        return f"{name}{self.suffix}"
+
+
+POSIX = Layout(site="lib/python{minor}/site-packages", scripts="bin", suffix="", launcher="posix")
+WINDOWS = Layout(site="Lib/site-packages", scripts="Scripts", suffix=".exe", launcher="windows")
+
+
 class Target(BaseModel):
-    """One system the program runs on: where its CPython comes from, which wheels fit it, and how
-    its interpreter folder is laid out (POSIX `bin/` + `lib/pythonX.Y/`, or Windows `python.exe` at
-    the root + `Lib/` + `Scripts/`)."""
+    """One system the program runs on: where its CPython comes from, which wheels fit it, its layout."""
 
     model_config = ConfigDict(frozen=True)
     name: str
@@ -65,29 +83,24 @@ class Target(BaseModel):
     wheels: str
     #: sha256 of `Interpreter.asset(triple)`, from the release's SHA256SUMS.
     interpreter_sha256: str
-    windows: bool = False
+    layout: Layout = POSIX
 
     @property
     def archive(self) -> str:
         return f"galaius-{self.name}.tar.gz"
 
     def site_packages(self, root: Path, interpreter: Interpreter) -> Path:
-        major, minor = interpreter.minor
-        return root / "Lib" / "site-packages" if self.windows else root / "lib" / f"python{major}.{minor}" / "site-packages"
+        return root / self.layout.site.format(minor=".".join(map(str, interpreter.minor)))
 
     def scripts(self, root: Path) -> Path:
-        """Where `sysconfig` puts this interpreter's programs (galaius's `Uv.find` looks there)."""
-        return root / ("Scripts" if self.windows else "bin")
-
-    def program(self, name: str) -> str:
-        return f"{name}.exe" if self.windows else name
+        return root / self.layout.scripts
 
 
 INTERPRETER = Interpreter()
 TARGETS: tuple[Target, ...] = (
     Target(name="linux-x86_64", triple="x86_64-unknown-linux-gnu", wheels="x86_64-manylinux_2_28",
            interpreter_sha256="459ed79967acc207bef2ff5124dac35d74d5108528e37b15395d14e2922f2c92"),
-    Target(name="windows-x86_64", triple="x86_64-pc-windows-msvc", wheels="x86_64-pc-windows-msvc", windows=True,
+    Target(name="windows-x86_64", triple="x86_64-pc-windows-msvc", wheels="x86_64-pc-windows-msvc", layout=WINDOWS,
            interpreter_sha256="7c3159205dda0289a47e6dd1226c4e5800b1f99a03146cdc25a41fed8ef74f5a"),
     Target(name="macos-arm64", triple="aarch64-apple-darwin", wheels="aarch64-apple-darwin",
            interpreter_sha256="795a5aeeb050f00aa8a2214d779bad9f1b9113edb6923317a80c042a11a087d7"),
@@ -95,33 +108,41 @@ TARGETS: tuple[Target, ...] = (
 
 
 class Launcher(BaseModel):
-    """A console script of galaius (its `entry_points.txt`) as a program beside the interpreter, which it
-    names relative to itself: the folder can sit anywhere, under any name."""
+    """A console script of galaius (its `entry_points.txt`) as a program one folder below the interpreter
+    folder, which it names relative to itself: the folder can sit anywhere, under any name. Every one goes in
+    the scripts folder; the person's own commands (`on_path`) also go in `commands/`, the one folder the
+    installers put on PATH (the scripts folder also holds uv, which is no command of his)."""
 
     model_config = ConfigDict(frozen=True)
     name: str
     module: str
     function: str
 
-    #: POSIX: follows a link to itself (the `galaius` on PATH) back to the interpreter folder.
+    on_path: ClassVar[frozenset[str]] = frozenset({"galaius"})
+    commands: ClassVar[str] = "commands"
+    #: POSIX: follows a link to itself back to its folder, then to the interpreter beside it.
     posix: ClassVar[str] = ('#!/bin/sh\nhere="$(dirname "$(readlink -f "$0")")"\n'
-                            'exec "$here/python3" -I -c \'import sys; sys.argv[0] = "{name}"; from {module} import {function}; sys.exit({function}())\' "$@"\n')
+                            'exec "$here/../bin/python3" -I -c \'import sys; sys.argv[0] = "{name}"; from {module} import {function}; sys.exit({function}())\' "$@"\n')
     #: Windows: distlib's console launcher, then its shebang (`<launcher_dir>` = the launcher's folder), then a
-    #: zip whose `__main__.py` the interpreter runs.
-    shebang: ClassVar[bytes] = b'#!"<launcher_dir>\\..\\python.exe"\n'
+    #: zip whose `__main__.py` the interpreter runs, isolated like every runtime command.
+    shebang: ClassVar[bytes] = b'#!"<launcher_dir>\\..\\python.exe" -I\n'
 
-    def write(self, target: Target, root: Path, windows_launcher: bytes | None) -> None:
-        path = target.scripts(root) / target.program(self.name)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if not target.windows:
-            path.write_text(self.posix.format(name=self.name, module=self.module, function=self.function), encoding="utf-8")
-            path.chmod(0o755)
-            return
+    def content(self, layout: Layout, windows_launcher: bytes | None) -> bytes:
+        if layout.launcher == "posix":
+            return self.posix.format(name=self.name, module=self.module, function=self.function).encode()
         main = f"import sys\nfrom {self.module} import {self.function}\nif __name__ == '__main__':\n    sys.exit({self.function}())\n"
         payload = io.BytesIO()
         with zipfile.ZipFile(payload, "w") as archive:
             archive.writestr("__main__.py", main)
-        path.write_bytes(windows_launcher + self.shebang + payload.getvalue())
+        return windows_launcher + self.shebang + payload.getvalue()
+
+    def write(self, target: Target, root: Path, windows_launcher: bytes | None) -> None:
+        content = self.content(target.layout, windows_launcher)
+        for folder in (target.scripts(root), *([root / self.commands] if self.name in self.on_path else [])):
+            path = folder / target.layout.program(self.name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+            path.chmod(0o755)
 
     @classmethod
     def of(cls, site: Path) -> tuple["Launcher", ...]:
@@ -174,12 +195,12 @@ class Bundler(BaseModel):
             # `--target` puts programs in <site>/bin (<site>/Scripts when building on Windows), scripts naming
             # THIS builder's interpreter: only uv's own binary is kept, where this interpreter's programs go.
             programs = [folder for folder in (site / "bin", site / "Scripts") if folder.is_dir()]
-            (uv,) = [found for folder in programs if (found := folder / target.program("uv")).is_file()]
+            (uv,) = [found for folder in programs if (found := folder / target.layout.program("uv")).is_file()]
             target.scripts(root).mkdir(exist_ok=True)
             uv.replace(target.scripts(root) / uv.name)
             for folder in programs:
                 shutil.rmtree(folder)
-            windows_launcher = (site / "pip" / "_vendor" / "distlib" / "t64.exe").read_bytes() if target.windows else None
+            windows_launcher = (site / "pip" / "_vendor" / "distlib" / "t64.exe").read_bytes() if target.layout.launcher == "windows" else None
             self.pruned(target, root, site)
             for launcher in Launcher.of(site):
                 launcher.write(target, root, windows_launcher)

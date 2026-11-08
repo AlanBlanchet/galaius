@@ -262,6 +262,17 @@ def test_a_server_offering_no_release_says_so(tmp_path, signer, published, monke
     assert "offers no release (it has published none yet) (HTTP 404)" in checker(tmp_path, signer, published, monkeypatch).run()
 
 
+@pytest.mark.parametrize("layout", [("Scripts/python.exe", "python.exe") if sys.platform == "win32" else ("bin/python", "bin/python3")])
+def test_a_runtime_is_a_virtual_environment_or_an_interpreter_folder_with_only_python3(tmp_path, layout) -> None:
+    """A venv names `bin/python`; the self-contained program and a system Python (Debian's /usr, the base a
+    development install upgrades from) may carry only their own name for it."""
+    venv, folder = layout
+    for present, expected in ((folder, folder), (venv, venv)):
+        (tmp_path / present).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / present).write_text("")
+        assert Runtime(path=tmp_path).python == tmp_path / expected
+
+
 def test_uv_is_the_one_installed_with_galaius_never_one_on_path(monkeypatch) -> None:
     monkeypatch.setenv("PATH", "")
     assert Uv.find().path == Path(sysconfig.get_path("scripts")) / ("uv.exe" if sys.platform == "win32" else "uv")
