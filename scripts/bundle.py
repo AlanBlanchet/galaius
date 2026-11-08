@@ -213,15 +213,26 @@ class Bundler(BaseModel):
             # The folder is never edited once unpacked: bytecode is checked by nothing but its presence.
             compileall.compile_dir(root, quiet=2, workers=0, invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
             if target.native == f"{sys.platform}-{platform.machine()}":
-                # Started as a person's computer starts it: its own command, no variable of this builder's.
-                command = root / Launcher.commands / target.layout.program("galaius")
-                clean = {name: value for name, value in os.environ.items() if not name.startswith(("PYTHON", "VIRTUAL_ENV", "UV_"))}
-                said = subprocess.run([str(command), "--version"], env=clean, capture_output=True, text=True, timeout=120, check=False)
-                if said.returncode != 0 or said.stdout.strip() != release.version:
-                    raise SystemExit(f"the built program does not start: {command} --version said {(said.stdout + said.stderr).strip()[-500:]!r}")
+                self.started(target, root, release, work / "home")
             return self.packed(root, self.out / target.archive)
         finally:
             shutil.rmtree(work, ignore_errors=True)
+
+    #: Every variable naming where a galaius keeps its data, settings and runtimes.
+    homes: ClassVar[tuple[str, ...]] = ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_DATA_HOME", "XDG_CONFIG_HOME",
+                                        "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_BIN_HOME", "GALAIUS_RUNTIMES")
+
+    @classmethod
+    def started(cls, target: Target, root: Path, release: Release, home: Path) -> None:
+        """The built program started once, as a person's computer starts it (its own command, no variable of
+        this builder's) but in a home of its own: a newer build started against this computer's own data would
+        become ITS active runtime (a scratch build once replaced the running service of the computer building it)."""
+        command = root / Launcher.commands / target.layout.program("galaius")
+        clean = {name: value for name, value in os.environ.items() if not name.startswith(("PYTHON", "VIRTUAL_ENV", "UV_", "GALAIUS_"))}
+        clean |= {name: str(home / name.lower()) for name in cls.homes}
+        said = subprocess.run([str(command), "--version"], env=clean, capture_output=True, text=True, timeout=120, check=False)
+        if said.returncode != 0 or said.stdout.strip() != release.version:
+            raise SystemExit(f"the built program does not start: {command} --version said {(said.stdout + said.stderr).strip()[-500:]!r}")
 
     #: What nothing in the program runs: build headers and manuals, the interpreter's own installers and
     #: editor, pip (uv installs upgrades), and the test suites packages ship.
