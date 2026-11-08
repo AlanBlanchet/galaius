@@ -34,15 +34,18 @@ def machine_connect(
 
 
 @machine_app.command(name="service")
-def machine_service(action: Literal["status", "start", "stop", "restart", "run"] = "status") -> None:
+def machine_service(action: Literal["status", "start", "stop", "restart", "install", "run"] = "status") -> None:
     """The background service keeping this computer connected after `galaius login` (Linux: a
     systemd user unit; macOS: a launchd agent; Windows: a task started at your logon). status (default)
-    says whether it runs and where its log is; start / stop / restart act on it; run is what the
-    Windows task itself starts."""
+    says whether it runs and where its log is; start / stop / restart act on it; install sets it up
+    again on THIS program and starts it (the install line, after replacing the program); run is what
+    the Windows task itself starts."""
     try:
         if action == "run":
             MACHINE_SERVICE.run()
             return
+        if action == "install":
+            MACHINE_SERVICE.install()
         if action in {"stop", "restart"}:
             MACHINE_SERVICE.stop()
         if action in {"start", "restart"}:
