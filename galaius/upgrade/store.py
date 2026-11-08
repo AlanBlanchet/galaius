@@ -14,6 +14,7 @@ import os
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import time
 from collections.abc import Callable, Iterator
@@ -93,10 +94,13 @@ class Runtime(BaseModel):
 
     @property
     def python(self) -> Path:
-        """Its interpreter; on Windows the console `python.exe` even under pythonw: a child's console
-        is hidden (`galaius.host.windowless`) and shared by what it starts, which a windowless child's is not."""
+        """Its interpreter: a virtual environment's, else (the self-contained program, an interpreter
+        folder of its own) the one at its root. On Windows the console `python.exe` even under pythonw:
+        a child's console is hidden (`galaius.host.windowless`) and shared by what it starts, which a
+        windowless child's is not."""
         if sys.platform == "win32":
-            return self.path / "Scripts" / "python.exe"
+            venv = self.path / "Scripts" / "python.exe"
+            return venv if venv.is_file() else self.path / "python.exe"
         return self.path / "bin" / "python"
 
     def command(self, arguments: tuple[str, ...]) -> list[str]:
@@ -193,24 +197,18 @@ class LiveProcess(BaseModel):
 
 
 class Uv(BaseModel):
-    """The uv that installs runtimes, by absolute path: the installer's own pinned copy first, then
-    one on an absolute PATH entry (never the working directory), then where uv's own installers put
-    it (a service started at boot may not have those on its PATH yet). Its environment carries no
+    """The uv that installs runtimes: the one installed with this program (a dependency, in this
+    interpreter's scripts folder), by absolute path, never one from PATH. Its environment carries no
     `UV_*` / `PIP_*` variable: an index, config or cache redirection never reaches an install."""
 
     model_config = ConfigDict(frozen=True)
     path: Path
 
     @classmethod
-    def find(cls, data: Path) -> "Uv":
-        name = "uv.exe" if sys.platform == "win32" else "uv"
-        path = [Path(entry) for entry in os.environ.get("PATH", "").split(os.pathsep) if entry and Path(entry).is_absolute()]
-        standard = [Path(os.environ["XDG_BIN_HOME"])] if os.environ.get("XDG_BIN_HOME") else []
-        standard += [Path.home() / ".local" / "bin", Path.home() / ".cargo" / "bin"]
-        candidates = [data / "uv" / name, *(folder / name for folder in (*path, *standard))]
-        found = next((candidate for candidate in candidates if candidate.is_file()), None)
-        if found is None:
-            raise FileNotFoundError("uv is needed to install a Galaius runtime (the installer puts its own copy beside Galaius's data)")
+    def find(cls) -> "Uv":
+        found = Path(sysconfig.get_path("scripts")) / ("uv.exe" if sys.platform == "win32" else "uv")
+        if not found.is_file():
+            raise FileNotFoundError(f"{found} is missing: reinstall Galaius with the line from your Galaius page")
         return cls(path=found)
 
     @staticmethod
@@ -395,10 +393,10 @@ class RuntimeStore(BaseModel):
         release) every dependency comes from it, each checked by hash, none resolved; without (a
         person's local build) uv resolves them as `uv tool install` does."""
         PRIVATE_FILES.directory(self.root)
-        uv = Uv.find(UserPaths.data())
+        uv = Uv.find()
         staging = Runtime(path=Path(tempfile.mkdtemp(prefix=".staging-", dir=self.root)))
         try:
-            uv.run("venv", "--quiet", "--no-config", "--relocatable", "--allow-existing", "--python", python or f"{sys.version_info.major}.{sys.version_info.minor}", str(staging.path))
+            uv.run("venv", "--quiet", "--no-config", "--relocatable", "--allow-existing", "--python", python or str(Runtime(path=Path(sys.base_prefix)).python), str(staging.path))
             requirements = staging.path / "requirements.txt"
             pinned = "".join(f"{name} @ {path.resolve().as_uri()} --hash=sha256:{self.digest(path)}\n" for name, path in sorted(wheels.items()))
             if lock is not None:

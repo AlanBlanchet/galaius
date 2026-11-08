@@ -4,8 +4,9 @@ this computer ran, and the upgrade settings are this computer's alone."""
 import hashlib
 import http.server
 import os
-import sys
 import subprocess
+import sys
+import sysconfig
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -261,16 +262,9 @@ def test_a_server_offering_no_release_says_so(tmp_path, signer, published, monke
     assert "offers no release (it has published none yet) (HTTP 404)" in checker(tmp_path, signer, published, monkeypatch).run()
 
 
-@pytest.mark.parametrize("folder", [".local/bin", ".cargo/bin"])
-def test_uv_is_found_where_its_installers_put_it_even_off_a_service_path(tmp_path, monkeypatch, folder) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    monkeypatch.setenv("PATH", "/usr/bin")
-    monkeypatch.delenv("XDG_BIN_HOME", raising=False)
-    installed = tmp_path / folder / ("uv.exe" if sys.platform == "win32" else "uv")
-    installed.parent.mkdir(parents=True)
-    installed.write_text("")
-    assert Uv.find(tmp_path / "data").path == installed
+def test_uv_is_the_one_installed_with_galaius_never_one_on_path(monkeypatch) -> None:
+    monkeypatch.setenv("PATH", "")
+    assert Uv.find().path == Path(sysconfig.get_path("scripts")) / ("uv.exe" if sys.platform == "win32" else "uv")
 
 
 def test_an_older_runtime_rewriting_the_pointer_never_brings_a_retired_key_back(tmp_path) -> None:

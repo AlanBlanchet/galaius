@@ -20,6 +20,7 @@ dependencies = [
     "mss>=9.0", # cross-platform screen capture for the macOS/Windows desktop backend (#24)
     "pynput>=1.7; sys_platform != 'linux'", # pointer + keyboard for the macOS/Windows desktop backend (#24); on Linux it would pull source-only evdev
     "pywin32>=306; sys_platform == 'win32'", # Windows: owner-only file ACLs + DPAPI for saved credentials (galaius/host/private_files.py)
+    "tzdata>=2024.1; sys_platform == 'win32'",  # Windows has no zone database: a usage limit's reset hour reads its zone through it (galaius/agents/limits/quota.py)
     # wait_for text= on a desktop target reads the screen with the OS's own OCR (galaius/desktop/ocr.py)
     "winrt-runtime>=3.2; sys_platform == 'win32'",
     "winrt-Windows.Media.Ocr>=3.2; sys_platform == 'win32'",
@@ -29,6 +30,7 @@ dependencies = [
     "winrt-Windows.Foundation.Collections>=3.2; sys_platform == 'win32'",
     "pyobjc-framework-Vision>=10; sys_platform == 'darwin'",
     "httpx>=0.28.1",
+    "uv>=0.11.25,<0.12",  # installs each signed release beside the running one (galaius/upgrade/store.py `Uv`); the self-contained program carries no other
     "cryptography>=44",  # imported directly: verifies the ed25519 signature on every automatic upgrade (galaius/upgrade/source.py)
     "websockets>=14,<16",
     "litellm>=1.83.4,<2",
@@ -40,7 +42,6 @@ dependencies = [
     "pydantic-settings>=2.13.1,<3",
     "pyyaml>=6.0,<7",
     "jsonschema>=4.23,<5",
-    "datasets>=2.20",
     "textual>=8.2.7",
     "huggingface_hub>=0.35",  # fetches a workspace's own huggingface_repo model weights (galaius/inference/user_models.py); no torch dependency
     # create_file's formats (galaius/media/files.py), written locally: Word, Excel, PowerPoint (MIT), PDF from Typst (Apache-2.0)
