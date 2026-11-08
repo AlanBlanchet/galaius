@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from galaius_core import CompactionTrigger, ContextGauge, TokenCounts, UsageWindow
 
-from galaius.usage_dialects import OlderTokens
+from galaius.usage_dialects import CountedTokens, OlderTokens
 
 
 EventKind = Literal[
@@ -276,7 +276,7 @@ class UsageLedger(BaseModel):
 
     def settle(
         self, cumulative: dict[str, TokenCounts], cost_usd: float | None,
-        local: TokenCounts | None = None,
+        local: TokenCounts = TokenCounts(),
     ) -> tuple[TokenCounts, float | None]:
         """This checkpoint's share of the stream's truth: tokens and API-equivalent cost."""
 
@@ -286,7 +286,7 @@ class UsageLedger(BaseModel):
                 return False
             if past.usage == cumulative:
                 return True  # one process reporting again (queued turns), nothing grew
-            return all(key in cumulative and cumulative[key].covers(usage + local if local is not None and key == self.primary else usage)
+            return all(key in cumulative and cumulative[key].covers(usage + local if key == self.primary else usage)
                        for key, usage in past.usage.items())
 
         baseline = next(
@@ -374,7 +374,7 @@ class AgentEvent(OlderTokens, ContextGauge):
     cost_usd: float | None = None
     #: The tokens it counted. Summed over a run's events they give the run's totals: a checkpoint event carries only
     #: what live events had not yet counted. Left out when it reports none.
-    usage: TokenCounts = Field(default_factory=TokenCounts, exclude_if=lambda value: not value.reported)
+    usage: CountedTokens
     raw_type: str = ""
     #: For an "error": what cut its turn from outside its work (`RunCut`); left out when None.
     cut: RunCut | None = Field(default=None, exclude_if=lambda value: value is None)

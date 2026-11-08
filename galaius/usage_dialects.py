@@ -4,10 +4,10 @@ report read as « nothing counted » would undercount; a cached token kept insid
 twice."""
 
 from collections.abc import Mapping
-from typing import Any, ClassVar
+from typing import Annotated, Any, ClassVar
 
 from galaius_core import TokenCounts
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 #: A figure's spellings in one report, first found wins; a dotted name reaches into a nested object
 #: (`prompt_tokens_details.cached_tokens`).
@@ -51,21 +51,29 @@ class UsageDialect(BaseModel):
         return frozenset(spelling.split(".")[0] for spellings in (self.input, self.output, self.cache_read, self.cache_write) for spelling in spellings)
 
 
-#: Codex `exec`'s spelling (`turn.completed.usage`), which galaius's runtime wrote on this PC until it held `TokenCounts`.
-WHOLE_PROMPT_SNAKE = UsageDialect(input=("input_tokens",), output=("output_tokens",), cache_read=("cached_input_tokens",),
-                                  cache_write=("cache_write_input_tokens",), whole_prompt=True)
+#: What galaius's runtime wrote on this PC before it held `TokenCounts`: the whole prompt as `input_tokens`, its cache
+#: reads and writes inside it.
+OLDER_RUNTIME = UsageDialect(input=("input_tokens",), output=("output_tokens",), cache_read=("cached_input_tokens",),
+                             cache_write=("cache_write_input_tokens",), whole_prompt=True)
 #: A litellm completion response (the object or its dict), its `usage` in OpenAI's shape: the whole prompt in
-#: `prompt_tokens`, its cache reads inside it.
+#: `prompt_tokens` (`input_tokens` in the Responses format), its cache reads and — for Anthropic models, litellm 1.100
+#: `anthropic/chat/transformation.py` — its cache writes inside it.
 LITELLM = UsageDialect(input=("usage.prompt_tokens", "usage.input_tokens"), output=("usage.completion_tokens", "usage.output_tokens"),
-                       cache_read=("usage.prompt_tokens_details.cached_tokens",), whole_prompt=True)
+                       cache_read=("usage.prompt_tokens_details.cached_tokens", "usage.input_tokens_details.cached_tokens"),
+                       cache_write=("usage.cache_creation_input_tokens",), whole_prompt=True)
+
+#: A model's token count: empty when nothing reported it, and then left out of what it writes.
+CountedTokens = Annotated[TokenCounts, Field(default_factory=TokenCounts, exclude_if=lambda value: not value.reported)]
 
 
 class OlderTokens(BaseModel):
     """A model an older runtime wrote on this PC (run record, event line, media usage-log row): its whole-prompt token
     fields read as its `usage` at validation, so it is written back in the one spelling. `_older` is the hook a model
-    with more of the older shape to move runs first."""
+    with more of the older shape to move runs first. This edge goes, with the VS Code client's `olderWritten`, once no
+    PC holds a run folder or usage log an older runtime wrote (event lines and the usage log are only appended to:
+    never rewritten in place while agents write them)."""
 
-    OLDER: ClassVar[UsageDialect] = WHOLE_PROMPT_SNAKE
+    OLDER: ClassVar[UsageDialect] = OLDER_RUNTIME
 
     @classmethod
     def _older(cls, data: dict[str, Any]) -> dict[str, Any]:

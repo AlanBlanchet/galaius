@@ -39,7 +39,7 @@ from uuid import UUID
 
 from pydantic import ConfigDict, BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
 from galaius.agents.limits import quota
-from galaius.usage_dialects import OlderTokens
+from galaius.usage_dialects import CountedTokens, OlderTokens
 from galaius_core import OPEN_MAX, OwnerQuestion, ASKED_BY_MAX, LaunchSkipReason, ReasoningLevel, RecordedReasoning, FILE_KEY, KEPT_FILE_MAX, MACHINE_AGENT_MEDIA, MEDIA_KEY, file_key, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor, TokenCounts
 
 from galaius.agents.transport.events import (
@@ -238,7 +238,7 @@ class StreamDigest(BaseModel):
     answered: int | None = None
     cost_usd: float | None = None
     #: The tokens its events count (`AgentEvent.usage`, summed).
-    usage: TokenCounts = Field(default_factory=TokenCounts, exclude_if=lambda value: not value.reported)
+    usage: CountedTokens
     #: The context gauge its events fold to (`AgentEvent.gauge_onto`).
     context: ContextGauge = ContextGauge()
     #: `AgentRun.compacted_to` as its events say it.
@@ -565,7 +565,7 @@ class AgentRun(OlderTokens, ContextGauge):
     #: Cumulative token use — how much CONTEXT this run has consumed, which is invisible from a
     #: cost figure alone (two models at the same price consume very differently); always the sum
     #: over the run's events (`AgentEvent.usage`). None before its first counted token.
-    usage: TokenCounts = Field(default_factory=TokenCounts, exclude_if=lambda value: not value.reported)
+    usage: CountedTokens
     last: str = ""
     stream_digest: StreamDigest | None = None
 

@@ -9,9 +9,10 @@ from galaius_core import TokenCounts
 from galaius.agents.transport.events import AgentEvent
 from galaius.agents import registry as reg
 from galaius.agents.registry import AgentRun
-from galaius.agents.providers import ClaudeCodeProvider
+from galaius.agents.providers import ClaudeCodeProvider, CodexProvider
+from galaius.agents.transport.events import UsageLedger
 from galaius.agents.transport.codex import _CodexTransport
-from galaius.usage_dialects import LITELLM, WHOLE_PROMPT_SNAKE, UsageDialect
+from galaius.usage_dialects import LITELLM, OLDER_RUNTIME, UsageDialect
 from galaius.vision.usage_records import UsageEntry
 
 RUN = {"run_id": "8f0c2a4e-55b1-4c4e-9d43-0f6f1c1d2e3a", "provider": "claude", "name": "worker", "started_at": 1.0, "status": "done"}
@@ -32,7 +33,7 @@ ENTRY = {"timestamp": "2026-10-20T10:00:00Z", "model": "gpt-5", "backend": "api"
 def test_an_older_runtimes_record_reads_as_token_counts(model, written: dict, usage: TokenCounts) -> None:
     read = model.model_validate(written)
     assert read.usage == usage
-    assert not read.model_dump(mode="json").keys() & WHOLE_PROMPT_SNAKE.names
+    assert not read.model_dump(mode="json").keys() & OLDER_RUNTIME.names
 
 
 class _Usage:
@@ -45,7 +46,9 @@ class _Usage:
      TokenCounts(input=2, output=9, cache_read=100000, cache_write=300)),
     (ClaudeCodeProvider.MODEL_USAGE, {"inputTokens": 2, "cacheReadInputTokens": 7, "outputTokens": 1}, TokenCounts(input=2, output=1, cache_read=7)),
     (_CodexTransport.USAGE, {"inputTokens": 5000, "cachedInputTokens": 4000, "outputTokens": 70}, TokenCounts(input=1000, output=70, cache_read=4000)),
-    (WHOLE_PROMPT_SNAKE, {"input_tokens": 5000, "cached_input_tokens": 4000, "output_tokens": 70}, TokenCounts(input=1000, output=70, cache_read=4000)),
+    (CodexProvider.USAGE, {"input_tokens": 5000, "cached_input_tokens": 4000, "output_tokens": 70}, TokenCounts(input=1000, output=70, cache_read=4000)),
+    (LITELLM, {"usage": {"prompt_tokens": 5000, "completion_tokens": 70, "prompt_tokens_details": {"cached_tokens": 4000}, "cache_creation_input_tokens": 600}},
+     TokenCounts(input=400, output=70, cache_read=4000, cache_write=600)),
     (LITELLM, {"usage": {"prompt_tokens": 5000, "completion_tokens": 70, "prompt_tokens_details": {"cached_tokens": 4000}}},
      TokenCounts(input=1000, output=70, cache_read=4000)),
     (LITELLM, type("Response", (), {"usage": _Usage()})(), TokenCounts(input=1000, output=70, cache_read=4000)),
@@ -79,3 +82,13 @@ def test_an_older_runs_files_on_this_pc_keep_their_counts_and_are_written_back_i
     written = json.loads((reg.agents_dir() / f"{run_id}.json").read_text())
     assert written["usage"] == {"input": 410, "output": 70, "cache_read": 8600, "cache_write": 600}
     assert not written.keys() & {"input_tokens", "output_tokens", "cached_input_tokens", "cache_write_input_tokens"}
+
+
+def test_a_line_without_usage_never_marks_its_message_counted() -> None:
+    """Claude repeats a message on each content block's line: one without usage leaves the message's count to the next."""
+    provider, ledger = ClaudeCodeProvider(), UsageLedger()
+    line = {"type": "assistant", "session_id": "s", "message": {"id": "m1", "role": "assistant", "content": [{"type": "text", "text": "hi"}]}}
+    first = provider.parse(json.dumps(line), ledger)
+    line["message"]["usage"] = {"input_tokens": 3, "cache_read_input_tokens": 900, "output_tokens": 1}
+    second = provider.parse(json.dumps(line), ledger)
+    assert not first.usage.reported and second.usage == TokenCounts(input=3, cache_read=900) and second.context_tokens == 903

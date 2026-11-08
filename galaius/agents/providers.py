@@ -40,7 +40,7 @@ from galaius_core import AGENT_PROGRAMS, AgentMedia, AgentProgram, ContextGauge,
 from galaius import installed_version
 from galaius.agents.catalog.entries import AgentCatalog
 from galaius.agents.transport.events import AgentEvent, CompactionTrigger, RunCut, UsageLedger, instant, stream_lines
-from galaius.usage_dialects import WHOLE_PROMPT_SNAKE, UsageDialect
+from galaius.usage_dialects import UsageDialect
 from galaius.agents.limits import held
 from galaius.agents.limits.quota import REFUSAL
 from galaius.agents.catalog.profiles import overlay_for
@@ -1671,9 +1671,9 @@ class ClaudeCodeProvider(AgentProvider):
         local = self.USAGE.read(raw.get("usage"))
         per_model = {
             model: usage for model, report in (raw.get("modelUsage") or {}).items()
-            if (usage := self.MODEL_USAGE.read(report)).prompt
+            if (usage := self.MODEL_USAGE.read(report)).reported
         }
-        if not per_model and local.prompt:
+        if not per_model and local.reported:
             per_model = {ledger.primary or "": local}
         cost = raw.get("total_cost_usd")
         cost = float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None
@@ -1776,9 +1776,11 @@ class ClaudeCodeProvider(AgentProvider):
             # output_tokens there is the stream-start value. Only the prompt side is a live
             # figure, counted once per message id; the result line settles the rest.
             usage = self.USAGE.read(msg.get("usage"))
-            live: dict[str, object] = {"usage": ledger.observe(msg.get("id") if isinstance(msg.get("id"), str) else None,
-                                                               usage.model_copy(update={"output": None}))}
-            if usage.prompt and raw.get("parent_tool_use_id") is None:
+            prompt = usage.model_copy(update={"output": None})
+            live: dict[str, object] = {}
+            if prompt.reported:  # a line without usage never marks its message counted
+                live["usage"] = ledger.observe(msg.get("id") if isinstance(msg.get("id"), str) else None, prompt)
+            if prompt.reported and raw.get("parent_tool_use_id") is None:
                 live["context_tokens"] = usage.prompt  # a subagent's call says nothing of this conversation
             if tool:
                 return AgentEvent(kind="tool", tool=tool, tool_input=tool_input, tool_id=tool_id,
@@ -2040,6 +2042,9 @@ class CodexProvider(AgentProvider):
     """
 
     program = AGENT_PROGRAMS["codex"]
+    #: `codex exec`'s `turn.completed.usage`: OpenAI's meaning, cached and cache-write tokens inside `input_tokens`.
+    USAGE: ClassVar[UsageDialect] = UsageDialect(input=("input_tokens",), output=("output_tokens",), cache_read=("cached_input_tokens",),
+                                                 cache_write=("cache_write_input_tokens",), whole_prompt=True)
     fenced = FencedCli(folder=".codex", read=("auth.json", "config.toml", "AGENTS.md", "prompts", "rules"), sessions=("sessions",),
                        egress=("api.openai.com", "chatgpt.com", "auth.openai.com"), keys=("OPENAI_API_KEY", "CODEX_API_KEY", COMPAT_KEY))
     first_files = {"config.toml": 'cli_auth_credentials_store = "file"\n'}
@@ -2659,7 +2664,7 @@ class CodexProvider(AgentProvider):
             # cache-write tokens inside `input_tokens`, reasoning inside `output_tokens`.
             usage = raw.get("usage")
             settled = TokenCounts()
-            if (counts := WHOLE_PROMPT_SNAKE.read(usage)).reported:
+            if (counts := self.USAGE.read(usage)).reported:
                 settled, _ = ledger.settle({"": counts}, None)
             return AgentEvent(
                 kind="done",

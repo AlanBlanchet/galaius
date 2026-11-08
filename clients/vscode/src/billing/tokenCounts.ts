@@ -29,7 +29,7 @@ export function promptTokens(usage: TokenCounts | null | undefined): number | nu
 }
 
 /** The token fields an older runtime wrote on a run record, an event line or a media usage-log row: the WHOLE prompt as
- *  `input_tokens`, its cache reads and writes inside it (Python `galaius.older_tokens`, the same edge). */
+ *  `input_tokens`, its cache reads and writes inside it (Python `galaius.usage_dialects.OlderTokens`, the same edge). */
 const OLDER_FIELDS = ["input_tokens", "output_tokens", "cached_input_tokens", "cache_write_input_tokens"] as const;
 
 /** What an older runtime wrote on this PC, read in the one spelling: its whole-prompt fields as its `usage` (the uncached
@@ -41,7 +41,7 @@ export function olderWritten<Row extends Record<string, unknown>>(row: Row): Row
   if (!OLDER_FIELDS.some((name) => name in read)) return read as Row;
   const [prompt, output, cacheRead, cacheWrite] = OLDER_FIELDS.map((name) => (typeof read[name] === "number" ? read[name] as number : null));
   for (const name of OLDER_FIELDS) delete read[name];
-  if (read.usage === undefined && (prompt !== null || output !== null)) {
+  if (read.usage === undefined && [prompt, output, cacheRead, cacheWrite].some((figure) => figure !== null)) {
     const input = prompt === null ? null : Math.max(prompt - (cacheRead ?? 0) - (cacheWrite ?? 0), 0);
     read.usage = Object.fromEntries(Object.entries({ input, output, cache_read: cacheRead, cache_write: cacheWrite }).filter(([, figure]) => figure !== null));
   }
