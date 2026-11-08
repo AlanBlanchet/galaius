@@ -116,7 +116,7 @@ class Spawn(BaseModel):
     #: its turn rather than another started beside it, and every other one of the role is forgotten (`forget_peers`).
     single: bool = False
     #: Who asks it (`messaging.Asker`), read once at the spawn's edge (`asked`) and kept while it waits: its relation's
-    #: caller. A spawn no one asked (a relaunch) calls as a run of no role, the `*` relation only.
+    #: caller. A relaunch calls as the run that started the run it replaces (`_parent_asker`).
     asker: messaging.Asker = Field(default_factory=lambda: messaging.Asker(kind="anonymous"))
     #: A new run asked even where its relation hands the task to one at work (`galaius agents spawn --fresh`); a role
     #: keeping one run still never gets a second beside a live one (`relation_refusal`).
@@ -143,7 +143,15 @@ class Spawn(BaseModel):
         return cls(task=run.task, cwd=run.cwd or ".", agent=run.agent, name=run.name, permission_mode=run.permission_mode,
                    image_paths=tuple(reg.RunMedia.path(run.run_id, name) for name in run.media), agent_ref=run.agent_ref,
                    parent_run_id=run.parent_run_id, session_id=run.session_id, denied_tools=tuple(run.denied_tools), fence=run.fence,
-                   continues=run.run_id, relaunches=reg.Relaunch.of(run), community=run.community)
+                   continues=run.run_id, relaunches=reg.Relaunch.of(run), community=run.community, asker=cls._parent_asker(run))
+
+    @staticmethod
+    def _parent_asker(run: reg.AgentRun) -> messaging.Asker:
+        """Who asked `run` again, for its relaunch: the run that started it (its parent), else a run of no role."""
+        parent = reg.get_run(run.parent_run_id) if run.parent_run_id is not None else None
+        if parent is None:
+            return messaging.Asker(kind="anonymous")
+        return messaging.Asker(kind="run", run_id=parent.run_id, role=parent.agent if parent.community is None else None)
 
     @classmethod
     def asked(cls, *, parent_run_id: str | None = None, **fields) -> Spawn:
