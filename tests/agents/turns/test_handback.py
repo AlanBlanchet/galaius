@@ -9,9 +9,10 @@ import time
 import uuid
 
 import pytest
+from galaius_core import StopActor
 
 from galaius.agents import agent_queue
-from galaius.agents.turns import handback
+from galaius.agents.turns import handback, reviews
 from galaius.agents.catalog import relations
 from galaius.agents import registry as reg
 from galaius.agents.transport.events import Relation
@@ -35,6 +36,13 @@ def _ended(run_id: str, at: float, *, status: str = "done", **rest) -> None:
 def _carried_since_ever(monkeypatch):
     """These tests' runs end at fixed times: every report counts (`handback_since`)."""
     monkeypatch.setattr(relations, "handback_since", lambda **_: 0.0)
+
+
+@pytest.fixture(autouse=True)
+def _no_signal(monkeypatch):
+    """A stop here ends no process: these runs hold pid 1 or this test's own (2026-11-08: a stop row TERMed every process
+    of the user through `killpg(1)`, `tests/host/test_processes.py`)."""
+    monkeypatch.setattr(reg, "_terminate", lambda pid: True)
 
 
 @pytest.fixture
@@ -74,6 +82,98 @@ def test_the_last_child_to_end_resumes_its_ended_parent_with_every_report(sent, 
     message = sent[0]["message"]
     assert "DONE: endpoint shipped, image abc123." in message and "Verdict: PASS." in message
     assert "eng" in message and "rev" in message
+
+
+LEAD = "lead"
+
+
+def _working(run_id: str, **rest) -> None:
+    """Run `run_id` on a turn: its process this one."""
+    register_run(run_id, pid=os.getpid(), **rest)
+
+
+def _finishes(run_id: str, text: str) -> None:
+    """Run `run_id`, at work, ends its turn on `text`."""
+    _answered(run_id, text)
+    reg.finish(run_id, exit_code=0, first=0)
+    reg._merge_record_locked(run_id, {"status": "done", "finished_at": time.time()})
+
+
+def _after_its_turn_a_review_starting():
+    """2026-11-07: his coordinator ended on « not yet », the runtime's reflection started for that answer as its agent
+    ended; it held the hand-back and ended owing nothing: the comparison never reached him."""
+    _ended(LEAD, 100.0, agent="main")
+    _working("eng", agent="purchase-strategist", parent_run_id=LEAD)
+    _finishes("eng", "DONE: 8 plaids compared.")
+    _working("refl", agent="reflection", parent_run_id=LEAD)   # `reviews.Ask.make`: its run first, its report carried next
+    yield ["eng"]
+    reviews.Ask(role="reflection", parent=LEAD, cwd=".", task="t").answered("refl")
+    _finishes("refl", "REDO: none.")
+    yield ["refl"]
+
+
+def _within_its_turn():
+    _working(LEAD, agent="main")
+    _working("eng", agent="purchase-strategist", parent_run_id=LEAD)
+    _finishes("eng", "DONE: 8 plaids compared.")
+    yield ["eng"]
+    _finishes(LEAD, "Asked the purchase agent.")
+    yield [LEAD]
+
+
+def _two_close_together():
+    _ended(LEAD, 100.0, agent="main")
+    for run_id in ("eng", "rev"):
+        _working(run_id, agent="purchase-strategist", parent_run_id=LEAD)
+    _finishes("eng", "DONE: 8 plaids compared.")
+    yield ["eng"]
+    _finishes("rev", "DONE: prices checked.")
+    yield ["rev"]
+
+
+def _a_grandchild_read_inline_ending_last():
+    """Its agent's agent, read by that agent while it worked (`collected`), ends after it: it owes nobody, yet held the hand-back."""
+    _ended(LEAD, 100.0, agent="main")
+    _working("eng", agent="purchase-strategist", parent_run_id=LEAD)
+    _working("web", agent="web-researcher", parent_run_id="eng")
+    _finishes("eng", "DONE: 8 plaids compared.")
+    yield ["eng"]
+    _finishes("web", "Prices: 3 sellers.")
+    handback.collected("eng", [handback.Report.of(reg.get_run("web"))])
+    yield ["web"]
+
+
+def _after_he_stopped_it():
+    _ended(LEAD, 100.0, agent="main")
+    _working("eng", agent="purchase-strategist", parent_run_id=LEAD)
+    assert reg.stop(LEAD, by=StopActor(kind="person", name="Alan"))
+    _finishes("eng", "DONE: 8 plaids compared.")
+    yield ["eng"]
+
+
+@pytest.mark.parametrize("member", [
+    pytest.param(_after_its_turn_a_review_starting, id="1-child-ends-after-its-turn-a-review-starting"),
+    pytest.param(_within_its_turn, id="2-child-ends-within-its-turn"),
+    pytest.param(_two_close_together, id="3-two-children-end-close-together"),
+    pytest.param(_a_grandchild_read_inline_ending_last, id="1b-a-grandchild-ends-last-owing-nobody"),
+    pytest.param(_after_he_stopped_it, id="4-he-stopped-it-the-report-waits-in-it"),
+])
+def test_every_report_reaches_the_coordinator_once_whatever_ends_between(sent, member):
+    """Owner 2026-11-07: « I never got a response from the coordinator whereas all the agents have finished ». Each end is
+    one look of the watch (`EndWatch.tick` -> `hand_back`); once the last run below it ended, the coordinator holds ONE
+    hand-back carrying every report, none twice. A review never starts on an answer whose hand-back is still to come
+    (`reviews._settled`). A stop he made stays: the report waits in it (`test_stop_holds` keeps it unread until he writes)."""
+    reports = {"eng": "DONE: 8 plaids compared.", "rev": "DONE: prices checked."}
+    for ended in member():
+        coming = [run_id for run_id in reports if (run := reg.get_run(run_id)) is not None and run.finished_at is not None]
+        if coming and not any(call["run_id"] == LEAD for call in sent):
+            assert not reviews._settled(reg.get_run(LEAD), handback.Asked.of(reg._stored_records())), "reviewed before its hand-back"
+        for run_id in ended:
+            handback.hand_back(run_id)
+    to_lead = [call["message"] for call in sent if call["run_id"] == LEAD]
+    expected = [text for run_id, text in reports.items() if reg.get_run(run_id) is not None]
+    assert len(to_lead) == 1 and all(to_lead[0].count(text) == 1 for text in expected), to_lead
+    assert (reg.get_run(LEAD).held_at is not None) is (member is _after_he_stopped_it)
 
 
 def test_a_child_its_lost_login_cut_wakes_its_parent_only_once_nothing_resumes_it(sent):

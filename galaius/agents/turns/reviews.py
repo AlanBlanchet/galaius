@@ -165,9 +165,12 @@ def _calls(review: TurnReview, text: str, earlier: Sequence[str]) -> str | None:
 
 
 def _settled(run: reg.AgentRun, asked: handback.Asked) -> bool:
-    """Whether `run` ended its turn with nothing waiting for it and every agent it waits on back (`handback`)."""
+    """Whether `run` ended its turn with nothing waiting for it, every agent it waits on back, and their reports handed
+    back to it (`handback.owes_reports`): the answer reviewed is the one the person reads last, never the « not yet »
+    before the hand-back, and a review asked while that hand-back is still to come holds it (2026-11-07)."""
     return (run.status in handback._ENDED_ITS_TURN and not handback._pending(run)
-            and not any(handback._agents_answering(run.run_id, asked, among=handback._pending)))
+            and not any(handback._agents_answering(run.run_id, asked, among=handback._pending))
+            and not handback.owes_reports(run.run_id, asked))
 
 
 def _launched_by_person(run: reg.AgentRun) -> bool:

@@ -131,12 +131,35 @@ def hand_back(run_id: str) -> list[messaging.Delivery]:
     child = reg.get_run(run_id)
     if child is None:
         return []
-    deliveries = [delivery for asker in dict.fromkeys(live(asker) for asker in owed(child)) if (delivery := _resume(asker)) is not None]
+    deliveries = [delivery for asker in _above(child) if (delivery := _resume(asker)) is not None]
     # Its own turn ended too: the reports its agents left while it worked, a hand-back refused then (it was at work), are
     # carried now. 2026-10-22: a reviewer's verdict for its maker ended mid-turn and never reached it.
     if (own := _resume(child.run_id)) is not None:
         deliveries.append(own)
     return deliveries
+
+
+def _above(run: reg.AgentRun) -> list[str]:
+    """The runs whose hand-back `run`'s end may release, nearest first, each reached through `live`: the runs it owes its
+    report (`owed`), every other run it answers, and theirs up to the top. Any of them `_resume` held while `run` worked
+    (`holds`: an agent at work, or one waiting on agents of its own), whether `run` owes it a report or not. 2026-11-07: a
+    reflection the runtime asked at the coordinator's end (its report counted carried at once, `reviews.Ask.answered`)
+    held the coordinator's hand-back while it started; it ended owing nothing, so nothing tried that hand-back again and
+    the purchase comparison its agent finished never reached the person."""
+    found: dict[str, None] = {}
+    frontier = [run]
+    while frontier:
+        above = [live(asker) for current in frontier for asker in dict.fromkeys((*owed(current), *sorted(current.askers)))]
+        fresh = [asker for asker in dict.fromkeys(above) if asker != run.run_id and asker not in found]
+        found.update(dict.fromkeys(fresh))
+        frontier = [asking for asker in fresh if (asking := reg.get_run(asker)) is not None]
+    return list(found)
+
+
+def owes_reports(asker_id: str, asked: "Asked") -> bool:
+    """An agent ended with a report for run `asker_id` no hand-back carried yet: its hand-back is still to come (`_resume`)."""
+    since = relations.handback_since()
+    return any(_agents_answering(asker_id, asked, among=lambda run: run.finished_at is not None and run.finished_at >= since and not _pending(run)))
 
 
 class Asked(BaseModel):

@@ -164,10 +164,18 @@ def detached_options() -> dict:
 def end_process_tree(pid: int) -> bool:
     """Ask the tree `pid` leads (spawned with `process_group_options`) to stop, without waiting:
     POSIX TERMs its group; Windows has no signal a console-less process receives, so `taskkill /T /F`.
-    False when nothing could be signalled."""
+    False when nothing could be signalled. A pid leading no group of its own (a recorded one, never spawned so) is TERMed
+    alone; pid 1 and this process's own group never: 2026-11-08 a run record holding pid 1 made it `killpg(1)`, which
+    is `kill(-1)`, every process of the user, and ended his desktop session twice."""
+    if pid <= 1:
+        return False
     try:
         if os.name == "posix":
-            os.killpg(os.getpgid(pid), signal.SIGTERM)
+            group = os.getpgid(pid)
+            if group == pid and group != os.getpgrp():
+                os.killpg(group, signal.SIGTERM)
+            else:
+                os.kill(pid, signal.SIGTERM)
             return True
         return subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=10).returncode == 0
     except (OSError, subprocess.SubprocessError):

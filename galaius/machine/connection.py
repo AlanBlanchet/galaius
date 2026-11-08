@@ -930,6 +930,10 @@ class MachineRunner:
     policy_renew_seconds = 15
     #: How often this PC's run records are settled against their processes (`registry.settle_gone`).
     settle_seconds = 60
+    #: How often this PC looks which runs ended, to hand their reports back (`handback.EndWatch`): one look reads only
+    #: the records that moved (~0.15 s for ~5,000); at `settle_seconds` a finished agent's report waited up to a minute
+    #: before its coordinator could answer the person.
+    handback_seconds = 10
     #: How long the beats reuse whether a run started for the web still works (`busy`): read from every run record
     #: (~0.2 s for ~5,000), at each beat it took a tenth of a core (2026-11-03). The server stops an idle cloud
     #: machine only after 15 idle minutes.
@@ -1232,10 +1236,10 @@ class MachineRunner:
             await asyncio.sleep(self.settle_seconds)
 
     async def _hand_back(self) -> None:
-        """Every `settle_seconds`, resume each parent whose last pending agent ended since (`handback.EndWatch`)."""
+        """Every `handback_seconds`, resume each parent whose last pending agent ended since (`handback.EndWatch`)."""
         watch = await asyncio.to_thread(EndWatch)
         while True:
-            await asyncio.sleep(self.settle_seconds)
+            await asyncio.sleep(self.handback_seconds)
             try:
                 for delivery in await asyncio.to_thread(watch.tick):
                     logger.info("run %s handed its agents' reports back: %s", delivery.run_id[:8], delivery.state)
