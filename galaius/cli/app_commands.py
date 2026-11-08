@@ -1114,6 +1114,19 @@ def agents_work_for(run_id: str) -> None:
     print(f"{caller[:8]} works for {asker[:8]}.")
 
 
+@agents_app.command(name="require-role")
+def agents_require_role(role: str) -> None:
+    """Exit 0 when the process asking is a run of ROLE or the person at a terminal; else say who asks in one line and exit 3.
+    A script reserving an act to one role runs it first: only the deployer ships (`deploy.sh`; owner 2026-11-08 « it's only
+    the service for the agent that's supposed to deploy that's deploying, right? »). Who asks is read from the process
+    (`messaging.Asker`), never from a variable: an agent outside galaius's runs and a `systemd-run` unit are no person."""
+    asker = messaging.Asker.here()
+    if asker.person or asker.role == role:
+        return
+    print(f"REFUSED: only the {role} does this, and {asker.said()} asks; hand it to the {role} instead.", file=sys.stderr)
+    raise SystemExit(3)
+
+
 @agents_app.command(name="compact")
 def agents_compact(run_id: str) -> None:
     """Compact an agent's conversation: its CLI replaces what was said so far with its own summary,
@@ -1726,10 +1739,11 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
     supervisor that shows the run at once passes a short one.
     --fence names a file holding what the run's OS fence is built from (`galaius.isolation.fence.FenceSpec`
     JSON); every turn builds it again from the machine's levels. The machine runner writes it.
-    The role's `instances` setting decides where the task goes: `many` (the default) starts a new run every time;
-    `one` / `per_project` give it to the role's run on this PC / of this project as its next turn (its context intact,
-    queued behind its turn while it works) and print its id, unless its context is near full; --fresh starts a new one
-    regardless. --single keeps ONE agent of the role in the conversation (a job queue's worker): one at work is queued
+    The role's relation to the caller's (its `relations`) decides where the task goes: `1-N` (the default) starts a new
+    run every time; `N-1` gives it to the role's run on this PC / of this project as its next turn (its context intact,
+    queued behind its turn while it works) and print its id, and refuses a second beside a live one; `N-N` gives it to
+    an idle run of the role in the conversation; past its `max_live` runs at once, or from a role it does not name, the
+    spawn is refused. --fresh starts a new one instead of handing it over, never a second `N-1` run beside a live one. --single keeps ONE agent of the role in the conversation (a job queue's worker): one at work is queued
     the task behind its turn instead of another started beside it, and every other one of the role not at work is
     forgotten (`agents clear`) once the task is handed over or its run started (one queued for a place keeps them).
     --for names the run of this computer (full or short id) the task is asked for (an operator passing on its ask: the
@@ -1787,12 +1801,12 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
                 quota_window=quota_window,
                 fence=FenceSpec.model_validate_json(fence.read_text()) if fence is not None else None,
                 for_run=for_run, single=single, continues=continues, helper=helper, cross_project=cross_project,
-                community=started_from,
+                community=started_from, fresh=fresh,
             )
             if (refused := spawn.naming_refusal()) is not None:
                 print(f"ERROR: {refused}", file=sys.stderr)
                 raise SystemExit(2)
-            handover = StartNew() if fresh or continues else spawn.hand_over()
+            handover = spawn.hand_over()
 
             def forget_others(keep: str) -> None:
                 if forgotten := spawn.forget_peers(keep):
