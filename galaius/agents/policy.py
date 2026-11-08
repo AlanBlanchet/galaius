@@ -28,7 +28,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, get_args
-from galaius_core import AgentRelation, AgentRevisionRef, ReasoningLevel
+from galaius_core import AgentInstances, AgentRevisionRef, ReasoningLevel
 
 from galaius.agents.catalog.entries import AgentCatalog
 from galaius.agents.catalog.connection import CatalogConnectionError
@@ -89,8 +89,8 @@ class Policy:
     #: is applied after candidate selection, so one role can keep a cheaper model shallow and a
     #: stronger model deep without teaching the caller a vendor flag.
     reasoning_models: dict[str, str] = field(default_factory=dict)
-    #: Each role's `AgentRevision.relations` (`relation`): who may call it, how many of its runs answer.
-    relations: dict[str, tuple[AgentRelation, ...]] = field(default_factory=dict)
+    #: Each role's `AgentRevision.instances` (`instances_for`): how many of its runs work at once, which takes a new task.
+    instances: dict[str, AgentInstances] = field(default_factory=dict)
     #: Per-agent providers explicitly ALLOWED to run it under COARSE (sandbox-scope, not per-tool)
     #: enforcement — a machine-local acceptance, same footing as `providers` (a role's own
     #: allowed/denied tool list stays catalog- or file-owned; this only says whether a provider
@@ -178,7 +178,7 @@ class Policy:
             elif agent.model is not None:
                 policy.agents[agent.role_key] = agent.model.id
             policy.reasoning[agent.role_key] = agent.reasoning
-            policy.relations[agent.role_key] = agent.relations
+            policy.instances[agent.role_key] = agent.instances
             if agent.harness_tools is not None:
                 policy.agent_tools[agent.role_key] = list(agent.harness_tools)
             policy.paradigms[agent.role_key] = [
@@ -291,10 +291,9 @@ class Policy:
     def weights_for(self, agent: str) -> str:
         return "" if self.catalog is None else self.catalog.role(agent).criteria_weights
 
-    def relation(self, agent: str, caller: str | None, *, person: bool = False) -> AgentRelation | None:
-        """The relation a call of role `agent` runs under, from a run of role `caller` (None: a run of no role) or the
-        `person` (`AgentRelation.answering`); a role the catalog does not set takes every call, a run per task."""
-        return AgentRelation.answering(self.relations.get(agent, (AgentRelation(),)), caller, person=person)
+    def instances_for(self, agent: str) -> AgentInstances:
+        """How many runs of `agent` work at once (`AgentRevision.instances`); `many` for a role the catalog does not set."""
+        return self.instances.get(agent, "many")
 
     def reasoning_for(self, agent: str, model: str | None = None) -> str:
         """Explicit role effort, independent of the parent session's effort."""

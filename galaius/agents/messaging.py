@@ -11,7 +11,6 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from galaius.account.caller import Caller
-from galaius.host.processes import process_ancestry, process_program
 from galaius_core import refusal_of, Coded, MachineRefusal, ReadsAt, RetractOutcome, StopActor
 
 from galaius.agents import agent_queue
@@ -494,52 +493,6 @@ def sender_id(environment: Mapping[str, str] | None = None) -> str:
     if environment is None and Caller.current().unowned():
         raise ValueError(UNOWNED)
     return reg.PERSON_SENDER
-
-
-class Asker(BaseModel):
-    """Who asks from this process, read from the process alone, never from a variable it could set or clear: `run` the
-    run whose scope or process tree it lives in (`Caller.scope_run`, `reg.ancestor_run`); else `anonymous` when it is an
-    agent's process outside galaius's runs (an agent CLI among its ancestors, an agent conversation's variable, a
-    `systemd-run` unit, a process working for every run); else `person`, the person at a terminal. The one reading of
-    who calls behind a role's relation (`spawn_line.Spawn.relation_refusal`) and `galaius agents require-role`
-    (owner 2026-11-08 « We need to actually control them correctly »). A process of the same user can still leave every
-    tree (`setsid` from an editor's agent): a guardrail, not a boundary."""
-
-    model_config = ConfigDict(frozen=True)
-
-    kind: Literal["person", "run", "anonymous"]
-    #: The run asking (`run`), and the role it asks as: its own, None for a community entry's run or a run of no role.
-    run_id: str | None = None
-    role: str | None = None
-
-    @classmethod
-    def here(cls) -> Asker:
-        caller = Caller.current()
-        if Caller.serves_none() or caller.unowned():
-            return cls(kind="anonymous")
-        scoped = Caller.scope_run(caller.pid)
-        run = reg.get_run(scoped) if scoped is not None else reg.ancestor_run()
-        if run is not None:
-            return cls(kind="run", run_id=run.run_id, role=run.agent if run.community is None else None)
-        if scoped is not None or caller.in_agent_conversation() or cls._under_an_agent(caller.pid):
-            return cls(kind="anonymous")
-        return cls(kind="person")
-
-    @staticmethod
-    def _under_an_agent(pid: int) -> bool:
-        """An agent CLI (`AgentProvider.binary`) among `pid`'s ancestors."""
-        binaries = {provider.binary for provider in PROVIDERS.values()}
-        return any(process_program(ancestor) in binaries for ancestor, _ in process_ancestry(pid))
-
-    @property
-    def person(self) -> bool:
-        return self.kind == "person"
-
-    def said(self) -> str:
-        """Who it is, in a sentence."""
-        if self.run_id is not None:
-            return f"run {reg.short_id(self.run_id)} ({self.role or 'no role'})"
-        return "the person" if self.person else "an agent outside galaius's runs"
 
 
 def asking_run() -> str | None:

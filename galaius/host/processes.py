@@ -380,22 +380,6 @@ def process_parent(pid: int) -> int | None:
     return parent if parent > 1 else None
 
 
-def process_program(pid: int) -> str | None:
-    """The program process `pid` runs, by its short name (`claude`; Windows: without `.exe`); None when it is gone.
-    Linux: `/proc/<pid>/comm`; macOS: libproc's BSD info; Windows: a Toolhelp snapshot."""
-    if sys.platform == "win32":
-        entry = process_programs(frozenset({pid})).get(pid)
-        return entry[1].removesuffix(".exe") if entry is not None else None
-    if sys.platform == "darwin":
-        info = _ProcBsdInfo()
-        filled = _libproc().proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))  # PROC_PIDTBSDINFO
-        return info.comm.decode(errors="replace") if filled == ctypes.sizeof(info) else None
-    try:
-        return Path(f"/proc/{pid}/comm").read_text().strip()
-    except OSError:
-        return None
-
-
 def process_ancestry(pid: int) -> tuple[tuple[int, int | None], ...]:
     """Each ancestor of `pid`, nearest first, as (pid, `process_started`): one process for good."""
     found: list[tuple[int, int | None]] = []
