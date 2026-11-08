@@ -291,10 +291,10 @@ class Policy:
     def weights_for(self, agent: str) -> str:
         return "" if self.catalog is None else self.catalog.role(agent).criteria_weights
 
-    def relation(self, agent: str, caller: str | None) -> AgentRelation | None:
-        """The relation a call of role `agent` from role `caller` (None: the person, a run of no role) runs under
-        (`AgentRelation.answering`); a role the catalog does not set takes every call, a run per task."""
-        return AgentRelation.answering(self.relations.get(agent, (AgentRelation(),)), caller)
+    def relation(self, agent: str, caller: str | None, *, person: bool = False) -> AgentRelation | None:
+        """The relation a call of role `agent` runs under, from a run of role `caller` (None: a run of no role) or the
+        `person` (`AgentRelation.answering`); a role the catalog does not set takes every call, a run per task."""
+        return AgentRelation.answering(self.relations.get(agent, (AgentRelation(),)), caller, person=person)
 
     def reasoning_for(self, agent: str, model: str | None = None) -> str:
         """Explicit role effort, independent of the parent session's effort."""

@@ -30,7 +30,6 @@ from galaius.agents.turns import handback
 from galaius.agents.catalog import relations
 from galaius.agents import providers as agent_providers
 from galaius.agents import registry as reg
-from galaius.account.caller import Caller
 from galaius.agents.catalog import community as community_agents
 from galaius.agents.catalog.community import CommunityAgent
 from galaius.agents.conversations import ConversationAnswers
@@ -1119,18 +1118,12 @@ def agents_work_for(run_id: str) -> None:
 def agents_require_role(role: str) -> None:
     """Exit 0 when the process asking is a run of ROLE or the person at a terminal; else say who asks in one line and exit 3.
     A script reserving an act to one role runs it first: only the deployer ships (`deploy.sh`; owner 2026-11-08 « it's only
-    the service for the agent that's supposed to deploy that's deploying, right? »). The run asking is read from its process
-    (`messaging.asking_run`), which no variable changes; an agent's shell outside galaius's runs (an editor's conversation,
-    `Caller.in_agent_conversation`) and a `systemd-run` unit (`Caller.unowned`) are no person."""
-    caller = Caller.current()
-    run = reg.get_run(asking) if (asking := messaging.asking_run()) is not None else None
-    if run is not None and run.plays(role):
+    the service for the agent that's supposed to deploy that's deploying, right? »). Who asks is read from the process
+    (`messaging.Asker`), never from a variable: an agent outside galaius's runs and a `systemd-run` unit are no person."""
+    asker = messaging.Asker.here()
+    if asker.person or asker.role == role:
         return
-    if run is None and not caller.unowned() and not caller.in_agent_conversation():
-        return
-    who = (f"run {reg.short_id(run.run_id)} ({run.agent or 'no role'})" if run is not None
-           else "a systemd-run unit" if caller.unowned() else "an agent conversation outside galaius's runs")
-    print(f"REFUSED: only the {role} does this, and {who} asks; hand it to the {role} instead.", file=sys.stderr)
+    print(f"REFUSED: only the {role} does this, and {asker.said()} asks; hand it to the {role} instead.", file=sys.stderr)
     raise SystemExit(3)
 
 
