@@ -8,6 +8,7 @@ One typed factory covers both call sites; a caller only names what its scenario 
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 import tempfile
@@ -63,6 +64,13 @@ class ScriptedProvider(AgentProvider):
 
 #: npm's own launcher for a `#!/usr/bin/env node` bin (cmd-shim 7.0.0, generated, never hand-written).
 NPM_SHIM = Path(__file__).parent.parent / "fixtures" / "agents" / "npm" / "codex.cmd"
+
+
+def claude_definitions(argv: list[str]) -> dict[str, dict]:
+    """The role definitions a Claude command line hands its CLI (`--agents`): inline JSON, or the file it names (on
+    Windows always, `ClaudeCodeProvider.agents_argument`)."""
+    value = argv[argv.index("--agents") + 1]
+    return json.loads(value if value.lstrip().startswith("{") else Path(value).read_text(encoding="utf-8"))
 
 
 def install_fake_cli(directory: Path, name: str, script: Path) -> Path:

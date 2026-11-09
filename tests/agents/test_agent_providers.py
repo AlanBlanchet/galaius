@@ -28,6 +28,7 @@ from galaius.models.registry import Model
 from galaius.agents.registry import StreamDigest, participant_environment
 from galaius.host.processes import shell_entries
 from galaius.host.processes import NpmShim, spawnable
+from tests.support.agents import claude_definitions
 from tests.support.paths import TESTS
 
 
@@ -39,7 +40,7 @@ def test_claude_role_tools_and_denials_are_available_tool_restrictions_on_every_
                    denied_tools=("mcp__galaius__report_issue",))
     command = provider.resume_command("fixture-session", "Review", **options) if resume else provider.command(
         "Review", cwd="/tmp", mcp_config=None, run_id="fixture-run", **options)
-    definition = json.loads(command[command.index("--agents") + 1])["visual-critic"]
+    definition = claude_definitions(command)["visual-critic"]
     assert definition["prompt"] == "Pinned role instructions"
     assert definition["tools"] == options["allowed_tools"]
     assert command[command.index("--agent") + 1] == "visual-critic"

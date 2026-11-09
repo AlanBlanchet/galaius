@@ -15,7 +15,7 @@ import pytest
 
 from galaius.agents.policy import Policy, PolicyError
 from galaius.agents.providers import PROVIDERS
-from tests.support.agents import use_policy
+from tests.support.agents import use_policy, claude_definitions
 from tests.support.models import catalog_of
 
 
@@ -161,7 +161,7 @@ def test_the_allow_list_reaches_the_vendor_command():
                           agent="fixture", agent_prompt="Pinned fixture role",
                           allowed_tools=["mcp__galaius__screenshot", "mcp__galaius__navigate"])
     assert argv[argv.index("--allowedTools") + 1] == "mcp__galaius", "the permission grant, never the toolset"
-    assert json.loads(argv[argv.index("--agents") + 1])["fixture"]["tools"] == [
+    assert claude_definitions(argv)["fixture"]["tools"] == [
         "mcp__galaius__screenshot", "mcp__galaius__navigate"]
     # No toolset configured: no `--agents` list, so an unrestricted agent stays unrestricted (the grant narrows nothing).
     assert "--agents" not in claude.command("t", cwd=".", model=None, mcp_config=None, run_id="r")

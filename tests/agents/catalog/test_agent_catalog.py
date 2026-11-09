@@ -33,6 +33,7 @@ from unittest.mock import AsyncMock
 from galaius.agents.run import ModelUnavailable, launch_continuation, run_agent
 from galaius.config.user import UserConfig
 from galaius.host.private_files import PRIVATE_FILES
+from tests.support.agents import claude_definitions
 from tests.support.private_files import loosen
 from galaius.cli.app import app
 from galaius.cli import app_commands
@@ -278,7 +279,7 @@ def test_a_role_with_an_empty_tool_list_starts_with_no_tool_and_no_mcp_server(ca
     argv = ClaudeCodeProvider().command("Answer.", cwd=str(catalog_home), model=None, mcp_config="mesh.json", run_id=str(uuid4()), agent="fixture-worker",
                                         allowed_tools=allowed, agent_prompt="Answer only.")
     options = argv[:argv.index("--")]
-    definition = json.loads(options[options.index("--agents") + 1])["fixture-worker"]
+    definition = claude_definitions(options)["fixture-worker"]
     none = tools == ()
     assert (allowed is None, definition.get("tools"), "--mcp-config" in options) == (tools is None, None if tools is None else allowed, not none)
     assert (options[options.index("--tools"):options.index("--tools") + 3] == ["--tools", "", "--strict-mcp-config"]) if none else "--tools" not in options
