@@ -59,7 +59,7 @@ from galaius.config.settings import Config
 from galaius.isolation.fence import FenceSpec
 from galaius.machine.web_runs import WebRuns
 from galaius.host.paths import UserPaths
-from galaius.host.processes import process_exited, process_started
+from galaius.host.processes import process_exited, process_started, share_malloc_arenas
 from galaius.upgrade.store import Runtime, RuntimeStore
 
 #: How often a waiter, or a resume, looks whether its turn came.
@@ -1124,6 +1124,7 @@ class SpawnLine(BaseModel):
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("usage: python -m galaius.agents.spawn_line RUN_ID")
+    share_malloc_arenas()  # one waiter per spawn in line, 12 threads each: ~120 of its 252 MB sat in their arenas (2026-11-09)
     RuntimeStore.default().register(Runtime.own(), os.getpid())  # its runtime stays until it ends
     SpawnLine.here().wait(sys.argv[1])
 
