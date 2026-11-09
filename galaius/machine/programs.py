@@ -191,6 +191,9 @@ class AgentPrograms(BaseModel):
     signed_in_listeners: list[Callable[[], None]] = Field(default_factory=list)
     #: How downloads reach the network (a test's own transport; None: the system's).
     transport: httpx.BaseTransport | None = None
+    #: A held sign-in runs here: its command needs a terminal, POSIX only (`PcFeature.HELD_SIGN_IN`); a held login is put
+    #: and taken on every system (`held_put`, `held_take`).
+    HELD_SIGN_IN: ClassVar[bool] = os.name == "posix"
     install_seconds: ClassVar[float] = 600
     sign_in_seconds: ClassVar[float] = 15 * 60
     #: How long a program may check the code it was handed before its sign-in ends (it never answers on some codes).
@@ -253,7 +256,7 @@ class AgentPrograms(BaseModel):
         subscription = Subscription.create(subscription_id, name) if subscription_id is not None else None
         key = self._key(provider, subscription)
         refused = ("unsupported_system" if provider.installer() is None
-                   else "held_unsupported" if held and (subscription is None or provider.held is None or os.name != "posix") else None)
+                   else "held_unsupported" if held and (subscription is None or provider.held is None or not self.HELD_SIGN_IN) else None)
         if refused is not None:
             return self._base(provider, subscription).model_copy(update={"step": "failed", "failure": refused, "changed_at": datetime.now(UTC)})
         with self._lock:

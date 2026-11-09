@@ -1445,9 +1445,9 @@ class MachineRunner:
 
     @classmethod
     def features(cls) -> list[str]:
-        """What this runner's hello names (`PcFeatures`): every `PcFeature` of the galaius-core it ships with (held logins
-        only where a sign-in runs under a terminal: POSIX), and each Script language it runs here."""
-        features = frozenset(PcFeature) if os.name == "posix" else frozenset(PcFeature) - {PcFeature.HELD_LOGINS}
+        """What this runner's hello names (`PcFeatures`): every `PcFeature` of the galaius-core it ships with (a held sign-in
+        only where one runs here, `AgentPrograms.HELD_SIGN_IN`), and each Script language it runs here."""
+        features = frozenset(PcFeature) if AgentPrograms.HELD_SIGN_IN else frozenset(PcFeature) - {PcFeature.HELD_SIGN_IN}
         return PcFeatures(features, frozenset(ScriptRuntime.languages(cls._safe_environment().get("PATH")))).said()
 
     @staticmethod

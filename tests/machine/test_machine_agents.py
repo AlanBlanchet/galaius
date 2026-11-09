@@ -18,7 +18,7 @@ import hmac
 import logging
 import time
 
-from galaius_core import refusal_of, MACHINE_AGENT_REQUESTS, PcFeatures, PROJECTS_ROOT, AgentDeclined, AgentProviderState, MachineAgentAnswer, WebFull, MachineAgentModel, MachineAgentRequest, MachineAgentSettingsUpdate, MachineWorkspaceJob, SubscriptionLimits, WebLoad, MachineRef, ScreenAssertion, ScreenOpenRequest, ScreenReadiness, ScreenStatusRequest
+from galaius_core import refusal_of, MACHINE_AGENT_REQUESTS, PcFeature, PcFeatures, PROJECTS_ROOT, AgentDeclined, AgentProviderState, MachineAgentAnswer, WebFull, MachineAgentModel, MachineAgentRequest, MachineAgentSettingsUpdate, MachineWorkspaceJob, SubscriptionLimits, WebLoad, MachineRef, ScreenAssertion, ScreenOpenRequest, ScreenReadiness, ScreenStatusRequest
 from galaius.desktop.screen.desk import ScreenDesk
 from galaius.machine.programs import AgentPrograms
 from galaius.agents import messaging
@@ -167,9 +167,15 @@ def test_the_projects_folder_never_reaches_the_runners_own(base: Path, tmp_path:
         agents.folder(".galaius/subscriptions" if plant == "web_named" else PROJECTS_ROOT, path)
 
 
-def test_every_feature_a_runner_names_is_read_by_the_server() -> None:
+@pytest.mark.parametrize("signs_in", [True, False])
+def test_every_feature_a_runner_names_is_read_by_the_server(signs_in: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A PC with no held sign-in (Windows) still takes held logins: the held login is put there at launch, never a
+    # « signed out » program while one is held.
+    monkeypatch.setattr(AgentPrograms, "HELD_SIGN_IN", signs_in)
     said = MachineRunner.features()
     assert PcFeatures.of(said).said() == said   # nothing it names is dropped as unknown
+    named = PcFeatures.of(said).named
+    assert PcFeature.HELD_LOGINS in named and (PcFeature.HELD_SIGN_IN in named) is signs_in
 
 
 def test_with_the_fence_on_an_agent_writes_its_own_project_folder_only(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
