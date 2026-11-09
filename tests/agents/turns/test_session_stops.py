@@ -69,6 +69,15 @@ def test_one_turn_is_one_trace_line_and_a_line_it_cannot_write_never_loses_the_s
     assert [line.split(" ", 2)[1] for line in stops.trace.read_text().splitlines()] == ["ended", "ended"]  # the later turn: its own line
 
 
+def test_a_stop_asked_again_after_his_prompt_is_its_own_trace_line(stops):
+    """Stop, he types, stop again within `TURN_SECONDS`: the second turn ended is a line of its own (tester 8968b165 r2)."""
+    now = time.time()
+    for event, at in [("PreToolUse", now), ("UserPromptSubmit", now + 1), ("PreToolUse", now + 2)]:
+        stops.ask(SESSION_ID, None)
+        session_stop_hook.answer(_event(event), stops.folder, at)
+    assert [line.split(" ", 2)[1] for line in stops.trace.read_text().splitlines()] == ["ended", "cleared", "ended"]
+
+
 @pytest.mark.parametrize(("event", "session", "age"), [
     ("UserPromptSubmit", SESSION, 0),                                   # he typed: his turn runs
     ("PreToolUse", SESSION, session_stop_hook.HOLD_SECONDS + 1),        # an old stop holds nothing

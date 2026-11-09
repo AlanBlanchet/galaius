@@ -47,17 +47,19 @@ def sweep(stops: Path, now: float) -> None:
             continue
 
 
-def trace(stops: Path, now: float, line: str, once: str | None = None) -> None:
-    """`line` appended to the hook's trace (`LOG`), its older bytes dropped past `LOG_BYTES`; skipped when a line
-    starting `once` was written in the last `TURN_SECONDS` (the same turn's other tool calls). Never raises: a trace
-    it cannot write leaves the stop as it is."""
+def trace(stops: Path, now: float, line: str, turn_of: str | None = None) -> None:
+    """`line` appended to the hook's trace (`LOG`), its older bytes dropped past `LOG_BYTES`. With `turn_of`, a line
+    ending a turn: skipped when that session's last line already ended one in the last `TURN_SECONDS` (the same
+    turn's other tool calls); a stop his prompt cleared since starts anew. Never raises: a trace it cannot write
+    leaves the stop as it is."""
     log = stops / LOG
     try:
         kept = log.read_bytes() if log.is_file() else b""
-        if once is not None and any(stamp >= time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - TURN_SECONDS))
-                                    for stamp, _, rest in (old.partition(" ") for old in kept.decode("utf-8", "replace").splitlines())
-                                    if rest.startswith(once)):
-            return
+        if turn_of is not None:
+            last = next((old for old in reversed(kept.decode("utf-8", "replace").splitlines()) if f" {turn_of} " in old), "")
+            stamp, _, rest = last.partition(" ")
+            if rest.startswith("ended ") and stamp >= time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - TURN_SECONDS)):
+                return
         if len(kept) > LOG_BYTES:
             kept = kept[-(LOG_BYTES // 2):]
             log.write_bytes(kept[kept.find(b"\n") + 1:])
@@ -85,7 +87,7 @@ def answer(event: dict, stops: Path, now: float) -> dict | None:
         return None
     if name in ("PreToolUse", "PostToolUse"):
         tool = event.get("tool_name")
-        trace(stops, now, f"ended {session} at {name} {tool if isinstance(tool, str) else '?'}", once=f"ended {session} ")
+        trace(stops, now, f"ended {session} at {name} {tool if isinstance(tool, str) else '?'}", turn_of=session)
     if name == "PreToolUse":
         return {"continue": False, "stopReason": SAID,
                 "hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": SAID}}
