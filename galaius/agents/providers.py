@@ -24,12 +24,13 @@ import sys
 import tempfile
 import time
 import tomllib
+import uuid
 from abc import ABC, abstractmethod
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Protocol, get_args
 from urllib.parse import urlsplit
@@ -403,6 +404,13 @@ class AgentProvider(ABC):
         """The folder of login folder `home` that `session_files` for a session started in `cwd` all sit below: what a
         conversation carried to another PC keeps them relative to, laid out again below that PC's own (`carries`)."""
         return home
+
+    def rebuild_session(self, home: Path, cwd: Path, session: str, stream: Iterable[str], prompts: Sequence[tuple[int, str]]) -> bool:
+        """Write session `session` (started in `cwd`) again in login folder `home` from galaius's own record of it, when no
+        login folder of this PC holds it any more (a sign-out deleted it): `stream`, the CLI's raw stream lines of every
+        turn, and `prompts`, each message that started a turn with the stream line index it was sent at. Its resume then
+        reads the same conversation. False: this CLI's session cannot be written from its stream, or the stream held none."""
+        return False
 
     def carries(self, parts: tuple[str, ...], session: str) -> bool:
         """Whether a file at `parts` below `session_folder` is one of session `session`'s `session_files`, by its name
@@ -1610,6 +1618,65 @@ class ClaudeCodeProvider(AgentProvider):
 
     def carries(self, parts: tuple[str, ...], session: str) -> bool:
         return parts == (f"{session}.jsonl",) or len(parts) > 1 and parts[0] == session
+
+    def rebuild_session(self, home: Path, cwd: Path, session: str, stream: Iterable[str], prompts: Sequence[tuple[int, str]]) -> bool:
+        """Its transcript written from its stream-json output: each top-level `user` and `assistant` line (a sub-agent's,
+        `parent_tool_use_id` set, stays out as in its own transcript) chained by `parentUuid`, from its last compaction on;
+        each turn opened by the message it echoed (`isReplay`), else by the `prompts` sent before it. A tool call its
+        turn never answered (the process was killed mid-call) is left out: a resume would refuse its dangling call."""
+        lines: list[dict] = []
+        for text in stream:
+            try:
+                line = json.loads(text)
+            except ValueError:
+                line = None
+            lines.append(line if isinstance(line, dict) else {})
+        first = max((at + 1 for at, line in enumerate(lines) if line.get("type") == "system" and line.get("subtype") == "compact_boundary"), default=0)
+        answered = {block.get("tool_use_id") for line in lines[first:] if line.get("type") == "user" and isinstance(content := (line.get("message") or {}).get("content"), list)
+                    for block in content if isinstance(block, dict) and block.get("type") == "tool_result"}
+        version = next((line["claude_code_version"] for line in lines if isinstance(line.get("claude_code_version"), str)), installed_version())
+        sent = sorted(prompts)
+        entries: list[dict] = []
+        parent: str | None = None
+        used: set[str] = set()
+        clock = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+        def add(kind: str, message: dict, line: dict) -> None:
+            nonlocal parent
+            mark = line.get("uuid") if isinstance(line.get("uuid"), str) and line["uuid"] not in used else str(uuid.uuid4())
+            used.add(mark)
+            entries.append({"parentUuid": parent, "isSidechain": False, "type": kind, "message": message, "uuid": mark,
+                            "timestamp": line.get("timestamp") or clock, "userType": "external", "cwd": str(cwd), "sessionId": session, "version": version})
+            parent = mark
+
+        for at, line in enumerate(lines):
+            kind = line.get("type")
+            if kind == "system" and line.get("subtype") == "init" and at >= first:
+                due = [text for index, text in sent if index <= at]
+                sent = [(index, text) for index, text in sent if index > at]
+                echoed = next((later for later in lines[at + 1:] if later.get("type") in {"user", "assistant", "result"}), {})
+                if due and not (echoed.get("type") == "user" and echoed.get("isReplay")):
+                    add("user", {"role": "user", "content": "\n\n".join(due)}, {})
+                continue
+            if at < first or kind not in {"user", "assistant"} or line.get("parent_tool_use_id") or not isinstance(message := line.get("message"), dict):
+                continue
+            if kind == "assistant" and isinstance(content := message.get("content"), list):
+                kept = [block for block in content if not (isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id") not in answered)]
+                if not kept:
+                    continue
+                message = {**message, "content": kept}
+            add(kind, message, line)
+        if not any(entry["type"] == "assistant" for entry in entries):
+            return False
+        target = self.session_files(home, cwd, session)[0]
+        if target.exists():
+            return False
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent, delete=False, suffix=".rebuilt") as handle:
+            handle.writelines(json.dumps(entry, ensure_ascii=False) + "\n" for entry in entries)
+        os.chmod(handle.name, 0o600)
+        os.replace(handle.name, target)
+        return True
 
     def startup_files(self, cwd: Path, environment: Mapping[str, str]) -> tuple[Path, ...]:
         """The user's and every enclosing folder's instructions (with the files they import),

@@ -458,14 +458,18 @@ def test_continuing_on_another_subscription_carries_the_session_never_a_credenti
 
 
 @pytest.mark.parametrize("case", ["held by the pc login", "newest of two logins", "signed out and in again", "unpinned, sent from a pinned run",
-                                  "a newer file stays", "fenced", "codex, signed out and in again", "lent", "nowhere"])
+                                  "a newer file stays", "fenced", "codex, signed out and in again", "lent", "nowhere",
+                                  "deleted, written again from its stream", "deleted, killed mid-call", "codex, deleted with its stream"])
 def test_a_resumed_turn_finds_its_session_in_whichever_login_folder_holds_it(case: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """2026-11-09: « No conversation found » 16 times in a row on his main conversation. Its login was signed out and in again
     from the web (the folder, transcripts included, removed), and a PC-login run messaged from a pinned run resumed under the
     sender's login. A turn resumes in the folder its run is pinned to (its fence's state when fenced), never the sender's,
     with its session carried there when missing from wherever this PC holds it (the newest copy, a signed-out login's kept
     sessions included, never over a newer file), Claude's and Codex's alike; a member's lent run never looks in the owner's
-    logins; held nowhere, refused typed once, never relaunched."""
+    logins; held nowhere, refused typed once, never relaunched.
+    2026-11-09: a session deleted with its login folder before sessions were kept — written again from the run's
+    own stream (its prompts in place, a call its killed turn never answered left out) and resumed; a CLI that cannot
+    rebuild it is refused saying so."""
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.delenv("CODEX_HOME", raising=False)
     codex = case.startswith("codex")
@@ -506,7 +510,22 @@ def test_a_resumed_turn_finds_its_session_in_whichever_login_folder_holds_it(cas
         older.parent.mkdir(parents=True)
         older.write_text("older", encoding="utf-8")
         os.utime(older, (500, 500))
-    if case in {"nowhere", "lent"}:
+    if case.startswith(("deleted", "codex, deleted")):
+        said = [{"type": "system", "subtype": "init", "claude_code_version": "2.1.319", "session_id": session},
+                {"type": "assistant", "uuid": "a1", "message": {"role": "assistant", "content": [{"type": "text", "text": "first answer"}]}},
+                {"type": "assistant", "uuid": "a2", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]}},
+                {"type": "user", "uuid": "u1", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}},
+                {"type": "assistant", "uuid": "s1", "parent_tool_use_id": "t1", "message": {"role": "assistant", "content": [{"type": "text", "text": "sub-agent"}]}},
+                {"type": "result", "subtype": "success", "result": "first answer"},
+                {"type": "system", "subtype": "init", "session_id": session}]
+        if case == "deleted, killed mid-call":
+            said.append({"type": "assistant", "uuid": "a3", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t2", "name": "Bash", "input": {}}]}})
+        reg.raw_events_path(session).parent.mkdir(parents=True, exist_ok=True)
+        reg.raw_events_path(session).write_text("".join(json.dumps(line) + "\n" for line in said), encoding="utf-8")
+        reg.messages_path(session).write_text(AgentEvent(kind="message", text="second ask", to_run=session, from_run="operator", raw_index=6).model_dump_json() + "\n",
+                                              encoding="utf-8")
+        run = run.model_copy(update={"task": "first ask"})
+    if case in {"nowhere", "lent", "codex, deleted with its stream"}:
         with pytest.raises(SubscriptionRefused) as refused:
             reg.resumable(program, run, session, environment)
         assert refused.value.refusal.reason == "session_missing" and agent_queue._permanent(refused.value)
@@ -514,6 +533,13 @@ def test_a_resumed_turn_finds_its_session_in_whichever_login_folder_holds_it(cas
         return
     resumed = reg.resumable(program, run, session, environment)
     home = fence.state / program.name if fence is not None else program.auth_home(resumed)
+    if case.startswith("deleted"):
+        written = [json.loads(line) for line in record(home).read_text(encoding="utf-8").splitlines()]
+        assert [(line["type"], line["message"]["content"] if isinstance(line["message"]["content"], str) else line["message"]["content"][0].get("type")) for line in written] == [
+            ("user", "first ask"), ("assistant", "text"), ("assistant", "tool_use"), ("user", "tool_result"), ("user", "second ask")]
+        assert [line["parentUuid"] for line in written] == [None, *(line["uuid"] for line in written[:-1])] and {line["sessionId"] for line in written} == {session}
+        assert record(home).stat().st_mode & 0o777 == 0o600
+        return
     expected = {"held by the pc login": "pc\n", "newest of two logins": "new\n", "signed out and in again": "kept\n", "codex, signed out and in again": "kept\n",
                 "unpinned, sent from a pinned run": "pc\n", "a newer file stays": "pc\n", "fenced": "pc\n"}[case]
     assert home == (fence.state / program.name if fence is not None else pc_login if run.subscription is None else a.folder)

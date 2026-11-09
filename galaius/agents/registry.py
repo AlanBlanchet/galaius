@@ -1697,8 +1697,8 @@ def resumable(program: AgentProvider, run: AgentRun, session: str, environment: 
     messaging an unpinned one), its session in the folder that turn reads (its fence's state, else that login's). One
     missing there is carried from whichever folder of this PC holds it (`Subscription.session_homes`, its fence's state),
     the newest copy, never over a newer file: a login signed out and in again, or a pin moved without it; a member's lent run
-    looks in none of the owner's. Held nowhere:
-    refused typed (`session_missing`), never relaunched, a resume could only answer « No conversation found »."""
+    looks in none of the owner's. Held nowhere: written again from the run's own stream (`AgentProvider.rebuild_session`),
+    else refused typed (`session_missing`), never relaunched, a resume could only answer « No conversation found »."""
     environment = run.subscription.bound(environment) if run.subscription is not None else Subscription.unpinned(environment)
     if program.fenced is None or not program.auth_home_env:
         return environment  # a CLI keeping no session in a login folder: nothing to find
@@ -1712,8 +1712,21 @@ def resumable(program: AgentProvider, run: AgentRun, session: str, environment: 
     looked = tuple(dict.fromkeys(folder for folder in (*owners, *((state,) if state else ())) if folder != home))
     held = [folder for folder in looked if holds(folder)]
     if not held:
-        raise SubscriptionRefused("session_missing", f"session {session} of run {run.run_id[:8]} is in none of this PC's {len(looked) + 1} login folders: "
-                                                     "its conversation cannot resume here, start a new one")
+        # Deleted with its login folder (a sign-out before 2026-11-09 removed it whole): written again from galaius's own
+        # record of the run — its CLI's stream and the messages that started its turns.
+        stream = raw_events_path(run.run_id)
+        prompts = [(0, run.task), *((event.raw_index or 0, event.text) for event in read_messages(run.run_id)
+                                    if event.kind == "message" and event.to_run == run.run_id and event.text)]
+        try:
+            rebuilt = stream.is_file() and program.rebuild_session(home, cwd, session, stream.read_text(encoding="utf-8", errors="replace").splitlines(), prompts)
+        except OSError as error:
+            log.warning("run %s: its session %s could not be written again from its stream: %s", run.run_id[:8], session[:8], error)
+            rebuilt = False
+        if rebuilt:
+            log.warning("run %s resumes session %s written again in %s from its stream: no login folder held it", run.run_id[:8], session[:8], home)
+            return environment
+        raise SubscriptionRefused("session_missing", f"session {session} of run {run.run_id[:8]} is in none of this PC's {len(looked) + 1} login folders "
+                                                     f"and {program.name} cannot rebuild it from the run's record: this conversation cannot continue, start a new one")
     source = max(held, key=lambda folder: program.session_files(folder, cwd, session)[0].stat().st_mtime)
     copied = Subscription.carry_session(program, source, home, cwd, session)
     log.warning("run %s resumes session %s carried from %s to %s (%d files): its login folder had none", run.run_id[:8], session[:8], source, home, copied)
