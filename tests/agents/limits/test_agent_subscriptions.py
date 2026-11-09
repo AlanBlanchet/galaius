@@ -457,6 +457,66 @@ def test_continuing_on_another_subscription_carries_the_session_never_a_credenti
     assert quota.blocked_until(unpinned.provider, unpinned.model) is None
 
 
+@pytest.mark.parametrize("case", ["held by the pc login", "newest of two logins", "signed out and in again", "unpinned, sent from a pinned run", "a newer file stays", "nowhere"])
+def test_a_resumed_turn_finds_its_session_in_whichever_login_folder_holds_it(case: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """2026-11-09: « No conversation found » 16 times in a row on his main conversation. Its login was signed out and in again
+    from the web (the folder, transcripts included, removed), and a PC-login run messaged from a pinned run resumed under the
+    sender's login. A turn resumes in the folder its run is pinned to, never the sender's, with its session carried there from
+    wherever this PC holds it (the newest copy, a signed-out login's kept sessions included, never over a newer file); held
+    nowhere, refused typed once, never relaunched."""
+    from galaius.agents import agent_queue
+
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    program, cwd, session = PROVIDERS["claude"], tmp_path / "project", str(uuid4())
+    pc_login, a, b = tmp_path / ".claude", Subscription.create(uuid4(), "claude"), Subscription.create(uuid4(), "claude")
+    transcript = lambda home: ClaudeCodeProvider.project_folder(home, cwd) / f"{session}.jsonl"  # noqa: E731
+
+    def held(home: Path, text: str, at: float) -> None:
+        transcript(home).parent.mkdir(parents=True, exist_ok=True)
+        transcript(home).write_text(text, encoding="utf-8")
+        os.utime(transcript(home), (at, at))
+
+    pinned = RunSubscription(subscription_id=a.id, limits=SubscriptionLimits())
+    run = reg.AgentRun(run_id=session, provider="claude", name="r", cwd=str(cwd), started_at=1.0, finished_at=2.0, status="done", provider_session_id=session,
+                       subscription=None if case == "unpinned, sent from a pinned run" else pinned)
+    environment = {"HOME": str(tmp_path), "PATH": os.environ.get("PATH", "")}
+    if case == "held by the pc login":
+        held(pc_login, "pc\n", 1_000)
+    elif case == "newest of two logins":
+        held(pc_login, "old\n", 1_000)
+        held(b.folder, "new\n", 2_000)
+    elif case == "signed out and in again":
+        held(a.folder, "kept\n", 1_000)
+        a.remove()  # his sign-out from the web
+        a = Subscription.create(a.id, "claude")  # his sign-in again: a fresh folder
+    elif case == "unpinned, sent from a pinned run":
+        held(pc_login, "pc\n", 1_000)
+        environment |= a.overlay()  # the sender's own turn runs on A
+    elif case == "a newer file stays":
+        held(pc_login, "pc\n", 1_000)
+        result = ClaudeCodeProvider.project_folder(a.folder, cwd) / session / "tool-results" / "r.txt"
+        result.parent.mkdir(parents=True)
+        result.write_text("newer", encoding="utf-8")
+        older = ClaudeCodeProvider.project_folder(pc_login, cwd) / session / "tool-results" / "r.txt"
+        older.parent.mkdir(parents=True)
+        older.write_text("older", encoding="utf-8")
+        os.utime(older, (500, 500))
+    if case == "nowhere":
+        with pytest.raises(SubscriptionRefused) as refused:
+            reg.resumable(program, run, session, environment)
+        assert refused.value.refusal.reason == "session_missing" and agent_queue._permanent(refused.value)
+        return
+    resumed = reg.resumable(program, run, session, environment)
+    home = program.auth_home(resumed)
+    expected = {"held by the pc login": "pc\n", "newest of two logins": "new\n", "signed out and in again": "kept\n",
+                "unpinned, sent from a pinned run": "pc\n", "a newer file stays": "pc\n"}[case]
+    assert home == (pc_login if run.subscription is None else a.folder) and transcript(home).read_text(encoding="utf-8") == expected
+    if case == "unpinned, sent from a pinned run":
+        assert not transcript(a.folder).exists()  # the sender's login never gets it
+    if case == "a newer file stays":
+        assert result.read_text(encoding="utf-8") == "newer"
+
+
 @pytest.mark.parametrize(("status", "resume"), [("done", False), ("running", False), ("running", True)], ids=["done", "running", "running, « Continuer sur »"])
 @pytest.mark.parametrize(("source", "target"), [("login", "a"), ("a", "login"), ("a", "b")])
 def test_a_running_conversation_switches_account_from_and_to_the_pc_login(source: str, target: str, status: str, resume: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

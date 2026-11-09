@@ -990,10 +990,9 @@ class ResumeLaunch(AheadLaunch):
     def of(cls, provider: AgentProvider, run: reg.AgentRun, session_id: str, *, model: str | None, criterion: str | None, reasoning: str | None,
            environment: Mapping[str, str] | None = None) -> "ResumeLaunch":
         """The current policy's next turn of `run`, run in `environment` (this process's own when None),
-        on the subscription `run` is pinned to: refused while it is at a cap."""
-        environment = dict(Caller.environ(environment))
-        if run.subscription is not None:
-            environment = run.subscription.bound(environment)
+        on the subscription `run` is pinned to (refused while it is at a cap), else this PC's own login, its session
+        found there first (`registry.resumable`)."""
+        environment = reg.resumable(provider, run, session_id, Caller.environ(environment))
         policy = load_policy()
         policy, _ = policy.for_launch(run.agent, reference=run.agent_ref)
         catalog = policy.catalog

@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from collections.abc import Iterable, Mapping
@@ -80,6 +81,9 @@ class Subscription(BaseModel):
     #: Per CLI, the folder its login is pointed at where none of its logins may answer (another CLI than
     #: a run's subscription's; every CLI for a member's run on a lent PC): empty, never writable.
     CLOSED: ClassVar[str] = ".closed"
+    #: Where a signed-out login's sessions are kept (`remove`), one folder per sign-out shaped as a login folder: a
+    #: transcript is never deleted with its login, a run pinned there resumes from it (`session_homes`).
+    KEPT: ClassVar[str] = ".signed-out"
     #: The files a CLI keeps its tokens in, inside its home: their values are redacted wherever a run's
     #: output goes (`credentials`).
     CREDENTIALS: ClassVar[tuple[str, ...]] = (".credentials.json", "auth.json")
@@ -210,9 +214,22 @@ class Subscription(BaseModel):
     def default_home(cls, program: AgentProvider, environment: Mapping[str, str]) -> Path:
         """`program`'s default login folder: its variable's, unless that names a subscription folder
         (a launch inside a pinned run), then home's own."""
+        return program.auth_home(cls.unpinned(environment))
+
+    @classmethod
+    def unpinned(cls, environment: Mapping[str, str]) -> dict[str, str]:
+        """`environment` without any CLI login variable naming a folder under `root` (a subscription's, a closed one): what a
+        turn on this PC's own login runs with, whoever's process asked for it (a pinned run messaging an unpinned one)."""
         root = cls.root().resolve()
-        unpinned = {key: value for key, value in environment.items() if not (key in program.auth_home_env and Path(value).resolve().is_relative_to(root))}
-        return program.auth_home(unpinned)
+        logins = {name for provider in PROVIDERS.values() for name in provider.auth_home_env}
+        return {key: value for key, value in environment.items() if not (key in logins and Path(value).resolve().is_relative_to(root))}
+
+    @classmethod
+    def session_homes(cls, program: AgentProvider, environment: Mapping[str, str]) -> tuple[Path, ...]:
+        """Every folder of this PC that may hold a session of `program`, each shaped as its login folder: its default
+        login's, each subscription's, each signed-out login's kept sessions (`KEPT`)."""
+        kept = cls.root() / cls.KEPT
+        return (cls.default_home(program, environment), *cls.folders(), *(sorted(path for path in kept.iterdir() if path.is_dir()) if kept.is_dir() else ()))
 
     def _rehome(self, value: dict, environment: Mapping[str, str]) -> dict:
         """`value` with every path into any CLI's default folder (`~/<folder>/`, `$HOME/…`,
@@ -250,16 +267,22 @@ class Subscription(BaseModel):
     @classmethod
     def carry_session(cls, program: AgentProvider, source: Path, target: Path, cwd: Path, session: str) -> int:
         """Session `session`'s files (`AgentProvider.session_files`) copied from login folder `source` to `target`, same place
-        inside, for it to continue there (contract A9): each a subscription's folder or this PC's own login's, one CLI's
-        (the caller checked). Never a credential, never another file; refused when none is in `source`. How many were copied."""
+        inside, with their times, for it to continue there (contract A9): each a subscription's folder, this PC's own
+        login's or a kept one's (`session_homes`), one CLI's (the caller checked). Never a credential, never another file,
+        never over a newer file; refused when none is in `source`. How many were copied."""
         files = [path for path in program.session_files(source, cwd, session) if path.is_file() and not path.is_symlink() and path.name not in cls.CREDENTIALS]
         if not files:
             raise SubscriptionRefused("session_missing", f"session {session} is not in login folder {source}: it cannot continue elsewhere")
+        copied = 0
         for path in files:
-            copy = target / path.relative_to(source)
+            copy, held = target / path.relative_to(source), path.stat()
+            if copy.is_file() and copy.stat().st_mtime > held.st_mtime:
+                continue
             copy.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             cls._replace(copy, path.read_bytes())
-        return len(files)
+            os.utime(copy, ns=(held.st_atime_ns, held.st_mtime_ns))
+            copied += 1
+        return copied
 
     def overlay(self) -> dict[str, str]:
         """What a child of this subscription's CLI runs with on top of its environment."""
@@ -340,6 +363,16 @@ class Subscription(BaseModel):
         return tuple(value for value in dict.fromkeys(values) if len(value) >= cls.SECRET_LENGTH)
 
     def remove(self) -> None:
+        """Its folder removed, its program's session folders (`FencedCli.sessions`) first moved to a kept folder of their
+        own (`KEPT`): a run pinned here resumes from them once moved or signed in again, never « No conversation found »
+        (2026-11-09: his web sign-out and sign-in again of a login removed his main conversation's transcript)."""
+        sessions = [self.folder / name for name in (self.program.fenced.sessions if self.program.fenced is not None else ()) if (self.folder / name).is_dir()]
+        if sessions:
+            kept = self.root() / self.KEPT / f"{self.id}.{time.time_ns()}"
+            self._private(kept.parent)
+            self._private(kept)
+            for folder in sessions:
+                folder.rename(kept / folder.name)
         shutil.rmtree(self.folder, ignore_errors=True)
 
     @classmethod

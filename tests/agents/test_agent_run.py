@@ -258,6 +258,9 @@ def test_codex_resume_replays_only_recorded_mesh_opt_in(tmp_path, monkeypatch, c
         raise RuntimeError("fixture resume boundary")
 
     monkeypatch.setattr(run_module.subprocess, "Popen", capture)
+    rollout = provider.auth_home(os.environ) / "sessions" / "rollout-fixture-vendor-thread.jsonl"  # the thread its resume reads
+    rollout.parent.mkdir(parents=True, exist_ok=True)
+    rollout.touch()
     with pytest.raises(RuntimeError, match="fixture resume boundary"):
         run_module.launch_continuation(provider, reg.get_run(run.run_id), "vendor-thread", "read",
                                        model="fixture-model", criterion=None, reasoning="medium", raw_index=0)

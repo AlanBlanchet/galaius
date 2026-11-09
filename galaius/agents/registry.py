@@ -1691,6 +1691,32 @@ def login_folder(program: AgentProvider, pinned: RunSubscription | None) -> Path
     return Subscription.of(pinned.subscription_id).folder if pinned is not None and pinned.subscription_id is not None else Subscription.default_home(program, os.environ)
 
 
+def resumable(program: AgentProvider, run: AgentRun, session: str, environment: Mapping[str, str]) -> dict[str, str]:
+    """`environment` for the next turn of `run` resuming `session` on `program`'s CLI: on the login `run` is pinned to
+    (`RunSubscription.bound`), else on this PC's own whoever's process asked (`Subscription.unpinned`: a pinned run
+    messaging an unpinned one), its session in the folder that turn reads (its fence's state, else that login's). One
+    missing there is carried from whichever folder of this PC holds it (`Subscription.session_homes`, its fence's state),
+    the newest copy, never over a newer file: a login signed out and in again, or a pin moved without it. Held nowhere:
+    refused typed (`session_missing`), never relaunched, a resume could only answer « No conversation found »."""
+    environment = run.subscription.bound(environment) if run.subscription is not None else Subscription.unpinned(environment)
+    if program.fenced is None or not program.auth_home_env:
+        return environment  # a CLI keeping no session in a login folder: nothing to find
+    cwd, state = Path(run.cwd or "."), run.fence.state / program.name if run.fence is not None else None
+    home = state or program.auth_home(environment)
+    holds = lambda folder: (files := program.session_files(folder, cwd, session)) and files[0].is_file()  # noqa: E731 — its first is the record its resume reads
+    if holds(home):
+        return environment
+    looked = tuple(dict.fromkeys(folder for folder in (*Subscription.session_homes(program, environment), *((state,) if state else ())) if folder != home))
+    held = [folder for folder in looked if holds(folder)]
+    if not held:
+        raise SubscriptionRefused("session_missing", f"session {session} of run {run.run_id[:8]} is in none of this PC's {len(looked) + 1} login folders: "
+                                                     "its conversation cannot resume here, start a new one")
+    source = max(held, key=lambda folder: program.session_files(folder, cwd, session)[0].stat().st_mtime)
+    copied = Subscription.carry_session(program, source, home, cwd, session)
+    log.warning("run %s resumes session %s carried from %s to %s (%d files): its login folder had none", run.run_id[:8], session[:8], source, home, copied)
+    return environment
+
+
 def movable(run: AgentRun, pinned: RunSubscription | None) -> AgentProvider:
     """Run `run`'s CLI, refused typed when it cannot move to `pinned` (None: this PC's own login): a member's lent run (on
     none of this PC's logins), a CLI no login runs, a subscription at its cap or of another CLI."""
