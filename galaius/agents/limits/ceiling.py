@@ -56,6 +56,9 @@ class Ceiling(BaseModel):
     oomd_pressure_percent: int = Field(ge=1, le=100)
     cpu_percent: int = Field(ge=1, le=100)
     cpu_weight: int = Field(ge=1, le=10000)
+    #: Each run's processes' `oom_score_adj` (0: the launcher's own), so a PC out of memory as a whole loses an agent's
+    #: test server or build before the person's browser or editor (`run_launcher`).
+    oom_score_adjust: int = Field(default=0, ge=0, le=1000)
 
     @model_validator(mode="after")
     def _run_fits_in_slice(self) -> "Ceiling":
@@ -71,6 +74,7 @@ class Ceiling(BaseModel):
             oomd_pressure_percent=config.agent_oomd_pressure_percent,
             cpu_percent=config.agent_cpu_percent,
             cpu_weight=config.agent_cpu_weight,
+            oom_score_adjust=config.agent_oom_score_adjust,
         )
 
     def properties(self, cores: int) -> dict[str, str]:
@@ -124,7 +128,19 @@ def contained(argv: Sequence[str], ceiling: Ceiling | None = None, *, run_id: st
         return list(argv)
     scope = [f"--property={key}={value}" for key, value in ceiling.run_properties().items()]
     scope.append(f"--unit={run_scope_name(run_id) if run_id is not None else task_scope_name()}")
-    return [systemd_run, "--user", "--scope", "--quiet", "--collect", f"--slice={SLICE}", *scope, "--", *argv]
+    launcher = run_launcher(ceiling) if run_id is not None else []
+    return [systemd_run, "--user", "--scope", "--quiet", "--collect", f"--slice={SLICE}", *scope, "--", *launcher, *argv]
+
+
+def run_launcher(ceiling: Ceiling) -> list[str]:
+    """What execs a run's command at its `oom_score_adj`: the kernel's OOM killer, short of memory for the whole PC,
+    takes the process with the highest score, and a browser tab (300) went before an agent's 1.1 GB test fixture (200,
+    inherited from the user manager): the person's browser was killed on 2026-11-09 14:24. A scope takes no
+    `OOMScoreAdjust`, so `choom` sets it and execs the command in the same pid; its children inherit it, and no
+    unprivileged child lowers it again. A scope serving several runs (the shared server) keeps the launcher's. No
+    `choom`: none."""
+    choom = shutil.which("choom") if ceiling.oom_score_adjust else None
+    return [choom, "-n", str(ceiling.oom_score_adjust), "--"] if choom is not None else []
 
 
 def slice_cgroup(root: Path = Path("/sys/fs/cgroup")) -> Path | None:

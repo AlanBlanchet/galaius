@@ -403,11 +403,17 @@ class Config(BaseSettings):
     # MemoryHigh: that throttle stalls every agent on reclaim (`galaius.agents.limits.ceiling`).
     agent_memory_soft_percent: Annotated[int, Field(ge=1, le=100)] = 85
     agent_memory_release_percent: Annotated[int, Field(ge=1, le=100)] = 80
+    # The PC's free memory (`MemAvailable`) as a share of its RAM under which no agent turn starts, and the share it
+    # waits for: the slice's own share misses what other programs hold (a container stack, the browser). 0: off.
+    agent_pc_available_min_percent: Annotated[int, Field(ge=0, le=100)] = 15
+    agent_pc_available_release_percent: Annotated[int, Field(ge=0, le=100)] = 20
     # systemd-oomd acts on the agents' slice when it stalls this share of the time on memory.
     agent_oomd_pressure_percent: Annotated[int, Field(ge=1, le=100)] = 80
     agent_cpu_percent: Annotated[int, Field(ge=1, le=100)] = 75
     # Relative to the desktop's default 100: under contention the editor gets 5x the CPU.
     agent_cpu_weight: Annotated[int, Field(ge=1, le=10000)] = 20
+    # Each agent run's `oom_score_adj`: the PC out of memory loses an agent's process before a browser tab (300).
+    agent_oom_score_adjust: Annotated[int, Field(ge=0, le=1000)] = 500
     # "local": drives the real session (uinput, system-wide). "nested": isolated Xephyr display
     # (xdotool) — sandbox that never touches the user's real windows or cursor.
     desktop_target: Literal["local", "nested"] = "local"

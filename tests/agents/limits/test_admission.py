@@ -179,3 +179,34 @@ def test_a_hold_line_names_the_day_its_window_reopens_past_today(days, said):
     until = (datetime.now().replace(hour=12, minute=0) + timedelta(days=days)).timestamp()
     hold = Hold(cause=quota.Pause(reason="usage_limit", at=time.time(), until=until), provider="claude")
     assert re.search(said, hold.line(promise=False))
+
+
+def _meminfo(tmp_path, available_gb: float, total_gb: float = 32.0):
+    path = tmp_path / "meminfo"
+    path.write_text(f"MemTotal:       {int(total_gb * 1e6)} kB\nMemFree:         1000 kB\nMemAvailable:   {int(available_gb * 1e6)} kB\n")
+    return path
+
+
+@pytest.mark.parametrize(("steps", "held"), [
+    ((6.0,), False),          # 19 % free: past the 15 % floor
+    ((4.0,), True),           # 12.5 %: short, the agents' own share low (2026-11-09: a container stack held the rest)
+    ((4.0, 5.5), True),       # 17 %: back over the floor, still under the 20 % it waits for
+    ((4.0, 6.6), False),      # 21 %: released
+])
+def test_the_pc_short_of_free_memory_holds_every_turn_whatever_the_agents_hold(tmp_path, steps, held):
+    memory = SoftMemory(soft_percent=85, release_percent=80, cgroup=_cgroup(tmp_path, 2.0),
+                        pc_min_percent=15, pc_release_percent=20, meminfo=tmp_path / "meminfo")
+    for available in steps:
+        _meminfo(tmp_path, available)
+        hold = memory.hold()
+    assert (hold is not None) is held
+    if held:
+        assert hold.line() == f"en pause : mémoire du PC à {steps[-1] * 1.024:.1f} Go libres, reprise au-dessus de {32 * 1.024 * 0.2:.1f} Go"
+
+
+def test_no_meminfo_holds_nothing_and_a_floor_of_zero_reads_none(tmp_path):
+    assert SoftMemory(soft_percent=85, release_percent=80, cgroup=_cgroup(tmp_path, 2.0), pc_min_percent=15,
+                      pc_release_percent=20, meminfo=None).hold() is None
+    _meminfo(tmp_path, 0.5)
+    assert SoftMemory(soft_percent=85, release_percent=80, cgroup=_cgroup(tmp_path, 2.0),
+                      meminfo=tmp_path / "meminfo").hold() is None

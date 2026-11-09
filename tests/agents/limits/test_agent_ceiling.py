@@ -32,6 +32,19 @@ def test_one_run_cannot_exceed_all_agents_together():
         Ceiling(memory_max_percent=45, run_memory_max_percent=50, oomd_pressure_percent=80, cpu_percent=75, cpu_weight=20)
 
 
+@pytest.mark.parametrize(("run_id", "adjust", "launched"), [
+    ("r1", 500, ["/usr/bin/choom", "-n", "500", "--", "claude"]),
+    ("r1", 0, ["claude"]),        # off: the launcher's own score
+    (None, 500, ["claude"]),      # a shared server's scope serves every run: never first to go
+])
+def test_a_run_goes_before_the_desktop_when_the_pc_is_out_of_memory(monkeypatch, run_id, adjust, launched):
+    monkeypatch.setattr(ceiling_module.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(ceiling_module.sys, "platform", "linux")
+    monkeypatch.setattr(ceiling_module, "_prepare_slice", lambda systemctl, ceiling: None)
+    argv = contained(["claude"], CEILING.model_copy(update={"oom_score_adjust": adjust}), run_id=run_id)
+    assert argv[argv.index("--") + 1:] == launched
+
+
 @pytest.mark.parametrize("missing", ["systemd-run", "systemctl"])
 def test_without_user_systemd_the_agent_runs_unchanged(monkeypatch, missing):
     real = shutil.which
@@ -85,20 +98,26 @@ def _user_manager() -> bool:
 
 
 @pytest.mark.skipif(not _user_manager(), reason="needs a systemd user manager")
-def test_a_contained_agent_keeps_its_pid_and_lands_in_its_own_capped_scope():
+def test_a_contained_agent_keeps_its_pid_and_lands_in_its_own_capped_scope(monkeypatch):
+    """Its pid is the one recorded, and the PC short of memory loses it before a browser tab (`run_launcher`). The
+    slice's limits stay this PC's own: a test's numbers applied there cut every agent running here (55 -> 45 %,
+    2026-11-09)."""
+    monkeypatch.setattr(ceiling_module, "_prepare_slice", lambda systemctl, ceiling: None)
+    probe = "import os; print(os.getpid()); print(open('/proc/self/oom_score_adj').read().strip()); print(open('/proc/self/cgroup').read())"
     process = subprocess.Popen(
-        contained([sys.executable, "-c", "import os; print(os.getpid()); print(open('/proc/self/cgroup').read())"], CEILING, run_id="probe-1"),
+        contained([sys.executable, "-c", probe], CEILING.model_copy(update={"oom_score_adjust": 500}), run_id="probe-1"),
         stdout=subprocess.PIPE, text=True,
     )
     out, _ = process.communicate(timeout=30)
-    pid, cgroup = out.split("\n", 1)
+    pid, adjust, cgroup = out.split("\n", 2)
     assert int(pid) == process.pid
+    assert int(adjust) == 500 or shutil.which("choom") is None
     assert f"/{SLICE}/galaius-run-probe-1-" in cgroup
     limits = subprocess.run(
-        ["systemctl", "--user", "show", SLICE, "-p", "MemoryHigh", "-p", "MemorySwapMax", "-p", "CPUWeight"],
+        ["systemctl", "--user", "show", SLICE, "-p", "MemoryHigh", "-p", "MemorySwapMax"],
         capture_output=True, text=True, check=True,
     ).stdout
-    assert "MemoryHigh=infinity" in limits and "MemorySwapMax=0" in limits and "CPUWeight=20" in limits
+    assert "MemoryHigh=infinity" in limits and "MemorySwapMax=0" in limits
 
 
 @pytest.mark.asyncio

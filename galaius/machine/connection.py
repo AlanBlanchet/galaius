@@ -44,7 +44,7 @@ from galaius.cli.prompts import PromptMode
 from galaius.agents import providers as agent_providers
 from galaius.host.file_lock import exclusive
 from galaius.host.private_files import PRIVATE_FILES
-from galaius.host.processes import shell_path
+from galaius.host.processes import share_malloc_arenas, shell_path
 from galaius.account.tls import server_tls
 from galaius.account.address import ServerAddress
 from galaius.diagnostics.error_reports import MachineErrorReports
@@ -2374,6 +2374,9 @@ class MachineRunner:
 async def connect_command(server_url: str | None, workspace_id: UUID | None, machine_id: UUID | None, token: str | None, permission_ceiling: PermissionLevel, working_directory: Path | None, serve: bool) -> None:
     if serve:  # before the runner: its programs take their PATH from it once, when it is built (`_system_environment`)
         os.environ["PATH"] = shell_path(os.environ.get("PATH", ""))
+        # Before its first worker thread: a thread per call each kept its own C arena, 36 of them held 722 of the
+        # service's 1,367 MB after 3 h (2026-11-09).
+        share_malloc_arenas()
     runner = MachineRunner()
     try:
         if server_url is None and workspace_id is None and machine_id is None and token is None:
