@@ -21,6 +21,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 from abc import ABC, abstractmethod
@@ -29,13 +30,14 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from collections.abc import Mapping
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Protocol, get_args
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, model_validator
 
 from galaius.account.caller import Caller
-from galaius_core import AGENT_PROGRAMS, AgentMedia, AgentProgram, ContextGauge, HeldLoginForm, LoginIdentity, TokenCounts, UsageWindow, UsageWindowName
+from galaius_core import AGENT_PROGRAMS, KEY_HARNESS, AgentMedia, AgentProgram, ContextGauge, HeldLoginForm, LoginIdentity, Provider, TokenCounts, UsageWindow, UsageWindowName
 
 from galaius import installed_version
 from galaius.agents.catalog.entries import AgentCatalog
@@ -44,11 +46,13 @@ from galaius.usage_dialects import UsageDialect
 from galaius.agents.limits import held
 from galaius.agents.limits.quota import REFUSAL
 from galaius.agents.catalog.profiles import overlay_for
-from galaius.agents.catalog.vocabulary import CLAUDE_VOCABULARY, CODEX_VOCABULARY, ApprovalIntent, HarnessVocabulary, TouchScope, ThinkingLevel
+from galaius.agents.catalog.vocabulary import CLAUDE_VOCABULARY, CODEX_VOCABULARY, VIBE_VOCABULARY, ApprovalIntent, HarnessVocabulary, TouchScope, ThinkingLevel
 from galaius.brief_hook import NOTE as BRIEF_NOTE
 from galaius.isolation.fence import BROWSERS, COMPAT_KEY, EGL_VENDOR, RELAY, FencedCli, RELAY_PORT, Confinement, RelayedServer, SignIn, confinement_refusal, userns_refusal
 from galaius.inbox_hook import NOTE as INBOX_NOTE
 from galaius.host.processes import ask_process, run_isolated_process, shell_entries
+from galaius.host.windowless import console_python
+from galaius.host.private_files import PRIVATE_FILES
 from galaius.mcp.announcement import GatewayServed
 
 if TYPE_CHECKING:  # the model registry stays out of every CLI start
@@ -2714,8 +2718,212 @@ class _MediaSessionProvider(Protocol):
     def media_result(self, events: list[AgentEvent]) -> _MediaResult: ...
 
 
+def galaius_invocation() -> list[str]:
+    """How a child launches galaius itself: its installed console script, else this interpreter on the package (a
+    checkout without one)."""
+    exe = shutil.which("galaius")
+    return [exe] if exe else [console_python(), "-m", "galaius"]
+
+
+#: The line `galaius agents turn-end` writes once its CLI's turn has ended (`KeyProgramProvider.parse`): the turn's
+#: outcome, error and token usage as the CLI exported them.
+TURN_END = "galaius.turn_end"
+
+
+def turn_end(argv: list[str], export_option: str) -> int:
+    """Runs one CLI turn `argv` whose stream marks no end of its own, its output where this process's goes, the CLI asked
+    to export its turn (`export_option` <folder>: Vibe's `--output-dir`, an `export.json` there), then writes that export
+    as one `TURN_END` line and exits as the CLI did. A turn exporting nothing (it never started) ends on its exit code."""
+    with tempfile.TemporaryDirectory(prefix="galaius-turn-") as folder:
+        code = subprocess.run([argv[0], export_option, folder, *argv[1:]], check=False).returncode
+        try:
+            said = json.loads((Path(folder) / "export.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            said = {"outcome": "finished" if code == 0 else "failed", "error": None if code == 0 else f"{Path(argv[0]).name} exited {code}"}
+    said = said if isinstance(said, dict) else {}
+    line = {"type": TURN_END, "sessionId": said.get("session_id"), **{key: said.get(key) for key in ("outcome", "error", "stop_reason", "usage")}}
+    sys.stdout.write(json.dumps(line) + "\n")
+    sys.stdout.flush()
+    return code
+
+
+def _toml(value: object) -> str:
+    """`value` (a string, bool, number, list or flat table of them) as a TOML value: strings JSON-quoted, which TOML's
+    basic strings read the same."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return json.dumps(value)
+    if isinstance(value, str):
+        return json.dumps(value)
+    if isinstance(value, Mapping):
+        return "{ " + ", ".join(f"{json.dumps(str(key))} = {_toml(item)}" for key, item in value.items()) + " }"
+    return "[" + ", ".join(_toml(item) for item in value) + "]"
+
+
+class KeyProgramProvider(AgentProvider):
+    """Every key program (core `Provider.key_program`: a provider row whose API key reaches a Chat Completions API), run by
+    its one harness (`KEY_HARNESS`, Mistral's Vibe, Apache-2.0) pointed at that row's API on its held key: no vendor has
+    code here, each is a subclass `of` its program, made from its row. A run has its own Vibe folder (`run_home`, its
+    `VIBE_HOME`) inside the subscription folder holding the key: its config (the row's API, the run's model, galaius's MCP
+    server, the tools its role may use: `config`) and its sessions, so a resumed turn finds its session and two runs on one
+    key never share a config. Vibe marks no turn's end on its stream: `galaius agents turn-end` runs each turn and writes
+    one `TURN_END` line from the export Vibe leaves (`ended`). Exercised 2026-11-09 with Vibe 3.1.0 headless on an
+    OpenAI-compatible endpoint: a tool call (write_file), the answer, a resumed second turn remembering the first."""
+
+    #: The provider row this program is (`of`).
+    row: ClassVar[Provider]
+    binary = KEY_HARNESS
+    can_resume = True
+    vocabulary = VIBE_VOCABULARY
+    installers = {"posix": ProgramInstaller(url="https://mistral.ai/vibe/install.sh", hosts=frozenset({"mistral.ai"}), shell=("bash",), bin_dirs=("~/.local/bin",))}
+    #: Vibe's built-in tools each role tool stands for: a role without it has them refused (`config`); a tool named
+    #: nowhere here (todo, skill) always runs, `ask_user_question` never (no one answers a headless turn).
+    TOOLS: ClassVar[Mapping[str, tuple[str, ...]]] = MappingProxyType({
+        "Read": ("read_file",), "Grep": ("grep",), "Glob": ("grep",), "Write": ("write_file",), "Edit": ("edit",),
+        "Bash": ("bash", "bash_output", "bash_stdin", "bash_sessions", "bash_log_file"), "WebFetch": ("web_fetch",),
+        "WebSearch": ("web_search",), "Agent": ("task",),
+    })
+    #: The role tools a read-only run never has.
+    WRITES: ClassVar[frozenset[str]] = frozenset({"Write", "Edit", "Bash"})
+    #: `export.json`'s `usage`: OpenAI's meaning, cached tokens inside the prompt's.
+    USAGE: ClassVar[UsageDialect] = UsageDialect(input=("input_tokens",), output=("output_tokens",), cache_read=("cached_input_tokens",), whole_prompt=True)
+
+    @classmethod
+    def of(cls, program: AgentProgram) -> "KeyProgramProvider":
+        """The provider of key program `program`, a subclass named after it."""
+        row = Provider.by_id(program.provider)
+        if row is None or row.api is None or not program.keyed:
+            raise ValueError(f"{program.provider} is no key program")
+        native = frozenset({row.id, row.api.connection} - {"openai_compatible"})
+        # Its own login-folder variable (Vibe's is `VIBE_HOME`, set from it per run: `child_environment`): one program's
+        # subscription folder, and the key in it, is never another's.
+        return type(f"KeyProgram_{row.id}", (cls,), {"program": program, "row": row, "native_providers": native,
+                                                     "auth_home_env": (f"GALAIUS_HOME_{row.id.upper()}",)})()
+
+    @property
+    def home_folder(self) -> str:
+        return ".vibe"
+
+    def login_keys(self, environment: Mapping[str, str]) -> frozenset[str]:
+        return frozenset({self.held.variable})
+
+    def run_home(self, environment: Mapping[str, str]) -> Path:
+        """Run `GALAIUS_RUN_ID`'s own Vibe folder inside the login folder `environment` names; that folder itself for a
+        launch naming no run."""
+        home, run = self.auth_home(environment), environment.get("GALAIUS_RUN_ID")
+        return home / "runs" / run if run else home
+
+    def child_environment(self, environment: Mapping[str, str], *, mcp_wait_seconds: float) -> dict[str, str]:
+        """Its key set from the login folder (`held_environment`), then Vibe pointed at the run's own folder."""
+        return {**super().child_environment(environment, mcp_wait_seconds=mcp_wait_seconds), "VIBE_HOME": str(self.run_home(environment))}
+
+    async def login_status(self, env: dict[str, str], *, timeout: float = 10, expiry: bool = True, named: bool = True) -> LoginStatus:
+        """Signed in while its held key is set (`held_environment`): the key's digest is the login; no CLI is asked."""
+        key = env.get(self.held.variable, "")
+        return LoginStatus(signed_in=True, login=hashlib.sha256(key.encode()).hexdigest()[:16]) if key else LoginStatus(signed_in=False)
+
+    def validate_tool_policy(self, allowed_tools: list[str] | None, denied_tools: tuple[str, ...], *, coarse_accepted: bool = False) -> None:
+        """Any restriction holds: each native tool refused one by one (`TOOLS`); galaius's own tools are the ones its server
+        serves the run's role."""
+        validate_denied_tools(denied_tools)
+
+    def model_name(self, model: str | None) -> str:
+        """The vendor's name for `model` (`<row>/<name>` or bare), its row's own model for none."""
+        if not model:
+            return self.row.api.model
+        prefix = f"{self.row.id}/"
+        return model[len(prefix):] if model.startswith(prefix) else model
+
+    def refused_tools(self, allowed_tools: list[str] | None, denied_tools: tuple[str, ...], permission_mode: str | None) -> list[str]:
+        """Vibe's tools this run never runs: each of a role tool it is not allowed (no list: every one is), is denied, or
+        writes in a read-only run, unless another role tool it keeps shares it (Grep, Glob: `grep`); `ask_user_question`
+        always (no one answers a headless turn)."""
+        read_only = self.touch_of(permission_mode) is TouchScope.READ_ONLY
+        kept = {native for tool, natives in self.TOOLS.items() if (allowed_tools is None or tool in allowed_tools) and tool not in denied_tools
+                and not (read_only and tool in self.WRITES) for native in natives}
+        return sorted({native for natives in self.TOOLS.values() for native in natives} - kept | {"ask_user_question"})
+
+    def config(self, *, model: str, mcp_config: str | None, refused: list[str], reasoning: str | None) -> str:
+        """The run's `config.toml`: the row's API on the held key, `model` (thinking at `reasoning`), galaius's MCP server
+        (`mcp_config`, Claude Code's JSON shape), `refused` tools never run, and nothing of Vibe's own calls home."""
+        lines = [f"active_model = {_toml(model)}", *(f"{name} = false" for name in ("enable_update_checks", "enable_auto_update", "enable_telemetry", "enable_notifications", "include_commit_signature")),
+                 "", "[[providers]]", f"name = {_toml(self.row.id)}", f"api_base = {_toml(self.row.api.chat_base())}", f"api_key_env_var = {_toml(self.held.variable)}",
+                 'api_style = "openai"', 'backend = "generic"', "", "[[models]]", f"name = {_toml(model)}", f"provider = {_toml(self.row.id)}", f"alias = {_toml(model)}"]
+        if reasoning is not None:
+            lines.append(f"thinking = {_toml(self.provider_thinking_level(reasoning))}")
+        for name, server in (json.loads(mcp_config).get("mcpServers", {}) if mcp_config else {}).items():
+            lines += ["", "[[mcp_servers]]", f"name = {_toml(name)}", 'transport = "stdio"', f"command = {_toml(server['command'])}",
+                      f"args = {_toml(server.get('args', []))}", f"env = {_toml(server.get('env', {}))}"]
+        for tool in refused:
+            lines += ["", f"[tools.{tool}]", 'permission = "never"']
+        return "\n".join(lines) + "\n"
+
+    def _turn(self, arguments: list[str], prompt: str) -> list[str]:
+        """One headless Vibe turn run by `galaius agents turn-end` (its end said, `TURN_END`); the prompt last, as one
+        argument (`on_stdin`)."""
+        return [*galaius_invocation(), "agents", "turn-end", "--export-option=--output-dir", "--", self.binary, "--output", "streaming", "--trust", "--auto-approve", *arguments, f"--prompt={prompt}"]
+
+    def command(self, task: str, *, cwd: str, model: str | None, mcp_config: str | None,
+                run_id: str, agent: str | None = None, permission_mode: str | None = None,
+                allowed_tools: list[str] | None = None, reasoning: str | None = None,
+                agent_prompt: str | None = None, denied_tools: tuple[str, ...] = (),
+                image_paths: tuple[Path, ...] = (), coarse_accepted: bool = False,
+                base_url: str | None = None, environment: Mapping[str, str] | None = None, fence_decides: bool = False) -> list[str]:
+        """The run's first turn: its folder's config written (`config`), then `task` (after its role's definition: Vibe has
+        no channel of its own for it) in a new session."""
+        self.validate_permission_mode(permission_mode)
+        home = self.run_home(environment or {})
+        home.mkdir(parents=True, exist_ok=True)
+        PRIVATE_FILES.write_text(home / "config.toml", self.config(model=self.model_name(model), mcp_config=mcp_config,
+                                                                   refused=self.refused_tools(allowed_tools, denied_tools, permission_mode), reasoning=reasoning))
+        return self._turn(["--workdir", cwd], f"{agent_prompt}\n\n{task}" if agent_prompt else task)
+
+    def resume_command(self, session_id: str, message: str, *, fork_to: str | None = None, **_options) -> list[str]:
+        """`message` into session `session_id`, under the config its first turn wrote."""
+        if fork_to is not None:
+            raise ValueError("a key program continues its own session; it cannot resume into a copy")
+        return self._turn(["--resume", session_id], message)
+
+    def parse(self, line: str, ledger: UsageLedger | None = None) -> AgentEvent | None:
+        """One Vibe stream line: the turn's user message starts its session, an assistant message is text, an effect is a
+        tool and its result, the `TURN_END` line ends the turn (`done` with its usage, `error` with what stopped it)."""
+        try:
+            raw = json.loads(line)
+        except ValueError:
+            return None
+        if not isinstance(raw, dict):
+            return None
+        session = raw.get("sessionId")
+        match raw.get("type"), raw.get("role"):
+            case "message", "user":
+                return AgentEvent(kind="started", session_id=session, raw_type="message")
+            case "message", "assistant" if raw.get("generationStatus") == "completed":
+                text = "".join(str(block.get("text") or "") for block in raw.get("content") or () if isinstance(block, dict) and block.get("type") == "text")
+                return AgentEvent(kind="text", session_id=session, raw_type="message", text=text) if text.strip() else None
+            case "effect", _:
+                detail, state = raw.get("detail") or {}, raw.get("state") or {}
+                status = str(state.get("status") or "")
+                display = detail.get("display") or {}
+                return AgentEvent(kind="tool_result" if status in ("completed", "failed") else "tool", session_id=session, raw_type="effect",
+                                  tool=str(raw.get("title") or detail.get("toolName") or "tool"), tool_id=str(raw.get("id") or ""),
+                                  tool_input=_clip(str(display.get("summary") or "")), status="failed" if status == "failed" else "completed" if status else "running",
+                                  text=_clip(str(state.get("outputText") or "")))
+            case TURN_END, _:
+                usage = raw.get("usage")
+                if raw.get("outcome") != "finished":
+                    said = str(raw.get("error") or raw.get("stop_reason") or raw.get("outcome") or "the turn ended without finishing")
+                    return AgentEvent(kind="error", session_id=session, raw_type=TURN_END, text=_clip(said), cut=self.cut_of(said))
+                settled = TokenCounts()
+                if (counts := self.USAGE.read(usage)).reported:
+                    settled, _ = (ledger or UsageLedger()).settle({"": counts}, None)
+                return AgentEvent(kind="done", session_id=session, raw_type=TURN_END, usage=settled)
+        return None
+
+
+
 _claude = ClaudeCodeProvider()
-PROVIDERS: dict[str, AgentProvider] = {p.name: p for p in (_claude, CodexProvider())}
+PROVIDERS: dict[str, AgentProvider] = {p.name: p for p in (_claude, CodexProvider(), *(KeyProgramProvider.of(program) for program in AGENT_PROGRAMS.values() if program.keyed))}
 MEDIA_PROVIDERS: dict[str, _MediaSessionProvider] = {_claude.name: _claude}
 
 

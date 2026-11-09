@@ -173,7 +173,8 @@ async def test_each_candidate_runs_on_its_own_providers_subscription_and_the_run
     # Fenced, the started candidate's login folder is the only one bound: every other chosen one is closed.
     fence = FenceSpec(working_directory=tmp_path, start=tmp_path, state=tmp_path / "state", providers=("claude", "codex"))
     closed = Subscription.root() / Subscription.CLOSED
-    for choices, homes in (((choice(codex), choice(claude)), {"claude": claude.folder, "codex": closed / "codex"}), ((choice(codex),), {"codex": closed / "codex"})):
+    shut = {name: closed / name for name in PROVIDERS if name != "claude"}  # every other program's folder, the key programs' too
+    for choices, homes in (((choice(codex), choice(claude)), {"claude": claude.folder, **shut}), ((choice(codex),), {"codex": closed / "codex"})):
         handle = await run_agent(None, "go", agent="tester", cwd=str(tmp_path), environment={"PATH": "/usr/bin:/bin"}, fence=fence,
                                  choices=SubscriptionChoices(subscriptions=choices))
         await asyncio.wait_for(handle.wait(), timeout=30)
@@ -540,7 +541,7 @@ def test_each_login_here_says_its_own_usage_and_a_subscriptions_never_mixes_with
     assert watch.login_usage("codex") == ()
     now = datetime.now(UTC)
     report = watch.report(now)
-    assert [(login.provider, len(login.windows)) for login in report.logins] == [("claude", 2), ("codex", 0)]  # first report: « none » too
+    assert [(login.provider, len(login.windows)) for login in report.logins] == [("claude", 2), *((name, 0) for name in PROVIDERS if name != "claude")]  # first report: « none » too
     assert [usage.subscription_id for usage in report.usage] == [subscription.id]
     # His account in ~/.claude and in the subscription's folder: one login, said with its e-mail (owner 2026-10-30).
     assert report.logins[0].login == report.usage[0].login != "" and report.logins[0].account.startswith("owner@example.com")
@@ -585,7 +586,8 @@ def test_a_cli_writing_no_usage_record_never_reads_its_subscription_folder(tmp_p
 def test_a_cli_signs_in_the_way_its_program_says() -> None:
     """A provider naming its program takes the program's name, and its sign-in is the program's: a link answered with a code
     pasted back (`paste_link`) only for `paste_code`."""
-    assert [(provider.name, provider.paste_link is not None) for provider in PROVIDERS.values()] == [("claude", True), ("codex", False)]
+    assert [(provider.name, provider.paste_link is not None) for provider in PROVIDERS.values()][:2] == [("claude", True), ("codex", False)]
+    assert all((provider.paste_link is not None) == (provider.program.sign_in.flow == "paste_code") for provider in PROVIDERS.values())
     with pytest.raises(TypeError, match="disagree"):
         type("Mismatched", (ClaudeCodeProvider,), {"program": PROVIDERS["codex"].program})
 
@@ -611,7 +613,7 @@ def test_a_held_login_reaches_only_the_launches_of_its_own_folder(launch: str) -
     assert held.hold(token) and not held.hold(token)  # the same token again writes nothing
     claude = PROVIDERS["claude"]
     for provider in PROVIDERS.values():
-        if provider.held is not None and provider.held.variable is not None:  # read off its screen, marked unstripped
+        if provider.held is not None and provider.held.variable is not None and provider.held.command is not None:  # read off its screen, marked unstripped
             assert provider.token_said is not None and not mark(provider.held.variable).upper().endswith(SECRET_SUFFIXES)
     base = {"HOME": str(Path.home()), "PATH": os.defpath}
     inherited = {**base, "CLAUDE_CODE_OAUTH_TOKEN": token, mark("CLAUDE_CODE_OAUTH_TOKEN"): str(held.folder)}
@@ -650,3 +652,26 @@ def test_a_held_login_file_is_private_never_a_link_and_masked_in_every_output(tm
     with pytest.raises(PermissionError, match="link"):
         subscription.hold("sk-ant-oat01-" + "z" * 40)
     assert elsewhere.read_text() == token
+
+
+def test_a_key_programs_key_reaches_only_its_own_programs_launches_in_its_runs_own_vibe_folder() -> None:
+    """Owner 2026-11-08 « Why can't I, uh, still add a Mistral subscription »: each key program (a provider row's pasted
+    key, core `Provider.key_program`) holds its key in its own folder and variable; a launch of it on that subscription runs
+    with the key and Vibe in the run's own folder there, never another key program's launch (its key never reaches
+    another vendor's API), nor a launch naming no subscription. Members: every key program, read from providers.json."""
+    from galaius.agents.providers import KeyProgramProvider
+
+    keyed = [provider for provider in PROVIDERS.values() if isinstance(provider, KeyProgramProvider)]
+    assert {"mistral", "gemini", "openrouter"} <= {provider.name for provider in keyed}
+    base = {"HOME": str(Path.home()), "PATH": os.defpath, "GALAIUS_RUN_ID": "run-1"}
+    for provider in keyed:
+        held = Subscription.create(uuid4(), provider.name)
+        key = f"key-{provider.name}-" + "k" * 24
+        assert held.hold(key)
+        overlay = {**base, **RunSubscription(subscription_id=held.id, limits=SubscriptionLimits()).overlay()}
+        made = provider.child_environment(overlay, mcp_wait_seconds=0)
+        assert made[provider.held.variable] == key and made["VIBE_HOME"] == str(held.folder / "runs" / "run-1")
+        for other in keyed:
+            if other is not provider:
+                assert other.held.variable not in other.child_environment(overlay, mcp_wait_seconds=0)
+        assert provider.held.variable not in provider.child_environment(base, mcp_wait_seconds=0)

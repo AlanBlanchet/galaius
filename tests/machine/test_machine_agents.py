@@ -42,7 +42,7 @@ from galaius.agents.limits.subscriptions import SubscriptionCapped
 from galaius.machine.projects.workspaces import KeptJob, MachineWorkspaces, WorkspaceJobs
 from galaius.machine.projects.workspace_git import CloneFailure, Git
 from galaius.machine.projects.workspace_copy import WorkspaceTransfers
-from galaius.agents.providers import PROJECT_SETTINGS_OFF, UNTRUSTED_FOLDERS, ClaudeCodeProvider, LoginStatus
+from galaius.agents.providers import PROJECT_SETTINGS_OFF, PROVIDERS, UNTRUSTED_FOLDERS, ClaudeCodeProvider, LoginStatus
 from galaius.machine.places.place_reviews import PlaceReviews
 from galaius.host.private_files import PRIVATE_FILES
 from galaius.host.processes import detached_options
@@ -368,8 +368,8 @@ def test_a_run_stays_on_its_subscription_and_a_lent_pc_lends_no_login(base: Path
     fenced = agents.model_copy(update={"fence_agents": True})
     lent = fenced.pinned(_request("start", root="project", role="tester", text="go", lent=True))
     closed = Subscription.root() / Subscription.CLOSED
-    assert lent == RunSubscription(lent=True) and lent.homes() == {"claude": closed / "claude", "codex": closed / "codex"}
-    assert lent.overlay() == {"CLAUDE_CONFIG_DIR": str(closed / "claude"), "CODEX_HOME": str(closed / "codex")}
+    assert lent == RunSubscription(lent=True) and lent.homes() == {name: closed / name for name in PROVIDERS}
+    assert lent.overlay() == {provider.auth_home_env[0]: str(closed / name) for name, provider in PROVIDERS.items()}
 
     async def nothing_runs(provider, task, **options):
         raise RuntimeError("No candidate for 'tester' can start on this machine")
@@ -900,7 +900,7 @@ def test_providers_switch_through_the_cli_the_editor_uses_and_settings_survive_a
     agents = _agents(base, tmp_path, cli=recorder)
     switched = _answer(agents, _request("provider", provider="codex", active=False))
     assert json.loads(seen.read_text()) == ["agents", "providers", "--name", "codex", "--state", "off"] and switched.detail == "off"
-    assert {item.provider for item in switched.providers} == {"claude", "codex"}
+    assert {item.provider for item in switched.providers} == set(AGENT_PROGRAMS)
     settings = _answer(agents, _request("settings"))
     assert json.loads(seen.read_text()) == ["config", "models", "--json-out"]
     assert settings.tool_models == () and settings.detail.startswith("models not read here") and settings.providers

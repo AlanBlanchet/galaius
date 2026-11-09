@@ -795,6 +795,12 @@ def config_path() -> None:
 agents_app = App(name="agents", help="Spawn and supervise agent runs across providers.")
 
 
+@agents_app.command(name="turn-end", show=False)
+def agents_turn_end(*argv: str, export_option: Annotated[str, Parameter(name="--export-option")]) -> None:
+    """Run one CLI turn whose stream marks no end and write its end as one line (`providers.turn_end`)."""
+    raise SystemExit(agent_providers.turn_end(list(argv), export_option))
+
+
 @agents_app.command(name="sync")
 def agents_sync(
     endpoint: Annotated[str | None, Parameter(name="--endpoint")] = None,

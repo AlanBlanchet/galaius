@@ -143,3 +143,35 @@ CLAUDE_VOCABULARY = HarnessVocabulary(
     }),
     tools=Translation("--tools/--allowedTools/--disallowedTools", True, "Claude Code tool policy"),
 )
+
+#: Vibe's (`KeyProgramProvider.vocabulary`, every key program's harness): its tools are allowed or refused one by one in
+#: the run's own config (`[tools.<name>] permission`), headless with no one to approve, so touch scope is which tools
+#: run and approval is never asked.
+VIBE_VOCABULARY = HarnessVocabulary(
+    name="vibe",
+    touch_apart=True,
+    touch=_translations({
+        TouchScope.READ_ONLY: Translation("read_only", True, "Vibe's write, edit and shell tools refused"),
+        TouchScope.WORKSPACE_WRITE: Translation("workspace_write", False, "Vibe's shell reaches past the workspace; safely narrowed to its tools"),
+        TouchScope.FULL_ACCESS: Translation("full_access", True, "every Vibe tool runs"),
+    }),
+    approval=_translations({
+        ApprovalIntent.ASK: Translation(None, True, "a headless Vibe turn has no one to ask"),
+        ApprovalIntent.AUTO_SAFE: Translation(None, False, "a headless Vibe turn has no one to ask"),
+        ApprovalIntent.AUTO_EDITS: Translation(None, False, "a headless Vibe turn has no one to ask"),
+        ApprovalIntent.NEVER: Translation("never", True, "Vibe --auto-approve"),
+    }),
+    thinking=_translations({
+        **{level: Translation(level.value, True, "Vibe model thinking") for level in (ThinkingLevel.LOW, ThinkingLevel.MEDIUM, ThinkingLevel.HIGH, ThinkingLevel.XHIGH, ThinkingLevel.MAX)},
+        ThinkingLevel.MINIMAL: Translation("low", False, "Vibe has no minimal thinking level"),
+        ThinkingLevel.ULTRA: Translation("max", False, "Vibe has no ultra thinking level"),
+    }),
+    model_source=_translations({
+        ModelSource.PROVIDER_LOGIN: Translation("providers", True, "its row's Chat Completions API"),
+        ModelSource.OPERATOR_ENDPOINT: Translation(None, False, "a key program runs its own row's API only"),
+        ModelSource.OLLAMA_LOCAL: Translation(None, False, "a key program runs its own row's API only"),
+        ModelSource.OLLAMA_CLOUD: Translation(None, False, "a key program runs its own row's API only"),
+        ModelSource.CURSOR_CLOUD: Translation(None, False, "a key program runs its own row's API only"),
+    }),
+    tools=Translation("[tools.<name>] permission", True, "Vibe tool permissions"),
+)
