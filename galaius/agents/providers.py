@@ -399,6 +399,17 @@ class AgentProvider(ABC):
         what continuing it under another login folder carries over (contract A9); empty for a CLI that cannot resume."""
         return ()
 
+    def session_folder(self, home: Path, cwd: Path) -> Path:
+        """The folder of login folder `home` that `session_files` for a session started in `cwd` all sit below: what a
+        conversation carried to another PC keeps them relative to, laid out again below that PC's own (`carries`)."""
+        return home
+
+    def carries(self, parts: tuple[str, ...], session: str) -> bool:
+        """Whether a file at `parts` below `session_folder` is one of session `session`'s `session_files`, by its name
+        alone: the only files a PC receiving a carried conversation writes there (threat-modeler 2026-11-09 Q4: never
+        the folder's memory, settings or another session)."""
+        return False
+
     def ahead_command(self, **arguments) -> list[str]:
         """`command`'s child with no task: it starts now and reads the task `task_message` writes."""
         raise UnsupportedToolPolicy(f"{self.name} cannot start before its task")
@@ -1594,6 +1605,12 @@ class ClaudeCodeProvider(AgentProvider):
         folder = self.project_folder(home, cwd)
         return (folder / f"{session}.jsonl", *(sorted(path for path in (folder / session).rglob("*") if path.is_file()) if (folder / session).is_dir() else ()))
 
+    def session_folder(self, home: Path, cwd: Path) -> Path:
+        return self.project_folder(home, cwd)
+
+    def carries(self, parts: tuple[str, ...], session: str) -> bool:
+        return parts == (f"{session}.jsonl",) or len(parts) > 1 and parts[0] == session
+
     def startup_files(self, cwd: Path, environment: Mapping[str, str]) -> tuple[Path, ...]:
         """The user's and every enclosing folder's instructions (with the files they import),
         settings, MCP servers, agents, skills, commands and rules; the folder's memory index; the
@@ -2187,6 +2204,12 @@ class CodexProvider(AgentProvider):
     def session_files(self, home: Path, cwd: Path, session: str) -> tuple[Path, ...]:
         """Codex's rollout of thread `session` (`sessions/<y>/<m>/<d>/rollout-*-<thread>.jsonl`), wherever it was started."""
         return tuple(sorted((home / "sessions").rglob(f"rollout-*-{session}.jsonl"))) if (home / "sessions").is_dir() else ()
+
+    def session_folder(self, home: Path, cwd: Path) -> Path:
+        return home / "sessions"
+
+    def carries(self, parts: tuple[str, ...], session: str) -> bool:
+        return len(parts) == 4 and all(part.isdigit() for part in parts[:3]) and parts[3].startswith("rollout-") and parts[3].endswith(f"-{session}.jsonl")
     can_queue = True
     verified = True
     caveat = ("Read/Grep/Glob/Write/Edit/Bash map exactly onto --sandbox + feature flags; "

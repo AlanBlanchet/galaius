@@ -480,7 +480,7 @@ def test_a_running_conversation_switches_account_from_and_to_the_pc_login(source
     pinned = RunSubscription(subscription_id=login_id(source), limits=SubscriptionLimits()) if source != "login" else None
     reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="r", cwd=str(cwd), started_at=1.0, finished_at=2.0, status=status, provider_session_id=session, subscription=pinned))
     monkeypatch.setattr(machine_agents, "deliver_message", lambda *args, **kwargs: pytest.fail("a move that waits starts no turn"))
-    agents = SimpleNamespace(_require_run=lambda run: reg.get_run(str(run)), _carry=MachineAgents._carry, _kind=lambda run: "agent")
+    agents = SimpleNamespace(_require_run=lambda run: reg.get_run(str(run)), _turning=lambda run: reg.get_run(str(run)), _carry=MachineAgents._carry, _kind=lambda run: "agent")
 
     def move(to: str, resume: bool = resume) -> None:
         to_id = login_id(to)

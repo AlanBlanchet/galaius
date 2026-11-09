@@ -172,9 +172,15 @@ class WorkspaceFiles(BaseModel):
                     facts = os.fstat(stream.fileno())
                     if not stat.S_ISREG(facts.st_mode) or facts.st_size != file.size:
                         raise WorkspaceRefused("failed", f"{file.path} changed while it was being copied; try again")
-                    member = tarfile.TarInfo(file.path)
-                    member.size, member.mtime, member.mode = file.size, int(facts.st_mtime), 0o755 if facts.st_mode & stat.S_IXUSR else 0o644
-                    packed.addfile(member, stream)
+                    add_file(packed, file.path, stream, facts)
+
+
+def add_file(packed: tarfile.TarFile, name: str, stream, facts: os.stat_result) -> None:
+    """`stream` (an open plain file, `facts` its `fstat`) added to `packed` as `name`: its bytes as large as `facts` says,
+    its time, executable or not; never an owner, a link or another mode."""
+    member = tarfile.TarInfo(name)
+    member.size, member.mtime, member.mode = facts.st_size, int(facts.st_mtime), 0o755 if facts.st_mode & stat.S_IXUSR else 0o644
+    packed.addfile(member, stream)
 
 
 class WorkspaceTransfers(BaseModel):
@@ -242,8 +248,8 @@ class BoundedReader(io.RawIOBase):
     """A decompressed archive as tarfile reads it: never more bytes in all than an archive within
     the copy limits holds."""
 
-    def __init__(self, stream: gzip.GzipFile) -> None:
-        self.stream, self.total = stream, 0
+    def __init__(self, stream: gzip.GzipFile, most: int = WORKSPACE_ARCHIVE_MAX_BYTES) -> None:
+        self.stream, self.total, self.most = stream, 0, most
 
     def readable(self) -> bool:
         return True
@@ -251,7 +257,7 @@ class BoundedReader(io.RawIOBase):
     def readinto(self, buffer) -> int:
         data = self.stream.read(len(buffer))
         self.total += len(data)
-        if self.total > WORKSPACE_ARCHIVE_MAX_BYTES:
+        if self.total > self.most:
             raise WorkspaceRefused("unsafe_archive", "the copy unpacks to more than it may hold")
         buffer[:len(data)] = data
         return len(data)
@@ -275,19 +281,22 @@ class BoundedHeader(tarfile.TarInfo):
 
 
 class WorkspaceArchiveReader(BaseModel):
-    """Writes a received archive's files into `parts` below `base` (a fresh partial folder)."""
+    """Writes a received archive's files into `parts` below `base` (a fresh partial folder): at most `most` bytes in all
+    (a project copy's limit by default), and only names `allowed` takes when set."""
 
     model_config = ConfigDict(frozen=True)
     archive: WorkspaceArchive
     base: Path
     parts: tuple[str, ...]
+    most: int = WORKSPACE_COPY_MAX_BYTES
+    allowed: Callable[[tuple[str, ...]], bool] | None = None
 
     def extract(self, path: Path) -> int:
         """Every member written, or `unsafe_archive` at the first one that is not a plain file with
         a portable relative name, a second one under the same name (any case), or one past the
         counts the archive declared; the files written."""
         try:
-            with gzip.open(path, "rb") as unzipped, tarfile.open(fileobj=BoundedReader(unzipped), mode="r|", tarinfo=BoundedHeader) as packed:
+            with gzip.open(path, "rb") as unzipped, tarfile.open(fileobj=BoundedReader(unzipped, self.most + WORKSPACE_ARCHIVE_MAX_BYTES - WORKSPACE_COPY_MAX_BYTES), mode="r|", tarinfo=BoundedHeader) as packed:
                 return self._written(packed)
         except (tarfile.TarError, EOFError, zlib.error, gzip.BadGzipFile) as error:
             raise WorkspaceRefused("unsafe_archive", f"the copy is damaged ({type(error).__name__})") from None
@@ -296,11 +305,11 @@ class WorkspaceArchiveReader(BaseModel):
         written, seen, total = 0, set(), 0
         for member in packed:
             parts = PortableName.path(member.name)
-            if not member.isreg() or parts is None:
-                raise WorkspaceRefused("unsafe_archive", f"the copy holds {member.name[:200]!r}, which is never written (only plain files under plain names)")
+            if not member.isreg() or parts is None or self.allowed is not None and not self.allowed(parts):
+                raise WorkspaceRefused("unsafe_archive", f"the copy holds {member.name[:200]!r}, which is never written (only plain files under the names it may hold)")
             folded = "/".join(parts).casefold()
             total += member.size
-            if folded in seen or written >= self.archive.files or total > WORKSPACE_COPY_MAX_BYTES:
+            if folded in seen or written >= self.archive.files or total > self.most:
                 raise WorkspaceRefused("unsafe_archive", "the copy holds more than it declared, or one name twice")
             seen.add(folded)
             source = packed.extractfile(member)

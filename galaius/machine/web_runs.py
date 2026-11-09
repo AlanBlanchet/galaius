@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import os
+from datetime import UTC, datetime, timedelta
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import ClassVar
@@ -57,6 +58,18 @@ class WebRun(BaseModel):
     fenced: bool = False
     #: The start request that launched it (`AgentStartRequest.idempotent_feature`): asked again, it answers this run.
     request_id: UUID | None = None
+    #: Since when it moves to another of its owner's PCs (`AgentExportRequest`): no turn of it starts here meanwhile, for at
+    #: most `MOVE_HOLD` (a move nobody ended never keeps it).
+    moving: datetime | None = None
+    #: The PC that took it (`AgentReleaseRequest`): no longer listed, read, messaged or stopped here; its files kept.
+    moved_to: UUID | None = None
+    #: The PC it came from (`AgentImportRequest`): taken again from one, its files here are replaced.
+    carried_from: str | None = None
+    #: How long a move holds its turns here at most: past a relayed copy's whole time (`JOB_MAX` on the server).
+    MOVE_HOLD: ClassVar[timedelta] = timedelta(hours=1)
+
+    def moves_now(self, now: datetime | None = None) -> bool:
+        return self.moving is not None and (now or datetime.now(UTC)) - self.moving < self.MOVE_HOLD
 
 
 class WebRuns(BaseModel):
@@ -83,10 +96,18 @@ class WebRuns(BaseModel):
         """The run start request `request_id` launched here, if any."""
         return next((run for run in self.read() if run.request_id == request_id), None)
 
+    def here(self) -> tuple[WebRun, ...]:
+        """These runs but those moved to another PC (`WebRun.moved_to`)."""
+        return tuple(run for run in self.read() if run.moved_to is None)
+
+    def entry(self, run_id: UUID) -> WebRun | None:
+        return next((run for run in self.read() if run.run_id == run_id), None)
+
     def add(self, run: WebRun) -> None:
+        """`run` kept, in place of the entry for the same run when there is one (a conversation coming back)."""
         descriptor = os.open(self.path.with_suffix(".lock"), os.O_RDWR | os.O_CREAT, 0o600)
         with exclusive(descriptor):
-            kept = (*self.read(), run)[-self.KEEP:]
+            kept = (*(item for item in self.read() if item.run_id != run.run_id), run)[-self.KEEP:]
             temporary = self.path.with_suffix(".tmp")
             handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(handle, "w", encoding="utf-8") as stream:
@@ -95,11 +116,11 @@ class WebRuns(BaseModel):
 
     def forest(self) -> dict[str, list[reg.AgentRun]]:
         """Each of these runs with every run it launched (`reg.forest`), as the launcher's registry has them now."""
-        return reg.forest(frozenset(str(item.run_id) for item in self.read()))
+        return reg.forest(frozenset(str(item.run_id) for item in self.here()))
 
     def run(self, run_id: str) -> reg.AgentRun | None:
         """One of these runs or a run it launched, as `runs` lists it (`reg.tree_run`); None: neither."""
-        return reg.tree_run(run_id, frozenset(str(item.run_id) for item in self.read()))
+        return reg.tree_run(run_id, frozenset(str(item.run_id) for item in self.here()))
 
     def runs(self) -> list[reg.AgentRun]:
         """These runs and every run they launched, newest first."""

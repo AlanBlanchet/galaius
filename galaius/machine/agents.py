@@ -30,6 +30,7 @@ import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar, TypeVar
 from uuid import UUID, uuid4
@@ -40,8 +41,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from galaius_core import (
     MODEL_ID_MAX,
     PROJECTS_ROOT, AGENT_TOUCH_SCOPES, AgentCompactRequest, ContextGauge, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, AgentFile, media_kind, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
-    AgentAllowanceRequest, AgentMoveRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentToolInstallRequest, AgentToolsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, AgentHeldTakeRequest, AgentHeldPutRequest, AgentRetractRequest, RetractOutcome, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
-    MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, media_key, media_paths, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest, ProjectFilesBase, ProjectFilePart,
+    AgentAllowanceRequest, AgentMoveRequest, AgentExportRequest, AgentImportRequest, AgentReleaseRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentToolInstallRequest, AgentToolsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, AgentHeldTakeRequest, AgentHeldPutRequest, AgentRetractRequest, RetractOutcome, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
+    WorkspaceFailure, WorkspaceUpload, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, media_key, media_paths, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest, ProjectFilesBase, ProjectFilePart,
 )
 from galaius.agents import agent_queue
 from galaius.agents.limits import quota
@@ -58,7 +59,8 @@ from galaius.agents.limits.warm import WarmStart
 from galaius.config.user import UserConfig
 from galaius.isolation.fence import FenceSpec, available
 from galaius.machine.editors import EDITOR_SESSIONS_MAX, EditorConversations
-from galaius.machine.web_runs import WebRun, WebRuns, listed
+from galaius.machine.web_runs import HELD, WebRun, WebRuns, listed
+from galaius.machine.run_carry import RunPackFiles, RunPackReader
 from galaius.machine.programs import AgentPrograms
 from galaius.machine.tools import MachineTools
 from galaius.machine.places.places import LOG as PLACES_LOG
@@ -66,7 +68,8 @@ from galaius.machine.projects.workspaces import MachineWorkspaces, unusable
 from galaius.host.pinned_directory import PinnedDirectory
 from galaius.machine.projects.project_files import ProjectFolder
 from galaius.diagnostics.redaction import mask, redact, secret_values
-from galaius.machine.projects.workspace_copy import WorkspaceRefused
+from galaius.machine.projects.workspace_copy import WorkspaceRefused, WorkspaceTransfers
+from galaius.host.paths import UserPaths
 from galaius_core import AgentRefused, TooLarge
 from galaius.machine.places.place_reviews import PlaceReviews
 from galaius.machine.places.levels import LEVEL_RANK, PlaceMap, split
@@ -476,6 +479,12 @@ class MachineAgents(BaseModel):
                 return await self._allow(request)
             case AgentMoveRequest():
                 return await self._move(request)
+            case AgentExportRequest():
+                return await asyncio.to_thread(self._export, request)
+            case AgentImportRequest():
+                return await asyncio.to_thread(self._import, request)
+            case AgentReleaseRequest():
+                return await asyncio.to_thread(self._release, request)
 
     def _programs(self) -> AgentPrograms:
         if self.programs is None:
@@ -634,6 +643,90 @@ class MachineAgents(BaseModel):
             if folder == root or root in folder.parents:
                 return name, "" if folder == root else folder.relative_to(root).as_posix()
         return "", ""
+
+    def _turning(self, run_id: UUID) -> reg.AgentRun:
+        """`_require_run` for a request starting a turn of it: refused `under_way` while it moves to another PC."""
+        run = self._require_run(run_id)
+        if (entry := self.runs.entry(run_id)) is not None and entry.moves_now():
+            raise AgentRefused("under_way", "this conversation is moving to another computer; it continues there")
+        return run
+
+    def _export(self, request: AgentExportRequest) -> MachineAgentAnswer:
+        """`AgentExportRequest`: a conversation started here, between turns, measured and its upload started; held here
+        (`WebRun.moving`) and never resumed here by itself from now on."""
+        entry, run = self.runs.entry(request.run_id), self._require_run(request.run_id)
+        if entry is None or entry.kind != "agent":
+            raise AgentRefused("not_here", "only a conversation started here from the web moves to another computer")
+        if run.status in HELD:
+            raise AgentRefused("under_way", "this conversation is at work or waiting for its owner; it moves once its turn ended")
+        if (program := PROVIDERS.get(run.provider)) is None or not program.can_resume:
+            raise AgentRefused("not_here", f"a {run.provider} conversation cannot continue on another computer")
+        measure, files = RunPackFiles(run=run, program=program).measure()
+        self.runs.add(entry.model_copy(update={"moving": datetime.now(UTC)}))
+        reg.leaving(run.run_id)
+        transfers = self._workspaces().transfers
+        threading.Thread(target=self._send_run, args=(transfers, request.transfer, files), name=f"run-send-{request.transfer}", daemon=True).start()
+        return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, carried=measure, detail="sending")
+
+    @staticmethod
+    def _send_run(transfers: WorkspaceTransfers, transfer: UUID, files: list[tuple[str, Path]]) -> None:
+        """The upload of a conversation's `files`, packed beside the runner's data; its outcome posted either way."""
+        packed = UserPaths.data() / "transfers" / f"{transfer}.run.send.tar.gz"
+        try:
+            packed.parent.mkdir(parents=True, exist_ok=True)
+            RunPackFiles.write(files, packed)
+            transfers.upload(transfer, packed, len(files))
+        except Exception as error:  # the thread's boundary: whatever stopped it, the server hears it
+            logger.exception("sending conversation for transfer %s failed", transfer)
+            try:
+                transfers.ended(transfer, WorkspaceUpload(outcome=WorkspaceFailure(code=error.refusal.reason if isinstance(error, WorkspaceRefused) else "failed",
+                                                                                   detail=str(error)[:600] or type(error).__name__)))
+            except WorkspaceRefused as unreachable:
+                logger.warning("the server never heard transfer %s failed: %s", transfer, unreachable)
+        finally:
+            packed.unlink(missing_ok=True)
+
+    def _import(self, request: AgentImportRequest) -> MachineAgentAnswer:
+        """`AgentImportRequest`: the conversation received into its project folder here, on this PC's own login of its CLI
+        (or inside a fence of its own when agents are fenced here), its record built from the server's facts, this PC's
+        permission and the sender's shown facts (`reg.carried_in`), listed here from then on."""
+        carried, run_id = request.run, str(request.run_id)
+        entry = self.runs.entry(request.run_id)
+        if reg.get_run(run_id) is not None and (entry is None or entry.moved_to is None and entry.carried_from is None):
+            raise WorkspaceRefused("exists", "this conversation is already on this computer")
+        if (program := PROVIDERS.get(carried.provider)) is None or not program.can_resume or not program.auth_home_env:
+            raise AgentRefused("not_here", f"a {carried.provider} conversation cannot continue on this computer")
+        folder = self.folder(request.root, request.path)
+        fence, review = self._fence(request.root, folder, {}) if self.fence_agents else (None, None)
+        if review is not None:
+            self.reviews.discard(review)
+            raise AgentRefused("fence_closed", "a conversation moves only into a folder agents write in directly here, never one written after review")
+        reader = RunPackReader(run_id=run_id, session=str(carried.session), program=program, staging=reg.agents_dir() / f".carry-{request.archive.transfer}")
+        received = UserPaths.data() / "transfers" / f"{request.archive.transfer}.run.tar.gz"
+        try:
+            received.parent.mkdir(parents=True, exist_ok=True)
+            self._workspaces().transfers.download(request.archive, received, lambda done: None)
+            reader.extract(request.archive, received)
+            sent = reader.record()
+            home = fence.state / program.name if fence is not None else reg.login_folder(program, None)
+            reader.place(reader.targets(program.session_folder(home, folder)), replace=entry is not None)
+            built = reg.register(run_id=run_id, pid=None, provider=program.name, name=carried.name, task=carried.task, cwd=str(folder), model=carried.model,
+                                 agent=carried.role, permission_mode=self.scope(None), reasoning=carried.reasoning, provider_session_id=str(carried.session), fence=fence)
+            moved = reg.carried_in(built, sent)
+        finally:
+            reader.discard()
+            received.unlink(missing_ok=True)
+        self.runs.add(WebRun(run_id=request.run_id, root=request.root, path=request.path, fenced=fence is not None, carried_from=carried.moved_from))
+        return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=f"taken from {carried.moved_from}: {moved.status}")
+
+    def _release(self, request: AgentReleaseRequest) -> MachineAgentAnswer:
+        """`AgentReleaseRequest`: the move ended; taken elsewhere, the conversation is no longer listed here (its files
+        kept), else its turns start here again."""
+        entry = self.runs.entry(request.run_id)
+        if entry is None or entry.moving is None and entry.moved_to is None:
+            raise AgentRefused("not_here", "this conversation is not moving from this computer")
+        self.runs.add(entry.model_copy(update={"moving": None, "moved_to": request.to.id if request.to is not None else None}))
+        return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="moved" if request.to is not None else "kept here")
 
     def _require_run(self, run_id: UUID) -> reg.AgentRun:
         run = self.runs.run(str(run_id))
@@ -1014,7 +1107,7 @@ class MachineAgents(BaseModel):
         subscription brings its caps as the server has them now; one naming another login runs where the run is, its
         answer naming that login (`AgentRun.next_subscription_id`) so the server's pin follows this PC. A member's message
         on a lent PC to a run of the owner's logins is refused."""
-        run = self._require_run(request.run_id)
+        run = self._turning(request.run_id)
         if request.lent and (run.subscription is None or not run.subscription.lent):
             raise SubscriptionRefused("lent", LENT_REFUSAL)
         if run.subscription is not None and request.subscription_id == run.subscription_id and request.limits is not None and request.limits != run.subscription.limits:
@@ -1026,7 +1119,7 @@ class MachineAgents(BaseModel):
         (`subscription_id` None), its session carried there (`registry.carry`) and resumed, unless the request does not
         `resume`: his pick in a conversation, the switch before a turn, made at once on a stopped run, at the end of the
         turn at work on one working (`_carry`). An editor's own conversation runs on the login its editor runs: refused typed."""
-        run = await asyncio.to_thread(self._require_run, request.run_id)
+        run = await asyncio.to_thread(self._turning, request.run_id)
         if self._kind(request.run_id) != "agent":
             raise SubscriptionRefused("default_login_only", "an editor conversation runs on the login its editor runs: only an agent started here moves")
         moved = await asyncio.to_thread(self._carry, run, request)

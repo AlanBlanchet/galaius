@@ -1742,6 +1742,24 @@ def carry_held(run_id: str) -> AgentRun | None:
             return hold_move(run_id, None) or run
 
 
+#: What a run carried from another PC keeps of that PC's record: what its conversation shows, never how it ran there
+#: (its permission, fence, tools, login: threat-modeler 2026-11-09 Q1).
+CARRIED_SHOWN: tuple[str, ...] = ("status", "started_at", "finished_at", "exit_code", "last", "cost_usd", "usage", *ContextGauge.model_fields)
+
+
+def leaving(run_id: str) -> AgentRun | None:
+    """Run `run_id` moving to another PC: nothing resumes it here by itself from now on (`cut_resume`)."""
+    return _update_fields(run_id, {"resumes": None, "resume_at": None})
+
+
+def carried_in(built: AgentRun, sent: Mapping[str, object]) -> AgentRun:
+    """Run `built` (registered here from the server's facts and this PC's settings) with what its conversation shows
+    taken from `sent`, the sending PC's record (`CARRIED_SHOWN`), saved."""
+    run = AgentRun.model_validate({**built.model_dump(mode="json"), **{key: sent[key] for key in CARRIED_SHOWN if key in sent}})
+    save_run(run)
+    return run
+
+
 def ancestor_run() -> AgentRun | None:
     """The running run the caller's process (`Caller.pid`) descends from (its pid and start time recorded on the run): the
     parent a launch cannot hide by clearing `GALAIUS_PARENT_RUN_ID` from its environment.
