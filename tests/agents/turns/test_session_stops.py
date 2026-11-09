@@ -48,12 +48,25 @@ def test_a_stopped_session_ends_its_turn_at_its_next_tool_call(stops, event, end
     assert [line.split(" ", 1)[1] for line in traced] == ([f"ended {SESSION} at {event} Bash"] if ends else [])
 
 
-def test_the_hooks_trace_stays_bounded_and_names_no_tool_input(stops):
+@pytest.mark.parametrize("old", ["old line\n", "x"], ids=["lines", "one-line-no-newline"])
+def test_the_hooks_trace_stays_bounded_and_names_no_tool_input(stops, old):
     stops.ask(SESSION_ID, None)
-    stops.trace.write_text("old line\n" * (session_stop_hook.LOG_BYTES // 9 + 10))
+    stops.trace.write_text(old * (3 * session_stop_hook.LOG_BYTES // len(old)))
     session_stop_hook.answer(_event("PreToolUse", tool_input={"command": "cat secret.txt"}), stops.folder, time.time())
     text = stops.trace.read_text()
     assert len(text) <= session_stop_hook.LOG_BYTES and text.endswith(f"ended {SESSION} at PreToolUse Bash\n") and "secret" not in text
+
+
+def test_one_turn_is_one_trace_line_and_a_line_it_cannot_write_never_loses_the_stop(stops):
+    """Parallel tool calls of one turn, then the call that ran: one line. A tool name it cannot encode (a lone
+    surrogate) still ends the turn (tester 8968b165)."""
+    stops.ask(SESSION_ID, None)
+    now = time.time()
+    for event, tool, at in [("PreToolUse", "Bash", now), ("PreToolUse", "Read", now), ("PostToolUse", "Bash", now + 2),
+                            ("PreToolUse", "x\udc80", now + session_stop_hook.TURN_SECONDS + 5)]:
+        said = session_stop_hook.answer(_event(event, tool_name=tool), stops.folder, at)
+        assert said is not None and said["continue"] is False
+    assert [line.split(" ", 2)[1] for line in stops.trace.read_text().splitlines()] == ["ended", "ended"]  # the later turn: its own line
 
 
 @pytest.mark.parametrize(("event", "session", "age"), [
@@ -131,6 +144,8 @@ def test_a_settings_change_while_installing_is_kept_and_uninstall_takes_out_only
     assert stops.install() == "written" and stops.installed()
     assert json.loads(stops.settings.read_text())["permissions"] == {"allow": ["Bash(ls)"]}
     stops.ask(SESSION_ID, None)
+    session_stop_hook.answer(_event("PreToolUse"), stops.folder, time.time())  # the hook's trace goes with the account too
+    assert stops.trace.exists()
     assert stops.uninstall() == "written" and not stops.installed() and list(stops.folder.iterdir()) == []
     assert json.loads(stops.settings.read_text()) == {"permissions": {"allow": ["Bash(ls)"]}, "hooks": {"PreToolUse": [guard]}}
 

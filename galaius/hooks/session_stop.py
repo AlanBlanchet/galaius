@@ -22,11 +22,14 @@ from pathlib import Path
 HOLD_SECONDS = 600
 #: What his editor shows where the turn ended.
 SAID = "Stopped from Galaius on the web."
-#: The hook's own trace beside the stops: one line per turn it ended or stop his prompt cleared — the session id, the
+#: The hook's own trace beside the stops: one line per turn it ended (`TURN_SECONDS`) or stop his prompt cleared — the session id, the
 #: event, the tool's name; never the tool's input nor his prompt. Never `*.json`: every `*.json` there is a stop.
 LOG = "stops.log"
 #: Past this size the trace keeps only its newer half: it lives as long as his account on this computer.
 LOG_BYTES = 64_000
+#: Tool calls of one turn reach the hook within this many seconds of each other (parallel calls, the call that
+#: ran plus the next): the trace names that turn once. A turn the session starts by itself later is another line.
+TURN_SECONDS = 10
 
 
 def sweep(stops: Path, now: float) -> None:
@@ -44,17 +47,23 @@ def sweep(stops: Path, now: float) -> None:
             continue
 
 
-def trace(stops: Path, now: float, line: str) -> None:
-    """`line` appended to the hook's trace (`LOG`), its older half dropped past `LOG_BYTES`. Never raises: a trace
+def trace(stops: Path, now: float, line: str, once: str | None = None) -> None:
+    """`line` appended to the hook's trace (`LOG`), its older bytes dropped past `LOG_BYTES`; skipped when a line
+    starting `once` was written in the last `TURN_SECONDS` (the same turn's other tool calls). Never raises: a trace
     it cannot write leaves the stop as it is."""
     log = stops / LOG
     try:
-        if log.is_file() and log.stat().st_size > LOG_BYTES:
-            kept = log.read_text(encoding="utf-8", errors="replace").splitlines()
-            log.write_text("\n".join(kept[len(kept) // 2:]) + "\n", encoding="utf-8")
-        with log.open("a", encoding="utf-8") as out:
+        kept = log.read_bytes() if log.is_file() else b""
+        if once is not None and any(stamp >= time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - TURN_SECONDS))
+                                    for stamp, _, rest in (old.partition(" ") for old in kept.decode("utf-8", "replace").splitlines())
+                                    if rest.startswith(once)):
+            return
+        if len(kept) > LOG_BYTES:
+            kept = kept[-(LOG_BYTES // 2):]
+            log.write_bytes(kept[kept.find(b"\n") + 1:])
+        with log.open("a", encoding="utf-8", errors="replace") as out:
             out.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))} {' '.join(line.split())[:300]}\n")
-    except OSError:
+    except (OSError, ValueError):  # a name it cannot encode included: the stop still answers
         return
 
 
@@ -76,7 +85,7 @@ def answer(event: dict, stops: Path, now: float) -> dict | None:
         return None
     if name in ("PreToolUse", "PostToolUse"):
         tool = event.get("tool_name")
-        trace(stops, now, f"ended {session} at {name} {tool if isinstance(tool, str) else '?'}")
+        trace(stops, now, f"ended {session} at {name} {tool if isinstance(tool, str) else '?'}", once=f"ended {session} ")
     if name == "PreToolUse":
         return {"continue": False, "stopReason": SAID,
                 "hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": SAID}}
