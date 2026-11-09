@@ -16,6 +16,9 @@ permissions:
 
 env:
   PYTHONUTF8: "1"  # Windows console is cp1252 by default → ✓/→/… in output would crash
+  # A test failing on a runner is run once more (pytest-rerunfailures) before the job fails: a flaky one passes on its
+  # second try and is NAMED under « rerun test summary info » (-r R); one failing twice fails the job as before.
+  PYTEST_ADDOPTS: "--reruns 1"
 
 jobs:
   test:
@@ -64,7 +67,7 @@ jobs:
         run: uv run python scripts/ci_shard.py ${{ matrix.shard }} 3 > shard.txt
 
       - name: Run tests (integration + desktop auto-skip here)
-        run: uv run pytest -m "not integration" -q -rs @shard.txt
+        run: uv run pytest -m "not integration" -q -rsR @shard.txt
 
       # The macOS runner is a real GUI session, so drive the PortableBackend (mss + pynput) on it
       # and SHOW the per-test result (-rs prints skip reasons): the visible mac desktop-automation
@@ -109,7 +112,7 @@ jobs:
           New-Item -ItemType File -Force empty.txt | Out-Null
           $pytest = Start-Process -FilePath .venv\Scripts\python.exe -PassThru -NoNewWindow -RedirectStandardInput empty.txt `
             -RedirectStandardOutput suite.log -RedirectStandardError suite.err `
-            -ArgumentList '-m', 'pytest', '-m', '"not integration"', '-v', '-rfEs', '-p', 'no:cacheprovider', '@shard.txt'
+            -ArgumentList '-m', 'pytest', '-m', '"not integration"', '-v', '-rfEsR', '-p', 'no:cacheprovider', '@shard.txt'
           if (-not $pytest.WaitForExit(18 * 60 * 1000)) {
             "== HUNG: last lines"; Get-Content suite.log -Tail 40; Get-Content suite.err -Tail 40
             "== processes"; Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, Name, CommandLine | Format-Table -AutoSize -Wrap | Out-String -Width 300
