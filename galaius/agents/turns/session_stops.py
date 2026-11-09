@@ -69,6 +69,11 @@ class SessionStops:
         return self.folder / f"{HOOK_MARK}.py"
 
     @property
+    def trace(self) -> Path:
+        """The hook's trace: one line per turn it ended or stop his prompt cleared (`session_stop_hook.trace`)."""
+        return self.folder / session_stop_hook.LOG
+
+    @property
     def _installed(self) -> Path:
         """Never `*.json`: every `*.json` beside it is a stop (the shell pre-check, `session_stop_hook.sweep`)."""
         return self.folder / "installed.record"
@@ -217,7 +222,7 @@ class SessionStops:
         record = self._record()
         try:
             done = (self if record is None else self._at(record.settings))._rewrite(self._drop)
-            for path in [*self.folder.glob("*.json"), self._installed, self.script] if self.folder.is_dir() else ():
+            for path in [*self.folder.glob("*.json"), self._installed, self.script, self.trace] if self.folder.is_dir() else ():
                 path.unlink(missing_ok=True)
         except OSError:
             return "unwritable"

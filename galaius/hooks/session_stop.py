@@ -9,7 +9,8 @@ Run from a copy of this file beside the stops (`SessionStops.install`), as `pyth
 STOPS_DIR`, the hook's event on stdin: standard library only, so it needs no galaius runtime and outlives
 an upgrade. Where a POSIX shell runs it, the shell starts Python only when a stop is waiting
 (`SessionStops.hook`), so a session nobody stopped pays nothing. It never fails his tool call:
-anything it cannot read leaves the turn alone."""
+anything it cannot read leaves the turn alone. Each turn it ends, and each stop his own prompt clears, is one line of
+`LOG` beside the stops, so a stop pressed on the web can be read on this computer afterwards (`trace`)."""
 
 import json
 import sys
@@ -21,6 +22,11 @@ from pathlib import Path
 HOLD_SECONDS = 600
 #: What his editor shows where the turn ended.
 SAID = "Stopped from Galaius on the web."
+#: The hook's own trace beside the stops: one line per turn it ended or stop his prompt cleared — the session id, the
+#: event, the tool's name; never the tool's input nor his prompt. Never `*.json`: every `*.json` there is a stop.
+LOG = "stops.log"
+#: Past this size the trace keeps only its newer half: it lives as long as his account on this computer.
+LOG_BYTES = 64_000
 
 
 def sweep(stops: Path, now: float) -> None:
@@ -38,6 +44,20 @@ def sweep(stops: Path, now: float) -> None:
             continue
 
 
+def trace(stops: Path, now: float, line: str) -> None:
+    """`line` appended to the hook's trace (`LOG`), its older half dropped past `LOG_BYTES`. Never raises: a trace
+    it cannot write leaves the stop as it is."""
+    log = stops / LOG
+    try:
+        if log.is_file() and log.stat().st_size > LOG_BYTES:
+            kept = log.read_text(encoding="utf-8", errors="replace").splitlines()
+            log.write_text("\n".join(kept[len(kept) // 2:]) + "\n", encoding="utf-8")
+        with log.open("a", encoding="utf-8") as out:
+            out.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))} {' '.join(line.split())[:300]}\n")
+    except OSError:
+        return
+
+
 def answer(event: dict, stops: Path, now: float) -> dict | None:
     """What this hook answers `event` with: None to leave the turn alone, else the stop."""
     session = event.get("session_id")
@@ -51,7 +71,12 @@ def answer(event: dict, stops: Path, now: float) -> dict | None:
     name = event.get("hook_event_name")
     if name == "UserPromptSubmit" or not isinstance(asked, int | float) or now - asked > HOLD_SECONDS:
         flag.unlink(missing_ok=True)  # he typed: his turn; or the stop is old: it holds nothing any more
+        if name == "UserPromptSubmit":
+            trace(stops, now, f"cleared {session} by his prompt")
         return None
+    if name in ("PreToolUse", "PostToolUse"):
+        tool = event.get("tool_name")
+        trace(stops, now, f"ended {session} at {name} {tool if isinstance(tool, str) else '?'}")
     if name == "PreToolUse":
         return {"continue": False, "stopReason": SAID,
                 "hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": SAID}}

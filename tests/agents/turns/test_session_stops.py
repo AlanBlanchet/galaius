@@ -43,6 +43,17 @@ def test_a_stopped_session_ends_its_turn_at_its_next_tool_call(stops, event, end
     assert (said is not None and said["continue"] is False) == ends
     assert (said or {}).get("hookSpecificOutput", {}).get("permissionDecision") == ("deny" if denies else None)
     assert (stops.folder / f"{SESSION}.json").exists(), "it holds: a turn the session starts by itself is ended too"
+    # Each turn it ends leaves one line a reader greps after his press; nothing for a turn it left alone.
+    traced = stops.trace.read_text().splitlines() if stops.trace.exists() else []
+    assert [line.split(" ", 1)[1] for line in traced] == ([f"ended {SESSION} at {event} Bash"] if ends else [])
+
+
+def test_the_hooks_trace_stays_bounded_and_names_no_tool_input(stops):
+    stops.ask(SESSION_ID, None)
+    stops.trace.write_text("old line\n" * (session_stop_hook.LOG_BYTES // 9 + 10))
+    session_stop_hook.answer(_event("PreToolUse", tool_input={"command": "cat secret.txt"}), stops.folder, time.time())
+    text = stops.trace.read_text()
+    assert len(text) <= session_stop_hook.LOG_BYTES and text.endswith(f"ended {SESSION} at PreToolUse Bash\n") and "secret" not in text
 
 
 @pytest.mark.parametrize(("event", "session", "age"), [
@@ -55,6 +66,8 @@ def test_a_stop_never_ends_his_own_prompt_an_old_one_or_another_session(stops, e
     stops.ask(SESSION_ID, None)
     assert session_stop_hook.answer(_event(event, session), stops.folder, time.time() + age) is None
     assert (stops.folder / f"{SESSION}.json").exists() == (session != SESSION)
+    traced = stops.trace.read_text().splitlines() if stops.trace.exists() else []
+    assert [line.split(" ", 1)[1] for line in traced] == ([f"cleared {SESSION} by his prompt"] if event == "UserPromptSubmit" else [])
 
 
 def test_the_hook_goes_in_beside_his_own_settings_once(stops):
@@ -205,6 +218,7 @@ def test_a_real_claude_session_stops_at_its_next_tool_call(stops, tmp_path, prom
     said = [path for path in Path(home, ".claude", "projects").glob(f"*/{session}*/**/*.jsonl") if session_stop_hook.SAID in path.read_text()]
     said += [path for path in Path(home, ".claude", "projects").glob(f"*/{session}.jsonl") if session_stop_hook.SAID in path.read_text()]
     assert said, "no tool call met the stop: the turn ended by itself"
+    assert f" ended {session} at " in stops.trace.read_text(), "the hook ended the turn and left no line for a reader"
 
 
 def test_on_windows_the_hook_runs_without_a_shell(stops, monkeypatch):

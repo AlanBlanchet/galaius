@@ -1689,6 +1689,7 @@ def test_a_screen_request_rides_the_signed_channel_and_its_passkey_decides(base:
     (True, "before", "opened_before"),   # Claude Code read its hooks before the hook was there: reopened, it can be
 ], ids=["stopped", "no-hook", "opened-before-the-hook"])
 def test_his_editor_session_is_stopped_through_its_hook_never_typed_into(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                                         caplog: pytest.LogCaptureFixture,
                                                                          installed: bool, opened: str, refused: str | None) -> None:
     """The web's stop for one of HIS editor sessions (a session galaius did not start, so not a run of the web's): the
     PC leaves the stop for the hook every Claude Code session runs (`SessionStops`) — it never types into his session."""
@@ -1705,12 +1706,19 @@ def test_his_editor_session_is_stopped_through_its_hook_never_typed_into(base: P
     listed = reg.list_runs
     monkeypatch.setattr(reg, "list_runs", lambda **kw: [*listed(**kw), his] if kw.get("include_foreign") else listed(**kw))
     stop = _request("stop", run_id=str(session), by={"kind": "person", "name": "Alan"})
+    caplog.set_level(logging.INFO, logger="galaius.machine.agents")
+    # One machine-log line per press, its outcome named, whatever it is (product-critic 2607ed0f).
+    def said() -> list[str]:
+        return [record.getMessage() for record in caplog.records if str(session) in record.getMessage()]
+
     if refused is not None:
         with pytest.raises(AgentRefused) as raised:
             _answer(agents, stop)
         assert raised.value.refusal == AgentDeclined(reason=refused) and not (stops.folder / f"{session}.json").exists()
+        assert said() == [f"editor session {session} not stopped: {refused}"]
         return
     assert _answer(agents, stop).detail == "stopping"
+    assert said() == [f"editor session {session} stop left for its hook (by person)"]
     assert json.loads((stops.folder / f"{session}.json").read_text())["by"]["name"] == "Alan"
 
 
