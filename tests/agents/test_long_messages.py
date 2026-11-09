@@ -72,3 +72,56 @@ def test_codex_reads_a_long_brief_on_its_stdin(turn):
     line = codex.command(text, cwd=".", model=None, mcp_config=None, run_id="run") if turn == "first" else codex.resume_command("session", text)
     argv, stdin = codex.on_stdin(line)
     assert argv[-1] == "-" and "--" in argv and all(fits_argv(argument) for argument in argv) and stdin.decode().endswith(text)
+
+
+WINDOWS_LINE = 32_767
+
+
+@pytest.mark.parametrize(("prompt_chars", "turn_chars", "turn"), [
+    (49_750, 200, "first"),       # role main's definition, a short prompt (2026-11-09: every main start refused on Windows)
+    (19_000, 15_900, "first"),    # a reviewer's definition, a turn just under what one argument carries
+    (49_750, 70_000, "first"),    # both past their argument: the turn on stdin, the definition in its file
+    (49_750, 200, "resumed"),     # every later turn resends the definition
+])
+def test_every_claude_command_line_fits_windows(monkeypatch, tmp_path, prompt_chars, turn_chars, turn):
+    """Windows refuses a whole command line past 32,767 characters (WinError 206, « Nom de fichier ou extension trop
+    long »): a role's definition reaches Claude from a file there, whatever its size; the CLI's line stays under it."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from galaius_core.workflows.contracts import WORKSPACE_NAME_MAX
+
+    from galaius.agents import providers
+    from galaius.agents.run import carried
+    from galaius.host.paths import UserPaths
+
+    monkeypatch.setattr(providers, "ARGV_TEXT_BYTES", 16_000)
+    monkeypatch.setattr(providers, "DEFINITION_ARGV_BYTES", 0)
+    monkeypatch.setenv(UserPaths.AGENTS_OVERRIDE, str(tmp_path))
+    claude, run_id = providers.ClaudeCodeProvider(), str(uuid.uuid4())
+    prompt, text = ("« Règle » \"citée\"\n" * prompt_chars)[:prompt_chars], "é" * turn_chars
+    options = {"model": None, "mcp_config": None, "agent": "main", "agent_prompt": prompt, "allowed_tools": ["Bash"]}
+    if turn == "first":
+        argv, _ = carried(claude, text, lambda said: claude.command(said, cwd=".", run_id=run_id, **options),
+                          lambda: claude.ahead_command(cwd=".", run_id=run_id, **options))
+    else:
+        argv, _ = carried(claude, text, lambda said: claude.resume_command(run_id, said, **options),
+                          lambda: claude.resume_ahead_command(run_id, **options))
+    assert len(subprocess.list2cmdline(argv)) < WINDOWS_LINE
+    project = tmp_path / ".galaius" / "projects" / ("Aconit-" * 10)[:WORKSPACE_NAME_MAX]   # the longest project folder name
+    project.mkdir(parents=True)
+    subprocess.run([sys.executable, "-c", "pass", *argv[1:]], cwd=project, check=True, timeout=60)   # the OS starts it (Windows: CreateProcess)
+    filed = Path(argv[argv.index("--agents") + 1])
+    assert filed.parent == tmp_path / "definitions" and json.loads(filed.read_text(encoding="utf-8"))["main"]["prompt"] == prompt
+
+
+def test_a_role_definition_in_a_file_still_tells_two_definitions_apart_on_the_command_line(monkeypatch, tmp_path):
+    """A child started ahead is reused only for the same command line: a changed role prompt names another file."""
+    from galaius.agents import providers
+    from galaius.host.paths import UserPaths
+
+    monkeypatch.setattr(providers, "DEFINITION_ARGV_BYTES", 0)
+    monkeypatch.setenv(UserPaths.AGENTS_OVERRIDE, str(tmp_path))
+    said = providers.ClaudeCodeProvider.agents_argument
+    assert said({"main": {"prompt": "a"}}) == said({"main": {"prompt": "a"}}) != said({"main": {"prompt": "b"}})

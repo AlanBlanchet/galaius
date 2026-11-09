@@ -52,6 +52,7 @@ from galaius.isolation.fence import BROWSERS, COMPAT_KEY, EGL_VENDOR, RELAY, Fen
 from galaius.inbox_hook import NOTE as INBOX_NOTE
 from galaius.host.processes import ask_process, run_isolated_process, shell_entries
 from galaius.host.windowless import console_python
+from galaius.host.paths import UserPaths
 from galaius.host.private_files import PRIVATE_FILES
 from galaius.mcp.announcement import GatewayServed
 
@@ -70,6 +71,12 @@ UNTRUSTED_FOLDERS = "GALAIUS_UNTRUSTED_FOLDERS"
 #: line is far larger), Windows a whole command line past 32,767 characters — room left for the CLI's own options. A
 #: turn's text past it goes on the child's stdin (`AgentProvider.on_stdin`, `task_message`).
 ARGV_TEXT_BYTES = 16_000 if sys.platform == "win32" else 100_000
+
+#: The most a role's definition carries as one command-line argument; past it the CLI reads it from a file
+#: (`ClaudeCodeProvider.agents_argument`). Nothing on Windows: its whole line is shared by the turn's text
+#: (`ARGV_TEXT_BYTES`) and every option, and one definition alone passes it (2026-11-09: role `main`'s, 49,750
+#: characters, refused every start on a Windows PC with « Nom de fichier ou extension trop long », WinError 206).
+DEFINITION_ARGV_BYTES = 0 if sys.platform == "win32" else ARGV_TEXT_BYTES
 
 
 def fits_argv(text: str) -> bool:
@@ -1450,6 +1457,28 @@ class ClaudeCodeProvider(AgentProvider):
         # below); there is nothing coarser to fall back to, so acceptance of one is moot here.
         validate_denied_tools(denied_tools)
 
+    #: How long a role definition written for a command line too short for it (`agents_argument`) is kept unused.
+    DEFINITIONS_KEPT_SECONDS: ClassVar[float] = 7 * 86_400
+
+    @classmethod
+    def agents_argument(cls, definitions: dict[str, dict[str, object]]) -> str:
+        """`--agents`' value for `definitions`: their JSON when it fits one argument here (`DEFINITION_ARGV_BYTES`), else
+        the path of a file holding it (the CLI reads one with `-p`, every turn of ours: 2.1.286 on), named by its content
+        so a command line still tells two definitions apart (a child started ahead is reused only for the same line).
+        Writing one touches it and drops the others unused past `DEFINITIONS_KEPT_SECONDS`."""
+        text = json.dumps(definitions)
+        if len(text.encode()) <= DEFINITION_ARGV_BYTES:
+            return text
+        folder = UserPaths.agents() / "definitions"
+        path = folder / f"{hashlib.sha256(text.encode()).hexdigest()[:32]}.json"
+        PRIVATE_FILES.replace_text(path, text)
+        os.utime(path)
+        for stale in folder.glob("*.json"):
+            with suppress(OSError):
+                if time.time() - stale.stat().st_mtime > cls.DEFINITIONS_KEPT_SECONDS:
+                    stale.unlink()
+        return str(path)
+
     def role_arguments(self, agent: str | None, agent_prompt: str | None,
                        allowed_tools: list[str] | None, denied_tools: tuple[str, ...]) -> list[str]:
         self.validate_tool_policy(allowed_tools, denied_tools)
@@ -1464,7 +1493,7 @@ class ClaudeCodeProvider(AgentProvider):
             definition = {"description": f"Galaius role {agent}", "prompt": agent_prompt}
             if allowed_tools is not None:
                 definition["tools"] = allowed_tools
-            arguments += ["--agents", json.dumps({agent: definition})]
+            arguments += ["--agents", self.agents_argument({agent: definition})]
         if agent:
             arguments += ["--agent", agent]
         if no_tools(allowed_tools):
