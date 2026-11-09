@@ -1241,7 +1241,11 @@ class MachineAgents(BaseModel):
         if session.started_at and session.started_at < since:
             logger.info("editor session %s not stopped: opened_before", request.run_id)
             raise AgentRefused("opened_before", "this editor session was opened before this computer could stop it: it can be stopped once opened again")
-        stops.ask(request.run_id, request.by)
+        try:
+            stops.ask(request.run_id, request.by)
+        except OSError as error:
+            logger.warning("editor session %s not stopped: its stop could not be written (%s)", request.run_id, type(error).__name__)
+            raise
         # Whether its turn then ended is the hook's own line (`SessionStops.trace`).
         logger.info("editor session %s stop left for its hook (by %s)", request.run_id, "?" if request.by is None else request.by.kind)
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="stopping")

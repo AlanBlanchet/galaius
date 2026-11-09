@@ -1687,7 +1687,8 @@ def test_a_screen_request_rides_the_signed_channel_and_its_passkey_decides(base:
     (True, "after", None),               # stopped: the hook in that session ends its turn
     (False, "after", "hook_missing"),    # no hook on this computer: refused, nothing promised
     (True, "before", "opened_before"),   # Claude Code read its hooks before the hook was there: reopened, it can be
-], ids=["stopped", "no-hook", "opened-before-the-hook"])
+    (True, "after", "unwritable"),       # the stop file cannot be written: the press still has its line
+], ids=["stopped", "no-hook", "opened-before-the-hook", "stop-unwritable"])
 def test_his_editor_session_is_stopped_through_its_hook_never_typed_into(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
                                                                          caplog: pytest.LogCaptureFixture,
                                                                          installed: bool, opened: str, refused: str | None) -> None:
@@ -1711,6 +1712,15 @@ def test_his_editor_session_is_stopped_through_its_hook_never_typed_into(base: P
     def said() -> list[str]:
         return [record.getMessage() for record in caplog.records if str(session) in record.getMessage()]
 
+    if refused == "unwritable":
+        def read_only(*_arguments) -> None:
+            raise PermissionError("read-only")
+
+        monkeypatch.setattr(SessionStops, "ask", read_only)
+        with pytest.raises(OSError):
+            _answer(agents, stop)
+        assert said() == [f"editor session {session} not stopped: its stop could not be written (PermissionError)"]
+        return
     if refused is not None:
         with pytest.raises(AgentRefused) as raised:
             _answer(agents, stop)
