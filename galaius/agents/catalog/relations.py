@@ -7,8 +7,10 @@ good, reports read as asks and acknowledged (each acknowledgement a turn), verdi
 run unknown to the runs still writing to the old one."""
 
 import re
+import threading
 import time
-from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
+from collections import OrderedDict
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -19,6 +21,7 @@ from galaius.agents.turns import facts as turn_facts
 from galaius.agents.turns import review_marks as turn_review_marks
 from galaius.agents import registry as reg
 from galaius.config.settings import Config
+from galaius.host.file_stamp import FileStamp
 from galaius.agents.transport.events import AgentEvent, Relation
 from galaius.inbox_hook import HEADING, OPERATOR
 
@@ -63,19 +66,32 @@ REUSABLE: frozenset[str] = reg.TERMINAL_STATUSES - {"cancelled"}
 _READ: ContextVar[dict[str, reg.AgentRun | None] | None] = ContextVar("relations_read", default=None)
 #: What one decision read of each run's turns (`_turn_records`), by run id.
 _TURNS_READ: ContextVar[dict[str, "_TurnRecords"] | None] = ContextVar("relations_turns_read", default=None)
+#: The messages one decision read of each run (`_messages`), by run id.
+_MESSAGES_READ: ContextVar[dict[str, list[AgentEvent]] | None] = ContextVar("relations_messages_read", default=None)
+#: Whether the turn that read an ask ended before a moment (`_answered_before`), by the run's raw stream, the raw line that
+#: turn started at and the moment; with what the run's events were built from when it was read (`registry._stream_source`).
+#: A stream is only appended to and an event keeps its first time: a yes holds for good, a no until the stream moves.
+_ANSWERED: dict[tuple[Path, int, float], tuple[str, bool]] = {}
 
 
 @contextmanager
-def one_read() -> Iterator[None]:
+def one_read(records: Iterable[reg.AgentRun] = ()) -> Iterator[None]:
     """Read each run record once for what runs inside (a decision, a card): one run's relations climb the same records
-    hundreds of times (2026-10-17: 656 reads for one card)."""
+    hundreds of times (2026-10-17: 656 reads for one card); `records` already read count as read (`registry._stored_records`:
+    a hand-back reads every record, then thousands one by one, 2026-11-09). The registry folder is checked once for all
+    of them (`registry._pinned_registry`), never once per file."""
     if _READ.get() is not None:
         yield
         return
-    token, turns = _READ.set({}), _TURNS_READ.set({})
+    read: dict[str, reg.AgentRun | None] = {}
+    for record in records:
+        read.setdefault(record.run_id, record)
+    token, turns, messages = _READ.set(read), _TURNS_READ.set({}), _MESSAGES_READ.set({})
     try:
-        yield
+        with reg._pinned_registry():
+            yield
     finally:
+        _MESSAGES_READ.reset(messages)
         _TURNS_READ.reset(turns)
         _READ.reset(token)
 
@@ -85,6 +101,45 @@ def _get(run_id: str) -> reg.AgentRun | None:
         return reg.get_run(run_id)
     if run_id not in read:
         read[run_id] = reg.get_run(run_id)
+    return read[run_id]
+
+
+class _ParsedMessages:
+    """Each run's messages as this process last parsed them (`registry.read_messages`), by file, with the stamp the file
+    had before that read: a file whose stamp did not move is never read again. At most `KEPT` files, the least recently
+    asked dropped first. 2026-11-09: one hand-back asked `owed` of each agent of each run it climbed, each ask read the
+    asker's messages again (2,455 reads of 189 files, 256,000 lines parsed), every 10 s; this PC's service at 100 % CPU,
+    its pings to the server unanswered."""
+
+    KEPT = 256
+    _kept: OrderedDict[Path, tuple[FileStamp, list[AgentEvent]]] = OrderedDict()
+    _lock = threading.Lock()
+
+    @classmethod
+    def of(cls, run_id: str) -> list[AgentEvent]:
+        """Never changed by a reader: every reader of the same stamp shares it."""
+        path = reg.messages_path(run_id)
+        stamp = FileStamp.at(path)   # before the read: a line appended meanwhile moves it, read again next time
+        with cls._lock:
+            if (kept := cls._kept.get(path)) is not None and kept[0] == stamp:
+                cls._kept.move_to_end(path)
+                return kept[1]
+        messages = reg.read_messages(run_id)
+        if stamp is not None:
+            with cls._lock:
+                cls._kept[path] = (stamp, messages)
+                cls._kept.move_to_end(path)
+                while len(cls._kept) > cls.KEPT:
+                    cls._kept.popitem(last=False)
+        return messages
+
+
+def _messages(run_id: str) -> list[AgentEvent]:
+    """Run `run_id`'s messages (`_ParsedMessages`), the same throughout one decision (`one_read`)."""
+    if (read := _MESSAGES_READ.get()) is None:
+        return _ParsedMessages.of(run_id)
+    if run_id not in read:
+        read[run_id] = _ParsedMessages.of(run_id)
     return read[run_id]
 
 
@@ -351,7 +406,7 @@ def _turn_records(run_id: str) -> _TurnRecords:
         events=tuple(reg.read_events(run_id)),
         items=tuple(sorted(((item.raw_index, item) for item in agent_queue.items_seen(run_id) if item.raw_index is not None),
                            key=lambda pair: pair[0])),
-        messages={event.event_id: event for event in reg.read_messages(run_id) if event.to_run == run_id and event.event_id})
+        messages={event.event_id: event for event in _messages(run_id) if event.to_run == run_id and event.event_id})
     if read is not None:
         read[run_id] = records
     return records
@@ -500,7 +555,7 @@ def ask_lines(run: reg.AgentRun) -> list[tuple[int, str]]:
     """Each ask of `run` its turns read, as (raw stream line its turn started at, its message): its queue items carrying a
     message that asks (not a one-way note, a hand-back or this computer's own resume), oldest first."""
     from galaius.agents import agent_queue
-    asks = {event.event_id for event in reg.read_messages(run.run_id)
+    asks = {event.event_id for event in _messages(run.run_id)
             if event.to_run == run.run_id and event.event_id and not event.fyi and not event.reports
             and event.from_run not in reg.SYSTEM_SENDERS and event.text != reg.RESUME_BRIEF}
     # Read without the run's lock (`items_seen`): its card is drawn under that lock, by its dispatcher starting its turn and
@@ -510,13 +565,20 @@ def ask_lines(run: reg.AgentRun) -> list[tuple[int, str]]:
 
 
 def _answered_before(run: reg.AgentRun, message: str | None, moment: float) -> bool:
-    """The turn that read the ask held by `message` (None: its task, read by its first turn) ended before `moment`."""
+    """The turn that read the ask held by `message` (None: its task, read by its first turn) ended before `moment`. Read
+    from the run's whole stream once (`_ANSWERED`), never again while it does not move: 2026-11-09, each hand-back re-read
+    every stream an old ask was in (346 reads of 67 streams up to 82 MB, ~85 s), every 10 s."""
     start = 0 if message is None else next((line for line, said in ask_lines(run) if said == message), None)
     if start is None:
         return False
+    key, source = (reg.raw_events_path(run.run_id), start, moment), reg._stream_source(run.run_id)
+    if (known := _ANSWERED.get(key)) is not None and (known[1] or known[0] == source):
+        return known[1]
     ended = next((event for event in reg.read_events(run.run_id)
                   if event.kind in ("done", "error") and event.raw_index is not None and event.raw_index >= start), None)
-    return ended is not None and ended.at is not None and ended.at < moment
+    answered = ended is not None and ended.at is not None and ended.at < moment
+    _ANSWERED[key] = (source, answered)
+    return answered
 
 
 def _asks(run: reg.AgentRun) -> dict[str, float | None]:
@@ -541,7 +603,7 @@ def _ask_marks(run: reg.AgentRun) -> dict[str, tuple[float | None, str | None]]:
     asked: dict[str, tuple[float | None, str | None]] = {top: (start, None)} if top else {}
     asked |= {asker: (run.inherited_asks.get(asker, start), None) for asker in run.asked_by if asker not in asked}
     reached = {live(asker): asker for asker in asked}
-    for event in reg.read_messages(run.run_id):
+    for event in _messages(run.run_id):
         if event.to_run != run.run_id or event.fyi or event.reports:
             continue
         said_by = event.for_run or event.from_run
@@ -557,13 +619,13 @@ def _ask_marks(run: reg.AgentRun) -> dict[str, tuple[float | None, str | None]]:
 def _reported(run_id: str, *, to: str, since: float) -> bool:
     """A hand-back to run `to`, or to a run that took over from it (`chain`), carried `run_id`'s report at or after `since`."""
     return any(event.to_run == target and run_id in event.reports and (event.at or 0.0) >= since
-               for target in chain(to) for event in reg.read_messages(target))
+               for target in chain(to) for event in _messages(target))
 
 
 def _last_ask(run: reg.AgentRun, asker: str) -> str:
     """The first line of what `asker` last asked `run`: its task when `asker` sent it nothing (its parent, a run it was
     spawned for or took over the asks of)."""
-    said = next((event.text for event in reversed(reg.read_messages(run.run_id))
+    said = next((event.text for event in reversed(_messages(run.run_id))
                  if event.to_run == run.run_id and not event.fyi and not event.reports and (event.for_run or event.from_run) == asker), None)
     return _first_line(content(said) if said is not None else run.task)
 
@@ -683,7 +745,7 @@ def _his_words(run: reg.AgentRun) -> str:
     # Circular layers: agent_queue imports this module (`card`, `heading`).
     from galaius.agents import agent_queue
     taken_back = agent_queue.withdrawn_seen(run.run_id)   # never what he took back (`messaging.retract`)
-    words = " ".join(event.text for event in reg.read_messages(run.run_id)
+    words = " ".join(event.text for event in _messages(run.run_id)
                      if event.from_run == reg.PERSON_SENDER and event.to_run == run.run_id and event.at > since and event.event_id not in taken_back)
     if run.finished_at is None and run.parent_run_id is None and not run.asked_by:
         words = f"{run.task} {words}"

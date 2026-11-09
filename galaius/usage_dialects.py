@@ -4,6 +4,7 @@ report read as « nothing counted » would undercount; a cached token kept insid
 twice."""
 
 from collections.abc import Mapping
+from functools import cached_property
 from typing import Annotated, Any, ClassVar
 
 from galaius_core import TokenCounts
@@ -45,9 +46,10 @@ class UsageDialect(BaseModel):
             return TokenCounts.of_prompt(prompt, output, cache_read, cache_write)
         return TokenCounts(input=prompt, output=output, cache_read=cache_read, cache_write=cache_write)
 
-    @property
+    @cached_property
     def names(self) -> frozenset[str]:
-        """Every top-level key it reads."""
+        """Every top-level key it reads: once per dialect, every event line validated asks it once per key it holds
+        (`OlderTokens`)."""
         return frozenset(spelling.split(".")[0] for spellings in (self.input, self.output, self.cache_read, self.cache_write) for spelling in spellings)
 
 
@@ -84,10 +86,10 @@ class OlderTokens(BaseModel):
     def _older_tokens(cls, data: object) -> object:
         if not isinstance(data, dict):
             return data
-        data = cls._older(data)
-        if not data.keys() & cls.OLDER.names:
+        data, names = cls._older(data), cls.OLDER.names
+        if not data.keys() & names:
             return data
-        value = {key: item for key, item in data.items() if key not in cls.OLDER.names}
+        value = {key: item for key, item in data.items() if key not in names}
         if not isinstance(data.get("usage"), dict | TokenCounts) and (counts := cls.OLDER.read(data)).reported:
             value["usage"] = counts.model_dump(mode="json", exclude_none=True)
         return value

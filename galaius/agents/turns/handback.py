@@ -172,6 +172,8 @@ class Asked(BaseModel):
     by_asker: Mapping[str, tuple[str, ...]]
     #: run id -> the runs it took over from, at any distance (`live`).
     took_over: Mapping[str, frozenset[str]]
+    #: run id -> its record as this look read it.
+    runs: Mapping[str, reg.AgentRun]
 
     @classmethod
     def of(cls, records: Sequence[reg.AgentRun]) -> Self:
@@ -182,7 +184,8 @@ class Asked(BaseModel):
                 by_asker.setdefault(asker, []).append(stored.run_id)
             if stored.successor:
                 took_over.setdefault(live(stored.run_id), set()).add(stored.run_id)
-        return cls(by_asker={asker: tuple(ids) for asker, ids in by_asker.items()}, took_over={run_id: frozenset(ids) for run_id, ids in took_over.items()})
+        return cls(by_asker={asker: tuple(ids) for asker, ids in by_asker.items()}, took_over={run_id: frozenset(ids) for run_id, ids in took_over.items()},
+                   runs={stored.run_id: stored for stored in reversed(records)})
 
 
 def _agents_answering(asker_id: str, asked: Asked, *, among: Callable[[reg.AgentRun], bool] = lambda _run: True) -> Iterator[reg.AgentRun]:
@@ -192,7 +195,7 @@ def _agents_answering(asker_id: str, asked: Asked, *, among: Callable[[reg.Agent
     end of one: this PC's service at 130 % CPU, the server's requests unanswered)."""
     aliases = {asker_id} | asked.took_over.get(asker_id, frozenset())
     found = dict.fromkeys(run_id for alias in aliases for run_id in asked.by_asker.get(alias, ()))
-    return (run for run_id in found if (run := reg.get_run(run_id)) is not None and among(run) and aliases.intersection(owed(run)))
+    return (run for run_id in found if (run := asked.runs.get(run_id)) is not None and among(run) and aliases.intersection(owed(run)))
 
 
 def _resume(asker_id: str) -> messaging.Delivery | None:
@@ -209,8 +212,9 @@ def _resume(asker_id: str) -> messaging.Delivery | None:
     # One a stop holds gets them too: queued, read once a person releases it (`registry.AgentRun.held_at`).
     if asker is None or asker.finished_at is None or (asker.status not in _ENDED_ITS_TURN and asker.held_at is None) or _pending(asker):
         return None
-    with one_read():
-        asked = Asked.of(reg._stored_records())
+    records = reg._stored_records()
+    with one_read(records):
+        asked = Asked.of(records)
 
         def holds(run: reg.AgentRun) -> bool:
             return _pending(run) or reg.self_resuming(run) or any(_agents_answering(run.run_id, asked, among=_pending))

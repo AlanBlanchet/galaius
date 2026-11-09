@@ -619,6 +619,10 @@ def test_a_reviewer_kept_for_two_makers_hands_each_its_own_verdict(sent, monkeyp
     assert handback.Report.answering(run, first).text == "Verdict for the first: PASS."
     assert handback.Report.answering(run, second).text == "Verdict for the second: FAIL, one row."
     assert relations.owed(run) == (second,)
+    # 2026-11-09: each hand-back re-read the whole stream of every run with such an ask, every 10 s (this PC at 100 % CPU).
+    reads: list[str] = []
+    monkeypatch.setattr(reg, "read_events", lambda run_id, read=reg.read_events: reads.append(run_id) or read(run_id))
+    assert relations.owed(run) == (second,) and reads == [], "a stream that did not move is read again"
     handback.hand_back(reviewer)                                        # its turn for the second ends: the first is idle
     assert not [call for call in sent if call["run_id"] == first]
 
