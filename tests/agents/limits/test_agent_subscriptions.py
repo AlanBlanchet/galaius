@@ -25,6 +25,7 @@ from galaius.agents import run as run_module
 from galaius.agents.run import run_agent
 from galaius.agents.limits.subscription_watch import SubscriptionWatch
 from galaius.agents.limits.subscriptions import RunSubscription, Subscription, SubscriptionCapped, SubscriptionRefused
+from galaius.host.private_files import PRIVATE_FILES
 from galaius.isolation.fence import FenceBind, FenceSpec
 from galaius.machine.programs import AgentPrograms
 from galaius.machine import agents as machine_agents
@@ -538,7 +539,7 @@ def test_a_resumed_turn_finds_its_session_in_whichever_login_folder_holds_it(cas
         assert [(line["type"], line["message"]["content"] if isinstance(line["message"]["content"], str) else line["message"]["content"][0].get("type")) for line in written] == [
             ("user", "first ask"), ("assistant", "text"), ("assistant", "tool_use"), ("user", "tool_result"), ("user", "second ask")]
         assert [line["parentUuid"] for line in written] == [None, *(line["uuid"] for line in written[:-1])] and {line["sessionId"] for line in written} == {session}
-        assert record(home).stat().st_mode & 0o777 == 0o600
+        PRIVATE_FILES.check(record(home))  # his conversation, readable by him alone (POSIX mode, Windows ACL)
         return
     expected = {"held by the pc login": "pc\n", "newest of two logins": "new\n", "signed out and in again": "kept\n", "codex, signed out and in again": "kept\n",
                 "unpinned, sent from a pinned run": "pc\n", "a newer file stays": "pc\n", "fenced": "pc\n"}[case]

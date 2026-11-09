@@ -1671,11 +1671,7 @@ class ClaudeCodeProvider(AgentProvider):
         target = self.session_files(home, cwd, session)[0]
         if target.exists():
             return False
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=target.parent, delete=False, suffix=".rebuilt") as handle:
-            handle.writelines(json.dumps(entry, ensure_ascii=False) + "\n" for entry in entries)
-        os.chmod(handle.name, 0o600)
-        os.replace(handle.name, target)
+        PRIVATE_FILES.write_text(target, "".join(json.dumps(entry, ensure_ascii=False) + "\n" for entry in entries))
         return True
 
     def startup_files(self, cwd: Path, environment: Mapping[str, str]) -> tuple[Path, ...]:
