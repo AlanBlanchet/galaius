@@ -1310,6 +1310,16 @@ def test_a_long_stop_hook_block_keeps_its_verdict():
     assert event.text.endswith("]: Check 1(b) fires: two items left as remaining.") and len(event.text) < 2100
 
 
+def test_a_failed_turn_that_never_reached_the_model_says_its_errors():
+    # A resume whose session is missing ends with no text, only `errors` (Claude Code 2.1.288): its ending names that
+    # error, never the bare subtype « error_during_execution » a conversation then read « Échec » with.
+    event = ClaudeCodeProvider().parse(json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True, "num_turns": 0,
+                                                   "session_id": "s", "errors": ["No conversation found with session ID: s"]}))
+    assert (event.kind, event.text) == ("error", "No conversation found with session ID: s")
+    bare = ClaudeCodeProvider().parse(json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True, "session_id": "s"}))
+    assert bare.text == "error_during_execution"
+
+
 @pytest.mark.parametrize("status, said, cut", [
     (401, "Failed to authenticate: OAuth token revoked.", "login_lost"),  # another account signed in (Claude Code's result)
     (None, "Failed to authenticate: OAuth session expired and could not be refreshed", "login_lost"),  # before it said its status

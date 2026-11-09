@@ -1841,8 +1841,11 @@ class ClaudeCodeProvider(AgentProvider):
             failed = bool(raw.get("is_error"))
             structured = raw.get("structured_output")
             has_final = structured is not None or bool(raw.get("result"))
+            # A turn that never reached the model says why in `errors` alone (« No conversation found with session ID: … »
+            # on a resume): the run's ending names that, never the bare `error_during_execution` subtype.
+            errors = "\n".join(str(error) for error in raw.get("errors") or () if str(error).strip()) if isinstance(raw.get("errors"), list) else ""
             detail = json.dumps(structured) if structured is not None else str(
-                raw.get("result") or raw.get("stop_reason") or raw.get("subtype") or ""
+                raw.get("result") or errors or raw.get("stop_reason") or raw.get("subtype") or ""
             )
             # The window this turn compacts below: the CLI's answer to its context request when this turn asked
             # (`control_response`, 2.1.288: the effective `autoCompactWindow`, capped at the model's own), else the
