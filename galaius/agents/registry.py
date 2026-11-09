@@ -1696,7 +1696,8 @@ def resumable(program: AgentProvider, run: AgentRun, session: str, environment: 
     (`RunSubscription.bound`), else on this PC's own whoever's process asked (`Subscription.unpinned`: a pinned run
     messaging an unpinned one), its session in the folder that turn reads (its fence's state, else that login's). One
     missing there is carried from whichever folder of this PC holds it (`Subscription.session_homes`, its fence's state),
-    the newest copy, never over a newer file: a login signed out and in again, or a pin moved without it. Held nowhere:
+    the newest copy, never over a newer file: a login signed out and in again, or a pin moved without it; a member's lent run
+    looks in none of the owner's. Held nowhere:
     refused typed (`session_missing`), never relaunched, a resume could only answer « No conversation found »."""
     environment = run.subscription.bound(environment) if run.subscription is not None else Subscription.unpinned(environment)
     if program.fenced is None or not program.auth_home_env:
@@ -1706,7 +1707,9 @@ def resumable(program: AgentProvider, run: AgentRun, session: str, environment: 
     holds = lambda folder: (files := program.session_files(folder, cwd, session)) and files[0].is_file()  # noqa: E731 — its first is the record its resume reads
     if holds(home):
         return environment
-    looked = tuple(dict.fromkeys(folder for folder in (*Subscription.session_homes(program, environment), *((state,) if state else ())) if folder != home))
+    # A member's run on a lent PC reaches none of the owner's logins (A3): only its own fence's state.
+    owners = () if run.subscription is not None and run.subscription.lent else Subscription.session_homes(program, environment)
+    looked = tuple(dict.fromkeys(folder for folder in (*owners, *((state,) if state else ())) if folder != home))
     held = [folder for folder in looked if holds(folder)]
     if not held:
         raise SubscriptionRefused("session_missing", f"session {session} of run {run.run_id[:8]} is in none of this PC's {len(looked) + 1} login folders: "

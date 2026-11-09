@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 from galaius_core import AGENT_PROGRAMS, AgentMoveRequest, MachineRef, SubscriptionAllowance, SubscriptionChoice, UsageWindow, SubscriptionChoices, SubscriptionLimits
 
-from galaius.agents import registry as reg
+from galaius.agents import agent_queue, registry as reg
 from galaius.agents.limits import admission, quota
 from galaius.agents.transport.events import AgentEvent
 from galaius.agents.providers import PROVIDERS, ClaudeCodeProvider, program_providers
@@ -457,38 +457,43 @@ def test_continuing_on_another_subscription_carries_the_session_never_a_credenti
     assert quota.blocked_until(unpinned.provider, unpinned.model) is None
 
 
-@pytest.mark.parametrize("case", ["held by the pc login", "newest of two logins", "signed out and in again", "unpinned, sent from a pinned run", "a newer file stays", "nowhere"])
+@pytest.mark.parametrize("case", ["held by the pc login", "newest of two logins", "signed out and in again", "unpinned, sent from a pinned run",
+                                  "a newer file stays", "fenced", "codex, signed out and in again", "lent", "nowhere"])
 def test_a_resumed_turn_finds_its_session_in_whichever_login_folder_holds_it(case: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """2026-11-09: « No conversation found » 16 times in a row on his main conversation. Its login was signed out and in again
     from the web (the folder, transcripts included, removed), and a PC-login run messaged from a pinned run resumed under the
-    sender's login. A turn resumes in the folder its run is pinned to, never the sender's, with its session carried there from
-    wherever this PC holds it (the newest copy, a signed-out login's kept sessions included, never over a newer file); held
-    nowhere, refused typed once, never relaunched."""
-    from galaius.agents import agent_queue
-
+    sender's login. A turn resumes in the folder its run is pinned to (its fence's state when fenced), never the sender's,
+    with its session carried there when missing from wherever this PC holds it (the newest copy, a signed-out login's kept
+    sessions included, never over a newer file), Claude's and Codex's alike; a member's lent run never looks in the owner's
+    logins; held nowhere, refused typed once, never relaunched."""
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
-    program, cwd, session = PROVIDERS["claude"], tmp_path / "project", str(uuid4())
-    pc_login, a, b = tmp_path / ".claude", Subscription.create(uuid4(), "claude"), Subscription.create(uuid4(), "claude")
-    transcript = lambda home: ClaudeCodeProvider.project_folder(home, cwd) / f"{session}.jsonl"  # noqa: E731
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    codex = case.startswith("codex")
+    program, cwd, session = PROVIDERS["codex" if codex else "claude"], tmp_path / "project", str(uuid4())
+    pc_login, a, b = tmp_path / ".claude", Subscription.create(uuid4(), "codex" if codex else "claude"), Subscription.create(uuid4(), "claude")
+    record = lambda home: (home / "sessions" / "2026" / "11" / "09" / f"rollout-2026-11-09T00-00-00-{session}.jsonl" if codex  # noqa: E731
+                           else ClaudeCodeProvider.project_folder(home, cwd) / f"{session}.jsonl")
 
     def held(home: Path, text: str, at: float) -> None:
-        transcript(home).parent.mkdir(parents=True, exist_ok=True)
-        transcript(home).write_text(text, encoding="utf-8")
-        os.utime(transcript(home), (at, at))
+        record(home).parent.mkdir(parents=True, exist_ok=True)
+        record(home).write_text(text, encoding="utf-8")
+        os.utime(record(home), (at, at))
 
-    pinned = RunSubscription(subscription_id=a.id, limits=SubscriptionLimits())
-    run = reg.AgentRun(run_id=session, provider="claude", name="r", cwd=str(cwd), started_at=1.0, finished_at=2.0, status="done", provider_session_id=session,
-                       subscription=None if case == "unpinned, sent from a pinned run" else pinned)
+    pinned = (RunSubscription(lent=True) if case == "lent" else None if case in {"unpinned, sent from a pinned run", "fenced"}
+              else RunSubscription(subscription_id=a.id, limits=SubscriptionLimits()))
+    fence = FenceSpec(working_directory=tmp_path, start=tmp_path, state=tmp_path / "state", providers=(program.name,)) if case in {"fenced", "lent"} else None
+    run = reg.AgentRun(run_id=session, provider=program.name, name="r", cwd=str(cwd), started_at=1.0, finished_at=2.0, status="done", provider_session_id=session,
+                       subscription=pinned, fence=fence)
     environment = {"HOME": str(tmp_path), "PATH": os.environ.get("PATH", "")}
-    if case == "held by the pc login":
+    if case in {"held by the pc login", "fenced", "lent"}:
         held(pc_login, "pc\n", 1_000)
     elif case == "newest of two logins":
         held(pc_login, "old\n", 1_000)
         held(b.folder, "new\n", 2_000)
-    elif case == "signed out and in again":
+    elif case in {"signed out and in again", "codex, signed out and in again"}:
         held(a.folder, "kept\n", 1_000)
         a.remove()  # his sign-out from the web
-        a = Subscription.create(a.id, "claude")  # his sign-in again: a fresh folder
+        a = Subscription.create(a.id, program.name)  # his sign-in again: a fresh folder
     elif case == "unpinned, sent from a pinned run":
         held(pc_login, "pc\n", 1_000)
         environment |= a.overlay()  # the sender's own turn runs on A
@@ -501,18 +506,20 @@ def test_a_resumed_turn_finds_its_session_in_whichever_login_folder_holds_it(cas
         older.parent.mkdir(parents=True)
         older.write_text("older", encoding="utf-8")
         os.utime(older, (500, 500))
-    if case == "nowhere":
+    if case in {"nowhere", "lent"}:
         with pytest.raises(SubscriptionRefused) as refused:
             reg.resumable(program, run, session, environment)
         assert refused.value.refusal.reason == "session_missing" and agent_queue._permanent(refused.value)
+        assert not record(fence.state / program.name).exists() if fence is not None else True  # the owner's session never reaches a member's fence
         return
     resumed = reg.resumable(program, run, session, environment)
-    home = program.auth_home(resumed)
-    expected = {"held by the pc login": "pc\n", "newest of two logins": "new\n", "signed out and in again": "kept\n",
-                "unpinned, sent from a pinned run": "pc\n", "a newer file stays": "pc\n"}[case]
-    assert home == (pc_login if run.subscription is None else a.folder) and transcript(home).read_text(encoding="utf-8") == expected
+    home = fence.state / program.name if fence is not None else program.auth_home(resumed)
+    expected = {"held by the pc login": "pc\n", "newest of two logins": "new\n", "signed out and in again": "kept\n", "codex, signed out and in again": "kept\n",
+                "unpinned, sent from a pinned run": "pc\n", "a newer file stays": "pc\n", "fenced": "pc\n"}[case]
+    assert home == (fence.state / program.name if fence is not None else pc_login if run.subscription is None else a.folder)
+    assert record(home).read_text(encoding="utf-8") == expected
     if case == "unpinned, sent from a pinned run":
-        assert not transcript(a.folder).exists()  # the sender's login never gets it
+        assert not record(a.folder).exists()  # the sender's login never gets it
     if case == "a newer file stays":
         assert result.read_text(encoding="utf-8") == "newer"
 
