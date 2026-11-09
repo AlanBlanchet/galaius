@@ -195,6 +195,7 @@ def rank(
     `policy` is the one already loaded by a caller ranking many roles; otherwise it is read here.
     """
     policy = policy if policy is not None else load_policy()
+    providers = _asked(providers)
     candidates, rows, criteria = _ranked_candidates(model, env, providers=providers, weights=weights, policy=policy)
     candidates = _switched_on(candidates, policy, model)
     if criteria is None:
@@ -226,12 +227,24 @@ def _switched_on(candidates: tuple[reg.LaunchCandidate, ...], policy: Policy, mo
     return kept
 
 
+def _keyed(provider: AgentProvider) -> bool:
+    return (program := getattr(provider, "program", None)) is not None and program.keyed  # a test double may declare none
+
+
+def _asked(providers: Sequence[AgentProvider]) -> list[AgentProvider]:
+    """The CLIs a ranking draws on: a key program (core `Provider.key_program`, a pasted key run through Vibe) only when
+    the run names key programs alone (its subscription picked). Beside the CLIs it never joins the pool: any held key
+    would take every role whose rule its cheapest model clears (visual-critic's `@eyes` ranked a Gemini image model)."""
+    return list(providers) if all(_keyed(p) for p in providers) else [p for p in providers if not _keyed(p)]
+
+
 def _ranked_candidates(
     model: str, env: dict[str, str], *, providers: Sequence[AgentProvider], weights: str, policy: Policy,
 ) -> tuple[tuple[reg.LaunchCandidate, ...], dict[str, Model], Criteria | None]:
     """Candidates before the value rule, the catalog rows they name, and the parsed criterion
     (None for a plain model id)."""
-    universe = list(PROVIDERS.values()) + [p for p in providers if p.name not in PROVIDERS]
+    providers = _asked(providers)
+    universe = [p for p in PROVIDERS.values() if not _keyed(p) or p in providers] + [p for p in providers if p.name not in PROVIDERS]
     allowed = {p.name for p in providers}
     if model.startswith("@"):
         model = policy.rule(model)
