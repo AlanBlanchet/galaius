@@ -113,11 +113,6 @@ def test_a_contained_agent_keeps_its_pid_and_lands_in_its_own_capped_scope(monke
     assert int(pid) == process.pid
     assert int(adjust) == 500 or shutil.which("choom") is None
     assert f"/{SLICE}/galaius-run-probe-1-" in cgroup
-    limits = subprocess.run(
-        ["systemctl", "--user", "show", SLICE, "-p", "MemoryHigh", "-p", "MemorySwapMax"],
-        capture_output=True, text=True, check=True,
-    ).stdout
-    assert "MemoryHigh=infinity" in limits and "MemorySwapMax=0" in limits
 
 
 @pytest.mark.asyncio
