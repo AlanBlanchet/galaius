@@ -3,8 +3,8 @@
 
 A week to 2026-10-20: 1,121 visual-critic runs, 274 of them in 71 subjects reviewed again and again, the three-round
 cap written only as prompt text. A round is one ask of a critic role for a maker: a run of that role started for it
-(`galaius agents spawn --for`), or a task message sent to one for it (`--for`, or the maker itself writing to a critic
-already reviewing its work). Several critics asked in one turn of the asker (a blind panel) are one round. Each round is
+(`galaius agents spawn --for`), or a task message sent to one for it (`--for`, or any agent run writing to a critic
+already reviewing its work: the maker, its coordinator, another run). Several critics asked in one turn of the asker (a blind panel) are one round. Each round is
 written down as it is given (`#critic-rounds.state`), whichever run of the role takes it, so a fresh instance inherits
 the rounds spent; the maker's work is the maker and the runs it handed off to (`relations.live`): a hand-off never
 resets the count. An agent asking for one more past the cap is refused, in one line; the person never is, and his
@@ -70,16 +70,22 @@ class CriticRounds(BaseModel):
         return list({entry.ask(): entry for entry in reversed(mine)}.values())[::-1]
 
     def maker_of(self, critic: reg.AgentRun, *, for_run: str | None, sender: str | None) -> str | None:
-        """The maker a task message to run `critic` is for: `for_run`, else `sender` when `critic` already reviews its work
-        (a maker writing to its own critic); None when it is for no maker (a lead's note, the person's message)."""
+        """The maker a task message to run `critic` is for: `for_run`, else — when an agent run `sender` writes to a critic
+        already reviewing someone's work — that work's maker: `sender`'s own when it is one, else the newest the critic took
+        (its coordinator or any other run asking again is a round all the same: 2026-11-09, a coordinator's three sends
+        to a critic spawned `--for` a maker were seen as one round); None for the person (`sender` None) or a critic
+        reviewing no maker's work."""
         if critic.agent not in self.cap.roles:
             return None
         if for_run is not None:
             return for_run
         if sender is None:
             return None
+        taken = [entry.maker for entry in self._ledger() if entry.run_id == critic.run_id]
+        if not taken:
+            return None
         live = relations.live(sender)
-        return sender if any(entry.run_id == critic.run_id and relations.live(entry.maker) == live for entry in self._ledger()) else None
+        return sender if any(relations.live(maker) == live for maker in taken) else taken[-1]
 
     def refusal(self, role: str | None, maker: str | None, *, asker: str | None, turn: str | None) -> str | None:
         """Why agent run `asker` may not ask critic `role` for one more round on `maker`'s work in its turn `turn`; None when

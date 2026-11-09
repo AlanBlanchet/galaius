@@ -107,3 +107,25 @@ def test_a_blind_panel_asked_in_one_turn_is_one_round():
     for name in ("p1", "p2", "p3"):   # three blind critics, one dispatch
         _spawned(name, parent="lead", for_run="eng")
     assert len(CriticRounds.here().spent("visual-critic", IDS["eng"])) == 1
+
+
+@pytest.mark.parametrize("sender", [pytest.param("lead", id="its-coordinator"), pytest.param("eng2", id="another-agent")])
+def test_a_task_any_agent_sends_a_critic_already_reviewing_a_makers_work_is_one_of_its_rounds(monkeypatch, sender):
+    """A critic spawned `--for` eng, asked again by a run other than eng with no `--for` (2026-11-09: a coordinator's
+    `galaius agents send` gave tester and code-reviewer three rounds each on one maker, the ledger saw one): each turn's
+    ask counts on eng's work, the fourth is refused, the person's message neither counts nor is refused."""
+    monkeypatch.setattr(messaging, "policy_for_continuation", lambda run, provider, environment: (None, None, run.model, None))
+    monkeypatch.setattr(messaging, "_dispatch", lambda *arguments, **keywords: None, raising=False)
+    _run("lead")
+    _run("eng", parent="lead")
+    _run("eng2", parent="lead") if sender == "eng2" else None
+    _spawned("rev1", parent="lead", for_run="eng")
+    for _ in range(2):
+        _next_turn(sender)
+        assert messaging.queue_message(IDS["rev1"], "fixed: check again", sender=IDS[sender]).state != "error"
+    assert messaging.queue_message(IDS["rev1"], "what did you mean by row 2?", sender=reg.PERSON_SENDER).state != "error"
+    assert len(CriticRounds.here().spent("visual-critic", IDS["eng"])) == 3
+    _next_turn(sender)
+    refused = messaging.queue_message(IDS["rev1"], "once more", sender=IDS[sender])
+    assert refused.state == "error" and "visual-critic already took 3 rounds" in refused.text
+    assert messaging.queue_message(IDS["rev1"], "once more, please", sender=reg.PERSON_SENDER).state != "error"

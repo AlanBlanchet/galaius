@@ -306,8 +306,8 @@ def _queue_message(
         # cap an agent's is refused; an answer or a note is no round. The asker is the process's run (`asking_run`).
         rounds = CriticRounds.here()
         task = kind is not Relation.REPORT and not turn.event_fields().get("fyi")
-        maker = rounds.maker_of(run, for_run=for_run, sender=speaker if origin is not None else None) if task else None
         asker = asking_run() or (speaker if origin is not None else None)
+        maker = rounds.maker_of(run, for_run=for_run, sender=asker) if task else None
         asked_in = turn_of(asker)
         if (capped := rounds.refusal(run.agent, maker, asker=asker, turn=asked_in)) is not None:
             return Delivery(state="error", text=f"ERROR: {capped}", run_id=run.run_id)
