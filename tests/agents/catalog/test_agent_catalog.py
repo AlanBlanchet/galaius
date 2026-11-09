@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import multiprocessing
+import os
 import sys
 from http.cookiejar import LWPCookieJar
 from types import SimpleNamespace
@@ -934,6 +935,9 @@ async def test_local_delegation_and_resume_run_exact_parent_pin(advanced_catalog
     assert captured[0][1]["allowed_tools"] == ["Read", *CONVERSATIONS]
     assert str(worker_ref.revision) in saved.definition_path
     assert "primary instruction revision 1" in Path(saved.definition_path).read_text()
+    transcript = ClaudeCodeProvider.project_folder(ClaudeCodeProvider().auth_home(os.environ), Path(saved.cwd)) / "fixture-session.jsonl"  # what its resume reads
+    transcript.parent.mkdir(parents=True, exist_ok=True)
+    transcript.touch()
     resumed = launch_continuation(ClaudeCodeProvider(), saved, "fixture-session", "Continue pinned work",
         model="wrong-new-model", criterion="price.in >= 2", reasoning="low", raw_index=0)
     assert resumed.wait() == 0
