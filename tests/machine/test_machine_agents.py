@@ -34,6 +34,7 @@ from galaius.diagnostics.redaction import redact
 from galaius_core import AGENT_PROGRAMS, AgentRefused
 from galaius.config.user import UserConfig
 from galaius.machine import connection as machines
+from galaius.diagnostics.error_reports import MachineErrorReports
 from galaius.machine.connection import MachineConfig, MachineRunner
 from galaius.agents.limits import admission
 from galaius.agents.policy import PolicyError
@@ -612,6 +613,34 @@ def test_a_send_asked_again_while_the_first_is_under_way_is_answered_once(base: 
     asyncio.run(scenario())
     assert [answer["detail"] for answer in socket.sent] == (["delivery 2"] if cut_off else ["delivery 1", "delivery 1"])
     assert len(calls) == (2 if cut_off else 1)
+
+
+@pytest.mark.parametrize(("raised", "reported"), [
+    (OSError(206, "Nom de fichier ou extension trop long"), True),   # 2026-11-09: every start on a Windows PC, one warning line
+    (RuntimeError("boom"), False),                                    # a sentence written for a reader: a refusal
+    (PermissionError("agents are off on this computer"), False),
+    (AgentRefused("folder_closed", "aino/src does not exist"), False),
+    (KeyError("token"), True),                                        # nothing here words it: a fault
+])
+def test_a_start_this_computer_failed_asks_its_owner_to_send_a_report(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raised, reported) -> None:
+    """A start this PC failed by its own fault is answered with its words AND keeps an error report its owner is asked
+    about on the PC's page (« Envoyer le rapport ? »), with the traceback; a refusal asks nothing."""
+    runner = MachineRunner(config_path=tmp_path / "machine.json")
+    config = _config(base)
+    runner.save(config)
+    monkeypatch.setattr(MachineRunner, "audit", staticmethod(lambda log, entry: None))
+    asked: list[tuple[str, str]] = []
+    monkeypatch.setattr(MachineErrorReports, "prepare", lambda self, endpoint, kind, message, lines, secrets=(): asked.append((message, "\n".join(lines))))
+
+    async def answer(self, request):
+        raise raised
+
+    monkeypatch.setattr(MachineAgents, "answer", answer)
+    socket = _Socket()
+    asyncio.run(runner._answer_agent_request(socket, config, _signed(config, _request("start", config, root="project", path="", text="hi", role="main"))))
+    assert socket.sent[0]["error"]
+    assert [message for message, _ in asked] == ([f"agent start failed: {socket.sent[0]['error']}"] if reported else [])
+    assert not reported or type(raised).__name__ in asked[0][1]
 
 
 @pytest.mark.parametrize(("op", "again"), [

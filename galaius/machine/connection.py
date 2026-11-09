@@ -1617,7 +1617,11 @@ class MachineRunner:
             logger.log(logging.INFO if request.action else logging.DEBUG, "agent %s %s", request.op, said)
         except ANSWERED_REFUSALS as error:
             answer = MachineAgentAnswer(request_id=request.id, error=fitted(MachineAgentAnswer, "error", (said := said_of(error, doing="driving_agent")).said), refusal=said.refusal)
-            logger.warning("agent %s refused: %s", request.op, answer.error)
+            if self.own_fault(error, said) and request.action:
+                logger.error("agent %s failed: %s", request.op, answer.error, exc_info=error)
+                self._report_fault(config, request.op, answer.error or "", error)
+            else:
+                logger.warning("agent %s refused: %s", request.op, answer.error)
         except Exception as error:  # noqa: BLE001 — the asker is never left with no answer at all
             # Whatever this was, the server is waiting on an answer to THIS request: without one it
             # cannot tell a refusal from a frozen PC and tells him the PC « n'a pas confirmé le
@@ -1625,6 +1629,8 @@ class MachineRunner:
             # derived from bare `Exception`, so the only trace was this runner's own log line).
             answer = MachineAgentAnswer(request_id=request.id, error=fitted(MachineAgentAnswer, "error", (said := said_of(error, doing="driving_agent")).said), refusal=said.refusal)
             logger.error("agent %s failed: %s", request.op, answer.error, exc_info=error)
+            if request.action:
+                self._report_fault(config, request.op, answer.error or "", error)
         if request.action:
             # The whole brief / message stays HERE, in the owner's local log; the server keeps a digest.
             asked = request.model_dump(mode="json", exclude={"type", "id", "machine", "workspace_id", "expires_at", "signature"})
@@ -1632,6 +1638,21 @@ class MachineRunner:
         if answered is not None:
             answered.set_result(answer)
         await socket.send(json.dumps({"type": "agent_answer", "result": answer.model_dump(mode="json")}))
+
+    @staticmethod
+    def own_fault(error: BaseException, said: Said) -> bool:
+        """Whether an answered refusal is this computer failing rather than refusing: an OS error no typed refusal names
+        (2026-11-09: every agent start on a Windows PC answered « Nom de fichier ou extension trop long », WinError 206, as if
+        the PC had refused; one warning line, no traceback, no report). A `PermissionError` is a refusal written here."""
+        return isinstance(error, OSError) and not isinstance(error, PermissionError) and said.refusal is None
+
+    def _report_fault(self, config: MachineConfig, op: str, said: str, error: BaseException) -> None:
+        """An agent action this computer failed by its own fault: an error report kept here, its owner asked on the PC's
+        page whether to send it (`MachineErrorReports.prepare`: nothing leaves before his yes) — this runner's recent log
+        and the traceback. Off the event loop (its question is an HTTPS call); never raises."""
+        lines = (*self._log_ring.lines, *"".join(traceback.format_exception(error)).splitlines())
+        reports, secrets = self.error_reports(), self._secrets(config)
+        asyncio.get_running_loop().run_in_executor(None, lambda: reports.prepare(config, "exception", f"agent {op} failed: {said}", lines, secrets))
 
     def _screen(self, config: MachineConfig) -> ScreenDesk:
         """The screen desk of this enrollment (a re-linked machine gets a new one: its id is in every offer)."""
