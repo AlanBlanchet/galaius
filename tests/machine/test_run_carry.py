@@ -221,3 +221,24 @@ def test_a_members_conversation_on_a_lent_pc_is_never_copied_off_it(pcs) -> None
     reg._update_fields(run_id, {"subscription": {"lent": True}})
     with pytest.raises(AgentRefused, match="lent"):
         a.answer("agent_export", run_id=run_id, transfer=str(uuid4()))
+
+
+def test_a_copy_of_a_conversation_with_many_images_opens_one_file_at_a_time(pcs, tmp_path: Path) -> None:
+    """code-reviewer 8eaa1a39 F2: never every file held open while it packs (an open-file limit of 1024 refused 1500)."""
+    resource = pytest.importorskip("resource")   # POSIX: the open-file limit lowered for the pack
+
+    from galaius.machine.run_carry import RunPackFiles
+
+    a, _, _ = pcs
+    run_id, _ = _conversation(a)
+    for index in range(1500):
+        (reg.agents_dir() / f"{run_id}.media.{index:020d}.png").write_bytes(b"png")
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (min(512, hard), hard))
+    try:
+        measured, files = RunPackFiles(run=reg.get_run(run_id), program=CLAUDE).measure()
+        RunPackFiles.write(files, tmp_path / "copy.tar.gz")
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+    with tarfile.open(tmp_path / "copy.tar.gz", "r:gz") as packed:
+        assert len(packed.getnames()) == measured.files == 1506
