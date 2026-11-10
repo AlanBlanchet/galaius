@@ -20,7 +20,7 @@ import stat
 import tarfile
 from collections.abc import Iterator
 from pathlib import Path
-from typing import ClassVar
+from typing import BinaryIO, ClassVar
 from uuid import UUID
 
 from galaius_core import MEDIA_KEY, RUN_PACK_MAX_BYTES, RUN_PACK_MAX_FILES, AgentRefused, RunPack, TooLarge, WorkspaceArchive
@@ -85,37 +85,53 @@ class RunPackFiles(BaseModel):
             return None
         return facts if stat.S_ISREG(facts.st_mode) else None
 
-    def measure(self) -> tuple[RunPack, list[tuple[str, Path, int]]]:
-        """Its plain files (a missing one, as a run without images, is left out) and their measure; refused typed when its
-        record is missing, its CLI session too and no stream writes it again (`whole`), or it is past
-        `RUN_PACK_MAX_BYTES` / `_FILES`."""
-        found = [(name, path, facts) for name, path in self.files() if (facts := self.plain(path)) is not None]
-        names = {name for name, _, _ in found}
+    def measure(self) -> tuple[RunPack, list[tuple[str, BinaryIO, int]]]:
+        """Its plain files (a missing one, as a run without images, is left out), each OPENED now, between turns, with its size
+        then: its copy holds exactly those bytes, whatever the next turn appends or a record rewritten whole meanwhile
+        (code-reviewer 1a9989c7 L1); refused typed when its record is missing, its CLI session too and no stream writes it
+        again (`whole`), or it is past `RUN_PACK_MAX_BYTES` / `_FILES`. The caller closes them (`write` does)."""
+        found = [(name, path) for name, path in self.files() if self.plain(path) is not None]
+        names = {name for name, _ in found}
         if f"{RUN}/{self.run.run_id}.json" not in names:
             raise WorkspaceRefused("source_missing", "this conversation's record is not on this computer")
         if not whole(self.program, self.run.run_id, names):
             raise WorkspaceRefused("source_missing", f"this conversation's CLI session is not on this computer and {self.program.name} cannot write it from its stream")
-        size = sum(facts.st_size for _, _, facts in found)
-        if size > RUN_PACK_MAX_BYTES:
-            raise AgentRefused(TooLarge(limit=RUN_PACK_MAX_BYTES, unit="bytes"), f"this conversation holds {size:,} bytes: more than one move carries")
         if len(found) > RUN_PACK_MAX_FILES:
             raise AgentRefused(TooLarge(limit=RUN_PACK_MAX_FILES, unit="entries"), f"this conversation holds {len(found)} files: more than one move carries")
-        # Each file as long as it is now, between turns: its copy holds exactly that, whatever the next turn appends meanwhile.
-        return RunPack(files=len(found), size=size, session=session_of(self.run)), [(name, path, facts.st_size) for name, path, facts in found]
+        opened: list[tuple[str, BinaryIO, int]] = []
+        try:
+            for name, path in found:
+                try:
+                    stream = os.fdopen(os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)), "rb")
+                except FileNotFoundError:
+                    continue   # gone since it was listed (an image removed): left out, as a missing one is
+                facts = os.fstat(stream.fileno())
+                if not stat.S_ISREG(facts.st_mode):
+                    stream.close()
+                    raise WorkspaceRefused("failed", f"{name} is no plain file")
+                opened.append((name, stream, facts.st_size))
+            size = sum(length for _, _, length in opened)
+            if size > RUN_PACK_MAX_BYTES:
+                raise AgentRefused(TooLarge(limit=RUN_PACK_MAX_BYTES, unit="bytes"), f"this conversation holds {size:,} bytes: more than one move carries")
+        except BaseException:
+            for _, stream, _ in opened:
+                stream.close()
+            raise
+        return RunPack(files=len(opened), size=size, session=session_of(self.run)), opened
 
     @staticmethod
-    def write(files: list[tuple[str, Path, int]], archive: Path) -> None:
-        """`files` as a gzip'd tar at `archive`, each read only as far as `measure` found it (its turns go on while it is
-        packed: a stream appended meanwhile never lands half a line in the copy), never through a link."""
-        with tarfile.open(archive, "w:gz", format=tarfile.PAX_FORMAT) as packed:
-            for name, path, size in files:
-                with os.fdopen(os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)), "rb") as stream:
-                    facts = os.fstat(stream.fileno())
-                    if not stat.S_ISREG(facts.st_mode) or facts.st_size < size:
-                        raise WorkspaceRefused("failed", f"{name} is no plain file, or shrank while it was packed")
+    def write(files: list[tuple[str, BinaryIO, int]], archive: Path) -> None:
+        """`files` (opened by `measure`) as a gzip'd tar at `archive`, each its first `size` bytes, every one closed after."""
+        try:
+            with tarfile.open(archive, "w:gz", format=tarfile.PAX_FORMAT) as packed:
+                for name, stream, size in files:
                     member = tarfile.TarInfo(name)
-                    member.size, member.mtime, member.mode = size, int(facts.st_mtime), 0o644
+                    member.size, member.mtime, member.mode = size, int(os.fstat(stream.fileno()).st_mtime), 0o644
+                    stream.seek(0)
                     packed.addfile(member, stream)
+        finally:
+            for _, stream, _ in files:
+                stream.close()
 
 
 class RunPackReader(BaseModel):

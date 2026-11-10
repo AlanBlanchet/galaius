@@ -31,7 +31,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import ClassVar, TypeVar
+from typing import BinaryIO, ClassVar, TypeVar
 from uuid import UUID, uuid4
 
 from annotated_types import MaxLen
@@ -661,7 +661,7 @@ class MachineAgents(BaseModel):
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, carried=measure, detail="sending")
 
     @staticmethod
-    def _send_run(transfers: WorkspaceTransfers, transfer: UUID, files: list[tuple[str, Path, int]]) -> None:
+    def _send_run(transfers: WorkspaceTransfers, transfer: UUID, files: list[tuple[str, BinaryIO, int]]) -> None:
         """The upload of a conversation's `files`, packed beside the runner's data; its outcome posted either way."""
         packed = UserPaths.data() / "transfers" / f"{transfer}.run.send.tar.gz"
         try:
@@ -676,6 +676,8 @@ class MachineAgents(BaseModel):
             except WorkspaceRefused as unreachable:
                 logger.warning("the server never heard transfer %s failed: %s", transfer, unreachable)
         finally:
+            for _name, stream, _size in files:   # closed by `write`; here too when it never ran
+                stream.close()
             packed.unlink(missing_ok=True)
 
     def _import(self, request: AgentImportRequest) -> MachineAgentAnswer:
