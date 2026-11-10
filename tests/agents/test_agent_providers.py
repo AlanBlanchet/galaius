@@ -1321,6 +1321,19 @@ def test_a_failed_turn_that_never_reached_the_model_says_its_errors():
     assert bare.text == "error_during_execution"
 
 
+@pytest.mark.parametrize("said, cut", [
+    # codex 0.155.1's own sentences for a login it cannot refresh: one on two PCs (its refresh token rotated by the other),
+    # expired, revoked, or another account signed in since.
+    ("Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.", "login_lost"),
+    ("Your access token could not be refreshed because your refresh token has expired. Please log out and sign in again.", "login_lost"),
+    ("Your access token could not be refreshed because you have since logged out or signed in to another account. Please sign in again.", "login_lost"),
+    ("You've hit your usage limit. Try again in 3 days.", "usage_limit"),
+    ("Error: the build failed", None),
+])
+def test_a_codex_turn_whose_login_could_not_be_refreshed_is_cut_for_its_login(said, cut):
+    assert PROVIDERS["codex"].cut_of(said) == cut
+
+
 @pytest.mark.parametrize("status, said, cut", [
     (401, "Failed to authenticate: OAuth token revoked.", "login_lost"),  # another account signed in (Claude Code's result)
     (None, "Failed to authenticate: OAuth session expired and could not be refreshed", "login_lost"),  # before it said its status

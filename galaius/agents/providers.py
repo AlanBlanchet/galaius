@@ -2168,6 +2168,10 @@ class CodexProvider(AgentProvider):
     fenced = FencedCli(folder=".codex", read=("auth.json", "config.toml", "AGENTS.md", "prompts", "rules"), sessions=("sessions",),
                        egress=("api.openai.com", "chatgpt.com", "auth.openai.com"), keys=("OPENAI_API_KEY", "CODEX_API_KEY", COMPAT_KEY))
     first_files = {"config.toml": 'cli_auth_credentials_store = "file"\n'}
+    # Its login lost, in codex 0.155.1's own words (read from its binary 2026-11-10): « Your access token could not be refreshed
+    # because your refresh token has expired / was already used / was revoked. Please log out and sign in again. », « … because you
+    # have since logged out or signed in to another account. Please sign in again. », « … refreshed. Please log out and sign in again. »
+    cut_words = {RunCut.login_lost: re.compile(r"access token could not be refreshed", re.IGNORECASE), **AgentProvider.cut_words}
     #: `sessions/**/rollout-*-<thread>.jsonl`, where Codex writes its `rate_limits`.
     usage_records = "rollout-*-{session}.jsonl"
     vocabulary = CODEX_VOCABULARY
