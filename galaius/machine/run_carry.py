@@ -29,7 +29,7 @@ from pydantic import BaseModel, ConfigDict
 from galaius.agents import registry as reg
 from galaius.agents.limits.subscriptions import Subscription
 from galaius.agents.providers import AgentProvider
-from galaius.machine.projects.workspace_copy import WorkspaceArchiveReader, WorkspaceRefused, add_file
+from galaius.machine.projects.workspace_copy import WorkspaceArchiveReader, WorkspaceRefused
 
 #: The archive's two folders: the run's registry files, and its CLI session's files below `AgentProvider.session_folder`.
 RUN, SESSION = "run", "session"
@@ -85,7 +85,7 @@ class RunPackFiles(BaseModel):
             return None
         return facts if stat.S_ISREG(facts.st_mode) else None
 
-    def measure(self) -> tuple[RunPack, list[tuple[str, Path]]]:
+    def measure(self) -> tuple[RunPack, list[tuple[str, Path, int]]]:
         """Its plain files (a missing one, as a run without images, is left out) and their measure; refused typed when its
         record is missing, its CLI session too and no stream writes it again (`whole`), or it is past
         `RUN_PACK_MAX_BYTES` / `_FILES`."""
@@ -100,19 +100,22 @@ class RunPackFiles(BaseModel):
             raise AgentRefused(TooLarge(limit=RUN_PACK_MAX_BYTES, unit="bytes"), f"this conversation holds {size:,} bytes: more than one move carries")
         if len(found) > RUN_PACK_MAX_FILES:
             raise AgentRefused(TooLarge(limit=RUN_PACK_MAX_FILES, unit="entries"), f"this conversation holds {len(found)} files: more than one move carries")
-        return RunPack(files=len(found), size=size, session=session_of(self.run)), [(name, path) for name, path, _ in found]
+        # Each file as long as it is now, between turns: its copy holds exactly that, whatever the next turn appends meanwhile.
+        return RunPack(files=len(found), size=size, session=session_of(self.run)), [(name, path, facts.st_size) for name, path, facts in found]
 
     @staticmethod
-    def write(files: list[tuple[str, Path]], archive: Path) -> None:
-        """`files` as a gzip'd tar at `archive`, each read as large as it is when read (its streams grow only between turns),
-        never through a link."""
+    def write(files: list[tuple[str, Path, int]], archive: Path) -> None:
+        """`files` as a gzip'd tar at `archive`, each read only as far as `measure` found it (its turns go on while it is
+        packed: a stream appended meanwhile never lands half a line in the copy), never through a link."""
         with tarfile.open(archive, "w:gz", format=tarfile.PAX_FORMAT) as packed:
-            for name, path in files:
+            for name, path, size in files:
                 with os.fdopen(os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)), "rb") as stream:
                     facts = os.fstat(stream.fileno())
-                    if not stat.S_ISREG(facts.st_mode):
-                        raise WorkspaceRefused("failed", f"{name} is no plain file")
-                    add_file(packed, name, stream, facts)
+                    if not stat.S_ISREG(facts.st_mode) or facts.st_size < size:
+                        raise WorkspaceRefused("failed", f"{name} is no plain file, or shrank while it was packed")
+                    member = tarfile.TarInfo(name)
+                    member.size, member.mtime, member.mode = size, int(facts.st_mtime), 0o644
+                    packed.addfile(member, stream)
 
 
 class RunPackReader(BaseModel):

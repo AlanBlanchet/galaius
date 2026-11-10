@@ -653,13 +653,15 @@ class MachineAgents(BaseModel):
             raise AgentRefused("under_way", "this conversation is at work or waiting for its owner; it moves once its turn ended")
         if (program := PROVIDERS.get(run.provider)) is None or not program.can_resume:
             raise AgentRefused("not_here", f"a {run.provider} conversation cannot continue on another computer")
+        if run.subscription is not None and run.subscription.lent:
+            raise AgentRefused("not_here", "a member's conversation on a lent computer is never copied off it")
         measure, files = RunPackFiles(run=run, program=program).measure()
         transfers = self._workspaces().transfers
         threading.Thread(target=self._send_run, args=(transfers, request.transfer, files), name=f"run-send-{request.transfer}", daemon=True).start()
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, carried=measure, detail="sending")
 
     @staticmethod
-    def _send_run(transfers: WorkspaceTransfers, transfer: UUID, files: list[tuple[str, Path]]) -> None:
+    def _send_run(transfers: WorkspaceTransfers, transfer: UUID, files: list[tuple[str, Path, int]]) -> None:
         """The upload of a conversation's `files`, packed beside the runner's data; its outcome posted either way."""
         packed = UserPaths.data() / "transfers" / f"{transfer}.run.send.tar.gz"
         try:

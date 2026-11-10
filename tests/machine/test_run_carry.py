@@ -194,3 +194,27 @@ def test_a_conversation_never_lands_over_one_the_pc_holds(pcs) -> None:
     with pytest.raises(WorkspaceRefused) as refused:
         b.answer("agent_import", run_id=run_id, root="galaius/projets", path="aino", archive=archive, run=_carried(run_id))
     assert refused.value.refusal.reason == "exists" and reg.get_run(run_id).name == "own"
+
+
+def test_a_copy_holds_each_stream_as_it_was_between_turns(pcs, tmp_path: Path) -> None:
+    """code-reviewer cfe2d4e4 #4: its PC's turns go on while the copy is packed; a stream appended meanwhile is copied as
+    long as it was when measured, never half a line of the next turn."""
+    from galaius.machine.run_carry import RunPackFiles
+
+    a, _, _ = pcs
+    run_id, _ = _conversation(a)
+    _measure, files = RunPackFiles(run=reg.get_run(run_id), program=CLAUDE).measure()
+    before = reg.raw_events_path(run_id).read_bytes()
+    with reg.raw_events_path(run_id).open("ab") as stream:
+        stream.write(b'{"type":"assistant","half')   # the next turn, mid-line
+    RunPackFiles.write(files, tmp_path / "copy.tar.gz")
+    with tarfile.open(tmp_path / "copy.tar.gz", "r:gz") as packed:
+        assert packed.extractfile(f"run/{run_id}.raw.jsonl").read() == before
+
+
+def test_a_members_conversation_on_a_lent_pc_is_never_copied_off_it(pcs) -> None:
+    a, _, _ = pcs
+    run_id, _ = _conversation(a)
+    reg._update_fields(run_id, {"subscription": {"lent": True}})
+    with pytest.raises(AgentRefused, match="lent"):
+        a.answer("agent_export", run_id=run_id, transfer=str(uuid4()))
