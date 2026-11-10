@@ -1790,7 +1790,7 @@ CARRIED_SHOWN: tuple[str, ...] = ("status", "started_at", "finished_at", "exit_c
 
 
 def leaving(run_id: str) -> AgentRun | None:
-    """Run `run_id` moving to another PC: nothing resumes it here by itself from now on (`cut_resume`)."""
+    """Run `run_id` continued on another PC: nothing resumes it here by itself from now on (`cut_resume`)."""
     return _update_fields(run_id, {"resumes": None, "resume_at": None})
 
 

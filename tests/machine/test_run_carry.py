@@ -1,6 +1,9 @@
-"""A conversation moved from one of its owner's PCs to another stays the same conversation (`PcFeature.RUN_CARRY`)."""
+"""A conversation is held by the server and continues on any of its owner's PCs as the same conversation
+(`PcFeature.RUN_HOLD`): the PC that ran it sends a copy between turns, keeps its turns, and is never needed again."""
 
 import io
+import json
+import os
 import tarfile
 import time
 from datetime import UTC, datetime
@@ -76,7 +79,7 @@ def _carried(run_id: str, session: str | None = None) -> dict:
 
 def test_a_conversation_moved_to_another_pc_is_the_same_one_there(pcs) -> None:
     """PC-A packs the finished conversation (record, streams, image, transcript and its sub-agent folder; never its error
-    output, the folder's memory or a credential) and holds its turns while it moves; PC-B takes it into its own project
+    output, the folder's memory or a credential) and keeps listing it, its turns its own still; PC-B takes it into its own project
     folder on its own login: same id and session, B's folder and permission, A's shown facts, listed there; once B has it
     A lists it no more, its files kept."""
     a, b, server = pcs
@@ -84,8 +87,7 @@ def test_a_conversation_moved_to_another_pc_is_the_same_one_there(pcs) -> None:
     transfer = uuid4()
     measured = a.answer("agent_export", run_id=run_id, transfer=str(transfer)).carried
     assert (measured.files, str(measured.session)) == (6, run_id)  # record, raw stream, messages, image, transcript, sub-agent (no mirror yet)
-    with pytest.raises(AgentRefused, match="moving"):
-        a.answer("send", run_id=run_id, text="encore")
+    assert [str(item.run_id) for item in a.answer("runs").runs] == [run_id] and a.agents.runs.entry(UUID(run_id)).moved_to is None
     archive = server.outcome(transfer)
     with tarfile.open(fileobj=io.BytesIO(server.parts[(str(transfer), 0)]), mode="r:gz") as packed:
         names = set(packed.getnames())
@@ -110,13 +112,45 @@ def test_a_conversation_moved_to_another_pc_is_the_same_one_there(pcs) -> None:
         a.answer("send", run_id=run_id, text="encore")
 
 
-def test_a_move_that_failed_lets_its_conversation_go_on_where_it_was(pcs) -> None:
-    a, _, server = pcs
+def test_a_conversation_released_to_none_goes_on_where_it_was(pcs) -> None:
+    a, _, _ = pcs
     run_id, _ = _conversation(a)
-    a.answer("agent_export", run_id=run_id, transfer=str(uuid4()))
+    a.answer("agent_release", run_id=run_id, to={"id": str(uuid4())})
     a.answer("agent_release", run_id=run_id)
-    assert not a.agents.runs.entry(UUID(run_id)).moves_now()
     assert [str(item.run_id) for item in a.answer("runs").runs] == [run_id]
+
+
+def test_a_conversation_whose_transcript_its_pc_lost_continues_on_another_pc(pcs) -> None:
+    """2026-11-10: his switch alan-neovision → AlanLenovo refused « ne la détient plus »: a sign-out on 11-09 had deleted
+    the Claude transcript on alan-neovision. Its copy travels without it, its stream with it; the PC taking it writes the
+    transcript from that stream at its next turn — the same conversation, its first ask in it."""
+    a, b, server = pcs
+    run_id, _ = _conversation(a)
+    said = [{"type": "system", "subtype": "init", "session_id": run_id},
+            {"type": "assistant", "uuid": "a1", "message": {"role": "assistant", "content": [{"type": "text", "text": "Le Emma Hybrid à 399 €"}]}},
+            {"type": "result", "subtype": "success", "result": "Le Emma Hybrid à 399 €"}]
+    reg.raw_events_path(run_id).write_text("".join(json.dumps(line) + "\n" for line in said))
+    for path in sorted(CLAUDE.session_files(a.home, Path(reg.get_run(run_id).cwd), run_id), reverse=True):
+        path.unlink()   # the sign-out
+    transfer = uuid4()
+    assert a.answer("agent_export", run_id=run_id, transfer=str(transfer)).carried.files == 4   # record, raw stream, messages, image
+    b.answer("agent_import", run_id=run_id, root="galaius/projets", path="aino", archive=server.outcome(transfer), run=_carried(run_id))
+    run = reg.get_run(run_id)
+    environment = {"HOME": str(b.base), "PATH": os.environ.get("PATH", ""), "CLAUDE_CONFIG_DIR": str(b.home)}
+    reg.resumable(CLAUDE, run, run_id, environment)
+    written = [json.loads(line) for line in CLAUDE.session_files(b.home, Path(run.cwd), run_id)[0].read_text().splitlines()]
+    assert [line["type"] for line in written] == ["user", "assistant"] and written[0]["message"]["content"] == "trouve un matelas"
+
+
+def test_a_conversation_with_neither_transcript_nor_stream_is_refused_typed(pcs) -> None:
+    a, _, _ = pcs
+    run_id, _ = _conversation(a)
+    reg.raw_events_path(run_id).unlink()
+    for path in sorted(CLAUDE.session_files(a.home, Path(reg.get_run(run_id).cwd), run_id), reverse=True):
+        path.unlink()
+    with pytest.raises(WorkspaceRefused) as refused:
+        a.answer("agent_export", run_id=run_id, transfer=str(uuid4()))
+    assert refused.value.refusal.reason == "source_missing"
 
 
 def _archive(server: TransferServer, *members: tuple[str, bytes]) -> dict:

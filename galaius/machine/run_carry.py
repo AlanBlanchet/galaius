@@ -1,14 +1,17 @@
-"""A conversation started on this PC moved to another of its owner's PCs as the SAME conversation (`PcFeature.RUN_CARRY`):
-its id, history and CLI session go along, its next turn there resumes that session.
+"""A conversation is held by the server, not by a PC (`PcFeature.RUN_HOLD`): the PC running it sends the server a copy
+between turns, and any of its owner's PCs takes it from that copy as the SAME conversation — its id, history and CLI
+session, its next turn there resuming that session. The PC that ran it is never asked at that time.
 
-On the PC it leaves (`RunPackFiles`): the run's registry files (record, streams, messages, images) and its CLI session's
-files (`AgentProvider.session_files`), plain files only, never a credential, never a link, within `RUN_PACK_MAX_BYTES` /
+On the PC copying it (`RunPackFiles`): the run's registry files (record, streams, messages, images) and its CLI session's
+files (`AgentProvider.session_files`; gone here, as a sign-out deleted them, left out when its program writes them again
+from the stream, `rebuilds_sessions`), plain files only, never a credential, never a link, within `RUN_PACK_MAX_BYTES` /
 `_FILES`; packed as a gzip'd tar and uploaded through the server's relay as a project copy is (`WorkspaceTransfers`).
 
-On the PC it reaches (`RunPackReader`): downloaded, its digest checked, extracted into a fresh staging folder taking only
+On the PC taking it (`RunPackReader`): downloaded, its digest checked, extracted into a fresh staging folder taking only
 `run/<id>.<registry suffix>`, `run/<id>.media.<key>` and the session's own names (`AgentProvider.carries`: never the
 CLI folder's memory or settings, threat-modeler 2026-11-09 Q4), then each file placed, never over one there unless that
-PC held this conversation before (it comes back)."""
+PC held this conversation before (it comes back). A copy without its session has it written from its stream at its
+next turn (`registry.resumable`)."""
 
 import os
 import re
@@ -48,6 +51,12 @@ def session_home(program: AgentProvider, run: reg.AgentRun) -> Path:
     return run.fence.state / program.name if run.fence is not None else reg.login_folder(program, run.subscription)
 
 
+def whole(program: AgentProvider, run_id: str, names: set[str]) -> bool:
+    """Whether a conversation of `program` whose archive holds `names` continues: its CLI session is in it, or its stream
+    writes that session again on the PC taking it (`AgentProvider.rebuilds_sessions`)."""
+    return any(name.startswith(f"{SESSION}/") for name in names) or program.rebuilds_sessions and f"{RUN}/{run_id}.raw.jsonl" in names
+
+
 class RunPackFiles(BaseModel):
     """What carrying run `run` sends: each archive name with the file behind it, measured (`measure`) and packed (`write`)."""
 
@@ -78,11 +87,14 @@ class RunPackFiles(BaseModel):
 
     def measure(self) -> tuple[RunPack, list[tuple[str, Path]]]:
         """Its plain files (a missing one, as a run without images, is left out) and their measure; refused typed when its
-        record or CLI transcript is missing, or it is past `RUN_PACK_MAX_BYTES` / `_FILES`."""
+        record is missing, its CLI session too and no stream writes it again (`whole`), or it is past
+        `RUN_PACK_MAX_BYTES` / `_FILES`."""
         found = [(name, path, facts) for name, path in self.files() if (facts := self.plain(path)) is not None]
         names = {name for name, _, _ in found}
-        if f"{RUN}/{self.run.run_id}.json" not in names or not any(name.startswith(f"{SESSION}/") for name in names):
-            raise WorkspaceRefused("source_missing", "this conversation's record or CLI session is not on this computer")
+        if f"{RUN}/{self.run.run_id}.json" not in names:
+            raise WorkspaceRefused("source_missing", "this conversation's record is not on this computer")
+        if not whole(self.program, self.run.run_id, names):
+            raise WorkspaceRefused("source_missing", f"this conversation's CLI session is not on this computer and {self.program.name} cannot write it from its stream")
         size = sum(facts.st_size for _, _, facts in found)
         if size > RUN_PACK_MAX_BYTES:
             raise AgentRefused(TooLarge(limit=RUN_PACK_MAX_BYTES, unit="bytes"), f"this conversation holds {size:,} bytes: more than one move carries")
@@ -134,8 +146,11 @@ class RunPackReader(BaseModel):
             raise WorkspaceRefused("unsafe_archive", f"the conversation's record is missing or unreadable ({type(error).__name__})") from None
         if raw.run_id != self.run_id or (raw.provider_session_id or raw.run_id) != self.session:
             raise WorkspaceRefused("unsafe_archive", "the conversation's record names another run or CLI session")
-        if not any(self.program.carries(path.relative_to(self.staging / SESSION).parts, self.session) for path in self._below(SESSION)):
-            raise WorkspaceRefused("unsafe_archive", "the conversation arrived without its CLI session")
+        names = {f"{RUN}/{path.name}" for path in self._below(RUN)} | {
+            f"{SESSION}/{path.relative_to(self.staging / SESSION).as_posix()}" for path in self._below(SESSION)
+            if self.program.carries(path.relative_to(self.staging / SESSION).parts, self.session)}
+        if not whole(self.program, self.run_id, names):
+            raise WorkspaceRefused("unsafe_archive", "the conversation arrived without its CLI session or a stream that writes it")
         return raw.model_dump(mode="json")
 
     def _below(self, folder: str) -> list[Path]:

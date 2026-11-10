@@ -30,7 +30,6 @@ import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from contextlib import contextmanager
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar, TypeVar
 from uuid import UUID, uuid4
@@ -644,16 +643,9 @@ class MachineAgents(BaseModel):
                 return name, "" if folder == root else folder.relative_to(root).as_posix()
         return "", ""
 
-    def _turning(self, run_id: UUID) -> reg.AgentRun:
-        """`_require_run` for a request starting a turn of it: refused `under_way` while it moves to another PC."""
-        run = self._require_run(run_id)
-        if (entry := self.runs.entry(run_id)) is not None and entry.moves_now():
-            raise AgentRefused("under_way", "this conversation is moving to another computer; it continues there")
-        return run
-
     def _export(self, request: AgentExportRequest) -> MachineAgentAnswer:
-        """`AgentExportRequest`: a conversation started here, between turns, measured and its upload started; held here
-        (`WebRun.moving`) and never resumed here by itself from now on."""
+        """`AgentExportRequest`: a conversation started here, between turns, measured and its copy's upload to the server
+        started; its turns here go on as before (the server holds the conversation, `PcFeature.RUN_HOLD`)."""
         entry, run = self.runs.entry(request.run_id), self._require_run(request.run_id)
         if entry is None or entry.kind != "agent":
             raise AgentRefused("not_here", "only a conversation started here from the web moves to another computer")
@@ -662,8 +654,6 @@ class MachineAgents(BaseModel):
         if (program := PROVIDERS.get(run.provider)) is None or not program.can_resume:
             raise AgentRefused("not_here", f"a {run.provider} conversation cannot continue on another computer")
         measure, files = RunPackFiles(run=run, program=program).measure()
-        self.runs.add(entry.model_copy(update={"moving": datetime.now(UTC)}))
-        reg.leaving(run.run_id)
         transfers = self._workspaces().transfers
         threading.Thread(target=self._send_run, args=(transfers, request.transfer, files), name=f"run-send-{request.transfer}", daemon=True).start()
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, carried=measure, detail="sending")
@@ -720,12 +710,14 @@ class MachineAgents(BaseModel):
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=f"taken from {carried.moved_from}: {moved.status}")
 
     def _release(self, request: AgentReleaseRequest) -> MachineAgentAnswer:
-        """`AgentReleaseRequest`: the move ended; taken elsewhere, the conversation is no longer listed here (its files
-        kept), else its turns start here again."""
+        """`AgentReleaseRequest`: continued on another PC, the conversation is no longer listed here (its files kept) and
+        nothing resumes it here by itself; None, its turns start here again."""
         entry = self.runs.entry(request.run_id)
-        if entry is None or entry.moving is None and entry.moved_to is None:
-            raise AgentRefused("not_here", "this conversation is not moving from this computer")
-        self.runs.add(entry.model_copy(update={"moving": None, "moved_to": request.to.id if request.to is not None else None}))
+        if entry is None:
+            raise AgentRefused("not_here", "this conversation was never started here from the web")
+        self.runs.add(entry.model_copy(update={"moved_to": request.to.id if request.to is not None else None}))
+        if request.to is not None:
+            reg.leaving(str(request.run_id))
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="moved" if request.to is not None else "kept here")
 
     def _require_run(self, run_id: UUID) -> reg.AgentRun:
@@ -1107,7 +1099,7 @@ class MachineAgents(BaseModel):
         subscription brings its caps as the server has them now; one naming another login runs where the run is, its
         answer naming that login (`AgentRun.next_subscription_id`) so the server's pin follows this PC. A member's message
         on a lent PC to a run of the owner's logins is refused."""
-        run = self._turning(request.run_id)
+        run = self._require_run(request.run_id)
         if request.lent and (run.subscription is None or not run.subscription.lent):
             raise SubscriptionRefused("lent", LENT_REFUSAL)
         if run.subscription is not None and request.subscription_id == run.subscription_id and request.limits is not None and request.limits != run.subscription.limits:
@@ -1119,7 +1111,7 @@ class MachineAgents(BaseModel):
         (`subscription_id` None), its session carried there (`registry.carry`) and resumed, unless the request does not
         `resume`: his pick in a conversation, the switch before a turn, made at once on a stopped run, at the end of the
         turn at work on one working (`_carry`). An editor's own conversation runs on the login its editor runs: refused typed."""
-        run = await asyncio.to_thread(self._turning, request.run_id)
+        run = await asyncio.to_thread(self._require_run, request.run_id)
         if self._kind(request.run_id) != "agent":
             raise SubscriptionRefused("default_login_only", "an editor conversation runs on the login its editor runs: only an agent started here moves")
         moved = await asyncio.to_thread(self._carry, run, request)

@@ -5,7 +5,6 @@ import json
 import logging
 import math
 import os
-from datetime import UTC, datetime, timedelta
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import ClassVar
@@ -47,7 +46,8 @@ def listed(forest: Mapping[str, Sequence[reg.AgentRun]], most: int) -> list[reg.
 
 
 class WebRun(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # A field a later or earlier release keeps in the file is left aside, never a refusal of every entry it read.
+    model_config = ConfigDict(extra="ignore", frozen=True)
     run_id: UUID
     root: str
     path: str = ""
@@ -58,18 +58,10 @@ class WebRun(BaseModel):
     fenced: bool = False
     #: The start request that launched it (`AgentStartRequest.idempotent_feature`): asked again, it answers this run.
     request_id: UUID | None = None
-    #: Since when it moves to another of its owner's PCs (`AgentExportRequest`): no turn of it starts here meanwhile, for at
-    #: most `MOVE_HOLD` (a move nobody ended never keeps it).
-    moving: datetime | None = None
     #: The PC that took it (`AgentReleaseRequest`): no longer listed, read, messaged or stopped here; its files kept.
     moved_to: UUID | None = None
     #: The PC it came from (`AgentImportRequest`): taken again from one, its files here are replaced.
     carried_from: str | None = None
-    #: How long a move holds its turns here at most: past a relayed copy's whole time (`JOB_MAX` on the server).
-    MOVE_HOLD: ClassVar[timedelta] = timedelta(hours=1)
-
-    def moves_now(self, now: datetime | None = None) -> bool:
-        return self.moving is not None and (now or datetime.now(UTC)) - self.moving < self.MOVE_HOLD
 
 
 class WebRuns(BaseModel):

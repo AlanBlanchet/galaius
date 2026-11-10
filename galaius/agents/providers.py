@@ -287,6 +287,9 @@ class AgentProvider(ABC):
     #: agent-to-agent messaging possible without inventing a mailbox: the recipient keeps its
     #: own context instead of being handed a cold summary of it.
     can_resume: ClassVar[bool] = False
+    #: Whether `rebuild_session` writes its session again from its stream: a copy of one of its conversations travels
+    #: without the session's files when they are gone (`PcFeature.RUN_HOLD`).
+    rebuilds_sessions: ClassVar[bool] = False
     can_queue: ClassVar[bool] = False
     #: False when the flags below were written from documentation but never exercised against a
     #: real binary — the adapter says so instead of pretending to be tested.
@@ -1158,6 +1161,7 @@ class ClaudeCodeProvider(AgentProvider):
     binary = "claude"
     session_media_kinds = frozenset({"image", "video"})
     can_resume = True
+    rebuilds_sessions = True
     installers = {
         "posix": ProgramInstaller(url="https://claude.ai/install.sh", hosts=ANTHROPIC_INSTALL_HOSTS, shell=("bash",), bin_dirs=("~/.local/bin",)),
         "windows": ProgramInstaller(url="https://claude.ai/install.ps1", hosts=ANTHROPIC_INSTALL_HOSTS, shell=POWERSHELL_FILE, bin_dirs=("~/.local/bin",)),
