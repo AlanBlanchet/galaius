@@ -49,7 +49,8 @@ class UserPaths:
     @staticmethod
     def projects() -> Path:
         """The folder holding the projects put on this PC from the web (`PROJECTS_ROOT` on the wire):
-        `PROJECTS_DIR` of the home folder (`~/.galaius/projects`, `%USERPROFILE%\\.galaius\\projects` on Windows)."""
+        `PROJECTS_DIR` of the home folder (`~/galaius/projects`, `%USERPROFILE%\\galaius\\projects` on Windows),
+        never derived from the runner's working directory."""
         return Path.home().resolve().joinpath(*PROJECTS_DIR.split("/"))
 
     @staticmethod

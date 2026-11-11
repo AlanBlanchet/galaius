@@ -313,7 +313,7 @@ class FenceSpec(BaseModel):
     internal: tuple[Path, ...] = ()
     start: Path
     #: The project folder put on this PC from the web (beneath `PROJECTS_ROOT`, in its owner's home) that `start`
-    #: is in: written there with no level (the hidden projects folder takes none), its siblings never bound.
+    #: is in: written there with no level (the projects folder takes none), its siblings never bound.
     project: Path | None = None
     #: `write_on_review` folder -> its staging copy for this run.
     staging: dict[str, Path] = Field(default_factory=dict)

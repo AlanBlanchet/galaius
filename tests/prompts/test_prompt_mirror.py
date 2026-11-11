@@ -25,13 +25,15 @@ def test_server_text_becomes_one_safe_folder(text, name):
 def test_each_workspace_gets_one_folder_and_shared_or_legacy_names_get_the_id():
     def workspace(label, kind="company", link=False):
         return PromptWorkspace(workspace_id=uuid4(), name=label, kind=kind, label=label, link=link, can_write=link)
-    own, first, second, other, legacy = workspace("Alan Blanchet EI", link=True), workspace("Acme"), workspace("ACME"), workspace("Other"), workspace("Personal")
-    places = folders((own, first, second, other, legacy))
+    own, first, second, other, legacy, named = (workspace("Alan Blanchet EI", link=True), workspace("Acme"), workspace("ACME"), workspace("Other"),
+                                                workspace("Personal"), workspace("Projects"))
+    places = folders((own, first, second, other, legacy, named))
     assert places[own.workspace_id] == ("alan-blanchet-ei",)
     assert places[other.workspace_id] == ("other",)
     assert places[first.workspace_id] == (f"acme-{str(first.workspace_id)[:8]}",)
     assert len({places[first.workspace_id], places[second.workspace_id]}) == 2
     assert places[legacy.workspace_id] == (f"personal-{str(legacy.workspace_id)[:8]}",)
+    assert places[named.workspace_id] == (f"projects-{str(named.workspace_id)[:8]}",)   # `~/galaius/projects` holds his projects
 
 
 def test_earlier_layout_is_kept_read_only_never_removed(tmp_path):

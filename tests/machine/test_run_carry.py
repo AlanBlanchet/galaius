@@ -46,7 +46,7 @@ class Pc:
 
 @pytest.fixture
 def pcs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Pc, Pc, TransferServer]:
-    return Pc(tmp_path, "a", monkeypatch, "project"), Pc(tmp_path, "b", monkeypatch, "galaius/projets"), TransferServer(monkeypatch)
+    return Pc(tmp_path, "a", monkeypatch, "project"), Pc(tmp_path, "b", monkeypatch, "shared"), TransferServer(monkeypatch)
 
 
 def _conversation(pc: Pc) -> tuple[str, Path]:
@@ -94,9 +94,9 @@ def test_a_conversation_moved_to_another_pc_is_the_same_one_there(pcs) -> None:
     assert names == {f"run/{run_id}{suffix}" for suffix in (".json", ".raw.jsonl", ".messages.jsonl", f".media.{'a' * 20}.png")} \
         | {f"session/{run_id}.jsonl", f"session/{run_id}/subagents/agent-1.jsonl"}
 
-    taken = b.answer("agent_import", run_id=run_id, root="galaius/projets", path="aino", archive=archive, run=_carried(run_id))
+    taken = b.answer("agent_import", run_id=run_id, root="shared", path="aino", archive=archive, run=_carried(run_id))
     assert taken.detail == "taken from PC-A: done"
-    run, cwd_b = reg.get_run(run_id), b.base / "galaius" / "projets" / "aino"
+    run, cwd_b = reg.get_run(run_id), b.base / "shared" / "aino"
     assert (run.cwd, run.provider_session_id, run.agent, run.permission_mode, run.last, run.cost_usd, run.status, run.pid) == (
         str(cwd_b), run_id, "main", b.agents.scope(None), "Le Emma Hybrid à 399 €", 0.42, "done", None)
     landed = CLAUDE.project_folder(b.home, cwd_b)
@@ -134,7 +134,7 @@ def test_a_conversation_whose_transcript_its_pc_lost_continues_on_another_pc(pcs
         path.unlink()   # the sign-out
     transfer = uuid4()
     assert a.answer("agent_export", run_id=run_id, transfer=str(transfer)).carried.files == 4   # record, raw stream, messages, image
-    b.answer("agent_import", run_id=run_id, root="galaius/projets", path="aino", archive=server.outcome(transfer), run=_carried(run_id))
+    b.answer("agent_import", run_id=run_id, root="shared", path="aino", archive=server.outcome(transfer), run=_carried(run_id))
     run = reg.get_run(run_id)
     environment = {"HOME": str(b.base), "PATH": os.environ.get("PATH", ""), "CLAUDE_CONFIG_DIR": str(b.home)}
     reg.resumable(CLAUDE, run, run_id, environment)
@@ -177,7 +177,7 @@ def test_a_crafted_conversation_writes_nothing_on_the_pc_receiving_it(pcs, craft
     session = other if crafted == "record_session" else run_id
     archive = _archive(server, (f"run/{run_id}.json", record), *members)
     with pytest.raises(WorkspaceRefused) as refused:
-        b.answer("agent_import", run_id=run_id, root="galaius/projets", path="aino", archive=archive, run=_carried(run_id, session))
+        b.answer("agent_import", run_id=run_id, root="shared", path="aino", archive=archive, run=_carried(run_id, session))
     assert refused.value.refusal.reason == "unsafe_archive"
     assert reg.get_run(run_id) is None and not any(b.home.rglob("*.md")) and not any(b.home.rglob("*.jsonl"))
     assert not any(path.name.startswith(".carry-") for path in reg.agents_dir().iterdir()) if reg.agents_dir().is_dir() else True
@@ -192,7 +192,7 @@ def test_a_conversation_never_lands_over_one_the_pc_holds(pcs) -> None:
     b.use()
     reg.register(run_id=run_id, pid=None, provider="claude", name="own", cwd=str(b.base))
     with pytest.raises(WorkspaceRefused) as refused:
-        b.answer("agent_import", run_id=run_id, root="galaius/projets", path="aino", archive=archive, run=_carried(run_id))
+        b.answer("agent_import", run_id=run_id, root="shared", path="aino", archive=archive, run=_carried(run_id))
     assert refused.value.refusal.reason == "exists" and reg.get_run(run_id).name == "own"
 
 

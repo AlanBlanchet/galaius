@@ -109,7 +109,7 @@ def test_every_claude_command_line_fits_windows(monkeypatch, tmp_path, prompt_ch
         argv, _ = carried(claude, text, lambda said: claude.resume_command(run_id, said, **options),
                           lambda: claude.resume_ahead_command(run_id, **options))
     assert len(subprocess.list2cmdline(argv)) < WINDOWS_LINE
-    project = tmp_path / ".galaius" / "projects" / ("Aconit-" * 10)[:WORKSPACE_NAME_MAX]   # the longest project folder name
+    project = tmp_path / "galaius" / "projects" / ("Aconit-" * 10)[:WORKSPACE_NAME_MAX]   # the longest project folder name
     project.mkdir(parents=True)
     subprocess.run([sys.executable, "-c", "pass", *argv[1:]], cwd=project, check=True, timeout=60)   # the OS starts it (Windows: CreateProcess)
     filed = Path(argv[argv.index("--agents") + 1])

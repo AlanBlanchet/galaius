@@ -13,7 +13,6 @@ lands in a hidden `.<name>.partial` folder (never reachable as an agent folder) 
 into place only once complete; an existing folder is never touched."""
 
 import contextlib
-import ctypes
 import errno
 import hashlib
 import ipaddress
@@ -25,7 +24,6 @@ import shutil
 import socket
 import stat
 import subprocess
-import sys
 import threading
 import time
 from collections import deque
@@ -51,8 +49,6 @@ from galaius.machine.projects.workspace_copy import PackedFile, WorkspaceArchive
 from galaius.machine.projects.workspace_git import Git, WorkspaceRefused
 
 logger = logging.getLogger(__name__)
-#: Windows' attribute that hides a folder from Explorer (a dot name alone does not).
-FILE_ATTRIBUTE_HIDDEN = 0x2
 
 
 def unusable(root: str) -> str:
@@ -194,10 +190,9 @@ class MachineWorkspaces(BaseModel):
 
     def _room(self, root: str, space: bool = True) -> None:
         """Refused when `root` is not an agent root here, or (`space`) its disk is nearly full. The
-        projects folder (`PROJECTS_ROOT`) is made by the first project put there, hidden on Windows too."""
-        with self._open(root, create=root == PROJECTS_ROOT) as folder:
-            if folder.created and sys.platform == "win32" and not ctypes.windll.kernel32.SetFileAttributesW(str(self.roots[root]), FILE_ATTRIBUTE_HIDDEN):
-                logger.warning("the projects folder %s could not be hidden: Explorer shows it", self.roots[root])
+        projects folder (`PROJECTS_ROOT`) is made by the first project put there."""
+        with self._open(root, create=root == PROJECTS_ROOT):
+            pass
         if space and shutil.disk_usage(self.roots[root]).free < self.disk_floor:
             raise WorkspaceRefused("disk_full", f"less than {self.disk_floor // 1024**3} GB free under {root} on this computer")
 

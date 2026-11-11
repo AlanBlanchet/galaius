@@ -25,6 +25,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
 from galaius.agents.catalog.connection import CatalogConnection, CatalogConnectionError
+from galaius.host.paths import UserPaths
 from galaius.host.pinned_directory import PinnedDirectory
 from galaius.prompts.heads import ServerPrompts
 
@@ -71,10 +72,10 @@ def folder_name(text: str) -> str:
 
 
 def folders(workspaces: tuple[PromptWorkspace, ...]) -> dict[UUID, tuple[str]]:
-    """The folder of each workspace under the root; a name shared with another workspace or with a
-    `LEGACY` folder gets the id's first 8 characters."""
+    """The folder of each workspace under the root; a name shared with another workspace, a `LEGACY` folder
+    or the projects folder beside them (`UserPaths.projects`, `~/galaius/projects`) gets the id's first 8 characters."""
     names = {value.workspace_id: folder_name(value.label) for value in workspaces}
-    taken = [*names.values(), *LEGACY]
+    taken = [*names.values(), *LEGACY, UserPaths.projects().name]
     return {workspace: (name if taken.count(name) == 1 else f"{name}-{str(workspace)[:8]}",) for workspace, name in names.items()}
 
 
@@ -195,7 +196,7 @@ def changed(connection: CatalogConnection, seen: dict[UUID, str]) -> bool:
 
 _NOTE = ("These folders are read-only copies of your prompts, refreshed by `galaius prompts sync`\n"
          "(and by this PC's runner when they change). An edit here is overwritten; change a prompt\n"
-         "on the platform, or with `galaius prompts write`.\n")
+         "on the platform, or with `galaius prompts write`. `projects` holds your projects: yours to edit.\n")
 
 
 def _note(root: Path) -> None:

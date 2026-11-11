@@ -125,14 +125,14 @@ def test_start_folder_stays_beneath_a_root(base: Path, tmp_path: Path, path: str
 @pytest.mark.parametrize("layout", ["below_home", "home_itself", "apart"])
 @pytest.mark.parametrize(("taken", "landed"), [((), "aino"), (("aino",), "aino-2"), ((), "Elise-Cafe")])
 def test_a_project_put_here_from_the_web_lands_in_the_galaius_folder_of_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout: str, taken: tuple[str, ...], landed: str) -> None:
-    """Owner 11-03: « a default project folder which would be in the hidden galaius folder, in a projects folder »,
-    whatever the working directory: below home (`~/dev`), home itself, or apart from home (`/srv/work`)."""
+    """Owner 11-11: « ~/galaius/projects » « A normal user wouldn't have the dev project, please make the distinction »:
+    the projects folder is never derived from the working directory: below home (`~/dev`), home itself, or apart (`/srv/work`)."""
     home = tmp_path / "home" / "ada"
     base = {"below_home": home / "dev", "home_itself": home, "apart": tmp_path / "srv" / "work"}[layout]
     (base / "project").mkdir(parents=True)
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HOME", str(home)), monkeypatch.setenv("USERPROFILE", str(home))
-    projects = home.resolve() / ".galaius" / "projects"
+    projects = home.resolve() / "galaius" / "projects"
     for name in taken:
         (projects / name).mkdir(parents=True)
     agents = _agents(base, tmp_path)
@@ -140,14 +140,15 @@ def test_a_project_put_here_from_the_web_lands_in_the_galaius_folder_of_home(tmp
     job = _answer(agents, _request("workspace_create", root=PROJECTS_ROOT, name=name)).workspaces[0]
     assert (job.root, job.name, job.state) == (PROJECTS_ROOT, landed, "ready")
     assert agents.folder(PROJECTS_ROOT, landed) == projects / landed
+    assert base == home or not agents.folder(PROJECTS_ROOT, landed).is_relative_to(base.resolve())   # never in the working directory
     assert [entry.name for entry in _answer(agents, _request("folders", root=PROJECTS_ROOT)).entries] == sorted((*taken, landed))
 
 
 @pytest.mark.parametrize("plant", ["root_link", "root_file", "root_swapped", "child_link", "climb", "hidden_child", "web_named"])
 def test_the_projects_folder_never_reaches_the_runners_own(base: Path, tmp_path: Path, plant: str) -> None:
     """Credentials, subscriptions and run logs (`~/.galaius`) stay out of reach however the projects folder is planted or named."""
-    own, projects = tmp_path / ".galaius" / "subscriptions", tmp_path / ".galaius" / "projects"
-    own.mkdir(parents=True)
+    own, projects = tmp_path / ".galaius" / "subscriptions", tmp_path / "galaius" / "projects"
+    own.mkdir(parents=True), projects.parent.mkdir()
     if plant == "root_link":
         projects.symlink_to(own)
     elif plant == "root_file":
@@ -159,7 +160,7 @@ def test_the_projects_folder_never_reaches_the_runners_own(base: Path, tmp_path:
     agents = _agents(base, tmp_path, agent_roots=("project", ".galaius/subscriptions") if plant == "web_named" else ("project",))
     if plant == "root_swapped":
         (projects / "aino").rmdir(), projects.rmdir(), projects.symlink_to(own)
-    path = {"child_link": "keys", "climb": "../subscriptions", "hidden_child": ".git"}.get(plant, "")
+    path = {"child_link": "keys", "climb": "../../.galaius/subscriptions", "hidden_child": ".git"}.get(plant, "")
     if plant in ("root_link", "root_file"):
         assert PROJECTS_ROOT not in agents.roots
     elif plant == "web_named":
@@ -184,13 +185,13 @@ def test_with_the_fence_on_an_agent_writes_its_own_project_folder_only(base: Pat
     seen = _launches(monkeypatch)
     home = tmp_path.resolve()
     for name in ("aino", "other"):
-        (home / ".galaius" / "projects" / name).mkdir(parents=True)
+        (home / "galaius" / "projects" / name).mkdir(parents=True)
     agents = _fenced_agents(base, tmp_path, ("false",))
     _answer(agents, _request("start", root=PROJECTS_ROOT, path="aino", role="app-engineer", text="tidy"))
     spec = seen[-1]["fence"]
     binds = {(bind.target.relative_to(home).as_posix(), bind.writable) for bind in spec.build().binds if bind.target.is_relative_to(home)}
-    assert spec.start == home / ".galaius" / "projects" / "aino" and (".galaius/projects/aino", True) in binds
-    assert not any(target.startswith((".galaius/projects/other", ".galaius/subscriptions", ".galaius/config")) for target, _ in binds)
+    assert spec.start == home / "galaius" / "projects" / "aino" and ("galaius/projects/aino", True) in binds
+    assert not any(target.startswith(("galaius/projects/other", ".galaius/subscriptions", ".galaius/config")) for target, _ in binds)
     with pytest.raises(PermissionError, match="inside one project folder"):
         _answer(agents, _request("start", root=PROJECTS_ROOT, role="app-engineer", text="tidy"))
 
@@ -1398,18 +1399,18 @@ def test_a_project_copied_to_another_pc_arrives_whole_under_a_free_name(base: Pa
     archive = server.outcome(transfer)
 
     pc_b_base = tmp_path / "pcb"
-    (pc_b_base / "galaius" / "projets" / "aino").mkdir(parents=True)  # an empty folder already there is never replaced
+    (pc_b_base / "shared" / "aino").mkdir(parents=True)  # an empty folder already there is never replaced
     (tmp_path / "b").mkdir()
-    pc_b = _agents(pc_b_base, tmp_path / "b", agent_roots=("galaius/projets",))
-    job = _answer(pc_b, _request("workspace_create", root="galaius/projets", name="aino", copy_of=archive)).workspaces[0]
+    pc_b = _agents(pc_b_base, tmp_path / "b", agent_roots=("shared",))
+    job = _answer(pc_b, _request("workspace_create", root="shared", name="aino", copy_of=archive)).workspaces[0]
     done = _settled(pc_b.workspaces, job.id)
-    landed = pc_b_base / "galaius" / "projets" / "aino-2"
+    landed = pc_b_base / "shared" / "aino-2"
     assert (done.state, done.name, done.source, done.done) == ("ready", "aino-2", "copy", archive["size"])
     assert {path.relative_to(landed).as_posix(): path.read_text() for path in landed.rglob("*") if path.is_file()} == {
         "README.md": "# aino", "src/app.py": "print(1)", ".gitignore": "*.log", "notes.log": "untracked"}
     assert pc_b.workspaces.prepared(landed) and (landed.parent / "aino").is_dir() and not any(path.name.endswith(".partial") for path in landed.parent.iterdir())
-    empty = [_answer(pc_b, _request("workspace_create", root="galaius/projets", name="notes")).workspaces[0].name for _ in range(2)]
-    assert empty == ["notes", "notes-2"] and (pc_b_base / "galaius" / "projets" / "notes-2").is_dir() and not pc_b.workspaces.prepared(pc_b_base / "galaius" / "projets" / "notes")
+    empty = [_answer(pc_b, _request("workspace_create", root="shared", name="notes")).workspaces[0].name for _ in range(2)]
+    assert empty == ["notes", "notes-2"] and (pc_b_base / "shared" / "notes-2").is_dir() and not pc_b.workspaces.prepared(pc_b_base / "shared" / "notes")
 
 
 def _tar(*members: tuple[str, bytes | None, bytes]) -> bytes:
@@ -1439,12 +1440,12 @@ def _tar(*members: tuple[str, bytes | None, bytes]) -> bytes:
 def test_an_unsafe_copy_writes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, members: tuple) -> None:
     server = TransferServer(monkeypatch)
     pc_b_base = tmp_path / "pcb"
-    (pc_b_base / "galaius" / "projets").mkdir(parents=True)
-    pc_b = _agents(pc_b_base, tmp_path, agent_roots=("galaius/projets",))
+    (pc_b_base / "shared").mkdir(parents=True)
+    pc_b = _agents(pc_b_base, tmp_path, agent_roots=("shared",))
     archive = server.serve(uuid4(), _tar(*members))
-    job = _settled(pc_b.workspaces, _answer(pc_b, _request("workspace_create", root="galaius/projets", name="aino", copy_of=archive)).workspaces[0].id)
+    job = _settled(pc_b.workspaces, _answer(pc_b, _request("workspace_create", root="shared", name="aino", copy_of=archive)).workspaces[0].id)
     assert (job.state, job.code) == ("failed", "unsafe_archive")
-    assert list((pc_b_base / "galaius" / "projets").iterdir()) == [] and not (pc_b_base / "galaius" / "x").exists() and not (pc_b_base.parent / "x").exists()
+    assert list((pc_b_base / "shared").iterdir()) == [] and not (pc_b_base / "galaius" / "x").exists() and not (pc_b_base.parent / "x").exists()
 
 
 def test_a_web_clone_is_fast_forwarded_before_a_launch_only_when_clean(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1482,11 +1483,11 @@ def test_a_web_clone_is_fast_forwarded_before_a_launch_only_when_clean(base: Pat
 def test_a_copy_of_a_folder_with_no_file_arrives_as_an_empty_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     server = TransferServer(monkeypatch)
     pc_b_base = tmp_path / "pcb"
-    (pc_b_base / "galaius" / "projets").mkdir(parents=True)
-    pc_b = _agents(pc_b_base, tmp_path, agent_roots=("galaius/projets",))
+    (pc_b_base / "shared").mkdir(parents=True)
+    pc_b = _agents(pc_b_base, tmp_path, agent_roots=("shared",))
     archive = {**server.serve(uuid4(), _tar()), "files": 0}
-    job = _settled(pc_b.workspaces, _answer(pc_b, _request("workspace_create", root="galaius/projets", name="aino", copy_of=archive)).workspaces[0].id)
-    assert (job.state, job.name) == ("ready", "aino") and list((pc_b_base / "galaius" / "projets" / "aino").iterdir()) == []
+    job = _settled(pc_b.workspaces, _answer(pc_b, _request("workspace_create", root="shared", name="aino", copy_of=archive)).workspaces[0].id)
+    assert (job.state, job.name) == ("ready", "aino") and list((pc_b_base / "shared" / "aino").iterdir()) == []
 
 
 _REVOKED = {"type": "result", "subtype": "success", "is_error": True, "api_error_status": 401, "session_id": "SID",
