@@ -25,14 +25,14 @@ _QUALIFIERS = frozenset({"latest", "preview", "exp", "experimental", "thinking",
 #: `-latest` names the newest version: later than any version written.
 _LATEST = (10**9,)
 #: A model-id-shaped word in a command line, and the values a command gives a model under a name that says so:
-#: `--model X`, `ANTHROPIC_MODEL=X`, `"model": "X"`, codex's `-m X`.
+#: `--model X`, `ANTHROPIC_MODEL=X`, `"model": "X"`, jq's `.model="X"`, codex's `-m X`.
 _WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@/-]*")
-_VALUE = re.compile(r"""(?:--model(?:=|\s+)|\b[A-Z][A-Z0-9_]*MODEL[A-Z0-9_]*=|["']model["']\s*:\s*|\bcodex\b[^\n;&|]*?\s-m\s+)["']?"""
+_VALUE = re.compile(r"""(?:--model(?:=|\s+)|\b[A-Z][A-Z0-9_]*MODEL[A-Z0-9_]*=|["']model["']\s*:\s*|\.model\s*=\s*|\bcodex\b[^\n;&|]*?\s-m\s+)["']?"""
                     r"""([A-Za-z0-9][\w.:/@-]*)""")
 
 
 def _qualifier(part: str) -> bool:
-    return part in _QUALIFIERS or (part.isdigit() and len(part) >= 4) or re.fullmatch(r"v\d+", part) is not None
+    return (part.isdigit() and len(part) >= 4) or re.fullmatch(r"v\d+", part) is not None or part.rstrip("0123456789") in _QUALIFIERS
 
 
 @dataclass(frozen=True)

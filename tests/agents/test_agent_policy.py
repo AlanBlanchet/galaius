@@ -127,6 +127,7 @@ FAMILY = {
     "latest is the newest": ({"claude/claude-fable-5-1": False}, ("claude/claude-fable-latest",), "claude/claude-fable-5-1"),
     "a preview or a bare latest of a later version": (
         {"gemini-2.5-pro": False}, ("gemini-3-pro-preview", "gemini-pro-latest"), "gemini-2.5-pro"),
+    "a release candidate": ({"claude-fable-5-1": False}, ("claude-fable-5-2-rc1",), "claude-fable-5-1"),
     "a Bedrock id, revision and all": ({"claude-fable-5-1": False}, ("us.anthropic.claude-fable-5-2-v1:0",), "claude-fable-5-1"),
     "words around the version in either order": ({"claude-3-5-sonnet-20241022": False}, ("claude-sonnet-4-20250514",),
                                                   "claude-3-5-sonnet-20241022"),
@@ -159,6 +160,7 @@ GUARD = {
     "claude -p --model claude-fable-latest hi": True,
     """echo '{"model": "fable"}' > settings.json""": True,
     "codex exec -m fable hi": True,
+    """jq '.model="fable"' settings.json""": True,
     "claude -p --model opus hi": False,
     "git commit -m fable": False,
     "grep -rn fable docs": False,
