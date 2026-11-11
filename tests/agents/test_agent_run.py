@@ -815,18 +815,28 @@ def test_a_community_agent_reads_the_files_its_caller_hands_it_and_no_credential
     if not fence_module.available()[0]:
         pytest.skip("this system cannot build the agent fence")
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("GALAIUS_AGENTS_DIR", raising=False)
-    brief, shot, other = tmp_path / ".galaius" / "out" / "owner" / "BRIEF.md", tmp_path / "work" / "page.png", tmp_path / "work" / "b" / "BRIEF.md"
-    refused = {"key": tmp_path / ".ssh" / "id_ed25519", "run record": tmp_path / ".galaius" / "out" / "agents" / "run.json",
-               "config": tmp_path / ".config" / "galaius" / "machine.json", "pem": tmp_path / "work" / "server.pem", "hidden": tmp_path / ".cache" / "notes.md"}
-    for path, text in ((brief, "judge the installer"), (shot, "PNG"), (other, "x"), *((path, "secret") for path in refused.values())):
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(tmp_path / ".galaius" / "out" / "probe-agents"))   # a probe's records: the default's stay refused
+    out = tmp_path / ".galaius" / "out"
+    brief, shot, other = out / "owner" / "BRIEF.md", tmp_path / "work" / "page.png", tmp_path / "work" / "b" / "BRIEF.md"
+    refused = {"key": tmp_path / ".ssh" / "id_ed25519", "run record": out / "agents" / "run.json", "probe record": out / "probe-agents" / "run.json",
+               "config": tmp_path / ".config" / "galaius" / "machine.json", "pem": tmp_path / "work" / "server.pem", "hidden": tmp_path / ".cache" / "notes.md",
+               "output token": out / "agent-session.token", "named token": out / "agent-token.txt", "hidden output": out / "venue" / ".token",
+               "cookie": tmp_path / "work" / "cookie.txt", "lone token": tmp_path / "work" / "notes.txt", "odd name": tmp_path / "work" / "n\udcff.md"}
+    for path, text in ((brief, "judge the installer"), (shot, "PNG"), (other, "x"), *((path, "eyJhbGciOiJIUzI1NiJ9.e30.c2lnbmF0dXJl\n") for path in refused.values())):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
     agent = CommunityAgent(entry=uuid4(), kind="agent", title="Electron pro", author="someone/agents", instructions="Review.", digest="0" * 64, nonce="n0nce")
-    os.link(refused["key"], tmp_path / "work" / "notes.md")
-    for path in (*refused.values(), tmp_path / "work" / "notes.md", brief.parent, tmp_path / "none.md"):
+    os.link(refused["key"], tmp_path / "work" / "linked.md")
+    for path in (*refused.values(), tmp_path / "work" / "linked.md", brief.parent, tmp_path / "none.md"):
         with pytest.raises(ValueError):
             agent.handing([path])
+    swapped = tmp_path / "work" / "swap.md"
+    swapped.write_text("a plain page")
+    handed = agent.handing([swapped])
+    swapped.unlink()
+    swapped.symlink_to(refused["key"])
+    with pytest.raises(ValueError):   # swapped for a link to a key between its check and its copy
+        handed.fence(str(tmp_path / "work"), None, ClaudeCodeProvider())
     with pytest.raises(ValueError, match="two handed files"):
         agent.handing([brief, other])
     started, spec = agent.handing([brief, shot]).fence(str(tmp_path / "work"), None, ClaudeCodeProvider())

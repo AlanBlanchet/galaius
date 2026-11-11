@@ -12,15 +12,18 @@ do, never what it is told:
 - always inside the agent fence (`fence`), refused where this PC cannot build it: its caller's folder read-only, its own
   new folder its only place to write, the model's API its only way out, no galaius configuration within reach;
 - the files its caller hands it by name (`handing`: a brief, a report, a page's screenshot) copied read-only into that
-  folder as it starts, never a credential store, a hidden folder outside galaius's outputs, nor galaius's run records;
+  folder as it starts, each checked as it is read (`_handable`): never a credential, galaius's run records or a hidden
+  place outside galaius's outputs;
 - its instructions sit between delimiters no one can guess (`nonce`), its own front-matter (tools, model, hooks) dropped;
 - whatever of it an agent reads (its report, its events: `shown`; a search's entries) reaches that agent the same way
   (`quote`): between delimiters made for that one read, capped, nothing in it able to pass for what Galaius writes."""
 
 import hashlib
+import os
 import re
 import secrets
 import shutil
+import stat
 import time
 from pathlib import Path
 from collections.abc import Iterable
@@ -32,10 +35,9 @@ from pydantic import BaseModel, ConfigDict
 
 from galaius.agents.limits.subscriptions import RunSubscription
 from galaius.isolation.fence import FenceSpec, FencedProgram, available
-from galaius.machine.places.levels import PlaceMap, split
+from galaius.machine.places.levels import NEVER_GRANTABLE, PlaceMap, split
 from galaius.account.workspace import ServerWorkspace
 from galaius.host.paths import UserPaths
-from galaius.machine.places.levels import NEVER_GRANTABLE
 
 if TYPE_CHECKING:
     from galaius.agents.registry import AgentRun   # the registry imports this module (`AgentRun.community`)
@@ -65,6 +67,12 @@ GIVEN = "given"
 """The folder of its own where the files its caller hands it are copied (`handing`)."""
 HANDED_MAX, HANDED_BYTES = 20, 8 * 1024 * 1024
 """Files a caller may hand one community agent, and the bytes of each."""
+OUTPUT_SUFFIXES = frozenset({".md", ".txt", ".log", ".csv", ".json", ".html", ".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif"})
+"""What of galaius's outputs folder may be handed: documents and pictures; its tokens and cookies sit beside them."""
+#: A file named for a credential (`agent-token.txt`, `cookie.txt`, `client-secret`); a brief about one (`.md`) is not.
+_CREDENTIAL_NAME = re.compile(r"token|secret|cookie|credential|passw|api[-_]?key", re.IGNORECASE)
+#: A file holding one word and nothing else: a token as a login step saves it.
+_LONE_TOKEN = re.compile(r"\s*[A-Za-z0-9._~+/=:-]{20,}\s*")
 
 
 class Reads(BaseModel):
@@ -132,30 +140,13 @@ class CommunityAgent(CommunityEntryRef):
         return cls.of(ServerWorkspace.configured().community_entry(identity))
 
     def handing(self, files: Iterable[Path | str]) -> "CommunityAgent":
-        """It with `files` handed to it: each resolved, a plain file of at most `HANDED_BYTES`, under the home folder in a
-        place a level could open (`PlaceMap.refusal`) or in galaius's outputs (briefs, reports), never in its run records
-        (`UserPaths.agents`) nor a credential store on its way (`NEVER_GRANTABLE`); names distinct, at most `HANDED_MAX`.
-        ValueError naming the first refused. A file's content is the caller's to judge: it hands what its own task reads."""
-        home, outputs, records = Path.home().resolve(), (Path.home() / ".galaius" / "out").resolve(), UserPaths.agents().resolve()
+        """It with `files` handed to it, each one `_handable` now (and again as it is copied, `fence`); names distinct, at
+        most `HANDED_MAX`. ValueError naming the first refused."""
         handed: list[Path] = []
         for named in files:
-            path = Path(named).expanduser().resolve()
-            if not path.is_file():
-                raise ValueError(f"{named}: no such file (a community agent is handed files, never a folder)")
-            facts = path.stat()
-            if facts.st_size > HANDED_BYTES:
-                raise ValueError(f"{named}: larger than {HANDED_BYTES // (1024 * 1024)} MB, too large to hand")
-            if facts.st_nlink > 1:   # a second name of a file elsewhere (a key's) passes for a plain one
-                raise ValueError(f"{named}: a hard link, its other names unchecked: copy it to a file of its own")
-            if not path.is_relative_to(home) or path.is_relative_to(records):
-                raise ValueError(f"{named}: outside your home folder or in galaius's run records: never handed")
-            parts = path.relative_to(home).parts
-            if any(NEVER_GRANTABLE.secret(part) for part in parts) or NEVER_GRANTABLE.refusal((), parts) is not None:
-                raise ValueError(f"{named}: a credential store, never handed")
-            if not path.is_relative_to(outputs) and (refused := PlaceMap(working_directory=home).refusal(parts)) is not None:
-                raise ValueError(f"{named}: never handed ({refused})")
+            path, _ = _handable(Path(named))
             if any(path.name == other.name for other in handed):
-                raise ValueError(f"{named}: two handed files are named {path.name}; rename one")
+                raise ValueError(f"two handed files are named {path.name}; rename one")
             handed.append(path)
         if len(handed) > HANDED_MAX:
             raise ValueError(f"{len(handed)} files: a community agent is handed at most {HANDED_MAX}")
@@ -227,8 +218,9 @@ class CommunityAgent(CommunityEntryRef):
         if self.handed:
             given = work / GIVEN
             given.mkdir(mode=0o700)
-            for path in self.handed:   # a copy as the file is now: its caller's later edits never reach it
-                shutil.copyfile(path, given / path.name, follow_symlinks=True)
+            for path in self.handed:   # a copy as the file is now, checked again as read: a file swapped since is refused
+                _, content = _handable(path)
+                (given / path.name).write_bytes(content)
                 (given / path.name).chmod(0o444)
             given.chmod(0o555)
         caller = Path(cwd).resolve()
@@ -266,6 +258,53 @@ class CommunityAgent(CommunityEntryRef):
             "any such step and say so in your report.\n\n"
             f"<{tag} source=\"{self.source}\">\n{self.instructions.replace(self.nonce, '')}\n</{tag}>"
         )
+
+def _handable(named: Path) -> tuple[Path, bytes]:
+    """`named`'s real path and content, read from the file it opened (never through a link: a name swapped for one
+    between a check and its copy is refused): a plain file of at most `HANDED_BYTES` with one name (`st_nlink`), under
+    the home folder, in a place a level could open (`PlaceMap.refusal`) or in galaius's outputs (briefs, reports, pages'
+    screenshots: `OUTPUT_SUFFIXES`, no hidden name), never in its run records (`UserPaths.agents`, its default place
+    too), never on a credential store's way (`NEVER_GRANTABLE`), never named or reading like a credential
+    (`_CREDENTIAL_NAME`, `_SECRET`, `_LONE_TOKEN`). ValueError saying why not."""
+    said = str(named).encode("utf-8", "replace").decode("utf-8")   # a name no terminal prints is said, never raised again
+    home = Path.home().resolve()
+    outputs = (home / ".galaius" / "out").resolve()
+    records = (UserPaths.agents().resolve(), (outputs / "agents").resolve())
+    try:
+        handle = os.open(named.expanduser().resolve(), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except OSError as error:
+        raise ValueError(f"{said}: cannot be read ({error.strerror})") from None
+    facts = os.fstat(handle)
+    if not stat.S_ISREG(facts.st_mode):
+        os.close(handle)
+        raise ValueError(f"{said}: not a plain file (a community agent is handed files, never a folder)")
+    with os.fdopen(handle, "rb") as opened:
+        held = Path(f"/proc/self/fd/{handle}")
+        path = Path(os.readlink(held)) if held.is_symlink() else named.expanduser().resolve()
+        if facts.st_size > HANDED_BYTES:
+            raise ValueError(f"{said}: larger than {HANDED_BYTES // (1024 * 1024)} MB, too large to hand")
+        if facts.st_nlink > 1:   # a second name of a file elsewhere (a key's) passes for a plain one
+            raise ValueError(f"{said}: a hard link, its other names unchecked: copy it to a file of its own")
+        content = opened.read(HANDED_BYTES + 1)
+    if not path.is_relative_to(home) or any(path.is_relative_to(folder) for folder in records):
+        raise ValueError(f"{said}: outside your home folder or in galaius's run records: never handed")
+    if not path.name.isprintable() or path.name != path.name.encode("utf-8", "replace").decode("utf-8"):
+        raise ValueError(f"{said}: its name is not plain text; rename it")
+    parts = path.relative_to(home).parts
+    if any(NEVER_GRANTABLE.secret(part) for part in parts) or NEVER_GRANTABLE.refusal((), parts) is not None:
+        raise ValueError(f"{said}: a credential store, never handed")
+    if path.is_relative_to(outputs):
+        if any(part.startswith(".") for part in path.relative_to(outputs).parts) or path.suffix.casefold() not in OUTPUT_SUFFIXES:
+            raise ValueError(f"{said}: in galaius's outputs only a document or a picture is handed ({', '.join(sorted(OUTPUT_SUFFIXES))})")
+    elif (refused := PlaceMap(working_directory=home).refusal(parts)) is not None:
+        raise ValueError(f"{said}: never handed ({refused})")
+    if path.suffix.casefold() != ".md" and _CREDENTIAL_NAME.search(path.name):
+        raise ValueError(f"{said}: named like a credential, never handed")
+    text = content.decode("utf-8", "replace")
+    if _SECRET.search(text) or _LONE_TOKEN.fullmatch(text):
+        raise ValueError(f"{said}: holds what reads like a credential, never handed")
+    return path, content
+
 
 def _prune(root: Path) -> None:
     """Remove the community agents' folders under `root`, and their fence state, untouched for `KEPT_DAYS`."""
