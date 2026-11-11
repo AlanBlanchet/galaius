@@ -782,9 +782,14 @@ class RoleToolMissing(RuntimeError):
 def tools_of(policy: Policy, role: str, community: bool) -> list[str] | None:
     """The tools a run of `role` may use (`Policy.tools_for`): a community agent's are its caller role's minus galaius's,
     which no MCP server hands it (`ClaudeTurnSettings.isolated`) — never a refusal to start (`require_galaius`, 2026-11-11:
-    every community spawn from a role naming galaius's tools was refused)."""
+    every community spawn from a role naming galaius's tools was refused). ModelUnavailable when that leaves it none: a
+    community agent with no tool could not even read what it was handed."""
     tools = policy.tools_for(role)
-    return [tool for tool in tools if not tool.startswith(TOOL_PREFIX)] if community and tools is not None else tools
+    if not community or not tools:
+        return tools
+    if not (own := [tool for tool in tools if not tool.startswith(TOOL_PREFIX)]):
+        raise ModelUnavailable(sentence=f"A community agent gets its caller's tools but galaius's: {role}'s are all galaius's, so it would have none")
+    return own
 
 
 def require_galaius(role: str | None, tools: list[str] | None, provider: AgentProvider, environment: Mapping[str, str], *,

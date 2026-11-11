@@ -762,6 +762,10 @@ async def test_a_community_agent_runs_fenced_with_less_than_its_caller_and_plays
     assert await asyncio.wait_for(child.wait(), timeout=60) == 0
     started = _CommandRecorder.started[-1]
     assert started["agent"] == "tester" and started["mcp_config"] is None and started["allowed_tools"] == ["Read", "Grep"]
+    with monkeypatch.context() as patched:   # nothing left once galaius's are taken out: refused, never a run reading nothing
+        patched.setattr(Policy, "tools_for", lambda self, agent: ["mcp__galaius__screenshot"])
+        with pytest.raises(ModelUnavailable, match="all galaius's"):
+            await run_agent(_CommandRecorder(), "map its protocol", cwd=str(project), parent_run_id=caller.run_id, community=entry)
     assert started["denied_tools"] == ("Bash", "Agent", "Task", "WebFetch", "WebSearch", "SendMessage", "ListAgents")   # its caller's, then ours
     record = reg.get_run(child.run_id)
     tag = f"community-instructions-{entry.nonce}"
