@@ -1483,19 +1483,21 @@ def test_a_pin_once_read_still_launches_while_the_service_is_unreachable(advance
         current.at_revision(unread)
 
 
-@pytest.mark.parametrize("in_catalog", [True, False])
-def test_a_pin_once_read_is_read_again_without_the_service_while_its_agent_is_in_the_catalog(advanced_catalogs, historical_http, in_catalog):
+@pytest.mark.parametrize("head", ["online", "stale", "without its agent"])
+def test_a_pin_once_read_is_read_again_without_the_service_while_its_agent_is_in_the_catalog(advanced_catalogs, historical_http, head):
     """An exact revision and the prompts it names by digest never change: a pin read once is read from this computer
-    on every later resume (2026-11-11: the same ~19 pins asked ~1 a second, the service at 100-140 % CPU). An agent
-    the catalog no longer holds is asked again, so access taken away is still refused by the service."""
+    on every later resume (2026-11-11: the same ~19 pins asked ~1 a second, the service at 100-140 % CPU), as stale as
+    the head catalog it was read beside (a head read from cache during an outage says so to the run). An agent the
+    catalog no longer holds is asked again, so access taken away is still refused by the service."""
     _, current, worker_ref, _ = advanced_catalogs
     online = current.at_revision(worker_ref)
     asked = len(historical_http)
-    reading = current if in_catalog else current.model_copy(update={"snapshot": current.snapshot.model_copy(
-        update={"agents": tuple(agent for agent in current.snapshot.agents if agent.id != worker_ref.id)})})
+    reading = {"online": current, "stale": current.model_copy(update={"stale": True}),
+               "without its agent": current.model_copy(update={"snapshot": current.snapshot.model_copy(
+                   update={"agents": tuple(agent for agent in current.snapshot.agents if agent.id != worker_ref.id)})})}[head]
     again = reading.at_revision(worker_ref)
-    assert not again.stale and again.instructions("fixture-worker") == online.instructions("fixture-worker")
-    assert (len(historical_http) == asked) is in_catalog
+    assert again.stale is (head == "stale") and again.instructions("fixture-worker") == online.instructions("fixture-worker")
+    assert (len(historical_http) == asked) is (head != "without its agent")
 
 
 @pytest.mark.parametrize("blip", ["connect", 502])

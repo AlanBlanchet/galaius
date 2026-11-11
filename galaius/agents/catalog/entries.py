@@ -1,6 +1,8 @@
 """Validated server catalog, replaceable local cache, and role prompt composition."""
 
+import contextlib
 import json
+import os
 import re
 import sys
 from datetime import UTC, datetime
@@ -302,8 +304,8 @@ class AgentCatalog(CachedRecord):
         if agent.id != reference.id or agent.revision != reference.revision:
             return None
         with self.connection.access_guard(self.access_generation):
-            if not stale:
-                target.touch()  # in use: kept among the newest `PINS_PER_AGENT`, as `remember_pin` keeps it
+            with contextlib.suppress(FileNotFoundError):
+                os.utime(target)  # in use: kept among the newest `PINS_PER_AGENT`, as `remember_pin` keeps it
             return self.model_copy(update={"selection": held.instructions, "stale": stale})
 
     def remember_pin(self, selection: AgentInstructionSet) -> None:
@@ -431,7 +433,7 @@ class AgentCatalog(CachedRecord):
         # read before the network while its agent is still in the catalog this access reads (one taken away is asked
         # again, and refused). Asked again on every resume, each of ~19 pins cost the service a revision and ~10 prompt
         # reads, ~1 a second from one PC (2026-11-11: the service at 100-140 % CPU).
-        if any(agent.id == reference.id for agent in self.snapshot.agents) and (pinned := self._pinned(reference, stale=False)) is not None:
+        if any(agent.id == reference.id for agent in self.snapshot.agents) and (pinned := self._pinned(reference, stale=self.stale)) is not None:
             return pinned
         try:
             with self.connection.connect() as client:
