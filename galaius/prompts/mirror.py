@@ -196,12 +196,13 @@ def changed(connection: CatalogConnection, seen: dict[UUID, str]) -> bool:
 
 _NOTE = ("These folders are read-only copies of your prompts, refreshed by `galaius prompts sync`\n"
          "(and by this PC's runner when they change). An edit here is overwritten; change a prompt\n"
-         "on the platform, or with `galaius prompts write`. `projects` holds your projects: yours to edit.\n")
+         "on the platform, or with `galaius prompts write`.\n")
 
 
 def _note(root: Path) -> None:
+    beside = "`projects` holds your projects: yours to edit.\n" if UserPaths.projects().parent == root.resolve() else ""
     with PinnedDirectory.at(root, create=True) as folder:
-        _write(folder, "README.txt", _NOTE.encode(), 0o600)
+        _write(folder, "README.txt", (_NOTE + beside).encode(), 0o600)
 
 
 def mirror(root: Path, connection: CatalogConnection, workspace: PromptWorkspace, place: tuple[str, ...]) -> int:

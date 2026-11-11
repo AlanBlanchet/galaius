@@ -27,7 +27,7 @@ import subprocess
 import threading
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
@@ -183,10 +183,19 @@ class MachineWorkspaces(BaseModel):
             raise AgentRefused("folder_closed", unusable(root))
         return anchor, folder.relative_to(anchor).parts
 
-    def _open(self, root: str, create: bool = False) -> contextlib.AbstractContextManager[PinnedDirectory]:
-        """Agent root `root`'s folder, walked from its anchor without a link or junction (`_walk`)."""
+    @contextlib.contextmanager
+    def _open(self, root: str, create: bool = False) -> Iterator[PinnedDirectory]:
+        """Agent root `root`'s folder, walked from its anchor without a link or junction (`_walk`); refused typed when a
+        link, a junction or a file sits on the way (`~/galaius` moved elsewhere and linked back)."""
         anchor, parts = self._walk(root)
-        return PinnedDirectory.open(anchor, *parts, create=create)
+        with contextlib.ExitStack() as stack:
+            try:
+                folder = stack.enter_context(PinnedDirectory.open(anchor, *parts, create=create))
+            except OSError as error:
+                if not isinstance(error, NotADirectoryError) and error.errno != errno.ELOOP:
+                    raise
+                raise AgentRefused("folder_closed", unusable(root)) from error
+            yield folder
 
     def _room(self, root: str, space: bool = True) -> None:
         """Refused when `root` is not an agent root here, or (`space`) its disk is nearly full. The

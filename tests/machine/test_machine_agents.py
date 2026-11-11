@@ -169,6 +169,26 @@ def test_the_projects_folder_never_reaches_the_runners_own(base: Path, tmp_path:
         agents.folder(".galaius/subscriptions" if plant == "web_named" else PROJECTS_ROOT, path)
 
 
+@pytest.mark.parametrize("plant", ["link", "file", "link_after_start"])
+def test_a_galaius_folder_moved_away_refuses_projects_typed(base: Path, tmp_path: Path, plant: str) -> None:
+    """`~/galaius` replaced by a link (moved to another disk) or a file: the projects folder is never reached through it,
+    and a project asked there is refused typed (`folder_closed`), never an untyped crash."""
+    galaius, elsewhere = tmp_path / "galaius", tmp_path / "elsewhere"
+    (elsewhere / "projects").mkdir(parents=True)
+    plant_it = lambda: galaius.symlink_to(elsewhere) if plant.startswith("link") else galaius.write_text("")
+    if plant != "link_after_start":
+        plant_it()
+    agents = _agents(base, tmp_path)
+    if plant == "link_after_start":
+        assert PROJECTS_ROOT in agents.roots
+        plant_it()
+    else:
+        assert PROJECTS_ROOT not in agents.roots
+    with pytest.raises(AgentRefused) as refused:
+        _answer(agents, _request("workspace_create", root=PROJECTS_ROOT, name="aino"))
+    assert refused.value.refusal.reason == "folder_closed" and not any((elsewhere / "projects").iterdir())
+
+
 @pytest.mark.parametrize("signs_in", [True, False])
 def test_every_feature_a_runner_names_is_read_by_the_server(signs_in: bool, monkeypatch: pytest.MonkeyPatch) -> None:
     # A PC with no held sign-in (Windows) still takes held logins: the held login is put there at launch, never a

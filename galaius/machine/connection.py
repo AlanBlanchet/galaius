@@ -193,13 +193,15 @@ class MachineConfig(MachineAgentSettings):
         declared = UserPaths.projects()
         if any(declared == folder or declared in folder.parents or (folder in declared.parents and folder != declared.parent) for folder in self._internal()):
             return None
-        try:
-            facts = declared.lstat()
-        except FileNotFoundError:
-            return declared
-        if not stat.S_ISDIR(facts.st_mode) or PinnedDirectory.link_like(facts) or declared.resolve() != declared:
-            return None
-        return declared
+        home = Path.home().resolve()
+        for folder in (declared, *(parent for parent in declared.parents if home in parent.parents)):   # `~/galaius` too: a link or a file there is never followed
+            try:
+                facts = folder.lstat()
+            except (FileNotFoundError, NotADirectoryError):   # not there yet, or a file above it (judged as that parent)
+                continue
+            if not stat.S_ISDIR(facts.st_mode) or PinnedDirectory.link_like(facts):
+                return None
+        return declared if not declared.exists() or declared.resolve() == declared else None
 
     def _internal(self) -> tuple[Path, ...]:
         """The runner's own folders (its settings, its installed runtimes, its data): code every
