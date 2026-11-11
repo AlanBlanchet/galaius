@@ -71,8 +71,13 @@ OUTPUT_SUFFIXES = frozenset({".md", ".txt", ".log", ".csv", ".json", ".html", ".
 """What of galaius's outputs folder may be handed: documents and pictures; its tokens and cookies sit beside them."""
 #: A file named for a credential (`agent-token.txt`, `cookie.txt`, `client-secret`); a brief about one (`.md`) is not.
 _CREDENTIAL_NAME = re.compile(r"token|secret|cookie|credential|passw|api[-_]?key", re.IGNORECASE)
-#: A file holding one word and nothing else: a token as a login step saves it.
-_LONE_TOKEN = re.compile(r"\s*[A-Za-z0-9._~+/=:-]{20,}\s*")
+#: In a handed text, the value given to a credential-named key (`TOKEN="…"`, `galaius_local_session=…`, `"api_key": "…"`):
+#: the key kept, the value removed (`_redacted`).
+_ASSIGNED = re.compile(r"((?:token|session|cookie|secret|passw(?:or)?d|api[-_]?key|auth)[\w.-]*[\"']?\s*[:=]\s*[\"']?)[^\s\"';,&]{12,}", re.IGNORECASE)
+#: A line holding one long word of letters and digits and nothing else: a token as a login step saves it.
+_LONE_TOKEN = re.compile(r"^(\s*)(?=\S*\d)(?=\S*[A-Za-z])[A-Za-z0-9_.+=~-]{32,}(\s*)$", re.MULTILINE)
+#: A browser's saved state (Playwright's `storage_state`): its cookies are a signed-in session.
+_COOKIE_JAR = re.compile(r"\"cookies\"\s*:\s*\[")
 
 
 class Reads(BaseModel):
@@ -264,8 +269,9 @@ def _handable(named: Path) -> tuple[Path, bytes]:
     between a check and its copy is refused): a plain file of at most `HANDED_BYTES` with one name (`st_nlink`), under
     the home folder, in a place a level could open (`PlaceMap.refusal`) or in galaius's outputs (briefs, reports, pages'
     screenshots: `OUTPUT_SUFFIXES`, no hidden name), never in its run records (`UserPaths.agents`, its default place
-    too), never on a credential store's way (`NEVER_GRANTABLE`), never named or reading like a credential
-    (`_CREDENTIAL_NAME`, `_SECRET`, `_LONE_TOKEN`). ValueError saying why not."""
+    too), never on a credential store's way (`NEVER_GRANTABLE`), never named like a credential
+    (`_CREDENTIAL_NAME`) nor a browser's saved sign-in (`_COOKIE_JAR`); a text's credentials removed (`_redacted`).
+    ValueError saying why not."""
     said = str(named).encode("utf-8", "replace").decode("utf-8")   # a name no terminal prints is said, never raised again
     home = Path.home().resolve()
     outputs = (home / ".galaius" / "out").resolve()
@@ -300,10 +306,22 @@ def _handable(named: Path) -> tuple[Path, bytes]:
         raise ValueError(f"{said}: never handed ({refused})")
     if path.suffix.casefold() != ".md" and _CREDENTIAL_NAME.search(path.name):
         raise ValueError(f"{said}: named like a credential, never handed")
-    text = content.decode("utf-8", "replace")
-    if _SECRET.search(text) or _LONE_TOKEN.fullmatch(text):
-        raise ValueError(f"{said}: holds what reads like a credential, never handed")
-    return path, content
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        return path, content   # a picture, a PDF: no text to read a credential in
+    if _COOKIE_JAR.search(text):
+        raise ValueError(f"{said}: a browser's saved sign-in (its cookies), never handed")
+    return path, _redacted(text).encode("utf-8")
+
+
+def _redacted(text: str) -> str:
+    """`text` with what reads like a credential removed: a bearer or API key (`_SECRET`), a credential-named key's value
+    (`_ASSIGNED`), a lone token line (`_LONE_TOKEN`). A report quoting a session cookie is still handed, without it."""
+    removed = "(credential removed)"
+    text = _SECRET.sub(removed, text)
+    text = _ASSIGNED.sub(lambda found: found.group(1) + removed, text)
+    return _LONE_TOKEN.sub(lambda found: found.group(1) + removed + found.group(2), text)
 
 
 def _prune(root: Path) -> None:

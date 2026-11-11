@@ -821,10 +821,16 @@ def test_a_community_agent_reads_the_files_its_caller_hands_it_and_no_credential
     refused = {"key": tmp_path / ".ssh" / "id_ed25519", "run record": out / "agents" / "run.json", "probe record": out / "probe-agents" / "run.json",
                "config": tmp_path / ".config" / "galaius" / "machine.json", "pem": tmp_path / "work" / "server.pem", "hidden": tmp_path / ".cache" / "notes.md",
                "output token": out / "agent-session.token", "named token": out / "agent-token.txt", "hidden output": out / "venue" / ".token",
-               "cookie": tmp_path / "work" / "cookie.txt", "lone token": tmp_path / "work" / "notes.txt", "odd name": tmp_path / "work" / "n\udcff.md"}
-    for path, text in ((brief, "judge the installer"), (shot, "PNG"), (other, "x"), *((path, "eyJhbGciOiJIUzI1NiJ9.e30.c2lnbmF0dXJl\n") for path in refused.values())):
+               "cookie": tmp_path / "work" / "cookie.txt", "odd name": tmp_path / "work" / "n\udcff.md"}
+    for path, text in ((brief, "judge the installer"), (shot, "PNG"), (other, "x"), *((path, "a plain page") for path in refused.values())):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
+    jar = out / "venue" / "state.json"   # a browser's saved sign-in: refused whole
+    jar.write_text('{"cookies": [{"name": "app_session", "value": "' + "a1" * 32 + '"}], "origins": []}')
+    refused["browser state"] = jar
+    token = "eyJhbGciOiJIUzI1NiJ9.e30.c2lnbmF0dXJlX3NpZ25lZA"
+    secrets_in = {"pasted cookie": f"seen with app_local_session={'f0' * 32} on the page", "export": f'export TOKEN="{token}"',
+                  "lone line": f"{token}\nsecond line", "bearer": f"Authorization: Bearer {token}", "json key": f'{{"api_key": "{token}"}}'}
     agent = CommunityAgent(entry=uuid4(), kind="agent", title="Electron pro", author="someone/agents", instructions="Review.", digest="0" * 64, nonce="n0nce")
     os.link(refused["key"], tmp_path / "work" / "linked.md")
     for path in (*refused.values(), tmp_path / "work" / "linked.md", brief.parent, tmp_path / "none.md"):
@@ -839,9 +845,14 @@ def test_a_community_agent_reads_the_files_its_caller_hands_it_and_no_credential
         handed.fence(str(tmp_path / "work"), None, ClaudeCodeProvider())
     with pytest.raises(ValueError, match="two handed files"):
         agent.handing([brief, other])
-    started, spec = agent.handing([brief, shot]).fence(str(tmp_path / "work"), None, ClaudeCodeProvider())
+    report = out / "owner" / "REPORT.md"
+    report.write_text("\n".join(secrets_in.values()) + "\ncommit 3f2a9c1 kept, a sha256 file name kept: notes.md")
+    started, spec = agent.handing([brief, shot, report]).fence(str(tmp_path / "work"), None, ClaudeCodeProvider())
+    copied = (started.work / "given" / "REPORT.md").read_text()
+    assert token not in copied and "f0" * 32 not in copied and copied.count("(credential removed)") == len(secrets_in), copied
+    assert "app_local_session=(credential removed)" in copied and "second line" in copied and "commit 3f2a9c1 kept" in copied
     copy = started.work / "given" / "BRIEF.md"
-    assert started.given() == (copy, started.work / "given" / "page.png") and oct(copy.stat().st_mode)[-3:] == "444"
+    assert started.given()[:2] == (copy, started.work / "given" / "page.png") and oct(copy.stat().st_mode)[-3:] == "444"
     assert str(copy) in started.prompt("main", "r1") and str(copy) in started.started()
     brief.write_text("changed after it started")
     done = subprocess.run(spec.build().command(["cat", str(copy)]), cwd=started.work, capture_output=True, text=True, timeout=60, check=False)
