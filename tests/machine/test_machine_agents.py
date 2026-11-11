@@ -996,6 +996,17 @@ def test_providers_switch_through_the_cli_the_editor_uses_and_settings_survive_a
     assert settings.tool_models == () and settings.detail.startswith("models not read here") and settings.providers
 
 
+def test_a_model_switch_from_the_web_writes_its_one_entry_here(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """His click on a ranking row reaches this PC's policy file: one `models` entry, the rest as he wrote it; a repeat changes nothing."""
+    policy = tmp_path / "agents.json"
+    policy.write_text(json.dumps({"providers": {"codex": False}, "models": {"claude/claude-fable-5-1": False}}))
+    monkeypatch.setattr("galaius.agents.policy.policy_path", lambda: policy)
+    agents = _agents(base, tmp_path)
+    for _ in range(2):
+        assert _answer(agents, _request("model", model="claude/claude-fable-5-2", active=True)).detail == "on"
+    assert json.loads(policy.read_text()) == {"providers": {"codex": False}, "models": {"claude/claude-fable-5-1": False, "claude/claude-fable-5-2": True}}
+
+
 def test_settings_carry_each_tool_rule_as_the_pc_resolves_it(base: Path, tmp_path: Path) -> None:
     payload = {"ok": True, "roles": [{"role": "image", "criterion": "cap.vlm", "configured": False, "models": [{"provider": "gemini", "model": "gemini/x"}], "reason": ""},
                                      {"role": "audio", "criterion": "cap.nope", "configured": True, "models": [], "reason": "unknown capability"}]}

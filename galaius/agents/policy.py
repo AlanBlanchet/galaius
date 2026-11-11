@@ -27,7 +27,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, get_args
+from collections.abc import Callable
+from typing import Any, Literal, get_args
 from galaius_core import AgentRelation, AgentRevisionRef, ReasoningLevel
 
 from galaius.agents.catalog.entries import AgentCatalog
@@ -393,6 +394,15 @@ class Policy:
     def set_provider_active(self, provider: str, active: bool, path: Path | None = None) -> None:
         """Flip a provider on or off and write it back, so the CLI and the panel's toggle are
         reading and writing the same one fact."""
+        self.providers = self._write("providers", lambda switches: {**switches, provider: bool(active)}, path)
+
+    def set_model_active(self, model: str, active: bool, path: Path | None = None) -> None:
+        """Switch one model (`claude/<id>`) on or off and write it back: its owner's click on the web (`ModelSwitches.switched`:
+        every spelling of that model follows it). A model he turns back on runs though an earlier version stays off."""
+        self.models = self._write("models", lambda switches: {**switches, **ModelSwitches.read(switches.items()).switched(model, bool(active))}, path)
+
+    def _write(self, section: str, change: Callable[[dict[str, Any]], dict[str, Any]], path: Path | None) -> dict[str, Any]:
+        """Read-modify-write ONE switch section of the policy file, every other key kept as written; returns the section."""
         path = Path(path) if path is not None else policy_path()
         try:
             raw = json.loads(path.read_text())
@@ -402,12 +412,12 @@ class Policy:
             # The file holds profiles and toolsets somebody typed. One missing comma must not let
             # a provider switch flatten it: refuse, name the file, write nothing.
             raise PolicyError(f"{path} is not readable policy ({err}); fix it — nothing was written") from err
-        if not isinstance(raw, dict):
-            raise PolicyError(f"{path} must hold an object — nothing was written")
-        raw.setdefault("providers", {})[provider] = bool(active)
+        if not isinstance(raw, dict) or not isinstance(raw.setdefault(section, {}), dict):
+            raise PolicyError(f"{path} must hold an object with `{section}` an object — nothing was written")
+        raw[section] = change(raw[section])
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(raw, indent=2) + "\n")
-        self.providers[provider] = bool(active)
+        return dict(raw[section])
 
     def assign_paradigm(
         self, agent: str, paradigm: str, projection: ParadigmProjection, path: Path | None = None,

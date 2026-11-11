@@ -83,6 +83,12 @@ class ModelSwitches:
         """From a policy file's raw `models` pairs: only a literal true / false is a switch."""
         return cls({str(name): on for name, on in models if isinstance(on, bool)})
 
+    def switched(self, model: str, active: bool) -> dict[str, bool]:
+        """The switches with `model` turned on or off by its owner: its entry, and every entry naming the same model in another
+        spelling (`anthropic/<id>` beside `claude/<id>`), so none of them still decides against his click. Idempotent."""
+        name = ModelName.of(model)
+        return {**{entry: active if ModelName.of(entry).same(name) else on for entry, on in self.models.items()}, model: active}
+
     def off(self) -> tuple[str, ...]:
         """The entries switched off, as written."""
         return tuple(entry for entry, on in self.models.items() if on is False)

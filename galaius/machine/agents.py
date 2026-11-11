@@ -40,7 +40,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from galaius_core import (
     MODEL_ID_MAX,
     PROJECTS_ROOT, AGENT_TOUCH_SCOPES, AgentCompactRequest, ContextGauge, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, AgentFile, media_kind, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
-    AgentAllowanceRequest, AgentMoveRequest, AgentExportRequest, AgentImportRequest, AgentReleaseRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentToolInstallRequest, AgentToolsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, AgentHeldTakeRequest, AgentHeldPutRequest, AgentRetractRequest, RetractOutcome, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
+    AgentAllowanceRequest, AgentMoveRequest, AgentExportRequest, AgentImportRequest, AgentReleaseRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentToolInstallRequest, AgentToolsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, AgentHeldTakeRequest, AgentHeldPutRequest, AgentRetractRequest, RetractOutcome, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentModelSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
     WorkspaceFailure, WorkspaceUpload, FailedMessage, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, media_key, media_paths, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest, ProjectFilesBase, ProjectFilePart,
 )
 from galaius.agents import agent_queue
@@ -54,6 +54,7 @@ from galaius.agents.messaging import deliver_message, queue_message, retract
 from galaius.agents.providers import PROJECT_SETTINGS_OFF, PROVIDERS, UNTRUSTED_FOLDERS, program_providers, provider_for
 from galaius.agents.limits.subscriptions import RunSubscription, Subscription, SubscriptionRefused
 from galaius.agents.run import launch_editor_turn, load_policy, rank_candidates, run_agent
+from galaius.agents.policy import Policy
 from galaius.agents.limits.warm import WarmStart
 from galaius.config.user import UserConfig
 from galaius.isolation.fence import FenceSpec, available
@@ -437,6 +438,8 @@ class MachineAgents(BaseModel):
                 return await asyncio.to_thread(self._settings, request)
             case AgentProviderSwitchRequest():
                 return await asyncio.to_thread(self._switch_provider, request)
+            case AgentModelSwitchRequest():
+                return await asyncio.to_thread(self._switch_model, request)
             case WorkspacePrepareRequest():
                 job = await asyncio.to_thread(self._workspaces().prepare, request)
                 return MachineAgentAnswer(request_id=request.id, workspaces=(job,), detail=f"preparing {job.root}/{job.name}")
@@ -1460,6 +1463,14 @@ class MachineAgents(BaseModel):
         if done.returncode != 0:
             raise RuntimeError(self._said(done.stderr) or f"not switched (exit {done.returncode})")
         _MODELS = None  # the model list follows the switched-on CLIs
+        return MachineAgentAnswer(request_id=request.id, providers=self.providers(), detail="on" if request.active else "off")
+
+    def _switch_model(self, request: AgentModelSwitchRequest) -> MachineAgentAnswer:
+        """His click on a ranking row: one model's `models` entry in this PC's policy file; the next launch, the run mirror's
+        published switches and the server's ranking all read it from there."""
+        global _MODELS
+        Policy().set_model_active(request.model, request.active)
+        _MODELS = None  # the model list follows the switched-on models
         return MachineAgentAnswer(request_id=request.id, providers=self.providers(), detail="on" if request.active else "off")
 
     # ---- sessions: conversations that ask before acting -------------------------------------

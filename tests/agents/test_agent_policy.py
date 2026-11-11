@@ -196,6 +196,33 @@ def test_switching_a_provider_off_and_on_round_trips(policy_file):
     assert Policy.load(policy_file).criterion_for("visual-critic") == "cap.vlm and price.in < 10"
 
 
+#: His switches (2026-10-05), clicks on ranking rows (model, on), and what then runs.
+CLICKS = {
+    "turning a later version back on": ([("claude/claude-fable-5-2", True)], {"claude-fable-5-2": True, "claude-fable-5-1": False}),
+    "turning a switched-off one on, every spelling of it": ([("claude/claude-fable-5-1", True)], {"claude-fable-5-1": True, "claude-fable-5": False}),
+    "a repeated click": ([("claude/claude-fable-5-2", True)] * 2, {"claude-fable-5-2": True}),
+    "on, then off again": ([("claude/claude-fable-5-2", True), ("claude/claude-fable-5-2", False)], {"claude-fable-5-2": False}),
+    "switching another model off": ([("claude/claude-opus-5-5", False)], {"claude-opus-5-5": False, "claude-sonnet-5-5": True}),
+}
+
+
+@pytest.mark.parametrize(("clicks", "runs"), CLICKS.values(), ids=CLICKS.keys())
+def test_a_click_switches_one_model_and_keeps_the_rest_of_the_file(policy_file, clicks, runs):
+    """His one-click switch from the web (owner 2026-11-10 « Fable 5.2 just came out and i don't see it anywhere in here »):
+    one model's entry, idempotent; the launcher reads it at once; every other key stays as he wrote it."""
+    raw = json.loads(policy_file.read_text())
+    raw["models"] = {"claude/claude-fable-5-1": False, "claude/claude-fable-5": False, "anthropic/claude-fable-5-1": False,
+                     "anthropic/claude-fable-5": False, "note": "his own text"}
+    policy_file.write_text(json.dumps(raw))
+    for model, on in clicks:
+        Policy.load(policy_file).set_model_active(model, on, path=policy_file)
+    after = Policy.load(policy_file)
+    assert {model: after.model_active("claude", model) for model in runs} == runs
+    written = json.loads(policy_file.read_text())
+    assert written["models"]["note"] == "his own text" and written["profiles"] == raw["profiles"]
+    assert ModelSwitches.read(written["models"].items()).switched(*clicks[-1]) == {k: v for k, v in written["models"].items() if k != "note"}
+
+
 def test_the_policy_reaches_the_spawn(policy_file, monkeypatch):
     """The seam that makes all three asks real: at spawn, an agent's profile decides its model,
     its toolset becomes the vendor's allow-list, and a switched-off provider refuses."""
