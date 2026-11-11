@@ -34,6 +34,7 @@ from galaius.agents.catalog.entries import AgentCatalog
 from galaius.agents.catalog.connection import CatalogConnectionError
 from galaius.agents.tool_gateway import AgentToolList, ToolGateway
 from galaius.agents.catalog.vocabulary import TouchScope
+from galaius.agents.model_family import ModelSwitches
 from galaius.config.user import UserConfig
 from galaius.catalog.criteria import ValueRule
 
@@ -373,9 +374,14 @@ class Policy:
 
     def model_active(self, provider: str, model: str, catalog_id: str | None = None) -> bool:
         """Whether this model may run here, read under any of its names (`claude/<id>`, the
-        catalog's `anthropic/<id>`, the bare id). Unmentioned means ON, like `provider_active`."""
-        names = (f"{provider}/{model}", model, *((catalog_id,) if catalog_id else ()))
-        return all(bool(self.models.get(name, True)) for name in names)
+        catalog's `anthropic/<id>`, the bare id): off when an entry switches it or an earlier
+        version of it off (`ModelSwitches`). Unmentioned means ON, like `provider_active`."""
+        return self.switches.off_by(f"{provider}/{model}", model, *((catalog_id,) if catalog_id else ())) is None
+
+    @property
+    def switches(self) -> ModelSwitches:
+        """The `models` switches, read by the one rule the guard and the watchdog read them by."""
+        return ModelSwitches.read(self.models.items())
 
     def accepts_coarse_tool_policy(self, agent: str, provider: str) -> bool:
         """Whether THIS role explicitly accepted running on a provider that can only enforce a

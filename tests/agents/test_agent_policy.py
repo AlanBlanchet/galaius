@@ -13,6 +13,7 @@ import json
 
 import pytest
 
+from galaius.agents.model_family import ModelSwitches
 from galaius.agents.policy import Policy, PolicyError
 from galaius.agents.providers import PROVIDERS
 from tests.support.agents import use_policy, claude_definitions
@@ -103,6 +104,39 @@ def test_providers_can_be_switched_off_from_galaius(policy_file):
     assert p.provider_active("codex") is False
     # Anything not mentioned is ON: a provider you installed is a provider you meant to use.
     assert p.provider_active("gemini") is True
+
+
+#: Rows: (switches, names one model is known by, the entry that switches it off or None).
+FAMILY = {
+    "his Fable 5.2 under the launcher's three names": (
+        {"claude/claude-fable-5-1": False, "anthropic/claude-fable-5": False},
+        ("claude/claude-fable-5-2", "claude-fable-5-2", "anthropic/claude-fable-5-2"), "claude/claude-fable-5-1"),
+    "an earlier version stays on": ({"claude/claude-fable-5-1": False}, ("claude-fable-5",), None),
+    "the model named itself, on, wins over its family": (
+        {"claude-fable-5-1": False, "claude/claude-fable-5-2": True}, ("anthropic/claude-fable-5-2",), None),
+    "the model named itself, off": ({"claude/claude-opus-5-5": False}, ("claude-opus-5-5",), "claude/claude-opus-5-5"),
+    "a sibling family stays on": ({"claude-fable-5": False}, ("claude-fable-pro-5-2",), None),
+    "dots, dashes, a release date and a tag read as one version": (
+        {"claude-opus-4.5": False}, ("vertex_ai/claude-opus-4-5@20251101",), "claude-opus-4.5"),
+    "a version in the middle of the name": ({"gemini/gemini-2.5-pro": False}, ("gemini-3-pro",), "gemini/gemini-2.5-pro"),
+    "the same version with another suffix is another family": ({"openai/gpt-5.1": False}, ("gpt-5.2-codex",), None),
+    "a name with no version is itself only": ({"gpt-4o": False}, ("gpt-4o-mini",), None),
+    "nothing switched off": ({}, ("claude-fable-5-2",), None),
+}
+
+
+@pytest.mark.parametrize(("switches", "names", "off_by"), FAMILY.values(), ids=FAMILY.keys())
+def test_a_switched_off_model_and_its_later_versions_never_run(switches, names, off_by):
+    """One rule for the launcher, the shell guard and the watchdog: a model switched off is off, and so are its later
+    versions (owner 2026-10-05 « Fable should not even come out in the formula »; 11-10 Fable 5.2 came out ON for the
+    launcher, OFF for the guard). A switch naming the model itself decides first."""
+    switch = ModelSwitches(switches)
+    assert switch.off_by(*names) == off_by
+    bare = names[-1].rsplit("/", 1)[-1]
+    assert Policy(models=switches).model_active("claude", bare, names[-1]) is (off_by is None)
+    # The guard reads the same rule in a command line, however the id is wrapped: it never lets a switched-off one through.
+    for command in (f"claude -p --model us.anthropic.{bare}-v1:0", f"tail {bare}.log", f"--model={names[0]}"):
+        assert off_by is None or switch.named_in(command) is not None, command
 
 
 def test_acting_default_is_a_machine_local_shared_touch_intent(policy_file):
