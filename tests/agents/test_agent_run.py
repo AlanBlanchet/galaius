@@ -764,7 +764,7 @@ async def test_a_community_agent_runs_fenced_with_less_than_its_caller_and_plays
     assert started["agent"] == "tester" and started["mcp_config"] is None and started["allowed_tools"] == ["Read", "Grep"]
     with monkeypatch.context() as patched:   # nothing left once galaius's are taken out: refused, never a run reading nothing
         patched.setattr(Policy, "tools_for", lambda self, agent: ["mcp__galaius__screenshot"])
-        with pytest.raises(ModelUnavailable, match="all galaius's"):
+        with pytest.raises(ModelUnavailable, match="none besides galaius's"):
             await run_agent(_CommandRecorder(), "map its protocol", cwd=str(project), parent_run_id=caller.run_id, community=entry)
     assert started["denied_tools"] == ("Bash", "Agent", "Task", "WebFetch", "WebSearch", "SendMessage", "ListAgents")   # its caller's, then ours
     record = reg.get_run(child.run_id)
@@ -833,8 +833,17 @@ def test_a_community_agent_reads_the_files_its_caller_hands_it_and_no_credential
     jar.write_text('{"cookies": [{"name": "app_session", "value": "' + "a1" * 32 + '"}], "origins": []}')
     refused["browser state"] = jar
     token = "eyJhbGciOiJIUzI1NiJ9.e30.c2lnbmF0dXJlX3NpZ25lZA"
-    secrets_in = {"pasted cookie": f"seen with app_local_session={'f0' * 32} on the page", "export": f'export TOKEN="{token}"',
-                  "lone line": f"{token}\nsecond line", "bearer": f"Authorization: Bearer {token}", "json key": f'{{"api_key": "{token}"}}'}
+    # Fakes, each put together from parts so no line of this file reads as a credential to a secret scanner.
+    key_block = "-----BEGIN OPENSSH " + "PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH " + "PRIVATE KEY-----"
+    secrets_in = {"pasted cookie": "seen with app_local_" + "session=" + "f0" * 32 + " on the page", "export": "export " + "TOKEN=" + f'"{token}"',
+                  "lone line": f"{token}\nsecond line", "bearer": "Authorization: " + "Bearer " + token, "json key": '{"api' + '_key": "' + token + '"}',
+                  "private key": key_block, "github": "push with gh" + "p_" + "A1b2C3d4E5" * 3 + " then", "jwt in prose": f"the page sent {token} back",
+                  "basic": "Authorization: " + "Basic " + "dXNlcjpwYXNz", "short password": "pass" + "word: " + "hunter2",
+                  "bullet": "- " + "Zk9" * 12, "base64 with a slash": "/".join(("q1W2", "e3R4+t5Y6u7I8o9", "P0aSdFgHjKlZxCvB"))}
+    for name, sign_in in (("netscape", "# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tTRUE\t0\tsid\tabc"),
+                          ("local storage", '{"origins": [{"origin": "https://x", "localStorage": [{"name": "t", "value": "v"}]}]}')):
+        (out / "owner" / f"{name}.txt").write_text(sign_in)
+        refused[name] = out / "owner" / f"{name}.txt"
     agent = CommunityAgent(entry=uuid4(), kind="agent", title="Electron pro", author="someone/agents", instructions="Review.", digest="0" * 64, nonce="n0nce")
     os.link(refused["key"], tmp_path / "work" / "linked.md")
     for path in (*refused.values(), tmp_path / "work" / "linked.md", brief.parent, tmp_path / "none.md"):
@@ -849,12 +858,17 @@ def test_a_community_agent_reads_the_files_its_caller_hands_it_and_no_credential
         handed.fence(str(tmp_path / "work"), None, ClaudeCodeProvider())
     with pytest.raises(ValueError, match="two handed files"):
         agent.handing([brief, other])
+    for name in ("netscape", "local storage"):
+        with pytest.raises(ValueError, match="saved sign-in"):
+            agent.handing([refused[name]])
     report = out / "owner" / "REPORT.md"
-    report.write_text("\n".join(secrets_in.values()) + "\ncommit 3f2a9c1 kept, a sha256 file name kept: notes.md")
+    report.write_text("\n".join(secrets_in.values()) + "\ncommit 3f2a9c1 kept, a sha256 file name kept: notes.md\n"
+                      "galaius/agents/catalog/community_handed_files_2026.py kept")
     started, spec = agent.handing([brief, shot, report]).fence(str(tmp_path / "work"), None, ClaudeCodeProvider())
     copied = (started.work / "given" / "REPORT.md").read_text()
     assert token not in copied and "f0" * 32 not in copied and copied.count("(credential removed)") == len(secrets_in), copied
     assert "app_local_session=(credential removed)" in copied and "second line" in copied and "commit 3f2a9c1 kept" in copied
+    assert "hunter2" not in copied and "PRIVATE KEY-----\nb3B" not in copied and "community_handed_files_2026.py kept" in copied
     copy = started.work / "given" / "BRIEF.md"
     assert started.given()[:2] == (copy, started.work / "given" / "page.png") and oct(copy.stat().st_mode)[-3:] == "444"
     assert str(copy) in started.prompt("main", "r1") and str(copy) in started.started()

@@ -45,9 +45,15 @@ if TYPE_CHECKING:
 _FRONT_MATTER = re.compile(r"\A﻿?---[ \t]*\r?\n(?:.*?\r?\n)?---[ \t]*(?:\r?\n|\Z)", re.DOTALL)
 #: What a reader could take for text Galaius or its CLI writes: a bracketed Galaius heading anywhere (`relations.heading`),
 #: a report or card heading at a line's start, a quote delimiter, a tag the CLI wraps its own notes or peers' messages in.
-#: A credential as it is written in a login file or a header (an API or OAuth token, a bearer token): never shown quoted.
-_SECRET = re.compile(r"\bsk-[A-Za-z0-9_-]{16,}|\b(?:bearer|token)\s+[A-Za-z0-9._~+/=-]{20,}|\"(?:access|refresh)_?token\"\s*:\s*\"[^\"]+\"",
-                     re.IGNORECASE)
+#: A credential as it is written in a login file, a header or prose: a private key block (to its end, or the text's), an API
+#: key of a known shape (OpenAI, GitHub, GitLab, Slack, AWS, Google), a JWT, a bearer / basic / token header, an OAuth token
+#: field. Never shown quoted, never handed (`_redacted`).
+_SECRET = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?s:.*?-----END [A-Z0-9 ]*PRIVATE KEY-----|.*\Z)"
+                     r"|\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}"
+                     r"|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35})"
+                     r"|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{2,}\.[A-Za-z0-9_-]{8,}"
+                     r"|\b(?:bearer|token)\s+[A-Za-z0-9._~+/=-]{20,}|\bauthorization\s*:\s*basic\s+[A-Za-z0-9+/=]{4,}"
+                     r"|\"(?:access|refresh)_?token\"\s*:\s*\"[^\"]+\"", re.IGNORECASE)
 _FORGED = re.compile(r"\[(?=\s*(?:galaius|\w+ agent provenance))|^(?=\s*##)|<(?=\s*/?\s*(?:community-|system-reminder|cross-session-message))",
                      re.IGNORECASE | re.MULTILINE)
 
@@ -74,10 +80,16 @@ _CREDENTIAL_NAME = re.compile(r"token|secret|cookie|credential|passw|api[-_]?key
 #: In a handed text, the value given to a credential-named key (`TOKEN="…"`, `galaius_local_session=…`, `"api_key": "…"`):
 #: the key kept, the value removed (`_redacted`).
 _ASSIGNED = re.compile(r"((?:token|session|cookie|secret|passw(?:or)?d|api[-_]?key|auth)[\w.-]*[\"']?\s*[:=]\s*[\"']?)[^\s\"';,&]{12,}", re.IGNORECASE)
-#: A line holding one long word of letters and digits and nothing else: a token as a login step saves it.
-_LONE_TOKEN = re.compile(r"^(\s*)(?=\S*\d)(?=\S*[A-Za-z])[A-Za-z0-9_.+=~-]{32,}(\s*)$", re.MULTILINE)
-#: A browser's saved state (Playwright's `storage_state`): its cookies are a signed-in session.
-_COOKIE_JAR = re.compile(r"\"cookies\"\s*:\s*\[")
+#: A password's value, however short (`password: hunter2`).
+_PASSWORD = re.compile(r"((?:passw(?:or)?d|passwd|pwd|passphrase)[\w.-]*[\"']?\s*[:=]\s*[\"']?)[^\s\"';,&]{4,}", re.IGNORECASE)
+#: A line holding one long word of letters and digits and nothing else (a list's bullet or a quote's mark before it): a
+#: token as a login step saves it; one with a `/` (base64) only when it is no path (no dot, no scheme, no leading `/`).
+_LONE_TOKEN = re.compile(r"^(\s*(?:[-*+>]\s+)?)(?=\S*\d)(?=\S*[A-Za-z])(?:[A-Za-z0-9_.+=~-]{32,}|(?![/.])(?!\S*\.)[A-Za-z0-9_+=~/-]{32,})(\s*)$",
+                         re.MULTILINE)
+#: A saved sign-in: a browser's state (Playwright's `storage_state`: its cookies or its pages' local storage) or a cookie
+#: file (Netscape's format, whatever its name).
+_SIGN_IN = re.compile(r"\"(?:cookies|origins)\"\s*:\s*\[|\"localStorage\"\s*:|^#\s*(?:Netscape\s+)?HTTP Cookie File"
+                      r"|^#HttpOnly_|^[^\s#]+\t(?:TRUE|FALSE)\t/[^\t]*\t(?:TRUE|FALSE)\t\d+\t", re.MULTILINE | re.IGNORECASE)
 
 
 class Reads(BaseModel):
@@ -270,7 +282,7 @@ def _handable(named: Path) -> tuple[Path, bytes]:
     the home folder, in a place a level could open (`PlaceMap.refusal`) or in galaius's outputs (briefs, reports, pages'
     screenshots: `OUTPUT_SUFFIXES`, no hidden name), never in its run records (`UserPaths.agents`, its default place
     too), never on a credential store's way (`NEVER_GRANTABLE`), never named like a credential
-    (`_CREDENTIAL_NAME`) nor a browser's saved sign-in (`_COOKIE_JAR`); a text's credentials removed (`_redacted`).
+    (`_CREDENTIAL_NAME`) nor a saved sign-in (`_SIGN_IN`); a text's credentials removed (`_redacted`).
     ValueError saying why not."""
     said = str(named).encode("utf-8", "replace").decode("utf-8")   # a name no terminal prints is said, never raised again
     home = Path.home().resolve()
@@ -310,17 +322,18 @@ def _handable(named: Path) -> tuple[Path, bytes]:
         text = content.decode("utf-8")
     except UnicodeDecodeError:
         return path, content   # a picture, a PDF: no text to read a credential in
-    if _COOKIE_JAR.search(text):
-        raise ValueError(f"{said}: a browser's saved sign-in (its cookies), never handed")
+    if _SIGN_IN.search(text):
+        raise ValueError(f"{said}: a saved sign-in (a browser's state or a cookie file), never handed")
     return path, _redacted(text).encode("utf-8")
 
 
 def _redacted(text: str) -> str:
-    """`text` with what reads like a credential removed: a bearer or API key (`_SECRET`), a credential-named key's value
-    (`_ASSIGNED`), a lone token line (`_LONE_TOKEN`). A report quoting a session cookie is still handed, without it."""
+    """`text` with what reads like a credential removed: a key, token or header (`_SECRET`), a credential-named key's or a
+    password's value (`_ASSIGNED`, `_PASSWORD`), a lone token line (`_LONE_TOKEN`). A report quoting a session cookie is still handed, without it."""
     removed = "(credential removed)"
     text = _SECRET.sub(removed, text)
     text = _ASSIGNED.sub(lambda found: found.group(1) + removed, text)
+    text = _PASSWORD.sub(lambda found: found.group(1) + removed, text)
     return _LONE_TOKEN.sub(lambda found: found.group(1) + removed + found.group(2), text)
 
 

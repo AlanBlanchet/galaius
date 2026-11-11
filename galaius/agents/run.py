@@ -785,10 +785,10 @@ def tools_of(policy: Policy, role: str, community: bool) -> list[str] | None:
     every community spawn from a role naming galaius's tools was refused). ModelUnavailable when that leaves it none: a
     community agent with no tool could not even read what it was handed."""
     tools = policy.tools_for(role)
-    if not community or not tools:
+    if not community or tools is None:
         return tools
     if not (own := [tool for tool in tools if not tool.startswith(TOOL_PREFIX)]):
-        raise ModelUnavailable(sentence=f"A community agent gets its caller's tools but galaius's: {role}'s are all galaius's, so it would have none")
+        raise ModelUnavailable(sentence=f"A community agent gets its caller's tools but galaius's: {role} has none besides galaius's, so it would have none")
     return own
 
 
@@ -1582,6 +1582,7 @@ async def run_agent(
         # the community fence (`CommunityAgent.fence`), working in its own folder.
         agent, agent_ref, delegate, mesh, name = parent_run.agent, parent_run.agent_ref, None, False, community.label()
         permission_mode, denied_tools = parent_run.permission_mode, tuple(dict.fromkeys((*parent_run.denied_tools, *denied_tools, *community_agents.DENIED_TOOLS)))
+        tools_of(load_policy(), agent, community=True)   # refused before its folder and the files handed to it are made
         community, fence = community.fence(cwd, pinned, provider)
         cwd = str(community.work)
     validated_images = validate_image_paths(image_paths)
