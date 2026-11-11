@@ -1072,8 +1072,8 @@ class MachineRunner:
         # Exact secrets masked in every kept log line from the first one on (`LogRing`).
         self._log_ring.secrets = self._secrets(config)
         self._workspace_jobs.settle_interrupted()
-        # Projects an earlier Galaius kept in the hidden ~/.galaius/projects, moved to ~/galaius/projects before any request names one.
-        moved, left = await asyncio.to_thread(self.move_projects, config, True, True)
+        # Projects an earlier Galaius kept (~/.galaius/projects, galaius/projets), moved to ~/galaius/projects before any request names one.
+        moved, left = await asyncio.to_thread(self.move_projects, config, True)
         for line in (*(f"moved {move.source} -> {move.target}" for move in moved.moves), *(f"kept {kept.folder}: {kept.why}" for kept in moved.kept), *left):
             logger.info("projects folder: %s", line)
         # Before anything reads which cut runs come back by themselves (`EndWatch`, `_resume_paused`): from when they do.
@@ -1676,10 +1676,10 @@ class MachineRunner:
                 del self._agent_answers[request_id]
                 self._agent_requests.pop(request_id, None)
 
-    def move_projects(self, config: MachineConfig, apply: bool, hidden_only: bool = False) -> tuple[relocate.MovePlan, list[str]]:
+    def move_projects(self, config: MachineConfig, apply: bool) -> tuple[relocate.MovePlan, list[str]]:
         """The projects an earlier Galaius put here, moved to the projects folder with this PC's records naming them
         (`relocate`); with `apply` False only planned. (the plan, what was left undone)."""
-        done = relocate.plan(config.working_directory, config.agent_roots, hidden_only)
+        done = relocate.plan(config.working_directory, config.agent_roots)
         if not apply or not (done.moves or done.drops):
             return done, []
 

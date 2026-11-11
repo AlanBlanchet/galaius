@@ -8,8 +8,8 @@ folder takes along: the agent registry's runs started in it (`cwd`, fence start 
 login's session folder keyed by its path (`ClaudeCodeProvider.project_folder`, so a resume finds the conversation), and
 this PC's web runs and workspace jobs (`rehome`). The earlier agent folder leaves the agent roots once emptied (`drop`).
 
-`plan` writes nothing (`galaius machine projects-move` prints it); `apply` carries it out. The runner applies the
-hidden folder's part at connect (`hidden_only`): Galaius's own folder, no person's."""
+`plan` writes nothing (`galaius machine projects-move` prints it); `apply` carries it out. The runner applies it at
+connect: both homes are folders Galaius made, and a folder in use waits for a later connect."""
 
 import os
 import sys
@@ -74,9 +74,9 @@ def inside(path: str | Path, folder: Path) -> bool:
     return text == prefix or text.startswith(prefix + os.sep)
 
 
-def _homes(working_directory: Path, agent_roots: tuple[str, ...], hidden_only: bool) -> tuple[tuple[Path, str], ...]:
+def _homes(working_directory: Path, agent_roots: tuple[str, ...]) -> tuple[tuple[Path, str], ...]:
     hidden = (Path.home() / ".galaius" / "projects", PROJECTS_ROOT)
-    if hidden_only or EARLIER_AGENT_ROOT not in agent_roots:
+    if EARLIER_AGENT_ROOT not in agent_roots:
         return (hidden,)
     return (hidden, (working_directory.resolve().joinpath(*EARLIER_AGENT_ROOT.split("/")), EARLIER_AGENT_ROOT))
 
@@ -102,16 +102,20 @@ def _claude_homes(runs: list[reg.AgentRun], moved: set[str]) -> tuple[Path, ...]
     return tuple(home for home in dict.fromkeys((*logins, *fenced)) if (home / "projects").is_dir())
 
 
-def plan(working_directory: Path, agent_roots: tuple[str, ...], hidden_only: bool = False) -> MovePlan:
+def plan(working_directory: Path, agent_roots: tuple[str, ...]) -> MovePlan:
     runs, cwds, new = reg.list_runs(include_foreign=True), _worked_in(), UserPaths.projects()
-    moves, kept = [], []
-    homes = _homes(working_directory, agent_roots, hidden_only)
+    moves, kept, every = [], [], []
+    homes = _homes(working_directory, agent_roots)
     for home, root in homes:
         try:
-            folders = sorted(entry for entry in home.iterdir() if entry.is_dir() and not entry.is_symlink())
+            entries = sorted(home.iterdir())
         except (FileNotFoundError, NotADirectoryError):
             continue
-        for folder in folders:
+        every += entries
+        for folder in entries:
+            if folder.is_symlink() or not folder.is_dir():
+                kept.append(Kept(folder=folder, why="a link or a file: left as it is"))
+                continue
             live = [run.run_id[:8] for run in runs if run.cwd and inside(run.cwd, folder) and run.process_running()]
             if live or any(inside(cwd, folder) for cwd in cwds):
                 kept.append(Kept(folder=folder, why="in use now" + (f" by {', '.join(live[:4])}" if live else "")))
@@ -121,14 +125,17 @@ def plan(working_directory: Path, agent_roots: tuple[str, ...], hidden_only: boo
                 moves.append(Move(source=folder, target=new / folder.name, root=root))
     moved = {run.run_id for run in runs if run.cwd and any(inside(run.cwd, move.source) for move in moves)}
     sessions = []
+    by_source = {move.source: move for move in moves}
     for home in _claude_homes(runs, moved):
-        keys = [(move, ClaudeCodeProvider.project_folder(home, move.source).name) for move in moves]
+        # Keyed by the folder's path with every other character a dash: `horizon` is a prefix of `horizon-mods`, so the
+        # longest key among EVERY earlier folder (moving or kept) decides whose session folder it is.
+        keys = [(folder, ClaudeCodeProvider.project_folder(home, folder).name) for folder in every]
         for entry in sorted((home / "projects").iterdir()):
-            match = max(((move, key) for move, key in keys if entry.name == key or entry.name.startswith(key + "-")), key=lambda pair: len(pair[1]), default=None)
-            if match is not None:
-                move, key = match
+            match = max(((folder, key) for folder, key in keys if entry.name == key or entry.name.startswith(key + "-")), key=lambda pair: len(pair[1]), default=None)
+            if match is not None and match[0] in by_source:
+                move, key = by_source[match[0]], match[1]
                 sessions.append(SessionMove(source=entry, target=entry.with_name(ClaudeCodeProvider.project_folder(home, move.target).name + entry.name[len(key):])))
-    drops = tuple(root for home, root in homes if root != PROJECTS_ROOT and not any(item.folder.parent == home for item in kept))
+    drops = tuple(root for home, root in homes if root != PROJECTS_ROOT and not any(item.folder.parent == home for item in kept))   # emptied by `apply`
     return MovePlan(moves=tuple(moves), kept=tuple(kept), runs=tuple(sorted(moved)), sessions=tuple(sessions), drops=drops)
 
 
