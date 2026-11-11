@@ -87,6 +87,17 @@ class WorkspaceJobs(BaseModel):
             jobs = tuple(item for index, item in enumerate(jobs) if item.state == "ready" or index < self.keep)
             PRIVATE_FILES.write_text(self.path, json.dumps([item.model_dump(mode="json") for item in jobs], separators=(",", ":")) + "\n")
 
+    def rehome(self, root: str, names: frozenset[str], to: str) -> int:
+        """Every job that made one of `names` under agent root `root` now under `to` (its folder moved there,
+        `galaius.machine.projects.relocate`); how many."""
+        with exclusive(os.open(self.path.with_suffix(".lock"), os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)):
+            jobs = self.read()
+            moved = tuple(item.model_copy(update={"root": to}) if item.root == root and item.name in names else item for item in jobs)
+            count = sum(1 for before, after in zip(jobs, moved, strict=True) if before is not after)
+            if count:
+                PRIVATE_FILES.write_text(self.path, json.dumps([item.model_dump(mode="json") for item in moved], separators=(",", ":")) + "\n")
+            return count
+
     def settle_interrupted(self) -> None:
         """A clone or copy still `running` from an earlier runner process ended with it."""
         for job in self.read():

@@ -212,6 +212,16 @@ def machine_agent_roots(*roots: str) -> None:
                       "agent_permission": config.agent_permission, "run_agents": config.run_agents}))
 
 
+@machine_app.command(name="projects-move")
+def machine_projects_move(*, apply: bool = False) -> None:
+    """Owner-only, on this machine: the projects an earlier Galaius put here (~/.galaius/projects, the agent folder
+    galaius/projets of the working directory) moved to ~/galaius/projects with their conversations; a folder in use stays
+    for a later run. Without --apply it only prints what it would do."""
+    runner = MachineRunner()
+    done, left = runner.move_projects(runner.load(), apply)
+    print(json.dumps({"applied": apply, "plan": done.lines(), "left": left}, indent=2))
+
+
 @machine_app.command(name="agent-permission")
 def machine_agent_permission(scope: AgentTouchScope | None = None) -> None:
     """Owner-only, on this machine: what agents started from the web may do — read_only, edit

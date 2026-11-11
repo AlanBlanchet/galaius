@@ -53,6 +53,7 @@ from galaius.machine.agents import AgentSpawns, LogRing, MachineAgents, MachineS
 from galaius.machine.web_runs import WebRuns
 from galaius.diagnostics.redaction import redact, secret_values
 from galaius.machine.programs import AgentPrograms
+from galaius.machine.projects import relocate
 from galaius.machine.projects.workspaces import MachineWorkspaces, WorkspaceJobs
 from galaius_core.identity.sealing import LoginSeal, SecretsSeal
 from galaius_core.wire import fitted, internals, readable
@@ -1071,6 +1072,10 @@ class MachineRunner:
         # Exact secrets masked in every kept log line from the first one on (`LogRing`).
         self._log_ring.secrets = self._secrets(config)
         self._workspace_jobs.settle_interrupted()
+        # Projects an earlier Galaius kept in the hidden ~/.galaius/projects, moved to ~/galaius/projects before any request names one.
+        moved, left = await asyncio.to_thread(self.move_projects, config, True, True)
+        for line in (*(f"moved {move.source} -> {move.target}" for move in moved.moves), *(f"kept {kept.folder}: {kept.why}" for kept in moved.kept), *left):
+            logger.info("projects folder: %s", line)
         # Before anything reads which cut runs come back by themselves (`EndWatch`, `_resume_paused`): from when they do.
         await asyncio.to_thread(reg.cut_resume_since)
         # The hook that lets the web stop his editor sessions, in place before he opens the next one: Claude Code reads
@@ -1670,6 +1675,18 @@ class MachineRunner:
             if self._agent_answers.get(request_id) is answer:
                 del self._agent_answers[request_id]
                 self._agent_requests.pop(request_id, None)
+
+    def move_projects(self, config: MachineConfig, apply: bool, hidden_only: bool = False) -> tuple[relocate.MovePlan, list[str]]:
+        """The projects an earlier Galaius put here, moved to the projects folder with this PC's records naming them
+        (`relocate`); with `apply` False only planned. (the plan, what was left undone)."""
+        done = relocate.plan(config.working_directory, config.agent_roots, hidden_only)
+        if not apply or not (done.moves or done.drops):
+            return done, []
+
+        def rehome(root: str, names: frozenset[str]) -> None:
+            self.web_runs.rehome(root, names, PROJECTS_ROOT), self._workspace_jobs.rehome(root, names, PROJECTS_ROOT)
+        return done, relocate.apply(done, rehome, lambda roots: self.update(lambda current: current.model_copy(
+            update={"agent_roots": tuple(root for root in current.agent_roots if root not in roots)})))
 
     @property
     def web_runs(self) -> WebRuns:

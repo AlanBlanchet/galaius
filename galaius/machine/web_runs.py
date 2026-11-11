@@ -106,6 +106,22 @@ class WebRuns(BaseModel):
                 json.dump([item.model_dump(mode="json") for item in kept], stream)
             replace_held_open(temporary, self.path)
 
+    def rehome(self, root: str, names: frozenset[str], to: str) -> int:
+        """Every run started in one of `names` under agent root `root` now under `to` (its folder moved there,
+        `galaius.machine.projects.relocate`); how many."""
+        descriptor = os.open(self.path.with_suffix(".lock"), os.O_RDWR | os.O_CREAT, 0o600)
+        with exclusive(descriptor):
+            runs = self.read()
+            moved = [item.model_copy(update={"root": to}) if item.root == root and item.path.split("/")[0] in names else item for item in runs]
+            count = sum(1 for before, after in zip(runs, moved, strict=True) if before is not after)
+            if count:
+                temporary = self.path.with_suffix(".tmp")
+                handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                    json.dump([item.model_dump(mode="json") for item in moved], stream)
+                replace_held_open(temporary, self.path)
+            return count
+
     def forest(self) -> dict[str, list[reg.AgentRun]]:
         """Each of these runs with every run it launched (`reg.forest`), as the launcher's registry has them now."""
         return reg.forest(frozenset(str(item.run_id) for item in self.here()))
