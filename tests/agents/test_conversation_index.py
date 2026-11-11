@@ -11,7 +11,7 @@ from uuid import uuid4
 import pytest
 
 from galaius.agents import registry as reg
-from galaius.agents.conversations import TIERS, TYPED, ConversationIndex, ConversationScope
+from galaius.agents.conversations import TIERS, TYPED, ConversationAnswers, ConversationIndex, ConversationScope
 from galaius.agents.transport.events import AgentEvent, instant
 from galaius.agents.limits.subscriptions import Subscription
 from galaius.agents.limits.subscriptions import RunSubscription
@@ -142,12 +142,35 @@ def test_a_file_grows_is_rewritten_breaks_and_goes(world: dict) -> None:
     assert index.search("fresh", EVERYWHERE) == []
 
 
-@pytest.mark.parametrize("folder", ["home", "root", "loose"])
-def test_a_folder_outside_any_repository_searches_nothing(world: dict, tmp_path: Path, folder: str) -> None:
-    cwd = {"home": str(Path.home()), "root": "/", "loose": str(tmp_path / "loose")}[folder]
-    Path(cwd).mkdir(exist_ok=True)
-    with pytest.raises(PermissionError):
-        ConversationScope.of_caller({}, cwd, False)
+@pytest.mark.parametrize(("folder", "searches"), [
+    ("~", None), ("/", None),  # a home folder or one above it: no project
+    ("~/loose", "~/loose"),  # in no repository: the folder itself
+    ("~/loose/nested", "~/loose/nested"),  # nested in a folder no repository holds: still itself
+    ("~/work/billing/src", "~/work/billing"),  # in a repository: its root
+])
+def test_a_folder_searches_its_repository_else_itself(world: dict, folder: str, searches: str | None) -> None:
+    cwd = Path(folder).expanduser()
+    cwd.mkdir(parents=True, exist_ok=True)
+    if searches is None:
+        with pytest.raises(PermissionError):
+            ConversationScope.of_caller({}, str(cwd), False)
+        return
+    assert ConversationScope.of_caller({}, str(cwd), False).root == str(Path(searches).expanduser().resolve())
+
+
+@pytest.mark.parametrize("asker", ["person", "agent"])
+def test_a_loose_folder_finds_its_own_conversations_only(world: dict, asker: str) -> None:
+    loose, beside = (Path.home() / "shops" / "loose").resolve(), (Path.home() / "shops" / "beside").resolve()
+    for folder in (loose, beside):
+        folder.mkdir(parents=True)
+        _claude_session(world["claude"], folder, str(uuid4()), _turns(f"compare the kettle prices in {folder.name}", "-"))
+    environment = {}
+    if asker == "agent":
+        run_id = str(uuid4())
+        reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", name="buyer", cwd=str(loose), started_at=1.0, pid=None, lifecycle_token="k" * 32))
+        environment = {"GALAIUS_PARENT_RUN_ID": run_id}
+    answer = ConversationAnswers(environment=environment, cwd=str(loose), index=world["index"]).search("kettle")
+    assert "prices in loose" in answer and "beside" not in answer, answer
 
 
 @pytest.mark.parametrize("held", ["denied", "lent", "fenced parent", "unknown"])

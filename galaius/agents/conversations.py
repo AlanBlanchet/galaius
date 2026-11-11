@@ -276,12 +276,14 @@ class ConversationScope(BaseModel):
 
     @staticmethod
     def project(cwd: str) -> str:
-        """The repository `cwd` is in; refused outside one, and for a home folder or any folder above one."""
-        root = reg.project_root(cwd)
+        """The folder `cwd` searches: the repository it is in (`reg.project_root`), else the folder itself
+        when no repository narrower than a home folder holds it; refused for a home folder or any folder
+        above one."""
         home = Path.home().resolve()
-        if root is None or root == home or root in home.parents:
-            raise PermissionError(f"{cwd or 'this folder'} is in no project folder to search in")
-        return str(root)
+        for root in (reg.project_root(cwd), reg.working_folder(cwd)):
+            if root is not None and root != home and root not in home.parents:
+                return str(root)
+        raise PermissionError(f"{cwd or 'this folder'} is in no project folder to search in")
 
     def where(self) -> tuple[str, tuple[str | int, ...]]:
         """The SQL condition on `c.cwd` keeping this scope, and its parameters: the one place it is decided."""

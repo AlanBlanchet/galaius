@@ -651,6 +651,16 @@ REPO_MARKERS = (".git", ".hg", ".svn")
 _PACKAGE_MARKERS = ("pyproject.toml", "package.json", "Cargo.toml", "go.mod")
 
 
+def working_folder(cwd: str) -> Path | None:
+    """A working directory as the folder it resolves to; None when empty or unresolvable."""
+    if not cwd:
+        return None
+    try:
+        return Path(cwd).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return None
+
+
 def project_for(cwd: str) -> str:
     """The project a working directory belongs to, by name: its `project_root`, else the folder's own
     name (a loose folder still gets one instead of falling back to a home directory).
@@ -658,12 +668,8 @@ def project_for(cwd: str) -> str:
     Empty for an unknown directory — a wrong project label is worse than none, because it
     silently merges unrelated work.
     """
-    if (root := project_root(cwd)) is not None:
-        return root.name
-    try:
-        return Path(cwd).expanduser().resolve().name if cwd else ""
-    except (OSError, RuntimeError):
-        return ""
+    root = project_root(cwd) or working_folder(cwd)
+    return root.name if root is not None else ""
 
 
 def project_root(cwd: str) -> Path | None:
@@ -674,11 +680,7 @@ def project_root(cwd: str) -> Path | None:
     ``vscode-extension/`` and its package.json) files under the repo rather than as a project of
     its own. Only when nothing above is version-controlled does a package manifest count.
     """
-    if not cwd:
-        return None
-    try:
-        here = Path(cwd).expanduser().resolve()
-    except (OSError, RuntimeError):
+    if (here := working_folder(cwd)) is None:
         return None
     chain = (here, *here.parents)
     for markers in (REPO_MARKERS, _PACKAGE_MARKERS):
