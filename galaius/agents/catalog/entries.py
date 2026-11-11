@@ -292,14 +292,19 @@ class AgentCatalog(CachedRecord):
         `pin_path`; None when this computer holds none it may use (`CachedRecord.usable_by`). The pin itself, never
         the latest in its place: what was launched before is what is launched now, which is the whole point of a
         pin."""
-        held = PinnedRevision.cached(self.pin_path(reference))
+        return self._pinned(reference, stale=True)
+
+    def _pinned(self, reference: AgentRevisionRef, *, stale: bool) -> Self | None:
+        held = PinnedRevision.cached(target := self.pin_path(reference))
         if held is None or not held.usable_by(self.connection, self.access_generation):
             return None
         agent = held.instructions.agent
         if agent.id != reference.id or agent.revision != reference.revision:
             return None
         with self.connection.access_guard(self.access_generation):
-            return self.model_copy(update={"selection": held.instructions, "stale": True})
+            if not stale:
+                target.touch()  # in use: kept among the newest `PINS_PER_AGENT`, as `remember_pin` keeps it
+            return self.model_copy(update={"selection": held.instructions, "stale": stale})
 
     def remember_pin(self, selection: AgentInstructionSet) -> None:
         """Keep `selection` as answered, for `pinned_offline` to work from while the service cannot be reached — every
@@ -422,6 +427,12 @@ class AgentCatalog(CachedRecord):
             selection = AgentInstructionSet(agent=held, prompts=self.snapshot.paradigms)
             self.remember_pin(selection)
             return self.model_copy(update={"selection": selection})
+        # An exact revision and the prompts it names by digest never change once answered: the pin this computer keeps is
+        # read before the network while its agent is still in the catalog this access reads (one taken away is asked
+        # again, and refused). Asked again on every resume, each of ~19 pins cost the service a revision and ~10 prompt
+        # reads, ~1 a second from one PC (2026-11-11: the service at 100-140 % CPU).
+        if any(agent.id == reference.id for agent in self.snapshot.agents) and (pinned := self._pinned(reference, stale=False)) is not None:
+            return pinned
         try:
             with self.connection.connect() as client:
                 connection = self.connection.authenticate(client)

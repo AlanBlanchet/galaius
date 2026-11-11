@@ -1470,7 +1470,10 @@ def test_a_pin_once_read_still_launches_while_the_service_is_unreachable(advance
 
     connect = CatalogConnection.connect
     monkeypatch.setattr(CatalogConnection, "connect", lambda self, **kwargs: connect(self, transport=httpx.MockTransport(offline)))
-    held = current.at_revision(worker_ref)
+    # Its agent out of the head catalog read last: the service is asked first, and the pin answers for it while it is down.
+    absent = current.model_copy(update={"snapshot": current.snapshot.model_copy(
+        update={"agents": tuple(agent for agent in current.snapshot.agents if agent.id != worker_ref.id)})})
+    held = absent.at_revision(worker_ref)
     assert held.stale and held.revision(worker_ref).revision == worker_ref.revision
     assert held.instructions("fixture-worker") == online.instructions("fixture-worker")
     assert "STALE agent revision" in capsys.readouterr().err
@@ -1478,6 +1481,21 @@ def test_a_pin_once_read_still_launches_while_the_service_is_unreachable(advance
     unread = AgentRevisionRef(id=worker_ref.id, revision=uuid4())
     with pytest.raises(CatalogConnectionError, match="latest revision is not a fallback"):
         current.at_revision(unread)
+
+
+@pytest.mark.parametrize("in_catalog", [True, False])
+def test_a_pin_once_read_is_read_again_without_the_service_while_its_agent_is_in_the_catalog(advanced_catalogs, historical_http, in_catalog):
+    """An exact revision and the prompts it names by digest never change: a pin read once is read from this computer
+    on every later resume (2026-11-11: the same ~19 pins asked ~1 a second, the service at 100-140 % CPU). An agent
+    the catalog no longer holds is asked again, so access taken away is still refused by the service."""
+    _, current, worker_ref, _ = advanced_catalogs
+    online = current.at_revision(worker_ref)
+    asked = len(historical_http)
+    reading = current if in_catalog else current.model_copy(update={"snapshot": current.snapshot.model_copy(
+        update={"agents": tuple(agent for agent in current.snapshot.agents if agent.id != worker_ref.id)})})
+    again = reading.at_revision(worker_ref)
+    assert not again.stale and again.instructions("fixture-worker") == online.instructions("fixture-worker")
+    assert (len(historical_http) == asked) is in_catalog
 
 
 @pytest.mark.parametrize("blip", ["connect", 502])
@@ -1524,7 +1542,10 @@ def test_a_service_with_no_app_behind_its_front_is_down_like_an_unreachable_one(
     monkeypatch.setattr(CatalogConnection, "connect", lambda self, **kwargs: connect(self, transport=httpx.MockTransport(
         lambda request: httpx.Response(200, headers={"Set-Cookie": "session=fixture-cookie; Path=/"}, json={})
         if request.url.path == "/v1/auth/local-preview" else httpx.Response(status))))
-    held = current.at_revision(worker_ref)
+    # Its agent out of the head catalog read last: the service is asked first, and the pin answers for it while it is down.
+    absent = current.model_copy(update={"snapshot": current.snapshot.model_copy(
+        update={"agents": tuple(agent for agent in current.snapshot.agents if agent.id != worker_ref.id)})})
+    held = absent.at_revision(worker_ref)
     assert held.stale and held.revision(worker_ref).revision == worker_ref.revision
     with pytest.raises(CatalogOffline):
         current.at_revision(AgentRevisionRef(id=worker_ref.id, revision=uuid4()))
