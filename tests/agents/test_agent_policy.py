@@ -122,6 +122,16 @@ FAMILY = {
     "the same version with another suffix is another family": ({"openai/gpt-5.1": False}, ("gpt-5.2-codex",), None),
     "a name with no version is itself only": ({"gpt-4o": False}, ("gpt-4o-mini",), None),
     "nothing switched off": ({}, ("claude-fable-5-2",), None),
+    # Tester 235a5c61 r1: the launcher kept the bare alias and `-latest` (no catalog row), and a qualifier made another family.
+    "the bare alias runs the newest": ({"claude/claude-fable-5-1": False}, ("claude/fable", "fable"), "claude/claude-fable-5-1"),
+    "latest is the newest": ({"claude/claude-fable-5-1": False}, ("claude/claude-fable-latest",), "claude/claude-fable-5-1"),
+    "a preview or a bare latest of a later version": (
+        {"gemini-2.5-pro": False}, ("gemini-3-pro-preview", "gemini-pro-latest"), "gemini-2.5-pro"),
+    "a Bedrock id, revision and all": ({"claude-fable-5-1": False}, ("us.anthropic.claude-fable-5-2-v1:0",), "claude-fable-5-1"),
+    "words around the version in either order": ({"claude-3-5-sonnet-20241022": False}, ("claude-sonnet-4-20250514",),
+                                                  "claude-3-5-sonnet-20241022"),
+    "turned back on, however it is spelled": (
+        {"claude-fable-5-1": False, "claude/claude-fable-5-2": True}, ("claude-fable-5.2", "claude-fable-5-2-20261101"), None),
 }
 
 
@@ -135,8 +145,29 @@ def test_a_switched_off_model_and_its_later_versions_never_run(switches, names, 
     bare = names[-1].rsplit("/", 1)[-1]
     assert Policy(models=switches).model_active("claude", bare, names[-1]) is (off_by is None)
     # The guard reads the same rule in a command line, however the id is wrapped: it never lets a switched-off one through.
-    for command in (f"claude -p --model us.anthropic.{bare}-v1:0", f"tail {bare}.log", f"--model={names[0]}"):
+    wrapped = (f"claude -p --model us.anthropic.{bare}-v1:0", f"tail {bare}.log") if any(map(str.isdigit, bare)) else ()
+    for command in (*wrapped, f"--model={names[0]}", f"claude -p --model {bare}"):
         assert off_by is None or switch.named_in(command) is not None, command
+
+
+#: Commands under his switches (Fable 5 and 5.1 off), and whether the guard refuses them (tester 235a5c61 r1 bypasses
+#: and false positives).
+GUARD = {
+    "claude -p --model fable[1m] hi": True,
+    "ANTHROPIC_MODEL=fable claude -p hi": True,
+    "claude -p --model fable-5-2 hi": True,
+    "claude -p --model claude-fable-latest hi": True,
+    """echo '{"model": "fable"}' > settings.json""": True,
+    "codex exec -m fable hi": True,
+    "claude -p --model opus hi": False,
+    "git commit -m fable": False,
+    "grep -rn fable docs": False,
+}
+
+
+@pytest.mark.parametrize(("command", "refused"), GUARD.items(), ids=GUARD.keys())
+def test_the_guard_reads_a_command_by_the_launchers_rule(command, refused):
+    assert (ModelSwitches({"claude/claude-fable-5-1": False, "claude/claude-fable-5": False}).named_in(command) is not None) is refused
 
 
 def test_acting_default_is_a_machine_local_shared_touch_intent(policy_file):
