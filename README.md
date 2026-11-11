@@ -77,7 +77,7 @@ The same tools drive a **real desktop app** — `launch_app` puts it in an isola
 ```bash
 # 1. install the `galaius` command (installs uv if missing)
 curl -LsSf https://raw.githubusercontent.com/AlanBlanchet/galaius/main/install.sh | sh
-# Windows (PowerShell): powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/AlanBlanchet/galaius/main/install.ps1 | iex"
+# Windows: download and open the installer, https://galaius.ai/install/windows (no administrator rights)
 
 # 2. register it with Codex
 galaius install codex
@@ -99,6 +99,7 @@ Other hosts use the same bootstrap: `galaius install claude`, `cursor`, `vscode`
 
 ```bash
 uv tool install git+https://github.com/AlanBlanchet/galaius             # any platform, without the installer
+winget install --id astral-sh.uv -e                                    # Windows: uv itself, for the line above
 uvx --from git+https://github.com/AlanBlanchet/galaius galaius mcp     # run without installing
 ```
 
@@ -118,14 +119,14 @@ Linux, a task started at your logon on Windows (your own rights, no administrato
    curl -LsSf https://raw.githubusercontent.com/AlanBlanchet/galaius/main/install.sh | sh
    ```
 
-   Windows, in PowerShell:
+   Windows: download and open the installer, https://galaius.ai/install/windows. It installs for your
+   user only (no administrator rights), with its own Python, and lists itself in Apps & Features with an
+   uninstaller, then opens the page that connects this computer (step 2 happens by itself). Until the installer is signed, Windows may first show « Windows protected your PC »:
+   click « More info », then « Run anyway ». No line to paste in PowerShell: Windows Defender reads that
+   shape as malware.
 
-   ```powershell
-   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/AlanBlanchet/galaius/main/install.ps1 | iex"
-   ```
-
-   Needs only `curl` (or `wget -qO-` in its place) on Linux, nothing on Windows: it brings uv and
-   Python. Run from a terminal, it goes straight on to step 2.
+   Needs only `curl` (or `wget -qO-` in its place) on Linux: it brings uv and Python. Run from a
+   terminal, it goes straight on to step 2.
 
 2. **Sign in**
 

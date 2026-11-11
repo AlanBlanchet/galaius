@@ -405,11 +405,13 @@ galaius usage    # spend &amp; tokens</pre>
 </div></footer>
 
 <script>
-  // The install line per system (same tabs as the galaius server's "Add a computer" step). A system
+  // How to install per system (same tabs as the galaius server's "Add a computer" step). A system
   // with no line says where galaius installs today; macOS shares the Linux script.
   const RAW='https://raw.githubusercontent.com/AlanBlanchet/galaius/main/';
   const SYSTEMS={
-    windows:{name:'Windows',line:`powershell -ExecutionPolicy ByPass -c "irm ${RAW}install.ps1 | iex"`,where:'Paste it in PowerShell: open the Start menu, type PowerShell, press Enter.',prompt:'PS>'},
+    // Windows downloads an installer: a pasted PowerShell line is the shape Windows Defender reads as malware.
+    windows:{name:'Windows',download:'https://galaius.ai/install/windows',label:'Download galaius for Windows',
+      where:'Open the downloaded file: it installs galaius for you (no administrator rights) and opens the page that connects this computer. Windows may first show « Windows protected your PC » (unknown publisher: the installer is not signed yet): click « More info », then « Run anyway ».'},
     macos:{name:'macOS',line:`curl -LsSf ${RAW}install.sh | sh`,where:'Paste it in Terminal (Applications → Utilities).',prompt:'$'},
     linux:{name:'Linux',line:`curl -LsSf ${RAW}install.sh | sh`,where:'Paste it in a terminal.',prompt:'$'},
   };
@@ -420,13 +422,14 @@ galaius usage    # spend &amp; tokens</pre>
   // Breaks only between words ("| iex" stays whole); a URL, longer than a narrow box, may break inside.
   const tokens=line=>line.split(' ').reduce((a,t)=>(a.length&&a[a.length-1]==='|'?a[a.length-1]+=' '+t:a.push(t),a),[])
     .map(t=>`<span${t.includes('://')?' class="url"':''}>${esc(t)}</span>`).join(' ');
-  const installs=()=>ORDER.filter(k=>SYSTEMS[k].line).map(k=>SYSTEMS[k].name).join(', ');
+  const installs=()=>ORDER.filter(k=>SYSTEMS[k].line||SYSTEMS[k].download).map(k=>SYSTEMS[k].name).join(', ');
   document.querySelectorAll('[data-os-install]').forEach((group,n)=>{
     const dollar=!!group.querySelector('.dollar');
     group.innerHTML=`<div class="os-tabs" role="tablist" aria-label="Operating system">${ORDER.map(k=>
       `<button type="button" role="tab" class="os-tab" id="os-${n}-${k}" aria-controls="os-${n}-${k}-panel" data-os="${k}">${SYSTEMS[k].name}</button>`).join('')}</div>${ORDER.map(k=>{
       const s=SYSTEMS[k];
-      const body=s.line?`<div class="install">${dollar?`<span class="dollar">${s.prompt}</span>`:''}<code>${tokens(s.line)}</code><button type="button" class="copy">Copy</button></div><p class="os-hint">${s.where}</p>`
+      const body=s.download?`<div class="install"><a class="btn primary" href="${s.download}">${s.label}</a></div><p class="os-hint">${s.where}</p>`
+        :s.line?`<div class="install">${dollar?`<span class="dollar">${s.prompt}</span>`:''}<code>${tokens(s.line)}</code><button type="button" class="copy">Copy</button></div><p class="os-hint">${s.where}</p>`
         :`<p class="os-hint">No installer for ${s.name} yet. galaius installs on ${installs()} today.</p>`;
       return `<div role="tabpanel" id="os-${n}-${k}-panel" aria-labelledby="os-${n}-${k}" data-os-panel="${k}">${body}</div>`;}).join('')}`;
   });
