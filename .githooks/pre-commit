@@ -41,9 +41,10 @@ _load_node() {
     command -v node >/dev/null 2>&1
 }
 
-# 2) Regenerate TS bindings when the Pydantic API surface changes (keeps the committed
-#    generated/types.ts in lock-step with the models).
-if git diff --cached --name-only | grep -qE '^galaius/(models|formats|api_types)\.py$|^galaius/benchmarks/(published|upstream)\.py$|^pyproject\.toml$|^clients/vscode/scripts/generate-types\.sh$'; then
+# 2) Regenerate TS bindings when a Python module changes (keeps the committed generated/types.ts in lock-step with
+#    the models): a model lives in any module (`AgentEvent`, `CommunityAgent`), and a fixed list of files let two
+#    model changes reach main with stale types, CI failing (2026-11-11). ~5 s.
+if git diff --cached --name-only | grep -qE '^galaius/.*\.py$|^pyproject\.toml$|^clients/vscode/scripts/generate-types\.sh$'; then
     if _load_node; then
         echo "[hook] Pydantic API changed — regenerating TS types..."
         if bash clients/vscode/scripts/generate-types.sh >/dev/null 2>&1; then
