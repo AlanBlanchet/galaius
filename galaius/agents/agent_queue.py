@@ -907,6 +907,24 @@ def read_ids(run_id: str) -> list[str]:
     return [item.message_id for item in sorted(read, key=lambda item: item.started_at or item.enqueued_at, reverse=True)]
 
 
+def failed_items(run_id: str) -> list[QueueItem]:
+    """The person's messages its run could not open a turn for, or whose turn ended before it replied (`failed`), the
+    latest first: what the web says was not delivered, and sends again ahead of his next message (`rearm_locked`)."""
+    failed = [item for item in items(run_id) if item.state == "failed" and item.sender == reg.PERSON_SENDER]
+    return sorted(failed, key=lambda item: item.finished_at or item.enqueued_at, reverse=True)
+
+
+def rearm_locked(run_id: str, message_id: str) -> QueueItem | None:
+    """The person's failed message under `message_id` (`failed_items`) put back, pending, in its place in the queue, while
+    the caller owns the run lock: its turn is tried again ahead of what was queued after it. None: no such item."""
+    item = next((item for item in items_locked(run_id) if item.message_id == message_id and item.state == "failed"
+                 and item.sender == reg.PERSON_SENDER), None)
+    if item is None:
+        return None
+    return _replace_item_locked(run_id, item.id, state="pending", started_at=None, finished_at=None, raw_index=None, attempt_token=None,
+                                attempts=0, not_before=None, waiting=None, waiting_since=None, error="")
+
+
 #: How long a dispatcher waits before trying a turn again whose pinned revision its service could not be reached for
 #: (`CatalogOffline`): the link is back in seconds to minutes, and nothing is refused meanwhile.
 SERVICE_POLL_SECONDS = 10.0

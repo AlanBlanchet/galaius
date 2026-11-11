@@ -28,7 +28,7 @@ import tempfile
 import threading
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import ClassVar, TypeVar
@@ -41,7 +41,7 @@ from galaius_core import (
     MODEL_ID_MAX,
     PROJECTS_ROOT, AGENT_TOUCH_SCOPES, AgentCompactRequest, ContextGauge, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, AgentFile, media_kind, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
     AgentAllowanceRequest, AgentMoveRequest, AgentExportRequest, AgentImportRequest, AgentReleaseRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentToolInstallRequest, AgentToolsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, AgentHeldTakeRequest, AgentHeldPutRequest, AgentRetractRequest, RetractOutcome, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
-    WorkspaceFailure, WorkspaceUpload, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, media_key, media_paths, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest, ProjectFilesBase, ProjectFilePart,
+    WorkspaceFailure, WorkspaceUpload, FailedMessage, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, media_key, media_paths, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest, ProjectFilesBase, ProjectFilePart,
 )
 from galaius.agents import agent_queue
 from galaius.agents.limits import quota
@@ -50,7 +50,7 @@ from galaius.agents.assembly import _TransportRegistry
 from galaius.agents.host import ConversationHost, ConversationRefused
 from galaius.agents.turns.session_stops import SessionStops
 from galaius.agents.turns.followup import FollowUps
-from galaius.agents.messaging import deliver_message, retract
+from galaius.agents.messaging import deliver_message, queue_message, retract
 from galaius.agents.providers import PROJECT_SETTINGS_OFF, PROVIDERS, UNTRUSTED_FOLDERS, program_providers, provider_for
 from galaius.agents.limits.subscriptions import RunSubscription, Subscription, SubscriptionRefused
 from galaius.agents.run import launch_editor_turn, load_policy, rank_candidates, run_agent
@@ -90,6 +90,8 @@ TAIL_LINES = 4000
 LISTED_RUNS = next(item.max_length for item in MachineAgentAnswer.model_fields["runs"].metadata if isinstance(item, MaxLen))
 #: A message id as the web gives it (`AgentSendRequest.id`, a UUID in its usual spelling).
 _WEB_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+#: Why an editor conversation does not take the messages sent ahead of one (`AgentSendRequest.earlier`): each is a turn of its own.
+NO_REPLAY = "a conversation continued from its editor takes one message per turn: send it again on its own"
 #: Why a member's run on a lent PC found nothing to run on (`SubscriptionUse.lent`); the server words it for him.
 LENT_REFUSAL = "subscriptions are never lent: a member's run on a lent PC uses none of its CLI logins; run it on your own PC or with an API key"
 MODEL_RANKING = "aa.intelligence and price.in >= 0"
@@ -785,7 +787,32 @@ class MachineAgents(BaseModel):
         lines = tuple(mask(line.decode("utf-8", "replace"), tokens) for line in data[:whole].split(b"\n") if line)
         if cursor is None and (placed := next((item for item in self.runs.read() if item.run_id == request.run_id and item.source), None)):
             lines = (*next((said for editor in EditorConversations.every(self) if (said := editor.history(placed.source))), ()), *lines)[-TAIL_LINES:]
-        return MachineAgentAnswer(request_id=request.id, lines=lines, cursor=start + whole, truncated=skipped, read_messages=self._read_messages(request.run_id))
+        return MachineAgentAnswer(request_id=request.id, lines=lines, cursor=start + whole, truncated=skipped, read_messages=self._read_messages(request.run_id),
+                                  failed_messages=self._failed_messages(request.run_id))
+
+    def _failed_messages(self, run_id: UUID) -> tuple[FailedMessage, ...]:
+        """The messages from the web run `run_id` could not open a turn for, the latest first, each with when and why: only
+        an agent's queue holds them (an editor conversation's turn answers its send)."""
+        if self._kind(run_id) != "agent":
+            return ()
+        return tuple(FailedMessage(id=UUID(item.message_id), at=item.finished_at or item.enqueued_at, detail=item.error[:500])
+                     for item in agent_queue.failed_items(str(run_id)) if _WEB_ID.fullmatch(item.message_id))[:MACHINE_AGENT_READ]
+
+    def _earlier(self, run: reg.AgentRun, request: AgentSendRequest, environment: Mapping[str, str]) -> tuple[FailedMessage, ...]:
+        """`request.earlier` queued ahead of its message, oldest first, each under its own id: one whose turn this PC could
+        not open put back in its place (`agent_queue.rearm_locked`), one it never got queued from the words the server
+        kept. The ones it could not queue, with why; an editor conversation takes one message per turn, so none."""
+        if self._kind(request.run_id) != "agent":
+            return tuple(FailedMessage(id=earlier.id, at=time.time(), detail=NO_REPLAY) for earlier in request.earlier)
+        missed: list[FailedMessage] = []
+        for earlier in request.earlier:
+            with reg.record_lock(run.run_id):
+                if agent_queue.rearm_locked(run.run_id, str(earlier.id)) is not None:
+                    continue
+            delivery = queue_message(run.run_id, earlier.text, sender=reg.PERSON_SENDER, environment=environment, message_id=str(earlier.id))
+            if delivery.state == "error":
+                missed.append(FailedMessage(id=earlier.id, at=time.time(), detail=delivery.text.removeprefix("ERROR: ")[:500]))
+        return tuple(missed)
 
     def _read_messages(self, run_id: UUID) -> tuple[UUID, ...]:
         """The messages from the web (`AgentSendRequest.id`) run `run_id` has read, the latest first:
@@ -1052,7 +1079,8 @@ class MachineAgents(BaseModel):
             raise AgentRefused("in_editor", "an editor conversation runs at the effort its editor sets; only an agent's is set here")
         media = await asyncio.to_thread(reg.RunMedia.keep, run.run_id, request.images)
         if self._kind(request.run_id) == "continued":
-            return await asyncio.to_thread(self.continue_turn, run, request.text, request_id=request.id, media=media)
+            answer = await asyncio.to_thread(self.continue_turn, run, request.text, request_id=request.id, media=media)
+            return answer.model_copy(update={"failed_messages": await asyncio.to_thread(self._earlier, run, request, {})}) if request.earlier else answer
         if request.text == reg.RESUME_BRIEF:  # his « Continuer »; a message he types waits for the turn it starts
             run.prepare_continue()
         run = await asyncio.to_thread(reg.carry_held, run.run_id) or run  # a move held for it, its turn ended: made first
@@ -1061,6 +1089,8 @@ class MachineAgents(BaseModel):
         # between turns (`FollowUps`), else its dispatcher resumes the agent; a resume refused after
         # this point is that run's failure, in its events.
         environment = await asyncio.to_thread(self.launcher_environment_in, Path(run.cwd))
+        # What he wrote before that never reached the agent goes first, in order (`AgentSendRequest.earlier`).
+        missed = await asyncio.to_thread(self._earlier, run, request, environment)
         turn = agent_queue.MessageTurn(media=media)
         # Set before the message is queued (the turn it starts reads it), back as it was if the message is not.
         if request.reasoning is not None:
@@ -1079,7 +1109,7 @@ class MachineAgents(BaseModel):
         # The account that turn runs on (a move held for it included): the server's pin follows it.
         current = await asyncio.to_thread(reg.get_run, run.run_id) or run
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=delivery.text, reads_at=delivery.reads_at,
-                                  subscription_id=current.next_subscription_id)
+                                  subscription_id=current.next_subscription_id, failed_messages=missed)
 
     async def _compact(self, request: AgentCompactRequest) -> MachineAgentAnswer:
         """Refused by `compact_refusal`, the rule its row says; a session compacts through its host, a queued run as a

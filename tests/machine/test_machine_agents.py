@@ -27,7 +27,7 @@ from galaius.agents import registry as reg
 from galaius.agents.host import ConversationRefused
 from galaius.agents.run import ModelUnavailable
 from galaius.agents.limits.subscriptions import RunSubscription, Subscription, SubscriptionRefused
-from galaius.machine.agents import LISTED_RUNS, LogRing, MachineAgents, MachineSessions, interaction_digest
+from galaius.machine.agents import LISTED_RUNS, NO_REPLAY, LogRing, MachineAgents, MachineSessions, interaction_digest
 from galaius.machine.editors import EditorConversations
 from galaius.machine.web_runs import WebRun, WebRuns
 from galaius.diagnostics.redaction import redact
@@ -503,6 +503,46 @@ def test_a_message_is_answered_once_durably_queued_and_its_dispatcher_gets_the_m
     agent_queue.mark(run_id, agent_queue.items(run_id)[0].id, "failed", error="resume refused: no model")
     with pytest.raises(RuntimeError, match="resume refused: no model"):
         _answer(agents, request)
+
+
+#: How a message he sent never reached its agent (owner 2026-11-11, his « The price changed... » sent twice to an ended
+#: conversation whose resume was refused, lost without a word): its resume refused before the turn started, its turn ended in
+#: an error before it replied (a provider's session limit), or it never reached this PC (off past the server's wait).
+NOT_DELIVERED = {
+    "resume refused": lambda run_id: agent_queue.mark_locked(run_id, agent_queue.items_locked(run_id)[0].id, "failed",
+                                                             error="session s of run r is in none of this PC's 17 login folders"),
+    "turn ended in error": lambda run_id: agent_queue.mark_locked(run_id, agent_queue.claim_next_locked(run_id).id, "failed",
+                                                                  error="You've hit your session limit"),
+    "never reached this PC": None,
+}
+
+
+@pytest.mark.parametrize("how", NOT_DELIVERED)
+def test_a_message_that_never_reached_its_agent_is_said_failed_and_goes_first_with_the_next(how: str, base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never silently dropped: a message whose turn this PC could not open is named in `tail` with why, and the next send
+    carrying it (`AgentSendRequest.earlier`) queues it again, verbatim, ahead of itself; an editor conversation refuses it."""
+    agents = _agents(base, tmp_path)
+    run_id = str(uuid4())
+    reg.save_run(reg.AgentRun(run_id=run_id, provider="claude", agent="tester", name="r", cwd=str(base / "project"), started_at=1.0, exit_code=0))
+    agents.runs.add(WebRun(run_id=run_id, root="project"))
+    monkeypatch.setattr(messaging, "policy_for_continuation", lambda run, provider, environment: (None, "criterion", "model", "high"))
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
+    lost = _request("send", run_id=run_id, text="The price changed... Can you still find some others ?")
+    if (fail := NOT_DELIVERED[how]) is not None:
+        _answer(agents, lost)
+        with reg.record_lock(run_id):
+            fail(run_id)
+        said = _answer(agents, _request("tail", run_id=run_id, cursor=0)).failed_messages
+        assert [message.id for message in said] == [lost.id] and said[0].detail
+    nudge = _request("send", run_id=run_id, text="plz", earlier=[{"id": str(lost.id), "text": lost.text}])
+    assert not _answer(agents, nudge).failed_messages
+    assert [(item.state, item.message_id) for item in agent_queue.items(run_id)] == [("pending", str(lost.id)), ("pending", str(nudge.id))]
+    assert [event.text for event in reg.read_messages(run_id)] == [lost.text, "plz"]
+    assert not _answer(agents, _request("tail", run_id=run_id, cursor=0)).failed_messages
+    agents.runs.add(WebRun(run_id=run_id, root="project", kind="continued"))
+    monkeypatch.setattr(MachineAgents, "continue_turn", lambda self, run, text, **options: MachineAgentAnswer(request_id=options["request_id"]))
+    refused = _answer(agents, _request("send", run_id=run_id, text="again", earlier=[{"id": str(uuid4()), "text": "older"}])).failed_messages
+    assert [message.detail for message in refused] == [NO_REPLAY]
 
 
 def test_a_message_taken_back_from_the_web_before_it_is_read_never_reaches_its_agent(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
