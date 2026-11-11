@@ -143,7 +143,7 @@ def test_a_file_grows_is_rewritten_breaks_and_goes(world: dict) -> None:
 
 
 @pytest.mark.parametrize(("folder", "searches"), [
-    ("~", None), ("/", None),  # a home folder or one above it: no project
+    ("~", None), ("/", None),  # a home folder, one above it or a filesystem root (another drive's on Windows): no project
     ("~/loose", "~/loose"),  # in no repository: the folder itself
     ("~/loose/nested", "~/loose/nested"),  # nested in a folder no repository holds: still itself
     ("~/work/billing/src", "~/work/billing"),  # in a repository: its root

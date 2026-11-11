@@ -277,11 +277,11 @@ class ConversationScope(BaseModel):
     @staticmethod
     def project(cwd: str) -> str:
         """The folder `cwd` searches: the repository it is in (`reg.project_root`), else the folder itself
-        when no repository narrower than a home folder holds it; refused for a home folder or any folder
-        above one."""
+        when no repository narrower than a home folder holds it; refused for a home folder, any folder
+        above one, and a filesystem root (another drive's, on Windows)."""
         home = Path.home().resolve()
         for root in (reg.project_root(cwd), reg.working_folder(cwd)):
-            if root is not None and root != home and root not in home.parents:
+            if root is not None and root != home and root not in home.parents and root.parent != root:
                 return str(root)
         raise PermissionError(f"{cwd or 'this folder'} is in no project folder to search in")
 
