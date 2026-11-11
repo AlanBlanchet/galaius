@@ -33,7 +33,7 @@ import pytest
 from galaius_core import StopActor, TokenCounts
 from galaius.agents import registry as reg
 from galaius.agents.limits import quota
-from galaius.agents.transport.events import AgentEvent
+from galaius.agents.transport.events import NO_REPLY, AgentEvent, Relation
 from galaius.host.pinned_directory import DescriptorDirectory
 from galaius.host.private_files import PRIVATE_FILES
 from galaius.host.processes import process_exited
@@ -1206,6 +1206,53 @@ def test_the_live_mirror_built_from_appended_lines_equals_a_whole_rebuild():
         assert step == 0 or reg.get_run("inc").context_window == 200_000
     assert [event["kind"] for event in mirrored("inc")][-1] == "done"
     assert reg.get_run("inc").provider_session_id == reg.get_run("full").provider_session_id == "s"
+
+
+#: One turn of each provider's raw stream answering `text`.
+_TURN = {
+    "claude": lambda text: [_INIT, _said(text), {"type": "result", "subtype": "success", "is_error": False, "session_id": "s", "result": text}],
+    "codex": lambda text: [{"type": "turn.started"}, {"type": "item.completed", "item": {"id": "i", "type": "agent_message", "text": text}},
+                           {"type": "turn.completed", "usage": {}}],
+}
+
+
+@pytest.mark.parametrize(("provider", "openers", "reply", "quiet"), [
+    # Only a report owing no reply opened the turn: its `NO_REPLY` reply is no answer.
+    ("claude", [Relation.REPORT], NO_REPLY, True),
+    ("claude", [Relation.REPORT, Relation.REPORT], f"  {NO_REPLY}\n", True),
+    ("codex", [Relation.REPORT], NO_REPLY, True),
+    # His message opened it: shown as written.
+    ("claude", [None], NO_REPLY, False),
+    # A report asking an answer, or his message beside the report.
+    ("claude", [Relation.REPORT_ASKING], NO_REPLY, False),
+    ("claude", [Relation.REPORT, None], NO_REPLY, False),
+    # More than the marker: shown whole.
+    ("claude", [Relation.REPORT], f"{NO_REPLY} The ranking moved.", False),
+    # No message opened it (a resume): shown.
+    ("claude", [], NO_REPLY, False),
+])
+def test_a_quiet_wake_reply_is_marked_in_every_mirror_and_says_nothing(provider, openers, reply, quiet):
+    """A turn only « no reply » reports opened, answered with exactly `NO_REPLY`, is marked `quiet` on its text and its
+    ending, alike in a whole read and in the live mirror; every other reply is left as written. A quiet reply is never
+    the run's last line nor a part of its answer."""
+    from galaius.agents.catalog.relations import closing_parts
+
+    register_run(run_id="lead", name="lead", provider=provider, task="t")
+    register_run(run_id="child", name="child", provider=provider, task="t")
+    mirror = reg.StreamMirror("lead")
+    write = lambda lines: reg.raw_events_path("lead").open("a").write("".join(json.dumps(line) + "\n" for line in lines))
+    write(_TURN[provider]("First answer."))
+    for relation in openers:
+        reg.record_message_event(from_run="child" if relation else reg.PERSON_SENDER, to_run="lead", text="report", relation=relation)
+    write(_TURN[provider](reply))
+    mirror.refresh()
+    events = reg.read_events("lead")
+    second = events[next(index for index, event in enumerate(events) if event.kind == "done") + 1:]
+    said = [event for event in second if event.kind in ("text", "done") and event.text.strip() == reply.strip()]
+    assert said and all(event.quiet is quiet for event in said)
+    assert [event.get("quiet", False) for event in _mirrored_events("lead")] == [event.quiet for event in events]
+    assert all(event.summary(viewer="lead") == "" for event in said) is quiet  # never the record's last line
+    assert (reply.strip() in closing_parts(events)) is not quiet
 
 
 @pytest.mark.parametrize("watcher", ["mirror", "whole_read"])

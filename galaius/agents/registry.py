@@ -43,7 +43,7 @@ from galaius.usage_dialects import CountedTokens, OlderTokens
 from galaius_core import OPEN_MAX, OwnerQuestion, ASKED_BY_MAX, LaunchSkipReason, ReasoningLevel, RecordedReasoning, FILE_KEY, KEPT_FILE_MAX, MACHINE_AGENT_MEDIA, MEDIA_KEY, file_key, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor, TokenCounts
 
 from galaius.agents.transport.events import (
-    CONTEXT_FIELDS, PERSON_SENDER, AgentEvent, MessageFields, RunCut, UsageLedger, answered_line, its_work, model_spoke,
+    CONTEXT_FIELDS, PERSON_SENDER, AgentEvent, MessageFields, RunCut, UsageLedger, WakeReply, answered_line, its_work, model_spoke,
     received, stream_lines,
 )
 from galaius.agents.catalog.connection import CatalogConnection
@@ -2472,6 +2472,9 @@ class StreamReader:
         self.raw = False
 
     def __iter__(self) -> Iterator[AgentEvent]:
+        return WakeReply.marked(self.run_id, self._events())
+
+    def _events(self) -> Iterator[AgentEvent]:
         lines = _raw_lines(self.run_id, self.first) if self.provider is not None else None
         if lines is None:
             yield from self._appended()
@@ -2686,7 +2689,7 @@ class StreamMirror:
             updates |= _thinking_update(stored, self.ledger.thinking, urgent=bool(updates))
             if updates:
                 _update_fields(self.run_id, updates)
-        merged = _interleave(parsed, read_messages(self.run_id), self.lines + len(stream_lines(tail)))
+        merged = list(WakeReply.marked(self.run_id, _interleave(parsed, read_messages(self.run_id), self.lines + len(stream_lines(tail)))))
         kept = self.written
         if len(merged) >= len(kept) and all(new is old or new.model_copy(update={"at": old.at}) == old for new, old in zip(merged, kept)) \
                 and self._append(merged[len(kept):]):

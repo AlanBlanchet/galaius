@@ -8,7 +8,7 @@ Unrecognised line becomes ``kind="other"`` rather than dropped — a vendor addi
 must never make a run look idle.
 """
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import suppress
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -384,6 +384,9 @@ class AgentEvent(OlderTokens, ContextGauge):
     #: structured output), not only a stop reason. Media execution must prefer this over an
     #: earlier free-form assistant block.
     final_text: bool = False
+    #: For a "text" or a "done": exactly `NO_REPLY`, ending a turn only « no reply » reports opened (`WakeReply`): read
+    #: as no answer by every reader (no bubble, no notice, no last line). Left out when False.
+    quiet: bool = Field(default=False, exclude_if=lambda value: not value)
     #: When galaius FIRST OBSERVED this line, not when the agent produced it — vendor writes
     #: no timestamp, we watch the stream, so this is the one honestly-available clock. Lets a
     #: view tell a working agent from a stopped one, order a conversation, and fire a message
@@ -422,6 +425,8 @@ class AgentEvent(OlderTokens, ContextGauge):
 
     def summary(self, viewer: str | None = None) -> str:
         """One line for a supervisor row — what this agent is doing right now."""
+        if self.quiet:
+            return ""  # a quiet wake's reply and its ending: nothing for anyone to read
         if self.kind == "tool":
             return f"using {self.tool}" if self.tool else "using a tool"
         if self.kind == "rate_limit":
@@ -517,3 +522,35 @@ def _who(run_id: str | None) -> str:
 
     run = reg._read_record(run_id)
     return run.name if run is not None else run_id[:8]
+
+
+#: The whole reply of a turn that has nothing for its reader: an agent hook asks for it when only reports owing no reply
+#: opened the turn (a provider refuses an empty final reply).
+NO_REPLY = "[no reply]"
+
+
+class WakeReply:
+    """Marks `quiet` the `NO_REPLY` reply of each turn of run `run_id` that only « no reply » reports opened: every
+    message to it since its previous turn ended is a `Relation.REPORT`, no prompt typed. A turn its stream shows no
+    opening message for (a resume, a stream read from the middle) is never quiet: shown, never hidden."""
+
+    def __init__(self, run_id: str) -> None:
+        self.run_id = run_id
+        #: None: no message to it this turn yet; True: only « no reply » reports; False: anything else opened it.
+        self.reports_only: bool | None = None
+
+    def mark(self, event: AgentEvent) -> AgentEvent:
+        quiet = event.kind in ("text", "done") and self.reports_only is True and event.text.strip() == NO_REPLY
+        if event.kind in ("done", "error", "cancelled"):
+            self.reports_only = None
+        elif event.kind == "prompt":
+            self.reports_only = False
+        elif event.kind == "message" and event.to_run == self.run_id and event.from_run != self.run_id:
+            self.reports_only = self.reports_only is not False and event.relation is Relation.REPORT
+        return event.model_copy(update={"quiet": True}) if quiet else event
+
+    @classmethod
+    def marked(cls, run_id: str, events: Iterable[AgentEvent]) -> Iterator[AgentEvent]:
+        """`events` of run `run_id`, in their stream's order, each reply of a quiet wake marked."""
+        wake = cls(run_id)
+        return (wake.mark(event) for event in events)
