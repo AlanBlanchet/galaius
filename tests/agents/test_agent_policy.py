@@ -223,6 +223,32 @@ def test_a_click_switches_one_model_and_keeps_the_rest_of_the_file(policy_file, 
     assert ModelSwitches.read(written["models"].items()).switched(*clicks[-1]) == {k: v for k, v in written["models"].items() if k != "note"}
 
 
+def test_two_clicks_at_once_both_land_and_no_reader_sees_a_torn_file(policy_file):
+    """Tester 5c3d677e: two rows clicked at once lost one click 295 times in 300, and a reader (the launcher, the shell guard)
+    saw an empty file 241 times — reading no switch, so a switched-off model ran."""
+    import threading
+    seen: list[dict] = []
+    for round_ in range(20):
+        start = threading.Barrier(3)
+        models = (f"claude/model-a-{round_}", f"claude/model-b-{round_}")
+
+        def click(model: str) -> None:
+            start.wait()
+            Policy.load(policy_file).set_model_active(model, False, path=policy_file)
+
+        def read() -> None:
+            start.wait()
+            for _ in range(20):
+                seen.append(json.loads(policy_file.read_text()))
+        threads = [threading.Thread(target=click, args=(model,)) for model in models] + [threading.Thread(target=read)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert set(models) <= set(json.loads(policy_file.read_text())["models"]), round_
+    assert all("profiles" in raw for raw in seen)
+
+
 def test_the_policy_reaches_the_spawn(policy_file, monkeypatch):
     """The seam that makes all three asks real: at spawn, an agent's profile decides its model,
     its toolset becomes the vendor's allow-list, and a switched-off provider refuses."""

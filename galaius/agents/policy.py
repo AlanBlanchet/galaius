@@ -25,6 +25,7 @@ projection kind — because the alternative is discovering it at 3am when that a
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Callable
@@ -36,6 +37,8 @@ from galaius.agents.catalog.connection import CatalogConnectionError
 from galaius.agents.tool_gateway import AgentToolList, ToolGateway
 from galaius.agents.catalog.vocabulary import TouchScope
 from galaius.agents.model_family import ModelSwitches
+from galaius.host.atomic_file import replace_held_open
+from galaius.host.file_lock import exclusive
 from galaius.config.user import UserConfig
 from galaius.catalog.criteria import ValueRule
 
@@ -402,21 +405,26 @@ class Policy:
         self.models = self._write("models", lambda switches: {**switches, **ModelSwitches.read(switches.items()).switched(model, bool(active))}, path)
 
     def _write(self, section: str, change: Callable[[dict[str, Any]], dict[str, Any]], path: Path | None) -> dict[str, Any]:
-        """Read-modify-write ONE switch section of the policy file, every other key kept as written; returns the section."""
+        """Read-modify-write ONE switch section of the policy file, every other key kept as written; returns the section.
+        Under the file's lock, written whole beside it then renamed over it: two clicks at once both land, and a reader (the
+        launcher, the shell guard) never sees it half written (tester 5c3d677e: one click lost, an empty file read)."""
         path = Path(path) if path is not None else policy_path()
-        try:
-            raw = json.loads(path.read_text())
-        except FileNotFoundError:
-            raw = {}
-        except (OSError, ValueError) as err:
-            # The file holds profiles and toolsets somebody typed. One missing comma must not let
-            # a provider switch flatten it: refuse, name the file, write nothing.
-            raise PolicyError(f"{path} is not readable policy ({err}); fix it — nothing was written") from err
-        if not isinstance(raw, dict) or not isinstance(raw.setdefault(section, {}), dict):
-            raise PolicyError(f"{path} must hold an object with `{section}` an object — nothing was written")
-        raw[section] = change(raw[section])
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(raw, indent=2) + "\n")
+        with exclusive(os.open(path.with_name(f".{path.name}.lock"), os.O_RDWR | os.O_CREAT, 0o600)):
+            try:
+                raw = json.loads(path.read_text())
+            except FileNotFoundError:
+                raw = {}
+            except (OSError, ValueError) as err:
+                # The file holds profiles and toolsets somebody typed. One missing comma must not let
+                # a provider switch flatten it: refuse, name the file, write nothing.
+                raise PolicyError(f"{path} is not readable policy ({err}); fix it — nothing was written") from err
+            if not isinstance(raw, dict) or not isinstance(raw.setdefault(section, {}), dict):
+                raise PolicyError(f"{path} must hold an object with `{section}` an object — nothing was written")
+            raw[section] = change(raw[section])
+            temporary = path.with_name(f".{path.name}.tmp")
+            temporary.write_text(json.dumps(raw, indent=2) + "\n")
+            replace_held_open(temporary, path)
         return dict(raw[section])
 
     def assign_paradigm(
