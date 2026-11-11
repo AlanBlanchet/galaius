@@ -755,10 +755,13 @@ async def test_a_community_agent_runs_fenced_with_less_than_its_caller_and_plays
     os.utime(stale, (time.time() - 8 * 86400,) * 2)
     caller = await run_agent(_CommandRecorder(), "find how it works", agent="tester", cwd=str(project), denied_tools=("Bash",))
     await asyncio.wait_for(caller.wait(), timeout=30)
+    # A role naming galaius's tools (every catalog role, 2026-11-11): its community child runs without them, never refused.
+    from galaius.agents.policy import Policy
+    monkeypatch.setattr(Policy, "tools_for", lambda self, agent: ["Read", "Grep", "mcp__galaius__screenshot"])
     child = await run_agent(_CommandRecorder(), "map its protocol", cwd=str(project), parent_run_id=caller.run_id, community=entry)
     assert await asyncio.wait_for(child.wait(), timeout=60) == 0
     started = _CommandRecorder.started[-1]
-    assert started["agent"] == "tester" and started["mcp_config"] is None
+    assert started["agent"] == "tester" and started["mcp_config"] is None and started["allowed_tools"] == ["Read", "Grep"]
     assert started["denied_tools"] == ("Bash", "Agent", "Task", "WebFetch", "WebSearch", "SendMessage", "ListAgents")   # its caller's, then ours
     record = reg.get_run(child.run_id)
     tag = f"community-instructions-{entry.nonce}"
@@ -798,6 +801,43 @@ def test_a_community_agent_starts_reading_nothing_from_a_caller_folder_the_fence
     started, spec = agent.fence(str(caller), None, ClaudeCodeProvider())
     assert isinstance(started.reach, Unread) and spec.levels == {} and started.work is not None and started.work.is_dir()
     assert "reads nothing of yours (" in started.started() and str(caller) in started.reach.why
+
+
+def test_a_community_agent_reads_the_files_its_caller_hands_it_and_no_credential(tmp_path, monkeypatch):
+    """2026-11-11: a community reviewer handed `~/.galaius/out/…/REPORT.md` found it missing — its coordinator's folder is
+    too large to open and a hidden folder never opens. Handed files are copied read-only into its own folder, read there
+    inside the real fence; a credential store, galaius's run records, a folder, a clash of names are refused."""
+    import subprocess
+    from uuid import uuid4
+
+    from galaius.isolation import fence as fence_module
+    from galaius.agents.catalog.community import CommunityAgent
+    if not fence_module.available()[0]:
+        pytest.skip("this system cannot build the agent fence")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("GALAIUS_AGENTS_DIR", raising=False)
+    brief, shot, other = tmp_path / ".galaius" / "out" / "owner" / "BRIEF.md", tmp_path / "work" / "page.png", tmp_path / "work" / "b" / "BRIEF.md"
+    refused = {"key": tmp_path / ".ssh" / "id_ed25519", "run record": tmp_path / ".galaius" / "out" / "agents" / "run.json",
+               "config": tmp_path / ".config" / "galaius" / "machine.json", "pem": tmp_path / "work" / "server.pem", "hidden": tmp_path / ".cache" / "notes.md"}
+    for path, text in ((brief, "judge the installer"), (shot, "PNG"), (other, "x"), *((path, "secret") for path in refused.values())):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    agent = CommunityAgent(entry=uuid4(), kind="agent", title="Electron pro", author="someone/agents", instructions="Review.", digest="0" * 64, nonce="n0nce")
+    os.link(refused["key"], tmp_path / "work" / "notes.md")
+    for path in (*refused.values(), tmp_path / "work" / "notes.md", brief.parent, tmp_path / "none.md"):
+        with pytest.raises(ValueError):
+            agent.handing([path])
+    with pytest.raises(ValueError, match="two handed files"):
+        agent.handing([brief, other])
+    started, spec = agent.handing([brief, shot]).fence(str(tmp_path / "work"), None, ClaudeCodeProvider())
+    copy = started.work / "given" / "BRIEF.md"
+    assert started.given() == (copy, started.work / "given" / "page.png") and oct(copy.stat().st_mode)[-3:] == "444"
+    assert str(copy) in started.prompt("main", "r1") and str(copy) in started.started()
+    brief.write_text("changed after it started")
+    done = subprocess.run(spec.build().command(["cat", str(copy)]), cwd=started.work, capture_output=True, text=True, timeout=60, check=False)
+    assert done.returncode == 0 and done.stdout == "judge the installer", done.stderr
+    hidden = subprocess.run(spec.build().command(["cat", str(brief)]), cwd=started.work, capture_output=True, text=True, timeout=60, check=False)
+    assert hidden.returncode != 0, "the original stays out of the fence: only its copy is read"
 
 
 def test_a_community_entry_with_a_long_licence_or_a_plain_http_link_still_starts():

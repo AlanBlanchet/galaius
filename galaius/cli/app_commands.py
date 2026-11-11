@@ -1710,11 +1710,14 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
                  for_run: Annotated[str | None, Parameter(name="--for")] = None,
                  continues: str | None = None, fresh: bool = False, single: bool = False, helper: bool = False,
                  cross_project: Annotated[bool, Parameter(name="--cross-project")] = False,
-                 community: str | None = None) -> None:
+                 community: str | None = None,
+                 read: Annotated[list[Path] | None, Parameter(name="--read")] = None) -> None:
     """Start an agent and return its id immediately, without waiting for it to finish.
 
     --community <entry id> starts the community library's entry (`galaius agents community "<need>"` lists them) as the
     child of the agent run asking, under its control: its role, tools, folder and permission mode, no MCP server.
+    --read <file> (repeatable, with --community) hands it a file: a brief, a report, a page's screenshot or text, copied
+    read-only into its own folder as it starts.
 
     --machine <name or id> starts it on another of your computers instead, through the server, in
     --folder (an agent folder of that computer, or a folder beneath one); --permission-mode there
@@ -1784,7 +1787,9 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
         _spawn_on_machine(machine, folder, task, agent=agent, provider=provider, model=model, permission=permission_mode)
         return
     try:
-        started_from = CommunityAgent.read(community) if community is not None else None
+        if read and community is None:
+            raise ValueError("--read hands files to a community agent: pass --community too")
+        started_from = CommunityAgent.read(community).handing(read or ()) if community is not None else None
     except (ValueError, CatalogConnectionError) as error:
         print(f"ERROR: community entry {community!r} cannot start: {error}", file=sys.stderr)
         raise SystemExit(2) from None

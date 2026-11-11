@@ -779,6 +779,14 @@ class RoleToolMissing(RuntimeError):
     parent says it works (2026-11-07: a scraper started with no browser on a held login)."""
 
 
+def tools_of(policy: Policy, role: str, community: bool) -> list[str] | None:
+    """The tools a run of `role` may use (`Policy.tools_for`): a community agent's are its caller role's minus galaius's,
+    which no MCP server hands it (`ClaudeTurnSettings.isolated`) — never a refusal to start (`require_galaius`, 2026-11-11:
+    every community spawn from a role naming galaius's tools was refused)."""
+    tools = policy.tools_for(role)
+    return [tool for tool in tools if not tool.startswith(TOOL_PREFIX)] if community and tools is not None else tools
+
+
 def require_galaius(role: str | None, tools: list[str] | None, provider: AgentProvider, environment: Mapping[str, str], *,
                     handed: bool, alone: bool) -> None:
     """Raises `RoleToolMissing` when `tools` (a role's, None: unrestricted, so it declares none) name galaius's and the
@@ -1007,7 +1015,8 @@ class ResumeLaunch(AheadLaunch):
                                                       subscription=run.subscription_id, floor=run.model)
             reasoning = policy.effort_for(run.agent, f"{provider.name}/{model}" if model else None, chosen=run.reasoning_set)
         coarse_accepted = policy.accepts_coarse_tool_policy(run.agent, provider.name) if run.agent else False
-        provider.validate_tool_policy(policy.tools_for(run.agent), run.denied_tools, coarse_accepted=coarse_accepted)
+        tools = tools_of(policy, run.agent, run.community is not None)
+        provider.validate_tool_policy(tools, run.denied_tools, coarse_accepted=coarse_accepted)
         if refusal := provider.sandbox_refusal():
             raise ModelUnavailable(sentence=f"{provider.name} cannot continue this run on this PC: {refusal}")
         env = {**GatewayServed.environment(environment, None if run.community else run.agent), **routed, "GALAIUS_RUN_ID": run.run_id,
@@ -1016,7 +1025,7 @@ class ResumeLaunch(AheadLaunch):
         arguments = dict(
             model=model, permission_mode=run.permission_mode, fence_decides=decides,
             reasoning=reasoning, agent=run.agent,
-            allowed_tools=policy.tools_for(run.agent), denied_tools=run.denied_tools,
+            allowed_tools=tools, denied_tools=run.denied_tools,
             agent_prompt=(run.community.prompt(run.agent, run.parent_run_id or "") if run.community is not None
                           else _role_prompt(catalog, run.agent, provider, env) if catalog is not None else None),
             mcp_config=mesh_config(run_id=run.run_id, role=run.agent, fence=run.fence)
@@ -1643,7 +1652,7 @@ async def run_agent(
     model: str | None = None
     effort = policy.effort_for(agent, chosen=reasoning)
     auth_cache: dict[tuple[str, str], tuple[bool | None, str]] = {}
-    allowed_tools = policy.tools_for(agent)
+    allowed_tools = tools_of(policy, agent, community is not None)
     # A model that refused for quota a moment ago refuses again: passing it over BEFORE the spawn
     # is what stops every launch paying the same dead-child tax. It goes to the END of the walk, never
     # out of it: tried once every other candidate refused or could not start — a stale note must never
