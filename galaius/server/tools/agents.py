@@ -241,11 +241,11 @@ def request_tool(tool: str, why: str, site: str | None = None) -> str:
 
     Decided by Galaius at once, from what that agent holds, never from your words: "browser" lends you a browser of
     your own, fresh and signed out, on one site a page of that agent shows now (`site`), to read and click for 30
-    minutes (navigate, get_page_state, get_interactive_elements, screenshot, run_actions). "sign_in" or "credential"
-    puts ONE question to the person, at most once; his answer goes to the agent that started you. Anything else is never
-    lent: finish without it and say in your report what you lacked.
+    minutes (navigate, get_page_state, get_interactive_elements, screenshot, run_actions). Anything else — a sign-in, a
+    credential, another tool — is never lent and never asked of the person by you: finish without it and say in your report
+    what you lacked and for which step; the agent that started you decides.
 
-    tool: "browser", "sign_in" or "credential".
+    tool: "browser".
     why: one line, what you need it for (shown to the agent that started you).
     site: with "browser", the address of the site (http(s)://host:port).
     """

@@ -2,18 +2,17 @@
 
 Code decides, never a model reading the asker's words (a stranger's text writes them): a community run gets the
 browser (`LENT_TOOLS`) when its coordinator holds it, on a site a page of the coordinator's shows, for `LENT_SECONDS`,
-in its own fresh session, signed out; anything else of its coordinator's is never lent. What no agent holds — a
-sign-in, a credential (`OWNER_ACCESS`) — is one card in the person's conversation, at most one per community run, worded
-by Galaius alone. Every grant lives on the community run's record, outside its fence; every call it makes passes `gate`
+in its own fresh session, signed out; anything else of its coordinator's is never lent. A sign-in or a credential
+(`OWNER_ONLY`) is never lent and never put to the person by it: refused, said to its coordinator, which knows the task and
+asks him itself when it must (2026-11-12: a card a community agent raised, « I don't understand what the question is
+about »). Every grant lives on the community run's record, outside its fence; every call it makes passes `gate`
 first, which takes exactly the parameters each lent tool may carry and forces its session."""
 
 import time
 from collections.abc import Callable, Iterable
 
-from galaius_core import OwnerQuestion, QuestionOption
-
 from galaius.agents import registry as reg
-from galaius.agents.catalog.community import LENT_ACTIONS, LENT_SECONDS, LENT_SESSION, LENT_TOOLS, OWNER_ACCESS, REQUEST_TOOL, CommunityAgent, ToolGrant, origin, quote
+from galaius.agents.catalog.community import LENT_ACTIONS, LENT_SECONDS, LENT_SESSION, LENT_TOOLS, OWNER_ONLY, REQUEST_TOOL, CommunityAgent, ToolGrant, origin, quote
 from galaius.agents.policy import TOOL_PREFIX
 from galaius.agents.transport.events import AgentEvent
 from galaius.isolation.fence import LENT_RUN
@@ -48,11 +47,11 @@ def request(run_id: str | None, tool: str, why: str, site: str | None, shown: Ca
     if counted is None or counted.community is None or counted.community.asked == run.community.asked:
         return f"ERROR: {REQUESTS_MAX} requests already: end your task with what you have, and say in your report what you lacked."
     name = tool.strip().removeprefix(TOOL_PREFIX).casefold()
-    if name in OWNER_ACCESS:
-        return _card(counted, name, why)
+    if name in OWNER_ONLY:
+        return _lacks(counted, name, why)
     if name != "browser" and name not in LENT_TOOLS:
         return (f"ERROR: {tool[:60]!r} is never lent to a community agent. What can be lent: \"browser\" (its tools: "
-                f"{', '.join(LENT_TOOLS)}), from the agent that started you; what only the person gives: {', '.join(OWNER_ACCESS)}.")
+                f"{', '.join(LENT_TOOLS)}), from the agent that started you; never lent: {', '.join(OWNER_ONLY)}.")
     coordinator = reg.get_run(run.parent_run_id) if run.parent_run_id else None
     if coordinator is None or coordinator.community is not None:
         return "ERROR: no agent run started you: nothing can be lent."
@@ -77,34 +76,12 @@ def request(run_id: str | None, tool: str, why: str, site: str | None, shown: Ca
             f"session ({session(run)}), fresh and signed out; it stays on {wanted} (a page leaving it is brought back). Call the tools now.")
 
 
-def _card(run: reg.AgentRun, name: str, why: str) -> str:
-    """The one question run `run`'s request for `name` puts in the person's conversation (its root run), worded by
-    Galaius: never a second for the same run."""
-    assert run.community is not None
-    if run.community.card is not None:
-        return f"ERROR: your request already reached the person (question {run.community.card[:8]}); his answer goes to the agent that started you."
-    root = reg.conversation_of(run.run_id)   # the top of its launch tree: the one run that asks him (`reg.ask_owner`)
-    if root == run.run_id:
-        return "ERROR: no conversation to ask in."
-    coordinator = reg.get_run(run.parent_run_id) if run.parent_run_id else None
-    asker = coordinator.agent if coordinator is not None and coordinator.agent else "an"
-    title = run.community.title[:60]
-    question = OwnerQuestion(
-        question=f"Community agent « {title} » ({asker} agent's) asks for {OWNER_ACCESS[name]}{f' ({lent})' if (lent := site(run)) else ''}"[:200],
-        options=(QuestionOption(label="Refuse", consequence="It carries on without it and says what it lacked."),
-                 QuestionOption(label="Allow", consequence=f"The {asker} agent is told you allow it and hands it over itself.")),
-        recommended=0, criticality="credential" if name == "credential" else "new_access", allow_custom=False,
-        reason=f"No agent here holds it; source {run.community.source}"[:160])
-    if reg.community_changed(run.run_id, lambda each: each.model_copy(update={"card": question.id}) if each.card is None else None).community.card != question.id:
-        return "ERROR: your request already reached the person; his answer goes to the agent that started you."
-    try:
-        reg.ask_owner(root, question)
-    except reg.QuestionRefused as refused:
-        return f"ERROR: the person could not be asked ({refused}). Say in your report what you lacked."
+def _lacks(run: reg.AgentRun, name: str, why: str) -> str:
+    """Run `run`'s request for `name` (`OWNER_ONLY`): refused, and said in its coordinator's events with its words quoted."""
     _note((run.run_id, *((run.parent_run_id,) if run.parent_run_id else ())),
-          f"asked the person ({question.short}) for {name} for community agent {reg.short_id(run.run_id)}; it said: {quote(why[:WHY_MAX], limit=WHY_MAX)}")
-    return (f"Asked the person (question {question.short}): one card in his conversation. Do not wait for it: finish what you can "
-            "without it, and say in your report what you lacked.")
+          f"refused {OWNER_ONLY[name]} to community agent {reg.short_id(run.run_id)}; it said: {quote(why[:WHY_MAX], limit=WHY_MAX)}")
+    return (f"ERROR: {OWNER_ONLY[name]} is never lent to a community agent, and the person is not asked by you. Finish what you can "
+            "without it, then say in your report what you lacked and for which step: the agent that started you decides what to do.")
 
 
 def _note(runs: Iterable[str], said: str) -> None:

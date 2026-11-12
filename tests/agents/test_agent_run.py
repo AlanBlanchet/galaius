@@ -925,7 +925,7 @@ def test_a_community_agent_is_lent_only_its_coordinators_browser_on_a_site_it_sh
     """Owner 2026-11-12 « Can't they ask for permissions instead ? … not that intrusive »: a community agent asks its
     coordinator (`request_tool`). Code decides, never its words: the browser alone, only when the coordinator holds it,
     on a site a page of the coordinator's shows, for a while, in its own session, exactly the parameters lent; a
-    sign-in or credential is one card in the person's conversation, never two; nothing else of the coordinator's."""
+    sign-in or credential never lent and never put to the person; nothing else of the coordinator's."""
     import time
     from uuid import uuid4
 
@@ -986,11 +986,13 @@ def test_a_community_agent_is_lent_only_its_coordinators_browser_on_a_site_it_sh
     assert asked(browserless, "browser").startswith("ERROR:") and not reg.get_run(browserless).community.grants
     assert set(LENT_TOOLS) <= {"navigate", "get_page_state", "get_interactive_elements", "screenshot", "run_actions"}
 
+    # His card 2026-11-12 « I don't understand what the question is about »: a community agent never asks him; its coordinator
+    # hears what it lacked, its words quoted.
     root = reg.get_run(child).parent_run_id
-    assert asked(child, "sign_in").startswith("Asked the person")
-    assert asked(child, "credential").startswith("ERROR:")   # one card per community run, never a second
-    cards = reg.get_run(conversation).asking
-    assert not reg.get_run(root).asking and len(cards) == 1 and "Ui ux tester" in cards[0].question and "to test the app" not in cards[0].question
+    for owner_only in ("sign_in", "credential"):
+        assert "never lent" in asked(child, owner_only)
+    assert not reg.get_run(conversation).asking and not reg.get_run(root).asking
+    assert sum("refused a signed-in browser" in event.text and "to test the app" in event.text for event in reg.read_events(root)) == 1
     for _ in range(lending.REQUESTS_MAX - 4):   # 4 asked already
         assert not asked(child, "browser").startswith("ERROR: 8")
     said = asked(child, "browser")
