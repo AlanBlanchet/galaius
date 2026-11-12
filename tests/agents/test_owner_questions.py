@@ -2,6 +2,8 @@
 and closes on the one message of his that carries its answer id (owner 2026-11-02 « only ask for critical things »;
 15:24 « a sub-agent shoudl'nt be allowed to ask question to the user, only the coordinator »)."""
 
+import json
+
 import pytest
 from galaius_core import OPEN_MAX, OwnerQuestion, QuestionAnswer
 
@@ -10,8 +12,9 @@ from galaius.agents import agent_queue, messaging
 from galaius.agents import registry as reg
 from tests.support import ScriptedProvider, install_provider, register_run, use_policy
 
-OPTIONS = [{"label": "Supprimer", "consequence": "la base preprod repart vide"},
-           {"label": "Garder", "consequence": "rien ne change, la migration attend"}]
+SUBJECT = "base de données preprod (serveur galaius)"
+OPTIONS = [{"label": "Supprimer", "consequence": "la base preprod repart vide", "cost": "1 min de coupure"},
+           {"label": "Garder", "consequence": "rien ne change, la migration attend", "cost": "rien"}]
 
 
 class _Resumable(ScriptedProvider):
@@ -28,8 +31,8 @@ def _asking(monkeypatch, run_id: str | None) -> None:
     monkeypatch.setattr(messaging, "asking_run", lambda: run_id)
 
 
-async def _ask(criticality: str = "destructive") -> str:
-    return await tools_agents.ask_owner("Supprimer la base preprod ?", OPTIONS, 1, criticality, "irréversible")
+async def _ask(criticality: str = "destructive", subject: str = SUBJECT, question: str = "Supprimer la base preprod ?", options=OPTIONS) -> str:
+    return await tools_agents.ask_owner(subject, question, options, 1, criticality, "irréversible")
 
 
 @pytest.mark.asyncio
@@ -47,8 +50,8 @@ async def test_the_coordinator_posts_its_question_and_keeps_working(monkeypatch)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("criticality", "refusal"), [
-    pytest.param("style", "Only these reasons reach the owner", id="not-critical"),
-    pytest.param("", "Only these reasons reach the owner", id="no-reason"),
+    pytest.param("style", "Only these reasons reach him", id="not-critical"),
+    pytest.param("", "Only these reasons reach him", id="no-reason"),
 ])
 async def test_a_question_without_a_critical_reason_is_refused(monkeypatch, criticality, refusal):
     register_run("main-1", name="main")
@@ -58,6 +61,36 @@ async def test_a_question_without_a_critical_reason_is_refused(monkeypatch, crit
 
     assert said.startswith("ERROR") and refusal in said and "decide yourself" in said
     assert reg.get_run("main-1").asking == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unclear", [
+    # Owner 2026-11-12 « I don't understand what the question is about. You must make your questions more concret »
+    pytest.param({"subject": ""}, id="names-nothing"),
+    pytest.param({"options": [{"label": "Supprimer", "consequence": "la base repart vide"}, OPTIONS[1]]}, id="option-without-cost"),
+    pytest.param({"question": "Community agent « T » asks for the browser signed in on the site lent to it"}, id="not-a-question"),
+    pytest.param({"question": "Relancer 0c62da1e sur galaius ?"}, id="internal-id"),
+])
+async def test_a_question_he_could_not_understand_cold_is_refused(monkeypatch, unclear):
+    register_run("main-1", name="main")
+    _asking(monkeypatch, "main-1")
+
+    said = await _ask(**unclear)
+
+    assert said.startswith("ERROR: not asked") and "name the thing it acts on" in said
+    assert reg.get_run("main-1").asking == ()
+
+
+def test_a_question_an_older_version_asked_never_hides_its_run(monkeypatch):
+    register_run("main-1", name="main")
+    old = {"id": "a" * 32, "question": "Supprimer ?", "options": [{"label": "Oui", "consequence": "x"}, {"label": "Non", "consequence": "y"}],
+           "recommended": 0, "allow_custom": False, "criticality": "destructive", "reason": "r"}
+    record = reg._record_path("main-1")
+    record.write_text(json.dumps({**json.loads(record.read_text()), "asking": [old]}))
+
+    run = reg.get_run("main-1")
+
+    assert run is not None and run.asking == ()
 
 
 @pytest.mark.asyncio
@@ -95,7 +128,7 @@ def test_his_message_under_the_answer_id_closes_the_question_and_reaches_the_run
     use_policy(monkeypatch, messaging, agents={"main": "fresh-model"}, reasoning={"main": "high"}, providers={"fake": True})
     monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
     register_run("main-1", name="main", provider="fake", agent="main", provider_session_id="vendor-main")
-    question = OwnerQuestion(question="Publier le site ?", options=OPTIONS, recommended=0, criticality="public", reason="public")
+    question = OwnerQuestion(subject="site galaius.ai", question="Publier le site ?", options=OPTIONS, recommended=0, criticality="public", reason="public")
     reg.ask_owner("main-1", question)
     text = question.answer_text(QuestionAnswer(option=1))
 

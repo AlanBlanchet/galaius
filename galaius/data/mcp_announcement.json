@@ -595,12 +595,12 @@
     },
     {
      "name": "ask_owner",
-     "description": "Put ONE critical question to the owner without waiting: it shows as a card in his conversation with one-tap\nanswers and notifies his devices; you keep working, and his pick reaches you later as a message from him.\n\nOnly a conversation's coordinator may ask (a sub-agent sends its question to its coordinator with agent_send and keeps\nworking), and only when the fork is critical — `criticality` one of: destructive (cannot be taken back), prod\n(touches production), public (publishes to an audience he does not control), credential (needs one he holds),\nnew_access (opens an access that does not exist yet), spend_past_cap (spends past his cap). Every other fork you\ndecide yourself: the reversible, conventional option, said in one line.\n\nquestion: one line, in his language.\noptions: 2 to 4, each {label, consequence: what happens if he picks it}; shown A, B, C, D.\nrecommended: the option you would take, 0-based.\nreason: one line, why this cannot be decided without him.\nallow_custom: whether he may answer in his own words instead.",
+     "description": "Put ONE critical question to the owner without waiting: it shows as a card in his conversation with one-tap\nanswers and notifies his devices; you keep working, and his pick reaches you later as a message from him.\n\nOnly a conversation's coordinator may ask (a sub-agent sends its question to its coordinator with agent_send and keeps\nworking), and only when the fork is critical — `criticality` one of: destructive (cannot be taken back), prod\n(touches production), public (publishes to an audience he does not control), credential (needs one he holds),\nnew_access (opens an access that does not exist yet), spend_past_cap (spends past his cap). Every other fork you\ndecide yourself: the reversible, conventional option, said in one line.\n\nHe reads it cold, maybe on his phone, with none of your context: write in the language he writes to you (French when\nhe writes French), plain words, no internal ids (run, commit, question ids), no agent or role names he did not choose.\nA question missing its subject or an option's cost, not ending with « ? », or carrying an id, is refused.\n\nsubject: what it is about, named as he knows it: the file, screen, server, account or amount it acts on.\nquestion: one line ending with « ? ».\noptions: 2 to 4, each {label, consequence: what happens for him if he picks it, cost: what it costs him in time or\n    money, « rien » when nothing}; shown A, B, C, D. His own words (« Autre ») always follow them.\nrecommended: the option you would take, 0-based.\nreason: one line, why this cannot be decided without him.",
      "inputSchema": {
       "$defs": {
        "QuestionOption": {
         "additionalProperties": false,
-        "description": "One answer he can tap: what it is, and what happens when he picks it.",
+        "description": "One answer he can tap: what it is, what happens for him when he picks it, and what that costs him.",
         "properties": {
          "label": {
           "maxLength": 60,
@@ -615,17 +615,29 @@
           "pattern": "^[^\\r\\n]*$",
           "title": "Consequence",
           "type": "string"
+         },
+         "cost": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[^\\r\\n]*$",
+          "title": "Cost",
+          "type": "string"
          }
         },
         "required": [
          "label",
-         "consequence"
+         "consequence",
+         "cost"
         ],
         "title": "QuestionOption",
         "type": "object"
        }
       },
       "properties": {
+       "subject": {
+        "title": "Subject",
+        "type": "string"
+       },
        "question": {
         "title": "Question",
         "type": "string"
@@ -656,14 +668,10 @@
        "reason": {
         "title": "Reason",
         "type": "string"
-       },
-       "allow_custom": {
-        "default": true,
-        "title": "Allow Custom",
-        "type": "boolean"
        }
       },
       "required": [
+       "subject",
        "question",
        "options",
        "recommended",

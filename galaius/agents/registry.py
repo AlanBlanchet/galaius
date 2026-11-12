@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, ClassVar, Literal, NamedTuple, Self, Unpack
 from uuid import UUID
 
-from pydantic import ConfigDict, BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
+from pydantic import ConfigDict, BaseModel, Field, PrivateAttr, ValidationError, ValidationInfo, field_validator
 from galaius.agents.limits import quota
 from galaius.usage_dialects import CountedTokens, OlderTokens
 from galaius_core import OPEN_MAX, OwnerQuestion, ASKED_BY_MAX, LaunchSkipReason, ReasoningLevel, RecordedReasoning, FILE_KEY, KEPT_FILE_MAX, MACHINE_AGENT_MEDIA, MEDIA_KEY, file_key, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor, TokenCounts
@@ -528,6 +528,21 @@ class AgentRun(OlderTokens, ContextGauge):
         """Only the run's own scope (`ceiling.is_run_scope`): a launcher's unit, as records written before this
         check hold, tells how the launcher ended, never this run."""
         return unit if is_run_scope(unit, info.data.get("run_id", "")) else None
+
+    @field_validator("asking", mode="before")
+    @classmethod
+    def readable_questions(cls, value: object) -> object:
+        """Only the questions this version reads: one an older galaius asked (no `subject`, an `allow_custom` key) is left
+        out, never the whole record with it — the run itself still lists, takes his messages and resumes."""
+        if not isinstance(value, list | tuple):
+            return value
+        readable = []
+        for held in value:
+            try:
+                readable.append(OwnerQuestion.model_validate(held))
+            except ValidationError:
+                continue
+        return tuple(readable)
 
     @field_validator("asked_by", mode="before")
     @classmethod

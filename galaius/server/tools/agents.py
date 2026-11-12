@@ -426,7 +426,7 @@ async def agent_send(run_id: str, message: str, wait: bool = False, fyi: bool = 
     return f"{said}\n{reply}" if waiting else reply
 
 
-def _ask(question: str, options: list[QuestionOption], recommended: int, criticality: Criticality, reason: str, allow_custom: bool) -> str:
+def _ask(subject: str, question: str, options: list[QuestionOption], recommended: int, criticality: Criticality, reason: str) -> str:
     """`ask_owner`'s posting (a record write): what the asking agent reads back, a refusal included. The asker is the run
     whose process scope the caller lives in (`messaging.asking_run`): no environment variable it could clear moves it."""
     if Caller.current().unowned():
@@ -434,12 +434,13 @@ def _ask(question: str, options: list[QuestionOption], recommended: int, critica
     if (run_id := messaging.asking_run()) is None:
         return "ERROR: this is the owner's own conversation: he reads you here, ask him in your answer."
     try:
-        posted = OwnerQuestion(question=question, options=tuple(options), recommended=recommended, criticality=criticality, reason=reason,
-                               allow_custom=allow_custom)
+        posted = OwnerQuestion(subject=subject, question=question, options=tuple(options), recommended=recommended, criticality=criticality,
+                               reason=reason)
     except ValidationError as error:
-        said = "; ".join(f"{'.'.join(map(str, problem['loc']))}: {problem['msg']}" for problem in error.errors())
-        return (f"ERROR: not asked: {said}. Only these reasons reach the owner: {', '.join(CRITICALITIES)}; anything else you decide "
-                "yourself: take the reversible, conventional option, say it in one line, keep working.")
+        said = "; ".join(f"{'.'.join(map(str, problem['loc'])) or 'question'}: {problem['msg']}" for problem in error.errors())
+        return (f"ERROR: not asked: {said}. He must understand it cold, from his phone: name the thing it acts on, what each answer does "
+                f"for him and what it costs, in plain words, no internal ids. Only these reasons reach him: {', '.join(CRITICALITIES)}; "
+                "anything else you decide yourself: take the reversible, conventional option, say it in one line, keep working.")
     try:
         reg.ask_owner(run_id, posted)
     except reg.QuestionRefused as refused:
@@ -451,8 +452,8 @@ def _ask(question: str, options: list[QuestionOption], recommended: int, critica
 
 @mcp.tool(category="agents")
 @instrumented
-async def ask_owner(question: str, options: list[QuestionOption], recommended: int, criticality: Criticality, reason: str,
-                    allow_custom: bool = True) -> str:
+async def ask_owner(subject: str, question: str, options: list[QuestionOption], recommended: int, criticality: Criticality,
+                    reason: str) -> str:
     """Put ONE critical question to the owner without waiting: it shows as a card in his conversation with one-tap
     answers and notifies his devices; you keep working, and his pick reaches you later as a message from him.
 
@@ -462,13 +463,18 @@ async def ask_owner(question: str, options: list[QuestionOption], recommended: i
     new_access (opens an access that does not exist yet), spend_past_cap (spends past his cap). Every other fork you
     decide yourself: the reversible, conventional option, said in one line.
 
-    question: one line, in his language.
-    options: 2 to 4, each {label, consequence: what happens if he picks it}; shown A, B, C, D.
+    He reads it cold, maybe on his phone, with none of your context: write in the language he writes to you (French when
+    he writes French), plain words, no internal ids (run, commit, question ids), no agent or role names he did not choose.
+    A question missing its subject or an option's cost, not ending with « ? », or carrying an id, is refused.
+
+    subject: what it is about, named as he knows it: the file, screen, server, account or amount it acts on.
+    question: one line ending with « ? ».
+    options: 2 to 4, each {label, consequence: what happens for him if he picks it, cost: what it costs him in time or
+        money, « rien » when nothing}; shown A, B, C, D. His own words (« Autre ») always follow them.
     recommended: the option you would take, 0-based.
     reason: one line, why this cannot be decided without him.
-    allow_custom: whether he may answer in his own words instead.
     """
-    return await asyncio.to_thread(_ask, question, options, recommended, criticality, reason, allow_custom)
+    return await asyncio.to_thread(_ask, subject, question, options, recommended, criticality, reason)
 
 
 @mcp.tool(category="agents", read_only=True)
