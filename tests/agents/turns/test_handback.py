@@ -738,6 +738,7 @@ def _only_a_review_at_work_the_role_ran_elsewhere():
     """The named role worked in another conversation of his: listed, so the close reads it before calling it undone."""
     _working(LEAD, agent="main")
     _working("refl", agent="reflection", parent_run_id=LEAD)
+    reviews.Ask(role="reflection", parent=LEAD, cwd=".", task="t").answered("refl")   # asked by the runtime: it wakes nobody
     _working("other", agent="main")
     _ended("fc16d3e8-0000", time.time() - 3600, agent="infra-engineer", parent_run_id="other", task="Fork: push our fixes")
 
@@ -757,10 +758,19 @@ def _spawn_still_in_line(monkeypatch):
     pytest.param(_spawn_still_in_line, STAMP, False, "", id="6-spawn-still-in-line"),
     pytest.param(_no_child, "DONE: pushed, a RUNNING close never stands alone.", False, "", id="7-no-running-stamp"),
     pytest.param(_child_at_work, "| push | RUNNING | deployer ships it |", True, "deployer", id="8-ledger-row-names-a-role-not-at-work"),
+    # Tester a903c717 round 1: roles named as what the reporter works on, a file name, the role spelled with a space, a
+    # stamp after a label or a list mark, an unnamed close with only the runtime's review at work.
+    pytest.param(_child_at_work, "RUNNING: infra-engineer fixes the visual-critic FAIL rows and the blob storage; reports here.", False, "", id="9-other-roles-are-its-objects"),
+    pytest.param(_no_child, "DONE.\n- `RUNNING-CHECK-R1.md`: brief written.", False, "", id="10-a-file-name-is-no-stamp"),
+    pytest.param(_only_a_review_at_work_the_role_ran_elsewhere, "RUNNING: push; infra engineer reports back here.", True, "fc16d3e8", id="11-role-with-a-space"),
+    pytest.param(_no_child, "Stamp: **RUNNING:** push; reports back.", True, "no run of yours", id="12-stamp-after-a-label"),
+    pytest.param(_no_child, "1. RUNNING: push; reports back.", True, "no run of yours", id="13-stamp-after-a-list-mark"),
+    pytest.param(_only_a_review_at_work_the_role_ran_elsewhere, "RUNNING: push and install guide; reports back here.", True, "no run of yours", id="14-unnamed-only-the-runtime-review"),
 ])
 def test_a_running_close_stands_only_on_a_run_that_reports_back(sent, monkeypatch, member, close, refused, says):
     member(**{name: value for name, value in (("sent", sent), ("monkeypatch", monkeypatch)) if name in member.__code__.co_varnames})
-    _working("deploy-1", agent="deployer", parent_run_id="other-root")   # a role the close may name, outside this conversation
+    for role in ("deployer", "visual-critic", "blob"):   # roles a close may name, at work outside this conversation
+        _working(f"{role}-1", agent=role, parent_run_id="other-root")
     reason = running_claim.refusal(LEAD, close)
     assert (reason is not None) == refused, reason
     assert says in (reason or "")
@@ -773,7 +783,8 @@ def test_the_turn_end_hook_refuses_a_lone_running_close_at_most_twice_in_a_row(m
     _no_child()
     monkeypatch.setattr(close_hook.subprocess, "run", lambda argv, *, input, **_: type("Done", (), {"stdout": running_claim.refusal(argv[-1], input) or ""})())
     decisions = []
-    for active, close in ((False, STAMP), (True, STAMP), (True, STAMP), (False, "DONE: pushed.")):
+    (reg.agents_dir() / f"{LEAD}.close-refusals").write_text("garbage")   # tester a903c717: an unreadable count crashed the hook
+    for active, close in ((True, STAMP), (True, STAMP), (True, STAMP), (False, "DONE: pushed.")):
         monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"last_assistant_message": close, "stop_hook_active": active})))
         monkeypatch.setattr("sys.argv", ["close_hook", LEAD, str(reg.agents_dir())])
         close_hook.main()

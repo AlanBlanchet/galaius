@@ -31,7 +31,8 @@ ELSEWHERE_MAX = 3
 
 def _named_roles(lines: Sequence[str], roles: Iterable[str]) -> set[str]:
     said = "\n".join(lines).lower()
-    return {role for role in roles if re.search(rf"(?<![\w-]){re.escape(role.lower())}(?!\w)", said)}
+    return {role for role in roles
+            if re.search(r"(?<![\w-])" + r"[-\s]".join(map(re.escape, role.lower().split("-"))) + r"(?!\w)", said)}
 
 
 def _when(at: float | None) -> str:
@@ -62,12 +63,14 @@ def refusal(run_id: str, text: str, *, now: float | None = None) -> str | None:
     known = {other.run_id[:8]: other for other in records}
     missing_ids = sorted({short for short in SHORT_ID.findall("\n".join(lines))
                           if short in known and not any(run_id.startswith(short) for run_id in covering_ids)})
-    if (reporters or in_line) and not missing_roles and not missing_ids:
+    named = _named_roles(lines, roles) | {short for short in SHORT_ID.findall("\n".join(lines)) if short in known}
+    # One run it names at work is enough: other names on its line are what that run works on (« fixes the tester's rows »).
+    if (reporters or in_line) and (not named or len(missing_roles) + len(missing_ids) < len(named)):
         return None
     now = time.time() if now is None else now
     why = ("no run of yours is at work or still owes you its report, so nothing wakes this conversation and the person "
            "waits for a report that never comes" if not (reporters or in_line) else
-           f"it names {', '.join([*missing_roles, *missing_ids])}, which is not at work for this conversation")
+           f"it names {', '.join([*missing_roles, *missing_ids])}, none of it at work for this conversation")
     lines_out = [f"RUNNING CHECK (galaius runtime): this close says « {lines[-1][:160]} », but {why}.",
                  "Reporting back to you: " + ("; ".join([*(_line(other) for other in reporters),
                                                          *(f"{reg.short_id(place.run_id)} {place.label()}, in line" for place in in_line)]) or "none") + "."]

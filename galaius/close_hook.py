@@ -16,8 +16,9 @@ from pathlib import Path
 CAP = 2
 #: What the records' read may take; past it the close stands (the CLI's own limit for this hook is `TIMEOUT` + 15).
 TIMEOUT = 45
-#: A status cell or stamp line saying RUNNING, never the word inside prose (« a RUNNING close never … » stands).
-STATUS = re.compile(r"(?:^|\|)[\s*_`>-]*(?:STATE[*_`]*\s*:[\s*_`]*)?RUNNING[*_`]*\s*(?:[:(—-]|\||$)")
+#: A status cell or stamp line saying RUNNING, after a list mark or one label (« 1. », « Stamp: »), never the word inside
+#: prose (« a RUNNING close never … ») nor a name it begins (`RUNNING-CHECK.md`).
+STATUS = re.compile(r"(?:^|\|)[\s*_`>-]*(?:\d+[.)]\s*)?(?:[A-Za-z]+[*_`]*\s*:[\s*_`]*)?RUNNING[*_`]*(?:\s*[:(—|]|\s+-|\s*$)")
 
 
 def claimed(text: str) -> tuple[str, ...]:
@@ -54,7 +55,8 @@ def main() -> None:
         return
     run_id, records = sys.argv[1], sys.argv[2]
     count = Path(records) / f"{run_id}.close-refusals"
-    refused = int(count.read_text() or 0) if event.get("stop_hook_active") and count.is_file() else 0
+    said = count.read_text().strip() if event.get("stop_hook_active") and count.is_file() else ""
+    refused = int(said) if said.isdigit() else 0
     if refused >= CAP:
         count.unlink(missing_ok=True)
         return
