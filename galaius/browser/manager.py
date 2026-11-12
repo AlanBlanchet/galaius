@@ -726,7 +726,8 @@ class BrowserManager:
             kw["record_video_size"] = dict(kw["viewport"])
         if self._http_credentials:  # authenticate Basic-auth sites without the native dialog (#70)
             kw["http_credentials"] = self._http_credentials
-        if self._proxy is not None:  # a lent session (`lend`): its one site, nothing kept past its pages, nothing saved to disk
+        if self._site is not None:  # a lent session (`lend`): its one site, nothing kept past its pages, nothing saved to disk
+            self._proxy = self._proxy or SiteProxy(self._site)   # never a lent context without its proxy (one `unlend` stopped)
             kw |= {"service_workers": "block", "accept_downloads": False, "proxy": {"server": self._proxy.server, "bypass": LOOPBACK_PROXIED}}
         return kw
 
