@@ -409,7 +409,7 @@ def test_a_restarted_watch_sees_the_runs_that_ended_while_none_watched(sent):
     """2026-11-12: the machine service re-exec'd into a new runtime; a child and its parent ended in the 5 min no watcher
     ran, and the parent heard nothing for 1 h 53 min."""
     first = handback.EndWatch()
-    assert first.ended() == []                       # its last look, kept for the next watcher
+    assert first.tick() == []                        # its last look, kept for the next watcher
     _ended(LEAD, time.time(), agent="main")
     _ended("eng", time.time(), agent="backend-engineer", parent_run_id=LEAD)
     _answered("eng", "DONE: pushed.")
@@ -417,6 +417,31 @@ def test_a_restarted_watch_sees_the_runs_that_ended_while_none_watched(sent):
 
     restarted.tick()
     assert [call["run_id"] for call in sent] == [LEAD] and "DONE: pushed." in sent[0]["message"]
+
+
+def test_a_look_is_kept_only_once_its_hand_backs_went_through(sent, monkeypatch):
+    """Tester c7160575: kept before its hand-backs, a look lost its endings to a re-exec (g) or one hand-back raising (h)
+    between the two."""
+    watch = handback.EndWatch()
+    _ended(LEAD, time.time(), agent="main")
+    _ended("other", time.time(), agent="tester", parent_run_id="elsewhere")
+    _ended("eng", time.time(), agent="backend-engineer", parent_run_id=LEAD)
+    _answered("eng", "DONE: pushed.")
+    assert "eng" in watch.ended()                    # (g) the service dies here, before any hand-back
+    real = handback.hand_back
+    monkeypatch.setattr(handback, "hand_back", lambda run_id: (_ for _ in ()).throw(OSError("unreadable")) if run_id == "other" else [])
+    restarted = handback.EndWatch()
+    restarted.tick()                                 # (h) one raises, the others hand nothing: the look is not kept
+    monkeypatch.setattr(handback, "hand_back", real)
+    handback.EndWatch().tick()                       # another restart replays from before them
+    assert [call["run_id"] for call in sent] == [LEAD]
+
+
+@pytest.mark.parametrize("note", [b"garbage", b"nan", b"inf", b"1e400", b"FUTURE"])
+def test_an_unusable_last_look_starts_the_watch_from_now(note):
+    with reg.shared_state("handback-looked") as (_raw, write, _keep):
+        write(repr(time.time() + 86_400).encode() if note == b"FUTURE" else note)
+    assert handback.EndWatch().looked <= time.time()
 
 
 def test_the_watch_hands_back_a_run_with_no_parent_to_the_run_it_works_for(sent):

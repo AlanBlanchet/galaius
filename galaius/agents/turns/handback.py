@@ -8,6 +8,8 @@ in since its turn ended; the run mirror calls it for each run `EndWatch` sees en
 `machines.MachineRunner`). `wait` is the same reports for a caller still in its turn, in one call."""
 
 import json
+import logging
+import math
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack
@@ -28,6 +30,8 @@ from galaius.agents.spawn_line import SpawnLine
 from galaius.config.settings import Config
 from galaius.host.paths import UserPaths
 from galaius.host.private_files import PRIVATE_FILES
+
+log = logging.getLogger(__name__)
 
 #: Each report's share of the hand-back message (`agent_queue.BRIEF_MAX` in all); the full one is `galaius agents events`.
 REPORT_MAX = 12_000
@@ -249,16 +253,22 @@ _LOOKED = "handback-looked"
 
 
 def _last_look() -> float:
-    """When the previous watcher on this computer last looked, else now (none ever did here, or its note is unreadable).
-    2026-11-12: the machine service re-exec'd into a new runtime at 14:58 and its new watcher first looked at 15:03, from
-    then on: a child that ended at 14:59 and its parent that ended a second before were never seen, and the parent waited
-    1 h 53 min for a report that had come back."""
-    with reg.shared_state(_LOOKED) as (raw, _write, keep):
+    """When the previous watcher on this computer last looked; else now, kept as this watcher's first look: none ever did
+    here, or its note is not a past time (kept aside as evidence). 2026-11-12: the machine service re-exec'd into a new
+    runtime at 14:58 and its new watcher first looked at 15:03, from then on: a child that ended at 14:59 and its parent
+    that ended a second before were never seen, and the parent waited 1 h 53 min for a report that had come back."""
+    now = time.time()
+    with reg.shared_state(_LOOKED) as (raw, write, keep):
         try:
-            return float(raw) if raw else time.time()
+            at = float(raw) if raw else math.nan
         except ValueError:
+            at = math.nan
+        if math.isfinite(at) and at <= now:
+            return at
+        if raw:
             keep()
-            return time.time()
+        write(repr(now).encode())
+        return now
 
 
 class EndWatch(BaseModel):
@@ -274,6 +284,8 @@ class EndWatch(BaseModel):
     #: right after its resume). Read from the store at start, every run a cut ended (`registry.recently_cut`): one that
     #: stopped coming back while this watcher was down ends on its first look (a report already carried is never carried twice).
     held: frozenset[str] = Field(default_factory=lambda: frozenset(run.run_id for run in reg.recently_cut() if run.askers))
+    #: Ended runs whose hand-back raised: tried again at the next look, which until then is never kept (`tick`).
+    failed: frozenset[str] = frozenset()
 
     def model_post_init(self, _context) -> None:
         relations.handback_since()   # from its first look on, a report its asker was at work for is carried (`_resume`)
@@ -286,13 +298,26 @@ class EndWatch(BaseModel):
         cut = frozenset(run_id for run_id in (self.held | fresh) - live if (run := reg.get_run(run_id)) is not None and reg.self_resuming(run, now=now))
         ended = sorted(fresh | (self.held - live - cut))
         self.live, self.looked, self.held = live, now, cut
-        with reg.shared_state(_LOOKED) as (_raw, write, _keep):
-            write(repr(now).encode())
         return ended
 
     def tick(self) -> list[messaging.Delivery]:
-        """`hand_back` for every run that ended since the last look; the deliveries it queued."""
-        return [delivery for run_id in self.ended() for delivery in hand_back(run_id)]
+        """`hand_back` for every run that ended since the last look, and each whose hand-back raised at an earlier look
+        (`failed`); the deliveries it queued. The look is kept for the next watcher only once all of them went through:
+        tester c7160575, a look kept before its hand-backs lost their endings for good to a re-exec or one raising between
+        the two. A look replayed queues nothing twice (one message per ended turn, `_resume`)."""
+        deliveries: list[messaging.Delivery] = []
+        failed: set[str] = set()
+        for run_id in sorted(set(self.ended()) | self.failed):
+            try:
+                deliveries.extend(hand_back(run_id))
+            except Exception:  # one unreadable record never stops the others; it is tried again next look
+                log.exception("handing back the reports of run %s failed", run_id[:8])
+                failed.add(run_id)
+        self.failed = frozenset(failed)
+        if not failed:
+            with reg.shared_state(_LOOKED) as (_raw, write, _keep):
+                write(repr(self.looked).encode())
+        return deliveries
 
 
 class SilenceWatch(BaseModel):
