@@ -83,8 +83,8 @@ def _card(run: reg.AgentRun, name: str, why: str) -> str:
     assert run.community is not None
     if run.community.card is not None:
         return f"ERROR: your request already reached the person (question {run.community.card[:8]}); his answer goes to the agent that started you."
-    root = run.root_run_id or run.parent_run_id
-    if root is None:
+    root = reg.conversation_of(run.run_id)   # the top of its launch tree: the one run that asks him (`reg.ask_owner`)
+    if root == run.run_id:
         return "ERROR: no conversation to ask in."
     coordinator = reg.get_run(run.parent_run_id) if run.parent_run_id else None
     asker = coordinator.agent if coordinator is not None and coordinator.agent else "an"

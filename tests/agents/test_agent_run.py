@@ -936,9 +936,12 @@ def test_a_community_agent_is_lent_only_its_coordinators_browser_on_a_site_it_sh
     roles = {"lead": None, "browserless": ["Read", "Bash", "mcp__galaius__agent_spawn"]}
     shown = {}
 
+    conversation = str(uuid4())   # the person's conversation: the coordinator's parent, the card's one place
+    reg.register(run_id=conversation, name="main", provider="claude", agent="lead", task="t", pid=None)
+
     def started(coordinator_role: str) -> str:
         root, child = str(uuid4()), str(uuid4())
-        reg.register(run_id=root, name="main", provider="claude", agent=coordinator_role, task="t", pid=None)
+        reg.register(run_id=root, name="lead", provider="claude", agent=coordinator_role, task="t", pid=None, parent_run_id=conversation)
         reg.register(run_id=child, name="community", provider="claude", agent=coordinator_role, task="t", pid=None, parent_run_id=root,
                      community=CommunityAgent(entry=uuid4(), kind="agent", title="Ui ux tester", author="someone/agents", instructions="Test.",
                                               digest="0" * 64, nonce="n0nce"))
@@ -986,8 +989,8 @@ def test_a_community_agent_is_lent_only_its_coordinators_browser_on_a_site_it_sh
     root = reg.get_run(child).parent_run_id
     assert asked(child, "sign_in").startswith("Asked the person")
     assert asked(child, "credential").startswith("ERROR:")   # one card per community run, never a second
-    cards = reg.get_run(root).asking
-    assert len(cards) == 1 and "Ui ux tester" in cards[0].question and "to test the app" not in cards[0].question
+    cards = reg.get_run(conversation).asking
+    assert not reg.get_run(root).asking and len(cards) == 1 and "Ui ux tester" in cards[0].question and "to test the app" not in cards[0].question
     for _ in range(lending.REQUESTS_MAX - 4):   # 4 asked already
         assert not asked(child, "browser").startswith("ERROR: 8")
     said = asked(child, "browser")
