@@ -741,6 +741,12 @@ class SpawnLine(BaseModel):
     def _memory_hold(self) -> Hold | None:
         return self.memory.hold() if self.memory is not None else None
 
+    def waiting_for(self, parent_run_id: str) -> list[Place]:
+        """The spawns run `parent_run_id` asked that are still in line: no record yet, so `handback.reporting` never sees
+        them (2026-11-08: a child held 21 min, its parent told « no own child pending » 23 s after spawning it)."""
+        with self._places() as places:
+            return [place for place in places if place.parent_run_id == parent_run_id and place.state != "failed"]
+
     @contextmanager
     def _places(self) -> Iterator[list[Place]]:
         """The line, pruned (`_listed`). Taken before `_asides` whenever both are."""

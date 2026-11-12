@@ -974,6 +974,12 @@ def brief_hook(run_id: str) -> str:
     it hands the agent back the task recorded here."""
     return hook_command("galaius.brief_hook", str(_record_path(run_id)))
 
+
+def close_hook(run_id: str) -> str:
+    """The command a turn of `run_id` runs as it ends (`galaius.close_hook`): a « RUNNING » close no run reports back to
+    is refused."""
+    return hook_command("galaius.close_hook", _safe_run_id(run_id), str(agents_dir()))
+
 class RunMedia:
     """The images a run was shown (attached to its brief, pasted in a message), each kept beside the run's other files
     under its name (`AgentMedia.name`, the hash of its bytes): what its agent opens, what the web shows back."""

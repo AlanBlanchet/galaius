@@ -49,6 +49,7 @@ from galaius.agents.limits.quota import REFUSAL
 from galaius.agents.catalog.profiles import overlay_for
 from galaius.agents.catalog.vocabulary import CLAUDE_VOCABULARY, CODEX_VOCABULARY, VIBE_VOCABULARY, ApprovalIntent, HarnessVocabulary, TouchScope, ThinkingLevel
 from galaius.brief_hook import NOTE as BRIEF_NOTE
+from galaius.close_hook import TIMEOUT as CLOSE_TIMEOUT
 from galaius.isolation.fence import BROWSERS, COMPAT_KEY, EGL_VENDOR, RELAY, FencedCli, RELAY_PORT, Confinement, RelayedServer, SignIn, confinement_refusal, userns_refusal
 from galaius.inbox_hook import NOTE as INBOX_NOTE
 from galaius.host.processes import ask_process, run_isolated_process, shell_entries
@@ -1089,6 +1090,8 @@ class ClaudeTurnSettings(BaseModel):
     #: Run once a compaction replaced the conversation (`SessionStart`, source `compact`: `galaius.brief_hook`), with the
     #: note telling the agent what that context is (`galaius.brief_hook.NOTE`).
     brief_hook: str | None = None
+    #: Run as the turn ends (`Stop`): a close saying RUNNING with no run reporting back to it is refused (`galaius.close_hook`).
+    close_hook: str | None = None
     #: The name a peer session's SendMessage addresses it by (`-n`): `<role>-<short run id>`. Unnamed, the CLI names a session
     #: after its folder (`<folder>-<2 hex>`) and a resume without `-n` drops the name: no peer finds a run by its role.
     name: str
@@ -1100,6 +1103,7 @@ class ClaudeTurnSettings(BaseModel):
         hooks = {
             **({"PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": self.inbox_hook}]}]} if self.inbox_hook else {}),
             **({"SessionStart": [{"matcher": "compact", "hooks": [{"type": "command", "command": self.brief_hook}]}]} if self.brief_hook else {}),
+            **({"Stop": [{"hooks": [{"type": "command", "command": self.close_hook, "timeout": CLOSE_TIMEOUT + 15}]}]} if self.close_hook else {}),
         }
         settings = {"bashOutputMaxChars": self.bash_output_chars, **({"hooks": hooks} if hooks else {})}
         notes = [note for hook, note in ((self.inbox_hook, INBOX_NOTE), (self.brief_hook, BRIEF_NOTE)) if hook]

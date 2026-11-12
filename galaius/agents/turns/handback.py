@@ -198,6 +198,17 @@ def _agents_answering(asker_id: str, asked: Asked, *, among: Callable[[reg.Agent
     return (run for run_id in found if (run := asked.runs.get(run_id)) is not None and among(run) and aliases.intersection(owed(run)))
 
 
+def reporting(run_id: str) -> list[reg.AgentRun]:
+    """The agents whose report will still resume run `run_id` (`_resume`): at work, cut and resuming by themselves, or
+    ended with a report no hand-back carried yet (`owed`). What a « RUNNING » close of `run_id` stands on
+    (`running_claim.refusal`); a spawn still in line has no record yet (`SpawnLine.waiting_for`)."""
+    records = reg._stored_records()
+    with one_read(records):
+        since = relations.handback_since()
+        return list(_agents_answering(run_id, Asked.of(records), among=lambda run: _pending(run) or reg.self_resuming(run)
+                                      or (run.finished_at or 0.0) >= since))
+
+
 def _resume(asker_id: str) -> messaging.Delivery | None:
     """Resume run `asker_id` with the reports of every agent that owes it one (`owed`) once none is pending: the reports
     alone, its turn opening on where it stands (`relations.card`) and on whose reports they are (`relations.heading`).

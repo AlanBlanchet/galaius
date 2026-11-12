@@ -3,6 +3,7 @@
 report saying "DONE" forthe tasks... »."""
 
 import asyncio
+import io
 import json
 import os
 import time
@@ -11,8 +12,10 @@ import uuid
 import pytest
 from galaius_core import StopActor
 
+from galaius import close_hook
 from galaius.agents import agent_queue
-from galaius.agents.turns import handback, reviews
+from galaius.agents.providers import ClaudeTurnSettings
+from galaius.agents.turns import handback, reviews, running_claim
 from galaius.agents.catalog import relations
 from galaius.agents import registry as reg
 from galaius.agents.transport.events import Relation
@@ -701,3 +704,78 @@ def test_a_hand_back_asks_while_its_newest_turn_does(lines, relation):
 def test_a_clipped_hand_back_drops_its_oldest_parts_first(parts, kept):
     report = handback.Report(run_id="maker", agent="backend-engineer", status="done", pending=False, parts=parts)
     assert report.section(limit=80) == f"## backend-engineer maker — done\n… (clipped; `galaius agents events maker`){kept}"
+
+
+# « RUNNING » closes (`running_claim.refusal`, run by `galaius.close_hook` as each Claude turn ends). 2026-11-10 a coordinator
+# closed « RUNNING: push and install guide; infra-engineer reports back here. »; owner 2026-11-12 « And the coordinator
+# finished, and i never got things done and pushed... There is a real comunication problem ! ».
+STAMP = "Fork linked.\n\nRUNNING: push and install guide; infra-engineer reports back here."
+
+
+def _no_child():
+    _working(LEAD, agent="main")
+
+
+def _child_at_work():
+    _working(LEAD, agent="main")
+    _working("infra", agent="infra-engineer", parent_run_id=LEAD)
+
+
+def _child_ended_report_not_carried():
+    _working(LEAD, agent="main")
+    _ended("infra", time.time(), agent="infra-engineer", parent_run_id=LEAD)
+
+
+def _child_ended_report_carried(sent):
+    _ended(LEAD, 100.0, agent="main")
+    _ended("infra", 200.0, agent="infra-engineer", parent_run_id=LEAD)
+    _answered("infra", "DONE: pushed.")
+    assert handback.hand_back("infra")   # its report reached the lead: nothing owes it one any more
+    _working(LEAD, agent="main")
+
+
+def _only_a_review_at_work_the_role_ran_elsewhere():
+    """The named role worked in another conversation of his: listed, so the close reads it before calling it undone."""
+    _working(LEAD, agent="main")
+    _working("refl", agent="reflection", parent_run_id=LEAD)
+    _working("other", agent="main")
+    _ended("fc16d3e8-0000", time.time() - 3600, agent="infra-engineer", parent_run_id="other", task="Fork: push our fixes")
+
+
+def _spawn_still_in_line(monkeypatch):
+    _working(LEAD, agent="main")
+    place = type("Place", (), {"run_id": "queued-1", "role": "infra-engineer", "label": lambda self: "infra-engineer"})()
+    monkeypatch.setattr(running_claim.SpawnLine, "waiting_for", lambda self, parent: [place] if parent == LEAD else [])
+
+
+@pytest.mark.parametrize("member, close, refused, says", [
+    pytest.param(_no_child, STAMP, True, "no run of yours", id="1-running-with-no-child"),
+    pytest.param(_child_at_work, STAMP, False, "", id="2-named-child-at-work"),
+    pytest.param(_child_ended_report_not_carried, STAMP, False, "", id="3-child-ended-its-report-still-to-come"),
+    pytest.param(_child_ended_report_carried, STAMP, True, "no run of yours", id="4-child-report-already-carried"),
+    pytest.param(_only_a_review_at_work_the_role_ran_elsewhere, STAMP, True, "fc16d3e8 infra-engineer", id="5-named-role-only-elsewhere"),
+    pytest.param(_spawn_still_in_line, STAMP, False, "", id="6-spawn-still-in-line"),
+    pytest.param(_no_child, "DONE: pushed, a RUNNING close never stands alone.", False, "", id="7-no-running-stamp"),
+    pytest.param(_child_at_work, "| push | RUNNING | deployer ships it |", True, "deployer", id="8-ledger-row-names-a-role-not-at-work"),
+])
+def test_a_running_close_stands_only_on_a_run_that_reports_back(sent, monkeypatch, member, close, refused, says):
+    member(**{name: value for name, value in (("sent", sent), ("monkeypatch", monkeypatch)) if name in member.__code__.co_varnames})
+    _working("deploy-1", agent="deployer", parent_run_id="other-root")   # a role the close may name, outside this conversation
+    reason = running_claim.refusal(LEAD, close)
+    assert (reason is not None) == refused, reason
+    assert says in (reason or "")
+
+
+def test_the_turn_end_hook_refuses_a_lone_running_close_at_most_twice_in_a_row(monkeypatch, capsys):
+    """Every Claude turn galaius launches carries it (`ClaudeTurnSettings.close_hook`); a close it refused twice stands."""
+    settings = json.loads(ClaudeTurnSettings(bash_output_chars=1, name="main-x", close_hook=reg.close_hook(LEAD)).arguments()[3])
+    assert "galaius.close_hook" in settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+    _no_child()
+    monkeypatch.setattr(close_hook.subprocess, "run", lambda argv, *, input, **_: type("Done", (), {"stdout": running_claim.refusal(argv[-1], input) or ""})())
+    decisions = []
+    for active, close in ((False, STAMP), (True, STAMP), (True, STAMP), (False, "DONE: pushed.")):
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"last_assistant_message": close, "stop_hook_active": active})))
+        monkeypatch.setattr("sys.argv", ["close_hook", LEAD, str(reg.agents_dir())])
+        close_hook.main()
+        decisions.append(json.loads(out)["decision"] if (out := capsys.readouterr().out) else "stands")
+    assert decisions == ["block", "block", "stands", "stands"]

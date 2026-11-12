@@ -851,14 +851,16 @@ class AheadLaunch(BaseModel):
         """What each turn of agent run `run_id` playing `role` runs under where `provider` takes it (`takes_turn_settings`): the
         name peers message it by, its role then the id `galaius agents list` prints (`app-engineer-0f9576d3`: unique on the
         machine; a peer naming only the role gets each running one back to pick from) and its Bash output (its conversation compacts where Claude Code's own default puts it); the messages sent to it while it works where it reads them
-        (`agent_queue.inbox_hook`); its launch task once a compaction replaced its conversation (`reg.brief_hook`),
+        (`agent_queue.inbox_hook`); its launch task once a compaction replaced its conversation (`reg.brief_hook`); a RUNNING
+        close no run reports back to refused (`reg.close_hook`),
         except inside a `fence`, where the run's record and galaius's interpreter are out of reach (its home is empty). `isolated`:
         a community agent's (`ClaudeTurnSettings.isolated`), named `community-<short id>` so no peer takes it for its caller's role."""
         if not provider.takes_turn_settings:
             return {}
         return {"turn": ClaudeTurnSettings(bash_output_chars=config.claude_bash_output_chars,
                                      inbox_hook=agent_queue.inbox_hook(run_id) if provider.reads_mid_turn else None,
-                                     brief_hook=None if fence else reg.brief_hook(run_id), isolated=isolated,
+                                     brief_hook=None if fence else reg.brief_hook(run_id),
+                                     close_hook=None if fence else reg.close_hook(run_id), isolated=isolated,
                                      name=f"{'community' if isolated else role or 'agent'}-{reg.short_id(run_id)}")}
 
     def digest(self, environment: Mapping[str, str], *parts: str) -> str:
