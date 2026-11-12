@@ -244,12 +244,31 @@ def _resume(asker_id: str) -> messaging.Delivery | None:
     )
 
 
+#: Where the hand-back watcher keeps when it last looked (`EndWatch`), across its restarts.
+_LOOKED = "handback-looked"
+
+
+def _last_look() -> float:
+    """When the previous watcher on this computer last looked, else now (none ever did here, or its note is unreadable).
+    2026-11-12: the machine service re-exec'd into a new runtime at 14:58 and its new watcher first looked at 15:03, from
+    then on: a child that ended at 14:59 and its parent that ended a second before were never seen, and the parent waited
+    1 h 53 min for a report that had come back."""
+    with reg.shared_state(_LOOKED) as (raw, _write, keep):
+        try:
+            return float(raw) if raw else time.time()
+        except ValueError:
+            keep()
+            return time.time()
+
+
 class EndWatch(BaseModel):
     """The runs that ended between two looks: left the live set, or recorded an end since the last look (a run that
     started and ended between looks, or one settled late with its observed end)."""
 
     live: frozenset[str] = Field(default_factory=lambda: frozenset(run.run_id for run in reg.running_runs()))
-    looked: float = Field(default_factory=time.time)
+    #: Its last look: the previous watcher's on this computer at start (`_last_look`), so the runs that ended while none
+    #: watched (a restart, an upgrade) end on its first look.
+    looked: float = Field(default_factory=_last_look)
     #: Ended runs a cut stopped that resume by themselves (`registry.self_resuming`): their launcher was not woken with the
     #: cut (`_resume`). Each ends again here once that no longer holds and nothing resumed it (cut again by the same cause
     #: right after its resume). Read from the store at start, every run a cut ended (`registry.recently_cut`): one that
@@ -267,6 +286,8 @@ class EndWatch(BaseModel):
         cut = frozenset(run_id for run_id in (self.held | fresh) - live if (run := reg.get_run(run_id)) is not None and reg.self_resuming(run, now=now))
         ended = sorted(fresh | (self.held - live - cut))
         self.live, self.looked, self.held = live, now, cut
+        with reg.shared_state(_LOOKED) as (_raw, write, _keep):
+            write(repr(now).encode())
         return ended
 
     def tick(self) -> list[messaging.Delivery]:

@@ -405,6 +405,20 @@ def test_the_watch_sees_a_run_leave_its_live_set_and_one_that_lived_between_two_
     assert watch.ended() == []
 
 
+def test_a_restarted_watch_sees_the_runs_that_ended_while_none_watched(sent):
+    """2026-11-12: the machine service re-exec'd into a new runtime; a child and its parent ended in the 5 min no watcher
+    ran, and the parent heard nothing for 1 h 53 min."""
+    first = handback.EndWatch()
+    assert first.ended() == []                       # its last look, kept for the next watcher
+    _ended(LEAD, time.time(), agent="main")
+    _ended("eng", time.time(), agent="backend-engineer", parent_run_id=LEAD)
+    _answered("eng", "DONE: pushed.")
+    restarted = handback.EndWatch()                  # a new process, after both ended
+
+    restarted.tick()
+    assert [call["run_id"] for call in sent] == [LEAD] and "DONE: pushed." in sent[0]["message"]
+
+
 def test_the_watch_hands_back_a_run_with_no_parent_to_the_run_it_works_for(sent):
     """A run started by the person, then asked work by another run, reports to that run once it ends."""
     coordinator, worker = str(uuid.UUID(int=1)), str(uuid.UUID(int=2))
