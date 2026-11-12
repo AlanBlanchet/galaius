@@ -525,8 +525,16 @@ def _instructions(version: str | None = None) -> str:
 
 
 def _borrower():
-    """The community run calling (`lending.borrower`); None for every other caller."""
-    return None if Caller.serves_none() else lending.borrower(messaging.asking_run())
+    """The community run calling (`lending.borrower`); None for every other caller. A connection its fence opened
+    (`lending.LENT_RUN`, set outside the fence) is that run's whatever process scope it lives in, and refused whole
+    (`lending.Refused`) when that run is no community run."""
+    if Caller.serves_none():
+        return None
+    if tagged := Caller.current().environment.get(lending.LENT_RUN):
+        if (run := lending.borrower(tagged)) is None:
+            raise lending.Refused("this connection serves a community agent's lent tools, and its run is none")
+        return run
+    return lending.borrower(messaging.asking_run())
 
 
 def _lent_view(tool: types.Tool) -> types.Tool:
@@ -569,7 +577,11 @@ class _SessionScopedMCP(FastMCP):
 
     async def list_tools(self):
         # A community run (`lending`) sees request_tool and the tools it may be lent, each with only the parameters it takes.
-        if (borrower := await asyncio.to_thread(_borrower)) is not None:
+        try:
+            borrower = await asyncio.to_thread(_borrower)
+        except lending.Refused:
+            return []
+        if borrower is not None:
             return [_lent_view(tool) for tool in await super().list_tools() if tool.name == lending.REQUEST_TOOL or tool.name in lending.LENT_TOOLS]
         # A read-only run's server (`config.scratch`, inside its fence) serves its `fenced` tools alone: its own sandbox
         # display driven and seen, outputs in its scratch folder (`resolve_output_path`).
@@ -579,7 +591,11 @@ class _SessionScopedMCP(FastMCP):
 
     async def call_tool(self, name: str, arguments: dict):
         # A community run first, before any other route (a gateway tool included): what it was lent, or nothing.
-        if (borrower := await asyncio.to_thread(_borrower)) is not None:
+        try:
+            borrower = await asyncio.to_thread(_borrower)
+        except lending.Refused as refused:
+            raise ToolError(str(refused)) from None
+        if borrower is not None:
             try:
                 arguments = lending.gate(borrower, name, dict(arguments or {}))
             except lending.Refused as refused:
@@ -587,8 +603,7 @@ class _SessionScopedMCP(FastMCP):
             if name in lending.LENT_TOOLS:
                 if (connection := _connection()) is not None:
                     _auto_session_names[connection] = arguments["session"]   # closed with its connection (`shared`)
-                lent = lending.site(borrower)
-                _sessions.get(arguments["session"]).lend(lambda url: lending.origin(url) == lent)
+                _sessions.get(arguments["session"]).lend(lending.site(borrower))
             return await super().call_tool(name, arguments)
         if config.scratch is not None and not GatewayServed.fenced((found.meta if (found := self._tool_manager.get_tool(name)) else None)):
             raise ToolError(f"{name}: a read-only run calls only {', '.join(sorted(tool.name for tool in await self.list_tools()))}")

@@ -13,12 +13,12 @@ from datetime import datetime
 from functools import partial
 from importlib.resources import files
 from pathlib import Path
-from collections.abc import Callable
 from typing import Literal
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, BrowserType, Page
 
 from galaius.config.settings import LOG_MAXLEN, Config
+from galaius.browser.site import LOOPBACK_PROXIED, SiteProxy, origin
 from galaius.browser.state import InteractiveElement
 from galaius.host.atomic_file import replace_held_open
 from galaius.host.windowless import console_python
@@ -247,8 +247,9 @@ class BrowserManager:
         # here, the next call on that page just silently acted on a dead blank tab (#127).
         # Keyed by id(page): stable for the page object's lifetime, cleared when the tab closes.
         self._crashed_pages: dict[int, str] = {}
-        # A community run's lent session (`lend`): which addresses its pages may show; None for every other session.
-        self._keeps: Callable[[str], bool] | None = None
+        # A community run's lent session (`lend`): the one site it reaches and the proxy holding it there; None elsewhere.
+        self._site: str | None = None
+        self._proxy: SiteProxy | None = None
 
     @property
     def _persistent(self) -> bool:
@@ -652,16 +653,27 @@ class BrowserManager:
                 pass
         await self._new_context(state)
 
-    def lend(self, keeps: Callable[[str], bool]) -> None:
-        """This session as a community run's (`galaius.agents.lending`): no profile on disk, no service worker, no download,
-        every page kept on what `keeps` accepts — a navigation elsewhere refused, a redirect or a page that left it taken
-        back to a blank page. Set before its first context: the session is that run's alone."""
-        if self._keeps is None and self._context is not None:
+    def lend(self, site: str) -> None:
+        """This session as a community run's (`galaius.agents.lending`), on `site` (an origin) alone: every connection
+        through a proxy reaching that site only (`SiteProxy`), no profile on disk, no service worker, no download, one tab,
+        a navigation elsewhere refused and a page that left taken back to a blank page. Set before its first context: the
+        session is that run's alone, its site fixed once lent."""
+        if self._site is None and self._context is not None:
             raise RuntimeError(f"session {self._session_id} is open already: it cannot be lent")
-        self._keeps, self._profile_dir = keeps, None
+        if self._site not in (None, site):
+            raise RuntimeError(f"session {self._session_id} is lent on {self._site}: close it before lending another site")
+        if self._proxy is None:
+            self._proxy = SiteProxy(site)
+        self._site, self._profile_dir = site, None
+
+    def unlend(self) -> None:
+        """Its lent site's proxy stopped (`lend`), once the session is gone for good."""
+        if self._proxy is not None:
+            self._proxy.close()
+            self._proxy = None
 
     def _kept(self, url: str) -> bool:
-        return self._keeps is None or url == "about:blank" or self._keeps(url)
+        return self._site is None or url == "about:blank" or origin(url) == self._site
 
     async def _lent_route(self, route) -> None:
         if route.request.is_navigation_request() and not self._kept(route.request.url):
@@ -714,8 +726,8 @@ class BrowserManager:
             kw["record_video_size"] = dict(kw["viewport"])
         if self._http_credentials:  # authenticate Basic-auth sites without the native dialog (#70)
             kw["http_credentials"] = self._http_credentials
-        if self._keeps is not None:  # a lent session (`lend`): nothing kept past its pages, nothing saved to disk
-            kw |= {"service_workers": "block", "accept_downloads": False}
+        if self._proxy is not None:  # a lent session (`lend`): its one site, nothing kept past its pages, nothing saved to disk
+            kw |= {"service_workers": "block", "accept_downloads": False, "proxy": {"server": self._proxy.server, "bypass": LOOPBACK_PROXIED}}
         return kw
 
     def _install_browser(self):
@@ -784,7 +796,7 @@ class BrowserManager:
                 kwargs["storage_state"] = storage_state
             self._context = await self._browser.new_context(**kwargs)
         self._active_tab = 0  # a fresh context starts on its first page
-        if self._keeps is not None:
+        if self._site is not None:
             await self._context.route("**/*", self._lent_route)
             self._context.on("page", self._lent_page)
         # Fail fast on a missing/non-actionable selector: Playwright's 30s default hangs the
@@ -971,6 +983,7 @@ class SessionRegistry:
         mgr = self._sessions.pop(session_id, None)
         if mgr:
             await mgr.close()
+            mgr.unlend()
         return mgr is not None
 
     def active(self) -> list[str]:
@@ -1003,4 +1016,5 @@ class SessionRegistry:
     async def close_all(self):
         for mgr in self._sessions.values():
             await mgr.close()
+            mgr.unlend()
         self._sessions.clear()

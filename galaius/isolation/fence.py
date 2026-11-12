@@ -141,6 +141,11 @@ MEDIA_SOCKET = f"{EGRESS_MOUNT}/media.sock"
 #: The lent tools' socket inside a fence that lends (`FenceSpec.lends`): `Outer` serves galaius's MCP server on it, outside,
 #: one per connection, as the run (`galaius.agents.lending` decides each call).
 TOOLS_SOCKET = f"{EGRESS_MOUNT}/tools.sock"
+#: Set by `Outer.serve_tools` on the MCP server it starts for its run, to that run's id: the connection is that community
+#: run's whatever process scope it lives in (one with no scope of its own reads as its launcher's: `galaius.agents.lending`).
+LENT_RUN = "GALAIUS_LENT_RUN"
+#: Connections `Outer.serve_tools` serves at once: its CLI holds one.
+TOOLS_CONNECTIONS = 2
 #: The MCP server a lending fence's CLI starts inside (`python -I -c TOOLS_PIPE TOOLS_SOCKET`): its standard input and
 #: output piped to `TOOLS_SOCKET`.
 TOOLS_PIPE = r"""
@@ -823,17 +828,24 @@ class Outer(BaseModel):
 
     @staticmethod
     def serve_tools(path: str, env: dict[str, str]) -> None:
-        """galaius's MCP server (`galaius mcp`, a relay to this PC's shared server) on each connection to `path`: started
-        here, outside the fence, in this run's process scope, so the server knows the caller for this run and none other
-        (`Caller.scope_run`), whatever comes through the socket."""
+        """galaius's MCP server (`galaius mcp`, a relay to this PC's shared server) on each connection to `path`, at most
+        `TOOLS_CONNECTIONS` at once: started here, outside the fence, tagged with this run's id (`LENT_RUN`, from the
+        launcher's `GALAIUS_RUN_ID`), so the server serves that run alone whatever comes through the socket. No run id:
+        nothing served."""
+        if not (run := env.get("GALAIUS_RUN_ID")):
+            return
         listener = socket.socket(socket.AF_UNIX)
         listener.bind(path)
         listener.listen(4)
+        served: list[subprocess.Popen] = []
         while True:
             client, _ = listener.accept()
             with client:
-                subprocess.Popen([*PACKAGE, "galaius", "mcp"], stdin=client.fileno(), stdout=client.fileno(), stderr=subprocess.DEVNULL,
-                                 env=env, cwd="/", **Children.options(False))
+                served = [each for each in served if each.poll() is None]
+                if len(served) >= TOOLS_CONNECTIONS:
+                    continue
+                served.append(subprocess.Popen([*PACKAGE, "galaius", "mcp"], stdin=client.fileno(), stdout=client.fileno(), stderr=subprocess.DEVNULL,
+                                               env={**env, LENT_RUN: run}, cwd="/", **Children.options(False)))
 
 
 #: What bubblewrap prints when this system refuses it a user namespace (the lines Codex 0.155.1

@@ -28,13 +28,13 @@ import time
 from pathlib import Path
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Literal
-from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 from galaius_core import AUTHOR_MAX, TITLE_MAX, CommunityEntryRef, CommunityKind, CommunityPrompt, CommunityQuery, plain_line, visible
 from pydantic import BaseModel, ConfigDict, Field
 
 from galaius.agents.limits.subscriptions import RunSubscription
+from galaius.browser.site import origin
 from galaius.isolation.fence import FenceSpec, FencedProgram, available
 from galaius.machine.places.levels import NEVER_GRANTABLE, PlaceMap, split
 from galaius.account.workspace import ServerWorkspace
@@ -120,7 +120,7 @@ class Unread(BaseModel):
 #: read and click one site, each tool with the exact parameters it takes — no path or target (a host file read or
 #: written), no query or observe (a vision model spent), no session (`LENT_SESSION` is forced).
 LENT_TOOLS: dict[str, frozenset[str]] = {
-    "navigate": frozenset({"url", "wait", "timeout", "scope"}),
+    "navigate": frozenset({"url", "wait", "scope"}),
     "get_page_state": frozenset({"scope", "tab"}),
     "get_interactive_elements": frozenset({"scope", "element", "limit", "tab"}),
     "screenshot": frozenset({"scope", "selector", "element", "return_image", "max_width", "region"}),
@@ -137,7 +137,7 @@ LENT_ACTIONS: dict[str, frozenset[str]] = {
         "scroll": {"amount", "direction", "name", "ref", "role", "selector", "x", "y"},
         "key_press": {"key"},
         "type_text": {"clear_first", "name", "ref", "role", "selector", "text"},
-        "wait_for": {"selector", "state", "text", "timeout"},
+        "wait_for": {"selector", "state", "text"},
         "sleep": {"duration"},
         "select_text": {"ref", "selector"},
         "switch_tab": {"index"},
@@ -156,18 +156,6 @@ LENT_SECONDS = 30 * 60
 """How long a lent tool lasts; its coordinator lends it again on a new request."""
 LENT_SESSION = "lent-{run}"
 """The browser session a community run's lent tools act in, `{run}` its short id: its own, fresh, never its coordinator's."""
-
-
-def origin(url: str) -> str | None:
-    """`url`'s origin (`scheme://host:port`, lower-cased) when it is an http(s) address; None otherwise."""
-    try:
-        parts = urlsplit(url.strip())
-        port = parts.port
-    except ValueError:
-        return None
-    if parts.scheme not in ("http", "https") or not parts.hostname:
-        return None
-    return f"{parts.scheme}://{parts.hostname.lower()}:{port or (443 if parts.scheme == 'https' else 80)}"
 
 
 class ToolGrant(BaseModel):

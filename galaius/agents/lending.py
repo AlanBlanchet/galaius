@@ -16,6 +16,7 @@ from galaius.agents import registry as reg
 from galaius.agents.catalog.community import LENT_ACTIONS, LENT_SECONDS, LENT_SESSION, LENT_TOOLS, OWNER_ACCESS, REQUEST_TOOL, CommunityAgent, ToolGrant, origin, quote
 from galaius.agents.policy import TOOL_PREFIX
 from galaius.agents.transport.events import AgentEvent
+from galaius.isolation.fence import LENT_RUN
 
 REQUESTS_MAX = 8
 """`request_tool` calls one community run may make: a stranger's text never keeps its coordinator busy."""
@@ -55,6 +56,8 @@ def request(run_id: str | None, tool: str, why: str, site: str | None, shown: Ca
     coordinator = reg.get_run(run.parent_run_id) if run.parent_run_id else None
     if coordinator is None or coordinator.community is not None:
         return "ERROR: no agent run started you: nothing can be lent."
+    if not lends(coordinator):
+        return f"ERROR: the {coordinator.agent} agent that started you is not at work now: nothing can be lent. Say in your report what you lacked."
     held = tools_of(coordinator.agent)
     lent = tuple(each for each in LENT_TOOLS if held is None or f"{TOOL_PREFIX}{each}" in held)
     if "navigate" not in lent:
@@ -87,7 +90,7 @@ def _card(run: reg.AgentRun, name: str, why: str) -> str:
     asker = coordinator.agent if coordinator is not None and coordinator.agent else "an"
     title = run.community.title[:60]
     question = OwnerQuestion(
-        question=f"Community agent « {title} » ({asker} agent's) asks for {OWNER_ACCESS[name]}"[:200],
+        question=f"Community agent « {title} » ({asker} agent's) asks for {OWNER_ACCESS[name]}{f' ({lent})' if (lent := site(run)) else ''}"[:200],
         options=(QuestionOption(label="Refuse", consequence="It carries on without it and says what it lacked."),
                  QuestionOption(label="Allow", consequence=f"The {asker} agent is told you allow it and hands it over itself.")),
         recommended=0, criticality="credential" if name == "credential" else "new_access", allow_custom=False,
@@ -117,19 +120,29 @@ def gate(run: reg.AgentRun, name: str, arguments: dict) -> dict:
     community: CommunityAgent = run.community
     allowed = LENT_TOOLS.get(name)
     grant = next((each for each in reversed(community.grants) if each.live() and name in each.tools), None)
+    if grant is not None and not lends(reg.get_run(grant.by)):
+        raise Refused(f"{name}: the agent that lent it is not at work any more: the browser is no longer lent.")
     if allowed is None or grant is None:
         raise Refused(f"{name}: not lent to you. Ask with request_tool(tool=\"browser\", why=..., site=...): only the browser is lent.")
     if extra := sorted(set(arguments) - allowed):
         raise Refused(f"{name}: parameters not lent to you: {', '.join(extra)} (yours: {', '.join(sorted(allowed))}).")
     if name == "navigate" and origin(str(arguments.get("url", ""))) != grant.origin:
         raise Refused(f"navigate: only {grant.origin} is lent to you.")
-    for step in arguments.get("actions") or () if name == "run_actions" else ():
+    steps = arguments.get("actions") if name == "run_actions" else []
+    if not isinstance(steps, list):
+        raise Refused("run_actions: actions is a list of steps.")
+    for step in steps:
         kind = step.get("type") if isinstance(step, dict) else None
-        if kind not in LENT_ACTIONS:
+        if not isinstance(kind, str) or kind not in LENT_ACTIONS:
             raise Refused(f"run_actions: step {kind!r} not lent to you (yours: {', '.join(LENT_ACTIONS)}).")
         if extra := sorted(set(step) - LENT_ACTIONS[kind]):
             raise Refused(f"run_actions: {kind} fields not lent to you: {', '.join(extra)}.")
     return {**arguments, "session": session(run)}
+
+
+def lends(coordinator: reg.AgentRun | None) -> bool:
+    """Whether `coordinator` may lend now: on a turn, or waiting on its agents (an ended one lends nothing more)."""
+    return coordinator is not None and coordinator.status in ("running", "waiting")
 
 
 def site(run: reg.AgentRun) -> str | None:

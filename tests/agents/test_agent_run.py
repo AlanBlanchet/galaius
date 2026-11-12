@@ -976,6 +976,9 @@ def test_a_community_agent_is_lent_only_its_coordinators_browser_on_a_site_it_sh
     with pytest.raises(lending.Refused):
         lending.gate(run.model_copy(update={"community": expired}), "navigate", {"url": site})
 
+    for malformed in (7, "click", {"type": "click"}, [{"type": ["click"]}], [{"type": {"a": 1}}], [3]):
+        with pytest.raises(lending.Refused):
+            lending.gate(run, "run_actions", {"actions": malformed})
     browserless = started("browserless")
     assert asked(browserless, "browser").startswith("ERROR:") and not reg.get_run(browserless).community.grants
     assert set(LENT_TOOLS) <= {"navigate", "get_page_state", "get_interactive_elements", "screenshot", "run_actions"}
@@ -990,3 +993,50 @@ def test_a_community_agent_is_lent_only_its_coordinators_browser_on_a_site_it_sh
     said = asked(child, "browser")
     assert said.startswith("ERROR:") and str(lending.REQUESTS_MAX) in said
     assert lending.request(root, "browser", "x", site, lambda run: (), roles.get).startswith("ERROR: request_tool lends")
+    lent = started("lead")
+    assert asked(lent, "browser").startswith("Lent:")
+    reg.finish(reg.get_run(lent).parent_run_id, exit_code=0, first=0)   # its coordinator ended: nothing lent any more
+    with pytest.raises(lending.Refused, match="not at work"):
+        lending.gate(reg.get_run(lent), "navigate", {"url": site})
+    assert "not at work" in asked(lent, "browser")
+
+
+def test_a_lent_browser_reaches_its_site_alone_and_a_lent_connection_is_its_run():
+    """Threat model 2026-11-12 r2: a redirect's later hops, a subresource, a websocket pass no route, so the lent
+    browser's proxy opens a connection to the lent site's host and port only; and the connection a community fence
+    opens is that run's (`LENT_RUN`), whatever process scope it lives in, refused whole when that run is no community run."""
+    from uuid import uuid4
+
+    from galaius.account.caller import Caller
+    from galaius.agents import lending
+    from galaius.agents.catalog.community import CommunityAgent
+    from galaius.browser.site import SiteProxy, _origin_form
+    from galaius.server import core
+
+    proxy = SiteProxy("http://127.0.0.1:8000")
+    try:
+        rows = {"GET http://127.0.0.1:8000/a?b=1 HTTP/1.1": True, "CONNECT 127.0.0.1:8000 HTTP/1.1": True,
+                "GET http://127.0.0.1:8001/ HTTP/1.1": False, "CONNECT accounts.example:443 HTTP/1.1": False, "GET http://localhost:8000/ HTTP/1.1": False,
+                "GET http://127.0.0.1:8000" + "@evil.example/ HTTP/1.1": False, "GET https://127.0.0.1:8000/ HTTP/1.1": False, "GET /relative HTTP/1.1": False,
+                "CONNECT 127.0.0.1:8000.evil.example:443 HTTP/1.1": False, "GET http://127.0.0.1:99999/ HTTP/1.1": False}
+        assert {line: proxy.allowed(line) for line in rows} == rows
+    finally:
+        proxy.close()
+    from galaius.browser.site import origin
+    for read_otherwise in ("https://evil.example\\@good.example/", "https://good.example@evil.example/", "https://good.example:0/",
+                           "https://good.example%2eevil.example/", "javascript:alert(1)"):
+        assert origin(read_otherwise) is None, read_otherwise
+    sent = _origin_form(b"GET http://127.0.0.1:8000/a?b=1 HTTP/1.1\r\nHost: 127.0.0.1:8000\r\nProxy-Connection: keep-alive\r\n\r\nbody")
+    assert sent == b"GET /a?b=1 HTTP/1.1\r\nHost: 127.0.0.1:8000\r\nConnection: close\r\n\r\nbody"
+
+    plain, community = str(uuid4()), str(uuid4())
+    reg.register(run_id=plain, name="lead", provider="claude", agent="lead", task="t", pid=None)
+    reg.register(run_id=community, name="community", provider="claude", agent="lead", task="t", pid=None, parent_run_id=plain,
+                 community=CommunityAgent(entry=uuid4(), kind="agent", title="t", author="a/b", instructions="x", digest="0" * 64, nonce="n0nce"))
+    for tagged, expected in ((community, community), (plain, None)):
+        with Caller(environment={lending.LENT_RUN: tagged}, cwd=Path("/"), pid=os.getpid()).bound():
+            if expected is None:
+                with pytest.raises(lending.Refused):
+                    core._borrower()
+            else:
+                assert core._borrower().run_id == expected
