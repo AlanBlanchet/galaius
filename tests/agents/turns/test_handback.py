@@ -760,7 +760,8 @@ def _spawn_still_in_line(monkeypatch):
     pytest.param(_child_at_work, "| push | RUNNING | deployer ships it |", True, "deployer", id="8-ledger-row-names-a-role-not-at-work"),
     # Tester a903c717 round 1: roles named as what the reporter works on, a file name, the role spelled with a space, a
     # stamp after a label or a list mark, an unnamed close with only the runtime's review at work.
-    pytest.param(_child_at_work, "RUNNING: infra-engineer fixes the visual-critic FAIL rows and the blob storage; reports here.", False, "", id="9-other-roles-are-its-objects"),
+    pytest.param(_child_at_work, "RUNNING: infra-engineer fixes the visual-critic FAIL rows; reports here.", True, "visual-critic", id="9-every-role-named-counts"),
+    pytest.param(_child_at_work, "RUNNING: infra-engineer fixes the tester's rows and its FAIL rows; reports here.", False, "", id="9b-a-possessive-is-what-it-works-on"),
     pytest.param(_no_child, "DONE.\n- `RUNNING-CHECK-R1.md`: brief written.", False, "", id="10-a-file-name-is-no-stamp"),
     pytest.param(_only_a_review_at_work_the_role_ran_elsewhere, "RUNNING: push; infra engineer reports back here.", True, "fc16d3e8", id="11-role-with-a-space"),
     pytest.param(_no_child, "Stamp: **RUNNING:** push; reports back.", True, "no run of yours", id="12-stamp-after-a-label"),
@@ -769,6 +770,10 @@ def _spawn_still_in_line(monkeypatch):
     # Tester a903c717 round 2: a second run said to do the work, not at work, beside one that is.
     pytest.param(_child_at_work, "RUNNING: infra-engineer pushes the fork; deployer ships it and reports back.", True, "deployer", id="15-second-promised-run-not-at-work"),
     pytest.param(_child_at_work, "RUNNING: infra-engineer and deployer ship it; reports back.", True, "deployer", id="16-joined-promised-run-not-at-work"),
+    # Tester a903c717 round 3: where a name sits never told who works (comma, « and », « by X », « waiting on X »).
+    pytest.param(_child_at_work, "RUNNING: infra-engineer fixes the page, deployer ships and reports back.", True, "deployer", id="17-comma-clause"),
+    pytest.param(_child_at_work, "RUNNING: infra-engineer fixes the page; ships by deployer.", True, "deployer", id="18-by-a-role"),
+    pytest.param(_child_at_work, "RUNNING: infra-engineer fixes the page; waiting on deployer to ship.", True, "deployer", id="19-waiting-on-a-role"),
 ])
 def test_a_running_close_stands_only_on_a_run_that_reports_back(sent, monkeypatch, member, close, refused, says):
     member(**{name: value for name, value in (("sent", sent), ("monkeypatch", monkeypatch)) if name in member.__code__.co_varnames})

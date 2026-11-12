@@ -5,7 +5,7 @@ running `python -m galaius.agents.turns.running_claim RUN_ID` with the close on 
 
 2026-11-10: a coordinator closed « RUNNING: push and install guide; infra-engineer reports back here. »; owner
 2026-11-12: « And the coordinator finished, and i never got things done and pushed... There is a real comunication
-problem ! ». Each run a RUNNING line says does its work (`promised`) must be at work for this conversation; one of that role elsewhere is listed so the closing
+problem ! ». Each run a RUNNING line names (`promised`) must be at work for this conversation; one of that role elsewhere is listed so the closing
 run reads what it did before it calls the work undone."""
 
 import re
@@ -22,11 +22,6 @@ from galaius.agents.turns import handback
 
 #: Roles whose name is an everyday word in a close (« the main page », « galaius ships it »), never read as a run named.
 UNNAMED_ROLES = frozenset({"main", "galaius", "community", "agent"})
-#: Where a clause of a RUNNING line starts, and what may open it before the name doing its work.
-CLAUSE = re.compile(r"[;:|().\u2014\n]|\bthen\b")
-LEAD = re.compile(r"^[\s*_`>-]*(?:(?:the|a|an|our|its)\s+)?")
-#: A second name joined to the first that does the work with it.
-JOINED = re.compile(r"^\s*(?:,|and|&)\s*(?:(?:the|a|an)\s+)?")
 #: How far back, and how many, runs of a named role in other conversations are listed.
 ELSEWHERE_SECONDS = 7 * 86_400.0
 ELSEWHERE_MAX = 3
@@ -38,21 +33,20 @@ def _role_pattern(role: str) -> str:
 
 
 def promised(lines: Sequence[str], roles: Iterable[str], known: Collection[str]) -> set[str]:
-    """The runs a RUNNING line says are doing its work: each role or known short id that opens a clause (« visual-critic
-    judges the page; infra-engineer pushes »), with those joined to it (« tester and visual-critic judge »). A name
-    inside a clause is what that work is on (« fixes the tester's rows »), one followed by « 's » never does it."""
+    """Every role or known short id a RUNNING line names, each one a run it says is at work; only a name followed by « 's »
+    is what that work is on (« fixes the tester's rows »). Tester a903c717 round 3: where a name sits in its clause never
+    told the run doing the work from its object (« app-engineer fixes the page, infra-engineer pushes » / « visual-critic
+    FAIL rows; app-engineer fixes them »). A wrong refusal shows its reason and the agent rewrites the line; a wrong pass
+    leaves the person waiting."""
     names = "|".join(sorted(map(_role_pattern, roles), key=len, reverse=True)) or r"(?!)"
-    name = re.compile(rf"(?P<role>{names})(?:[-\s]+(?P<run>[0-9a-f]{{8}}))?(?![\w'’])|(?P<id>[0-9a-f]{{8}})(?![\w'’])")
+    name = re.compile(rf"(?<![\w-])(?:(?P<role>{names})(?:[-\s]+(?P<run>[0-9a-f]{{8}}))?|(?P<id>[0-9a-f]{{8}}))(?![\w'’-])")
     found: set[str] = set()
-    for clause in CLAUSE.split("\n".join(lines).lower()):
-        rest = LEAD.sub("", clause, count=1)
-        while (hit := name.match(rest)) is not None:
-            run = hit.group("run") or hit.group("id")
-            if hit.group("role"):
-                found.add(next(role for role in roles if re.fullmatch(_role_pattern(role), hit.group("role"))))
-            if run in known:
-                found.add(run)
-            rest = JOINED.sub("", rest[hit.end():], count=1) if JOINED.match(rest[hit.end():]) else ""
+    for hit in name.finditer("\n".join(lines).lower()):
+        run = hit.group("run") or hit.group("id")
+        if hit.group("role"):
+            found.add(next(role for role in roles if re.fullmatch(_role_pattern(role), hit.group("role"))))
+        if run in known:
+            found.add(run)
     return found
 
 
@@ -89,7 +83,7 @@ def refusal(run_id: str, text: str, *, now: float | None = None) -> str | None:
     now = time.time() if now is None else now
     why = ("no run of yours is at work or still owes you its report, so nothing wakes this conversation and the person "
            "waits for a report that never comes" if not (reporters or in_line) else
-           f"it says {', '.join([*missing_roles, *missing_ids])} does that work, and none is at work for this conversation")
+           f"it names {', '.join([*missing_roles, *missing_ids])}, not at work for this conversation")
     lines_out = [f"RUNNING CHECK (galaius runtime): this close says « {lines[-1][:160]} », but {why}.",
                  "Reporting back to you: " + ("; ".join([*(_line(other) for other in reporters),
                                                          *(f"{reg.short_id(place.run_id)} {place.label()}, in line" for place in in_line)]) or "none") + "."]
@@ -100,6 +94,9 @@ def refusal(run_id: str, text: str, *, now: float | None = None) -> str | None:
             lines_out.append(f"{role} in another conversation ({reg.short_id(reg.conversation_of(other.run_id))}): {_line(other)}")
     if len(lines_out) > 2:
         lines_out.append("Read what those runs did (`galaius agents events <id>`) before calling their work undone.")
+    if named:
+        lines_out.append("Every role or run id on a RUNNING line counts as a run at work for you: name a role you only work on "
+                         "as « its rows » or « the tester's rows ».")
     lines_out.append("Dispatch what is still owed (spawn it and end your turn: its report resumes this run), or close on what "
                      "is true now: DONE, PARTIAL or BLOCKED.")
     return "\n".join(lines_out)
