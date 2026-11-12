@@ -766,6 +766,9 @@ def _spawn_still_in_line(monkeypatch):
     pytest.param(_no_child, "Stamp: **RUNNING:** push; reports back.", True, "no run of yours", id="12-stamp-after-a-label"),
     pytest.param(_no_child, "1. RUNNING: push; reports back.", True, "no run of yours", id="13-stamp-after-a-list-mark"),
     pytest.param(_only_a_review_at_work_the_role_ran_elsewhere, "RUNNING: push and install guide; reports back here.", True, "no run of yours", id="14-unnamed-only-the-runtime-review"),
+    # Tester a903c717 round 2: a second run said to do the work, not at work, beside one that is.
+    pytest.param(_child_at_work, "RUNNING: infra-engineer pushes the fork; deployer ships it and reports back.", True, "deployer", id="15-second-promised-run-not-at-work"),
+    pytest.param(_child_at_work, "RUNNING: infra-engineer and deployer ship it; reports back.", True, "deployer", id="16-joined-promised-run-not-at-work"),
 ])
 def test_a_running_close_stands_only_on_a_run_that_reports_back(sent, monkeypatch, member, close, refused, says):
     member(**{name: value for name, value in (("sent", sent), ("monkeypatch", monkeypatch)) if name in member.__code__.co_varnames})

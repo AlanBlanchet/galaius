@@ -5,13 +5,13 @@ running `python -m galaius.agents.turns.running_claim RUN_ID` with the close on 
 
 2026-11-10: a coordinator closed « RUNNING: push and install guide; infra-engineer reports back here. »; owner
 2026-11-12: « And the coordinator finished, and i never got things done and pushed... There is a real comunication
-problem ! ». A named run must be one at work for this conversation; one of that role elsewhere is listed so the closing
+problem ! ». Each run a RUNNING line says does its work (`promised`) must be at work for this conversation; one of that role elsewhere is listed so the closing
 run reads what it did before it calls the work undone."""
 
 import re
 import sys
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from datetime import datetime
 
 from galaius.agents import registry as reg
@@ -20,19 +20,40 @@ from galaius.agents.spawn_line import SpawnLine
 from galaius.close_hook import claimed
 from galaius.agents.turns import handback
 
-#: A run's short id (`registry.short_id`) as a close names it.
-SHORT_ID = re.compile(r"(?<![0-9a-f])[0-9a-f]{8}(?![0-9a-f])")
 #: Roles whose name is an everyday word in a close (« the main page », « galaius ships it »), never read as a run named.
 UNNAMED_ROLES = frozenset({"main", "galaius", "community", "agent"})
+#: Where a clause of a RUNNING line starts, and what may open it before the name doing its work.
+CLAUSE = re.compile(r"[;:|().\u2014\n]|\bthen\b")
+LEAD = re.compile(r"^[\s*_`>-]*(?:(?:the|a|an|our|its)\s+)?")
+#: A second name joined to the first that does the work with it.
+JOINED = re.compile(r"^\s*(?:,|and|&)\s*(?:(?:the|a|an)\s+)?")
 #: How far back, and how many, runs of a named role in other conversations are listed.
 ELSEWHERE_SECONDS = 7 * 86_400.0
 ELSEWHERE_MAX = 3
 
 
-def _named_roles(lines: Sequence[str], roles: Iterable[str]) -> set[str]:
-    said = "\n".join(lines).lower()
-    return {role for role in roles
-            if re.search(r"(?<![\w-])" + r"[-\s]".join(map(re.escape, role.lower().split("-"))) + r"(?!\w)", said)}
+def _role_pattern(role: str) -> str:
+    """`role` as a close writes it, with hyphens or spaces (« infra engineer »)."""
+    return r"[-\s]".join(map(re.escape, role.lower().split("-")))
+
+
+def promised(lines: Sequence[str], roles: Iterable[str], known: Collection[str]) -> set[str]:
+    """The runs a RUNNING line says are doing its work: each role or known short id that opens a clause (« visual-critic
+    judges the page; infra-engineer pushes »), with those joined to it (« tester and visual-critic judge »). A name
+    inside a clause is what that work is on (« fixes the tester's rows »), one followed by « 's » never does it."""
+    names = "|".join(sorted(map(_role_pattern, roles), key=len, reverse=True)) or r"(?!)"
+    name = re.compile(rf"(?P<role>{names})(?:[-\s]+(?P<run>[0-9a-f]{{8}}))?(?![\w'’])|(?P<id>[0-9a-f]{{8}})(?![\w'’])")
+    found: set[str] = set()
+    for clause in CLAUSE.split("\n".join(lines).lower()):
+        rest = LEAD.sub("", clause, count=1)
+        while (hit := name.match(rest)) is not None:
+            run = hit.group("run") or hit.group("id")
+            if hit.group("role"):
+                found.add(next(role for role in roles if re.fullmatch(_role_pattern(role), hit.group("role"))))
+            if run in known:
+                found.add(run)
+            rest = JOINED.sub("", rest[hit.end():], count=1) if JOINED.match(rest[hit.end():]) else ""
+    return found
 
 
 def _when(at: float | None) -> str:
@@ -59,18 +80,16 @@ def refusal(run_id: str, text: str, *, now: float | None = None) -> str | None:
     covering_roles = {other.agent for other in (*reporters, *at_work) if other.agent} | {place.role for place in in_line if place.role}
     records = reg._stored_records()
     roles = {other.agent for other in records if other.agent} - UNNAMED_ROLES - {run.agent}
-    missing_roles = sorted(_named_roles(lines, roles) - covering_roles)
-    known = {other.run_id[:8]: other for other in records}
-    missing_ids = sorted({short for short in SHORT_ID.findall("\n".join(lines))
-                          if short in known and not any(run_id.startswith(short) for run_id in covering_ids)})
-    named = _named_roles(lines, roles) | {short for short in SHORT_ID.findall("\n".join(lines)) if short in known}
-    # One run it names at work is enough: other names on its line are what that run works on (« fixes the tester's rows »).
-    if (reporters or in_line) and (not named or len(missing_roles) + len(missing_ids) < len(named)):
+    known = {other.run_id[:8] for other in records}
+    named = promised(lines, roles, known)
+    missing_roles = sorted(name for name in named if name not in known and name not in covering_roles)
+    missing_ids = sorted(name for name in named if name in known and not any(other.startswith(name) for other in covering_ids))
+    if (reporters or in_line) and not missing_roles and not missing_ids:
         return None
     now = time.time() if now is None else now
     why = ("no run of yours is at work or still owes you its report, so nothing wakes this conversation and the person "
            "waits for a report that never comes" if not (reporters or in_line) else
-           f"it names {', '.join([*missing_roles, *missing_ids])}, none of it at work for this conversation")
+           f"it says {', '.join([*missing_roles, *missing_ids])} does that work, and none is at work for this conversation")
     lines_out = [f"RUNNING CHECK (galaius runtime): this close says « {lines[-1][:160]} », but {why}.",
                  "Reporting back to you: " + ("; ".join([*(_line(other) for other in reporters),
                                                          *(f"{reg.short_id(place.run_id)} {place.label()}, in line" for place in in_line)]) or "none") + "."]
