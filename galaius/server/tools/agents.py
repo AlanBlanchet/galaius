@@ -13,16 +13,16 @@ from galaius.account.caller import Caller
 from galaius_core import CRITICALITIES, AgentRevisionRef, Criticality, CommunityKind, OwnerQuestion, QuestionOption
 from pydantic import ValidationError
 
-from galaius.agents import messaging, registry as reg
+from galaius.agents import lending, messaging, registry as reg
 from galaius.agents import agent_queue
 from galaius.agents.turns import handback
 from galaius.agents.catalog import community as community_agents
 from galaius.agents.catalog.community import CommunityAgent
 from galaius.agents.conversations import ConversationAnswers, ConversationScope
 from galaius.agents.providers import PROVIDERS, available_providers, provider_caveat_note, provider_for
-from galaius.agents.run import run_agent
+from galaius.agents.run import load_policy, run_agent
 from galaius.agents.spawn_line import Admission, Continued, Spawn, SpawnLine, StartNew
-from galaius.server.core import instrumented, mcp, offloaded
+from galaius.server.core import instrumented, mcp, offloaded, shown_sites
 
 
 def _fmt(run: reg.AgentRun, waiting: str | None = None) -> str:
@@ -231,6 +231,25 @@ async def agent_spawn(
             f"criterion={getattr(handle, 'criterion', None)}{walked}{handover.note()}\n"
             f"{takeover}"
             f"Watch it with agent_list, or agent_events(run_id=\"{handle.run_id}\").{caveat}")
+
+
+@mcp.tool(category="agents")
+@instrumented
+@offloaded
+def request_tool(tool: str, why: str, site: str | None = None) -> str:
+    """Ask the agent that started you for a tool you lack — for a community agent, the one Galaius tool it holds.
+
+    Decided by Galaius at once, from what that agent holds, never from your words: "browser" lends you a browser of
+    your own, fresh and signed out, on one site a page of that agent shows now (`site`), to read and click for 30
+    minutes (navigate, get_page_state, get_interactive_elements, screenshot, run_actions). "sign_in" or "credential"
+    puts ONE question to the person, at most once; his answer goes to the agent that started you. Anything else is never
+    lent: finish without it and say in your report what you lacked.
+
+    tool: "browser", "sign_in" or "credential".
+    why: one line, what you need it for (shown to the agent that started you).
+    site: with "browser", the address of the site (http(s)://host:port).
+    """
+    return lending.request(messaging.asking_run(), tool, why, site, shown_sites, load_policy().tools_for)
 
 
 @mcp.tool(category="agents", read_only=True)

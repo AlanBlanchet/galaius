@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import shutil
@@ -12,6 +13,7 @@ from datetime import datetime
 from functools import partial
 from importlib.resources import files
 from pathlib import Path
+from collections.abc import Callable
 from typing import Literal
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, BrowserType, Page
@@ -245,6 +247,8 @@ class BrowserManager:
         # here, the next call on that page just silently acted on a dead blank tab (#127).
         # Keyed by id(page): stable for the page object's lifetime, cleared when the tab closes.
         self._crashed_pages: dict[int, str] = {}
+        # A community run's lent session (`lend`): which addresses its pages may show; None for every other session.
+        self._keeps: Callable[[str], bool] | None = None
 
     @property
     def _persistent(self) -> bool:
@@ -648,6 +652,36 @@ class BrowserManager:
                 pass
         await self._new_context(state)
 
+    def lend(self, keeps: Callable[[str], bool]) -> None:
+        """This session as a community run's (`galaius.agents.lending`): no profile on disk, no service worker, no download,
+        every page kept on what `keeps` accepts — a navigation elsewhere refused, a redirect or a page that left it taken
+        back to a blank page. Set before its first context: the session is that run's alone."""
+        if self._keeps is None and self._context is not None:
+            raise RuntimeError(f"session {self._session_id} is open already: it cannot be lent")
+        self._keeps, self._profile_dir = keeps, None
+
+    def _kept(self, url: str) -> bool:
+        return self._keeps is None or url == "about:blank" or self._keeps(url)
+
+    async def _lent_route(self, route) -> None:
+        if route.request.is_navigation_request() and not self._kept(route.request.url):
+            await route.abort("blockedbyclient")
+        else:
+            await route.continue_()
+
+    def _lent_page(self, page: Page) -> None:
+        """A page of a lent session: its only tab (a popup or a second tab closed at once), brought back to a blank page
+        whenever its main frame shows another site (a refused navigation's error page, a redirect's later hops)."""
+        if any(other is not page for other in page.context.pages):
+            self._note_recovery("NOTE: a popup or new tab was closed: a lent browser keeps one tab; navigate to its address instead.")
+            asyncio.ensure_future(page.close())
+            return
+        def navigated(frame) -> None:
+            if frame == page.main_frame and not self._kept(frame.url):
+                self._note_recovery(f"NOTE: the page left the lent site ({frame.url[:80]}); it was taken back to a blank page.")
+                asyncio.ensure_future(page.goto("about:blank"))
+        page.on("framenavigated", navigated)
+
     def _context_kwargs(self, record_video_dir: str | None = None) -> dict:
         dev = self._device_override or {}
         chromium = self._config.browser_type == "chromium"
@@ -680,6 +714,8 @@ class BrowserManager:
             kw["record_video_size"] = dict(kw["viewport"])
         if self._http_credentials:  # authenticate Basic-auth sites without the native dialog (#70)
             kw["http_credentials"] = self._http_credentials
+        if self._keeps is not None:  # a lent session (`lend`): nothing kept past its pages, nothing saved to disk
+            kw |= {"service_workers": "block", "accept_downloads": False}
         return kw
 
     def _install_browser(self):
@@ -748,6 +784,9 @@ class BrowserManager:
                 kwargs["storage_state"] = storage_state
             self._context = await self._browser.new_context(**kwargs)
         self._active_tab = 0  # a fresh context starts on its first page
+        if self._keeps is not None:
+            await self._context.route("**/*", self._lent_route)
+            self._context.on("page", self._lent_page)
         # Fail fast on a missing/non-actionable selector: Playwright's 30s default hangs the
         # agent half a minute before erroring. config.wait_timeout (10s) is the one knob; a dead
         # selector then surfaces as an actionable nudge (see dispatch) in ~10s.

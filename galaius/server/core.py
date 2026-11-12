@@ -32,6 +32,7 @@ from galaius import __version__
 from galaius.agents.tool_gateway import ServedGateway
 from galaius.browser.manager import SessionRegistry, session_name
 from galaius.account.caller import Caller
+from galaius.agents import lending, messaging
 from galaius.diagnostics.debug_output import _CURRENT_INV, Debug, resolve_output_path
 from galaius.mcp.announcement import GATEWAY_PREFIX, GatewayServed, McpAnnouncement
 from galaius.desktop.window import CaptureError
@@ -175,9 +176,28 @@ def _auto_session_name() -> str | None:
         if name is None:
             name = _mint_session_name(conn)
             _auto_session_names[conn] = name
+            if (run := messaging.asking_run()) is not None:
+                _session_runs[name] = run
         return name
     except TypeError:  # a connection object that can't be weak-referenced
         return _mint_session_name(conn)
+
+
+#: The run each minted session works for (`_auto_session_name`): the sites a coordinator's pages show are what it may lend
+#: a community agent (`lending.request`).
+_session_runs: dict[str, str] = {}
+
+
+def shown_sites(run_id: str) -> set[str]:
+    """The sites (origins) the pages of run `run_id`'s own browser sessions show now."""
+    sites: set[str] = set()
+    for name, run in list(_session_runs.items()):
+        manager = _sessions.peek(name) if run == run_id else None
+        context = getattr(manager, "_context", None) if manager is not None else None
+        for page in context.pages if context is not None else ():
+            if (site := lending.origin(page.url)) is not None:
+                sites.add(site)
+    return sites
 
 
 def _resolve_session(session: str) -> str:
@@ -504,6 +524,22 @@ def _instructions(version: str | None = None) -> str:
     )
 
 
+def _borrower():
+    """The community run calling (`lending.borrower`); None for every other caller."""
+    return None if Caller.serves_none() else lending.borrower(messaging.asking_run())
+
+
+def _lent_view(tool: types.Tool) -> types.Tool:
+    """`tool` as a community run sees it: only the parameters it may pass (`lending.LENT_TOOLS`)."""
+    allowed = lending.LENT_TOOLS.get(tool.name)
+    if allowed is None:
+        return tool
+    schema = dict(tool.inputSchema)
+    schema["properties"] = {key: value for key, value in (schema.get("properties") or {}).items() if key in allowed}
+    schema["required"] = [key for key in schema.get("required") or () if key in allowed]
+    return tool.model_copy(update={"inputSchema": schema})
+
+
 class _SessionScopedMCP(FastMCP):
     """FastMCP whose tool registration is the ONE seam session names resolve at.
 
@@ -532,6 +568,9 @@ class _SessionScopedMCP(FastMCP):
     gateway = ServedGateway()
 
     async def list_tools(self):
+        # A community run (`lending`) sees request_tool and the tools it may be lent, each with only the parameters it takes.
+        if (borrower := await asyncio.to_thread(_borrower)) is not None:
+            return [_lent_view(tool) for tool in await super().list_tools() if tool.name == lending.REQUEST_TOOL or tool.name in lending.LENT_TOOLS]
         # A read-only run's server (`config.scratch`, inside its fence) serves its `fenced` tools alone: its own sandbox
         # display driven and seen, outputs in its scratch folder (`resolve_output_path`).
         if config.scratch is not None:
@@ -539,6 +578,18 @@ class _SessionScopedMCP(FastMCP):
         return [*await super().list_tools(), *self.gateway.tools()]
 
     async def call_tool(self, name: str, arguments: dict):
+        # A community run first, before any other route (a gateway tool included): what it was lent, or nothing.
+        if (borrower := await asyncio.to_thread(_borrower)) is not None:
+            try:
+                arguments = lending.gate(borrower, name, dict(arguments or {}))
+            except lending.Refused as refused:
+                raise ToolError(str(refused)) from None
+            if name in lending.LENT_TOOLS:
+                if (connection := _connection()) is not None:
+                    _auto_session_names[connection] = arguments["session"]   # closed with its connection (`shared`)
+                lent = lending.site(borrower)
+                _sessions.get(arguments["session"]).lend(lambda url: lending.origin(url) == lent)
+            return await super().call_tool(name, arguments)
         if config.scratch is not None and not GatewayServed.fenced((found.meta if (found := self._tool_manager.get_tool(name)) else None)):
             raise ToolError(f"{name}: a read-only run calls only {', '.join(sorted(tool.name for tool in await self.list_tools()))}")
         if self.gateway.serves(name):

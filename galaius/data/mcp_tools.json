@@ -175,6 +175,12 @@
  },
  {
   "server": "galaius",
+  "name": "request_tool",
+  "category": "agents",
+  "description": "Ask the agent that started you for a tool you lack \u2014 for a community agent, the one Galaius tool it holds."
+ },
+ {
+  "server": "galaius",
   "name": "reset_sandbox",
   "category": "desktop",
   "description": "Tear down galaius's isolated sandbox display \u2014 kill every app launched into it and stop the nested X server. The next launch_app starts a fresh display."

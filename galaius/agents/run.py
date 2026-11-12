@@ -42,10 +42,10 @@ from galaius.agents import run_folder
 from galaius.agents.catalog.entries import AgentCatalog
 from galaius.agents.catalog.connection import RoleAbsent
 from galaius.agents.catalog import community as community_agents
-from galaius.agents.catalog.community import CommunityAgent
+from galaius.agents.catalog.community import LENT_TOOLS, REQUEST_TOOL, CommunityAgent
 from galaius.agents.limits.ceiling import contained
 from galaius.agents.transport.events import model_spoke, stream_lines
-from galaius.isolation.fence import MEDIA_SOCKET, FenceSpec, available, fenced, inside_environment
+from galaius.isolation.fence import MEDIA_SOCKET, TOOLS_PIPE, TOOLS_SOCKET, FenceSpec, available, fenced, inside_environment
 from galaius.host.processes import process_group_options, spawnable
 from galaius.agents.policy import TOOL_PREFIX, Policy, policy_path
 from galaius.agents.catalog.profiles import overlay_for, profiles_from
@@ -751,6 +751,9 @@ def mesh_config(*, run_id: str, role: str | None, fence: FenceSpec | None = None
     read-only run's) is told it (`GatewayServed.SCRATCH`, `Config.scratch`): it serves that run's tools alone and writes
     nowhere else.
     """
+    if fence is not None and fence.lends:
+        # A community agent's fence (`galaius.agents.lending`): the server outside, as its run, reached through its socket.
+        return json.dumps({"mcpServers": {"galaius": {"command": sys.executable, "args": ["-I", "-c", TOOLS_PIPE, TOOLS_SOCKET]}}})
     command, args = _galaius_command()
     scratch = {} if fence is None else {**inside_environment(), GatewayServed.MEDIA_RELAY: MEDIA_SOCKET,
                                         **({GatewayServed.SCRATCH: str(fence.scratch)} if fence.scratch is not None else {})}
@@ -789,7 +792,8 @@ def tools_of(policy: Policy, role: str, community: bool) -> list[str] | None:
         return tools
     if not (own := [tool for tool in tools if not tool.startswith(TOOL_PREFIX)]):
         raise ModelUnavailable(sentence=f"A community agent gets its caller's tools but galaius's: {role} has none besides galaius's, so it would have none")
-    return own
+    # galaius's it may be lent (`galaius.agents.lending`): listed from its start, each call decided by the server.
+    return [*own, *(f"{TOOL_PREFIX}{name}" for name in (REQUEST_TOOL, *LENT_TOOLS))]
 
 
 def require_galaius(role: str | None, tools: list[str] | None, provider: AgentProvider, environment: Mapping[str, str], *,
@@ -1580,9 +1584,10 @@ async def run_agent(
         provider = provider or next((cli for cli in program_providers() if cli.confines_tools), None)
         if provider is None:
             raise ModelUnavailable(sentence="A community agent runs only on a CLI that switches off its tools one by one, and none is on this PC")
-        # Less than its caller: its role, revision and permission mode, its denials and ours, no MCP server (`isolated`), in
+        # Less than its caller: its role, revision and permission mode, its denials and ours, no MCP server but its lent tools
+        # (`isolated`, `mesh_config`: request_tool, `galaius.agents.lending`), in
         # the community fence (`CommunityAgent.fence`), working in its own folder.
-        agent, agent_ref, delegate, mesh, name = parent_run.agent, parent_run.agent_ref, None, False, community.label()
+        agent, agent_ref, delegate, mesh, name = parent_run.agent, parent_run.agent_ref, None, True, community.label()
         permission_mode, denied_tools = parent_run.permission_mode, tuple(dict.fromkeys((*parent_run.denied_tools, *denied_tools, *community_agents.DENIED_TOOLS)))
         tools_of(load_policy(), agent, community=True)   # refused before its folder and the files handed to it are made
         community, fence = community.fence(cwd, pinned, provider)

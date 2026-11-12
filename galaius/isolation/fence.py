@@ -138,6 +138,24 @@ EGRESS_MOUNT = "/run/galaius-egress"
 #: The media relay's socket inside a fence (`Config.media_relay`): `outer` serves `galaius.vision.relay` beside the
 #: egress proxy, outside, with this PC's keys.
 MEDIA_SOCKET = f"{EGRESS_MOUNT}/media.sock"
+#: The lent tools' socket inside a fence that lends (`FenceSpec.lends`): `Outer` serves galaius's MCP server on it, outside,
+#: one per connection, as the run (`galaius.agents.lending` decides each call).
+TOOLS_SOCKET = f"{EGRESS_MOUNT}/tools.sock"
+#: The MCP server a lending fence's CLI starts inside (`python -I -c TOOLS_PIPE TOOLS_SOCKET`): its standard input and
+#: output piped to `TOOLS_SOCKET`.
+TOOLS_PIPE = r"""
+import os, socket, sys, threading
+link = socket.socket(socket.AF_UNIX)
+link.connect(sys.argv[1])
+def out():
+    while data := link.recv(65536):
+        os.write(1, data)
+    os._exit(0)
+threading.Thread(target=out).start()
+while data := os.read(0, 65536):
+    link.sendall(data)
+link.shutdown(socket.SHUT_WR)
+"""
 #: How this package's modules are started outside a fence: isolated (`-I`), so the folder they start in (the agent's,
 #: writable by it) is never on `sys.path`, nor any `PYTHON*` variable read.
 PACKAGE = (sys.executable, "-I", "-m")
@@ -224,6 +242,8 @@ class Fence(BaseModel):
     #: The secret-looking variables (`SECRET_SUFFIXES`) the run keeps: its CLIs' own keys. `outer` drops every other one
     #: from the environment the fence is started with, whoever built it (a key the runner adds for one child included).
     keys: tuple[str, ...] = ()
+    #: Whether `TOOLS_SOCKET` is served (`FenceSpec.lends`).
+    lends: bool = False
     MODULE: ClassVar[str] = "galaius.isolation.fence"
 
     def command(self, argv: list[str]) -> list[str]:
@@ -256,7 +276,7 @@ class Fence(BaseModel):
         view += ["--chdir", str(self.cwd)]
         inner = [sys.executable, "-I", "-c", INNER, f"{EGRESS_MOUNT}/egress.sock", *argv]
         guard = SteeringGuard(reviews=self.reviews, guards=self.guards)
-        return Outer(hosts=self.egress, guard=guard, keys=self.keys, media=True).command([bwrap, *view, "--", *inner])
+        return Outer(hosts=self.egress, guard=guard, keys=self.keys, media=True, lends=self.lends).command([bwrap, *view, "--", *inner])
 
 
 class Scan(BaseModel):
@@ -329,6 +349,8 @@ class FenceSpec(BaseModel):
     reviews: Path | None = None
     #: Runner-owned folder the run writes its outputs in, bound writable at its own path (`Fence.scratch`).
     scratch: Path | None = None
+    #: Whether its run may be lent tools (a community agent's, `galaius.agents.lending`): `TOOLS_SOCKET` served.
+    lends: bool = False
 
     def places(self) -> PlaceMap:
         levels = self.levels
@@ -400,7 +422,7 @@ class FenceSpec(BaseModel):
         links = tuple({link: target for path in reached for link, target in _links(path)
                        if not any(link.is_relative_to(folder) or folder.is_relative_to(link) for folder in shown)}.items())
         return Fence(home=home, cwd=self.start.resolve(), binds=tuple(binds), emptied=tuple(emptied), blanked=tuple(blanked), links=links, egress=self.egress,
-                     guards=tuple(guards), reviews=self.reviews, scratch=self.scratch,
+                     guards=tuple(guards), reviews=self.reviews, scratch=self.scratch, lends=self.lends,
                      keys=tuple(sorted({name for provider in self.providers for name in FencedCli.of(provider).keys})))
 
     @classmethod
@@ -759,6 +781,8 @@ class Outer(BaseModel):
     guard: SteeringGuard = Field(default_factory=SteeringGuard)
     keys: tuple[str, ...] = ()
     media: bool = False
+    #: Whether galaius's MCP server is served on `TOOLS_SOCKET` (`serve_tools`).
+    lends: bool = False
 
     def command(self, argv: list[str]) -> list[str]:
         """`argv` (bwrap's) started by this module outside."""
@@ -778,6 +802,8 @@ class Outer(BaseModel):
             try:
                 threading.Thread(target=EgressProxy(hosts=self.hosts).serve, args=(os.path.join(folder, "egress.sock"),), daemon=True).start()
                 env = {name: value for name, value in os.environ.items() if name in self.keys or not name.upper().endswith(SECRET_SUFFIXES)}
+                if self.lends:
+                    threading.Thread(target=self.serve_tools, args=(os.path.join(folder, os.path.basename(TOOLS_SOCKET)), env), daemon=True).start()
                 child = subprocess.Popen([part.replace("{egress}", folder) for part in argv], env=env)
                 for number in platform_signals("SIGTERM", "SIGINT", "SIGHUP"):
                     signal.signal(number, lambda received, _frame: child.send_signal(received))
@@ -793,6 +819,21 @@ class Outer(BaseModel):
                 if relay is not None:
                     relay.kill()
                     relay.wait()
+
+
+    @staticmethod
+    def serve_tools(path: str, env: dict[str, str]) -> None:
+        """galaius's MCP server (`galaius mcp`, a relay to this PC's shared server) on each connection to `path`: started
+        here, outside the fence, in this run's process scope, so the server knows the caller for this run and none other
+        (`Caller.scope_run`), whatever comes through the socket."""
+        listener = socket.socket(socket.AF_UNIX)
+        listener.bind(path)
+        listener.listen(4)
+        while True:
+            client, _ = listener.accept()
+            with client:
+                subprocess.Popen([*PACKAGE, "galaius", "mcp"], stdin=client.fileno(), stdout=client.fileno(), stderr=subprocess.DEVNULL,
+                                 env=env, cwd="/", **Children.options(False))
 
 
 #: What bubblewrap prints when this system refuses it a user namespace (the lines Codex 0.155.1

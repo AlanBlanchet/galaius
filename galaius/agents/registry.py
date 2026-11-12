@@ -1906,6 +1906,17 @@ def question_answered_locked(run_id: str, message_id: str) -> OwnerQuestion | No
     return answered
 
 
+def community_changed(run_id: str, change: Callable[[CommunityAgent], CommunityAgent | None]) -> AgentRun | None:
+    """Community run `run_id` with its `community` replaced by `change(community)` under the record's lock (what it was lent,
+    its requests: `galaius.agents.lending`); unchanged when `change` gives None. None for no community run."""
+    with record_lock(run_id):
+        run = get_run(run_id)
+        if run is None or run.community is None:
+            return None
+        changed = change(run.community)
+        return run if changed is None else _merge_record_locked(run_id, {"community": changed.model_dump(mode="json")})
+
+
 def note_asker_locked(run_id: str, asker: str) -> AgentRun | None:
     """Add run `asker` to run `run_id`'s `asked_by` while the caller holds `record_lock(run_id)`; the record when it
     changed. Only another run of this PC counts (a UUID with a record): never the person (« operator »), an automatic

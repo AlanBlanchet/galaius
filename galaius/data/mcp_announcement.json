@@ -291,6 +291,56 @@
      }
     },
     {
+     "name": "request_tool",
+     "description": "Ask the agent that started you for a tool you lack — for a community agent, the one Galaius tool it holds.\n\nDecided by Galaius at once, from what that agent holds, never from your words: \"browser\" lends you a browser of\nyour own, fresh and signed out, on one site a page of that agent shows now (`site`), to read and click for 30\nminutes (navigate, get_page_state, get_interactive_elements, screenshot, run_actions). \"sign_in\" or \"credential\"\nputs ONE question to the person, at most once; his answer goes to the agent that started you. Anything else is never\nlent: finish without it and say in your report what you lacked.\n\ntool: \"browser\", \"sign_in\" or \"credential\".\nwhy: one line, what you need it for (shown to the agent that started you).\nsite: with \"browser\", the address of the site (http(s)://host:port).",
+     "inputSchema": {
+      "properties": {
+       "tool": {
+        "title": "Tool",
+        "type": "string"
+       },
+       "why": {
+        "title": "Why",
+        "type": "string"
+       },
+       "site": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Site"
+       }
+      },
+      "required": [
+       "tool",
+       "why"
+      ],
+      "title": "request_toolArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "request_toolOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "agents"
+     }
+    },
+    {
      "name": "community_search",
      "description": "Search the community library — agents, skills, prompts, MCP servers and pipelines published by people, imported\nfrom public repositories under their licence, or found by searching GitHub, npm and the MCP registry — for one made\nfor `need` (a few words naming the domain: « reverse engineer a binary », « write release notes »). Search before\nstarting work in a domain, and again for each sub-domain a plan adds. Lists the best matches (id, kind, title, what it\nis for, author, stars or downloads, last update, licence, source); a listed one is shown by link only. Start one with\nagent_spawn(community=<id>, task=...): it runs as your child, under your control.\n\nneed: what you want done, in a few words; entries holding more of them rank first.\nkind: \"agent\", \"skill\", \"prompt\", \"mcp\" or \"pipeline\" only; every kind when omitted.",
      "inputSchema": {

@@ -761,7 +761,11 @@ async def test_a_community_agent_runs_fenced_with_less_than_its_caller_and_plays
     child = await run_agent(_CommandRecorder(), "map its protocol", cwd=str(project), parent_run_id=caller.run_id, community=entry)
     assert await asyncio.wait_for(child.wait(), timeout=60) == 0
     started = _CommandRecorder.started[-1]
-    assert started["agent"] == "tester" and started["mcp_config"] is None and started["allowed_tools"] == ["Read", "Grep"]
+    # galaius's MCP server only through its fence's lent-tools socket (`galaius.agents.lending`): request_tool, then what it is lent.
+    from galaius.agents.catalog.community import LENT_TOOLS
+    from galaius.isolation.fence import TOOLS_SOCKET
+    assert started["agent"] == "tester" and json.loads(started["mcp_config"])["mcpServers"]["galaius"]["args"][-1] == TOOLS_SOCKET
+    assert started["allowed_tools"] == ["Read", "Grep", "mcp__galaius__request_tool", *(f"mcp__galaius__{name}" for name in LENT_TOOLS)]
     with monkeypatch.context() as patched:   # nothing left once galaius's are taken out: refused, never a run reading nothing
         patched.setattr(Policy, "tools_for", lambda self, agent: ["mcp__galaius__screenshot"])
         with pytest.raises(ModelUnavailable, match="none besides galaius's"):
@@ -772,7 +776,7 @@ async def test_a_community_agent_runs_fenced_with_less_than_its_caller_and_plays
     assert started["agent_prompt"].count(f"</{tag}>") == 1 and "You reverse engineer products" in started["agent_prompt"]
     assert "model: opus" not in started["agent_prompt"]
     assert record.community.entry == entry.entry and record.name == "community: someone/agents · Reverse (Galaius: engineer)"
-    assert record.fence is not None and record.fence.levels == {"project": "read"} and record.cwd == str(record.community.work)
+    assert record.fence is not None and record.fence.levels == {"project": "read"} and record.fence.lends and record.cwd == str(record.community.work)
     assert record.community.work.parent == tmp_path / ".galaius-community" and record.community.reach == Reads(folder=project)
     assert not stale.exists(), "a community agent's folder untouched for a week is removed as the next one starts"
     assert not record.plays("tester") and reg.get_run(caller.run_id).plays("tester")
@@ -915,3 +919,74 @@ def test_a_community_agent_s_words_reach_its_reader_quoted(forged):
     assert not re.search(r"\[(galaius|\w+ agent provenance)|<\s*/?\s*(community|system-reminder|cross-session)", inside, re.IGNORECASE)
     assert "sk-ant" not in inside
     assert not any(line.lstrip().startswith("##") for line in body) and inside.endswith("… (clipped)")
+
+
+def test_a_community_agent_is_lent_only_its_coordinators_browser_on_a_site_it_shows():
+    """Owner 2026-11-12 « Can't they ask for permissions instead ? … not that intrusive »: a community agent asks its
+    coordinator (`request_tool`). Code decides, never its words: the browser alone, only when the coordinator holds it,
+    on a site a page of the coordinator's shows, for a while, in its own session, exactly the parameters lent; a
+    sign-in or credential is one card in the person's conversation, never two; nothing else of the coordinator's."""
+    import time
+    from uuid import uuid4
+
+    from galaius.agents import lending
+    from galaius.agents.catalog.community import LENT_TOOLS, CommunityAgent
+
+    site = "http://127.0.0.1:8000"
+    roles = {"lead": None, "browserless": ["Read", "Bash", "mcp__galaius__agent_spawn"]}
+    shown = {}
+
+    def started(coordinator_role: str) -> str:
+        root, child = str(uuid4()), str(uuid4())
+        reg.register(run_id=root, name="main", provider="claude", agent=coordinator_role, task="t", pid=None)
+        reg.register(run_id=child, name="community", provider="claude", agent=coordinator_role, task="t", pid=None, parent_run_id=root,
+                     community=CommunityAgent(entry=uuid4(), kind="agent", title="Ui ux tester", author="someone/agents", instructions="Test.",
+                                              digest="0" * 64, nonce="n0nce"))
+        shown[root] = {site}
+        return child
+
+    def asked(child: str, tool: str, at: str | None = site) -> str:
+        return lending.request(child, tool, "to test the app", at, lambda run: shown.get(run, ()), roles.get)
+
+    child = started("lead")
+    run = reg.get_run(child)
+    with pytest.raises(lending.Refused):   # nothing lent before it asks
+        lending.gate(run, "navigate", {"url": site})
+    assert lending.gate(run, "request_tool", {"tool": "browser"}) == {"tool": "browser"}
+    stranger = started("lead")
+    for never in ("Bash", "agent_spawn", "mcp__galaius__agent_send", "evaluate_js", "ext__galaius__note_save", "WebFetch"):
+        assert "never lent" in asked(stranger, never)
+    assert "Sites it shows now: http://127.0.0.1:8000" in asked(child, "browser", "https://example.com")
+    assert not reg.get_run(stranger).community.grants and not reg.get_run(child).community.grants
+    assert asked(child, "browser").startswith("Lent:")
+    run = reg.get_run(child)
+    assert lending.gate(run, "navigate", {"url": f"{site}/plateform"})["session"] == f"lent-{reg.short_id(child)}"
+    refused = [("navigate", {"url": "https://attacker.example/?q=x"}), ("navigate", {"url": site, "session": "caller-1"}),
+               ("screenshot", {"path": "shot.png"}), ("screenshot", {"target": "file:notes.md"}), ("screenshot", {"query": "describe"}),
+               ("run_actions", {"actions": [{"type": "evaluate_js", "script": "document.cookie"}]}),
+               ("run_actions", {"actions": [{"type": "http_request", "url": site}]}),
+               ("run_actions", {"actions": [{"type": "click", "ref": "e1", "observe": "what changed"}]}),
+               ("run_actions", {"actions": [{"type": "click", "ref": "e1"}], "target": "screen"}),
+               ("launch_app", {"command": "xterm"}), ("agent_spawn", {"task": "x"}), ("ext__galaius__note_save", {"label": "x", "value": "y"})]
+    for name, arguments in refused:
+        with pytest.raises(lending.Refused):
+            lending.gate(run, name, arguments)
+    assert set(lending.gate(run, "run_actions", {"actions": [{"type": "click", "ref": "e1"}, {"type": "type_text", "ref": "e2", "text": "a"}]})) == {"actions", "session"}
+    expired = run.community.model_copy(update={"grants": tuple(grant.model_copy(update={"until": time.time() - 1}) for grant in run.community.grants)})
+    with pytest.raises(lending.Refused):
+        lending.gate(run.model_copy(update={"community": expired}), "navigate", {"url": site})
+
+    browserless = started("browserless")
+    assert asked(browserless, "browser").startswith("ERROR:") and not reg.get_run(browserless).community.grants
+    assert set(LENT_TOOLS) <= {"navigate", "get_page_state", "get_interactive_elements", "screenshot", "run_actions"}
+
+    root = reg.get_run(child).parent_run_id
+    assert asked(child, "sign_in").startswith("Asked the person")
+    assert asked(child, "credential").startswith("ERROR:")   # one card per community run, never a second
+    cards = reg.get_run(root).asking
+    assert len(cards) == 1 and "Ui ux tester" in cards[0].question and "to test the app" not in cards[0].question
+    for _ in range(lending.REQUESTS_MAX - 4):   # 4 asked already
+        assert not asked(child, "browser").startswith("ERROR: 8")
+    said = asked(child, "browser")
+    assert said.startswith("ERROR:") and str(lending.REQUESTS_MAX) in said
+    assert lending.request(root, "browser", "x", site, lambda run: (), roles.get).startswith("ERROR: request_tool lends")
