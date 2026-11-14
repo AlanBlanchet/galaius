@@ -339,8 +339,8 @@ class Term:
     #: Set on a RESOLVED percentile: a model this variable's source never measured is not in the
     #: population the percentile describes, so it can't clear a bar drawn on it.
     source_only: bool = False
-    #: A bare numeric metric is a ranking request. It still requires a measured value, but does
-    #: not create a zero-valued threshold.
+    #: A bare numeric metric is a ranking request: it needs a number, never a zero-valued threshold; the source's own
+    #: measures rank before numbers it never measured (`Criteria.qualifying`).
     ranking: bool = False
 
     def __str__(self) -> str:
@@ -381,6 +381,9 @@ class Term:
         if self.percentile:  # asked directly rather than through `Criteria`, which pre-resolves
             bar = self.resolved()
             return False if bar.percentile else bar.holds(model)
+        # A percentile bar is drawn on what the source measured: a model it never measured is outside it. A bare ranking
+        # metric only needs a number (`qualifying` ranks the source's own measures first): `aa.intelligence and provider ~
+        # mistral` dropped every Mistral model, none being on the live board, so the preference never ran.
         if self.source_only:
             var = Variables.by_name(self.field)
             if var is not None and var.measured is not None and not var.measured(model):
@@ -657,7 +660,7 @@ class Criteria:
                         f"{name!r} is not a capability or metric.{_did_you_mean(name)}"
                     )
                 if var.rankable:
-                    terms.append(Term(name, ranking=True, source_only=True))
+                    terms.append(Term(name, ranking=True))
                     continue
                 if var.flag:
                     terms.append(Term(name))
@@ -715,12 +718,18 @@ class Criteria:
         variables = self._ranking_variables()
         if variables:
             fit.sort(key=lambda model: (
+                not self.measured(model),
                 *[variable.read(model) * (-1 if variable.higher_is_better else 1) for variable in variables],
                 model.thrift[0], model.thrift[1], model.id,
             ))
             return fit
         fit.sort(key=lambda m: m.thrift)
         return fit
+
+    def measured(self, model: Model) -> bool:
+        """Whether every measure this criterion ranks on has its source's own number for `model` (the live board for
+        `aa.intelligence`), not only one galaius shipped: those rank first (`qualifying`)."""
+        return all(variable.measured is None or variable.measured(model) for variable in self._ranking_variables())
 
     def _ranking_variables(self) -> list[Variable]:
         variables = [Variables.by_name(term.field) for term in self.terms if term.ranking]

@@ -266,8 +266,8 @@ def _ranked_candidates(
     pool = lambda m: any(p.can_run(m, env) for p in universe if p.name in allowed)
     # Unpruned here: what is worth running is judged over the pool that can run, further down.
     ranked = criteria.ranked(runnable=lambda m: any(p.can_run(m, env) for p in universe), weights=weights, value=None)
-    if not ranked and any(term.source_only for term in criteria.terms) and not live_scores():
-        # No board here (it is fetched with its reader's own key): the server ranked this rule on its
+    if (not ranked or not criteria.measured(ranked[0])) and any(term.source_only or term.ranking for term in criteria.terms) and not live_scores():
+        # No board here (it is fetched with its reader's own key), so nothing ranks on a measured score: the server ranked this rule on its
         # own and its order is the launch order, its rows named here even when the bundled catalog
         # lacks them; no score came with it, so no value rule second-guesses it (criteria None).
         server = ServerRanking.linked()

@@ -104,15 +104,24 @@ def test_it_selects_the_cheapest_model_that_clears_the_bar(registry):
     assert Criteria.parse("price.in < 1").choose(available_only=False).id == "blind-but-cheap"
 
 
-def test_bare_intelligence_excludes_snapshot_scores_outside_the_current_board(monkeypatch):
+def test_bare_intelligence_ranks_snapshot_scores_after_the_current_board(monkeypatch):
+    """A model off the live board keeps its shipped score, ranked after every model on the board: a rule preferring its
+    provider (`aa.intelligence and provider ~ mistral`, no Mistral model on the board) still finds it; a model with no
+    score at all never qualifies."""
     from galaius.catalog import models as model_catalog
 
-    monkeypatch.setattr(model_catalog, "live_scores", lambda: {"current": 40.0})
+    monkeypatch.setattr(model_catalog, "live_scores", lambda: {"current": 40.0, "weak": 10.0})
     with catalog_of(
         Model(provider="p", id="snapshot", capabilities=set(), intelligence_score=99.0),
+        Model(provider="mistral", id="mistral-large", capabilities=set(), intelligence_score=22.0),
         Model(provider="p", id="current", capabilities=set(), intelligence_score=40.0),
+        Model(provider="p", id="weak", capabilities=set(), intelligence_score=10.0),
+        Model(provider="p", id="unscored", capabilities=set()),
     ):
+        criterion = Criteria.parse("aa.intelligence and provider ~ mistral")
         assert Criteria.parse("aa.intelligence").choose(available_only=False).id == "current"
+        assert [model.id for model in criterion.qualifying(available_only=False)] == ["current", "weak", "snapshot", "mistral-large"]
+        assert criterion.clears(Model.by_id("mistral-large")) and not criterion.clears(Model.by_id("unscored"))
 
 
 def test_bare_benchmark_obeys_lower_is_better_direction():
