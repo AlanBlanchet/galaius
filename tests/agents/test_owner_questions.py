@@ -70,6 +70,8 @@ async def test_a_question_without_a_critical_reason_is_refused(monkeypatch, crit
     pytest.param({"options": [{"label": "Supprimer", "consequence": "la base repart vide"}, OPTIONS[1]]}, id="option-without-cost"),
     pytest.param({"question": "Community agent « T » asks for the browser signed in on the site lent to it"}, id="not-a-question"),
     pytest.param({"question": "Relancer 0c62da1e sur galaius ?"}, id="internal-id"),
+    pytest.param({"subject": "renommage"}, id="one-word-subject"),
+    pytest.param({"question": "Le backend-engineer peut-il redémarrer le serveur ?"}, id="agent-talk"),
 ])
 async def test_a_question_he_could_not_understand_cold_is_refused(monkeypatch, unclear):
     register_run("main-1", name="main")
@@ -81,7 +83,7 @@ async def test_a_question_he_could_not_understand_cold_is_refused(monkeypatch, u
     assert reg.get_run("main-1").asking == ()
 
 
-def test_a_question_an_older_version_asked_never_hides_its_run(monkeypatch):
+def test_a_question_an_older_version_asked_keeps_its_run_and_its_card(monkeypatch):
     register_run("main-1", name="main")
     old = {"id": "a" * 32, "question": "Supprimer ?", "options": [{"label": "Oui", "consequence": "x"}, {"label": "Non", "consequence": "y"}],
            "recommended": 0, "allow_custom": False, "criticality": "destructive", "reason": "r"}
@@ -90,7 +92,7 @@ def test_a_question_an_older_version_asked_never_hides_its_run(monkeypatch):
 
     run = reg.get_run("main-1")
 
-    assert run is not None and run.asking == ()
+    assert run is not None and [question.id for question in run.asking] == ["a" * 32]
 
 
 @pytest.mark.asyncio

@@ -436,8 +436,11 @@ def _ask(subject: str, question: str, options: list[QuestionOption], recommended
     try:
         posted = OwnerQuestion(subject=subject, question=question, options=tuple(options), recommended=recommended, criticality=criticality,
                                reason=reason)
+        problems = posted.unclear()
     except ValidationError as error:
-        said = "; ".join(f"{'.'.join(map(str, problem['loc'])) or 'question'}: {problem['msg']}" for problem in error.errors())
+        problems = tuple(f"{'.'.join(map(str, problem['loc'])) or 'question'}: {problem['msg']}" for problem in error.errors())
+    if problems:
+        said = "; ".join(problems)
         return (f"ERROR: not asked: {said}. He must understand it cold, from his phone: name the thing it acts on, what each answer does "
                 f"for him and what it costs, in plain words, no internal ids. Only these reasons reach him: {', '.join(CRITICALITIES)}; "
                 "anything else you decide yourself: take the reversible, conventional option, say it in one line, keep working.")
@@ -447,7 +450,8 @@ def _ask(subject: str, question: str, options: list[QuestionOption], recommended
         return f"ERROR: not asked: {refused}."
     return (f"Asked the owner: question {posted.short}, a card in his conversation with your options and a notification on his "
             "devices. Do not wait for it: keep working on everything that does not depend on it, and end your turn when that is "
-            f"done. His answer arrives later as a message from him opening « [question {posted.short}] »; act on it then.")
+            f"done. His answer arrives later as a message from him opening « [question {posted.short}] »; act on it then. A tapped option is his choice; his own words (« Autre ») "
+            "steer you and approve no irreversible act they do not name.")
 
 
 @mcp.tool(category="agents")

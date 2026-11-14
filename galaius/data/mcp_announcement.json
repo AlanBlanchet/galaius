@@ -617,17 +617,24 @@
           "type": "string"
          },
          "cost": {
-          "maxLength": 80,
-          "minLength": 1,
-          "pattern": "^[^\\r\\n]*$",
-          "title": "Cost",
-          "type": "string"
+          "anyOf": [
+           {
+            "maxLength": 80,
+            "minLength": 1,
+            "pattern": "^[^\\r\\n]*$",
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Cost"
          }
         },
         "required": [
          "label",
-         "consequence",
-         "cost"
+         "consequence"
         ],
         "title": "QuestionOption",
         "type": "object"
