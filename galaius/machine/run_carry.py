@@ -207,5 +207,16 @@ class RunPackReader(BaseModel):
             source.chmod(0o600)
             os.replace(source, target)
 
+    @staticmethod
+    def keep(targets: list[tuple[Path, Path]], folder: Path) -> int:
+        """Each file `place` would write over, copied whole into `folder` first (the older copy of a conversation coming
+        back, never lost); how many."""
+        kept = [target for _, target in targets if target.is_file()]
+        for target in kept:
+            destination = folder / target.parent.name / target.name
+            destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            shutil.copy2(target, destination)
+        return len(kept)
+
     def discard(self) -> None:
         shutil.rmtree(self.staging, ignore_errors=True)

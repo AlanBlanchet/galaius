@@ -705,8 +705,21 @@ class MachineAgents(BaseModel):
             self._workspaces().transfers.download(request.archive, received, lambda done: None)
             reader.extract(request.archive, received)
             sent = reader.record()
+            # Back on a PC that held it: the copy whose last turn ended later is the conversation, the other saved whole
+            # beside it: its first PC may have kept working on it after the move.
+            backup = UserPaths.data() / "conversation-backups" / f"{run_id}-{request.archive.transfer}"
+            local = reg.get_run(run_id) if entry is not None else None
+            if local is not None and (local.finished_at or 0) > (sent.get("finished_at") or 0):
+                backup.mkdir(parents=True, exist_ok=True, mode=0o700)
+                os.replace(received, backup / received.name)
+                self.runs.add(entry.model_copy(update={"moved_to": None, "moved_at": None, "carried_from": carried.moved_from}))
+                return MachineAgentAnswer(request_id=request.id, run_id=request.run_id,
+                                          detail=f"kept this computer's newer copy; the copy from {carried.moved_from} is saved in {backup}")
             home = fence.state / program.name if fence is not None else reg.login_folder(program, None)
-            reader.place(reader.targets(program.session_folder(home, folder)), replace=entry is not None)
+            targets = reader.targets(program.session_folder(home, folder))
+            if local is not None:
+                reader.keep(targets, backup)
+            reader.place(targets, replace=entry is not None)
             built = reg.register(run_id=run_id, pid=None, provider=program.name, name=carried.name, task=carried.task, cwd=str(folder), model=carried.model,
                                  agent=carried.role, permission_mode=self.scope(None), reasoning=carried.reasoning, provider_session_id=str(carried.session), fence=fence)
             moved = reg.carried_in(built, sent)
@@ -722,7 +735,7 @@ class MachineAgents(BaseModel):
         entry = self.runs.entry(request.run_id)
         if entry is None:
             raise AgentRefused("not_here", "this conversation was never started here from the web")
-        self.runs.add(entry.model_copy(update={"moved_to": request.to.id if request.to is not None else None}))
+        self.runs.add(entry.model_copy(update={"moved_to": request.to.id if request.to is not None else None, "moved_at": time.time() if request.to is not None else None}))
         if request.to is not None:
             reg.leaving(str(request.run_id))
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail="moved" if request.to is not None else "kept here")

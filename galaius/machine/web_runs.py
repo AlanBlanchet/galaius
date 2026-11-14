@@ -58,8 +58,11 @@ class WebRun(BaseModel):
     fenced: bool = False
     #: The start request that launched it (`AgentStartRequest.idempotent_feature`): asked again, it answers this run.
     request_id: UUID | None = None
-    #: The PC that took it (`AgentReleaseRequest`): no longer listed, read, messaged or stopped here; its files kept.
+    #: The PC that took it (`AgentReleaseRequest`): no longer listed, read, messaged or stopped here; its files kept —
+    #: until a turn of it ends here after `moved_at` (`here`).
     moved_to: UUID | None = None
+    #: When it was let go (`moved_to`); None: never, or let go before this was recorded.
+    moved_at: float | None = None
     #: The PC it came from (`AgentImportRequest`): taken again from one, its files here are replaced.
     carried_from: str | None = None
 
@@ -89,8 +92,13 @@ class WebRuns(BaseModel):
         return next((run for run in self.read() if run.request_id == request_id), None)
 
     def here(self) -> tuple[WebRun, ...]:
-        """These runs but those moved to another PC (`WebRun.moved_to`)."""
-        return tuple(run for run in self.read() if run.moved_to is None)
+        """These runs but those moved to another PC (`WebRun.moved_to`) — one that took a turn here after it was let go
+        (its agents' reports, a message through this PC) is this PC's again: listed, so its server pins it here rather
+        than serve the other PC's older copy."""
+        def worked(run: WebRun) -> bool:
+            record = reg.get_run(str(run.run_id)) if run.moved_at is not None else None
+            return record is not None and (record.status in WORKING or (record.finished_at or 0) > (run.moved_at or 0))
+        return tuple(run for run in self.read() if run.moved_to is None or worked(run))
 
     def entry(self, run_id: UUID) -> WebRun | None:
         return next((run for run in self.read() if run.run_id == run_id), None)

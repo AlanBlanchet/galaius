@@ -242,3 +242,41 @@ def test_a_copy_of_a_conversation_with_many_images_opens_one_file_at_a_time(pcs,
         resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
     with tarfile.open(tmp_path / "copy.tar.gz", "r:gz") as packed:
         assert len(packed.getnames()) == measured.files == 1506
+
+
+@pytest.mark.parametrize("newer", ["here", "arriving"])
+def test_a_conversation_coming_back_keeps_its_newer_copy_and_saves_the_other(pcs, newer) -> None:
+    """Moved A → B, the conversation kept working on A (its agents' reports) — A lists it again
+    once a turn ended there after the move, and taking it back from B keeps whichever copy's last turn ended later, the
+    other saved whole under the data folder's conversation-backups; nothing is written over unsaved."""
+    from galaius.host.paths import UserPaths
+    a, b, server = pcs
+    run_id, cwd_a = _conversation(a)
+    first = uuid4()
+    a.answer("agent_export", run_id=run_id, transfer=str(first))
+    b.answer("agent_import", run_id=run_id, root="shared", path="aino", archive=server.outcome(first), run=_carried(run_id))
+    a.answer("agent_release", run_id=run_id, to={"id": str(uuid4())})
+    assert a.answer("runs").runs == ()
+    later = time.time() + (60 if newer == "here" else -60)
+    if newer == "here":   # A took a turn after the move: its copy is the conversation again
+        a.use()
+        reg._update_fields(run_id, {"finished_at": later, "last": "Le Bedsure à 49 €"})
+        CLAUDE.session_files(a.home, cwd_a, run_id)[0].write_text('{"type":"user","message":"plz"}\n')
+        assert [str(item.run_id) for item in a.answer("runs").runs] == [run_id]
+    else:
+        b.use()
+        reg._update_fields(run_id, {"finished_at": time.time() + 60, "last": "Le IKEA à 32 €"})
+    back = uuid4()
+    b.answer("agent_export", run_id=run_id, transfer=str(back))
+    taken = a.answer("agent_import", run_id=run_id, root="project", path="aino", archive=server.outcome(back), run=_carried(run_id) | {"moved_from": "PC-B"})
+    a.use()
+    saved = [path for path in (UserPaths.data() / "conversation-backups").rglob("*") if path.is_file()]
+    transcript = CLAUDE.session_files(a.home, cwd_a, run_id)[0].read_text()
+    if newer == "here":
+        assert taken.detail.startswith("kept this computer's newer copy; the copy from PC-B is saved in ")
+        assert (reg.get_run(run_id).last, transcript) == ("Le Bedsure à 49 €", '{"type":"user","message":"plz"}\n')
+        assert [path.name for path in saved] == [f"{back}.run.tar.gz"]
+    else:
+        assert taken.detail.startswith("taken from PC-B") and reg.get_run(run_id).last == "Le IKEA à 32 €"
+        assert transcript == '{"type":"user","message":"trouve un matelas"}\n' and f"{run_id}.jsonl" in {path.name for path in saved}
+    assert [str(item.run_id) for item in a.answer("runs").runs] == [run_id] and a.agents.runs.entry(UUID(run_id)).moved_to is None
