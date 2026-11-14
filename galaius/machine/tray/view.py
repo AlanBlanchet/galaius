@@ -77,10 +77,10 @@ class TrayWords(BaseModel):
 TrayWords.by_language = {
     "fr": TrayWords(shown={"connected": "Connecté", "working": "", "reconnecting": "Reconnexion…", "paused": "En pause", "refused": "À reconnecter", "off": "Éteint"},
                     working=("{n} agent actif", "{n} agents actifs"), update="Mise à jour après les agents",
-                    actions={"open": "Ouvrir Galaius", "pause": "Mettre en pause", "resume": "Reprendre", "start": "Démarrer", "quit": "Quitter"}),
+                    actions={"open": "Ouvrir Galaius", "pause": "Mettre en pause", "resume": "Reprendre", "start": "Démarrer", "quit": "Quitter Galaius"}),
     "en": TrayWords(shown={"connected": "Connected", "working": "", "reconnecting": "Reconnecting…", "paused": "Paused", "refused": "Sign in again", "off": "Off"},
                     working=("{n} agent working", "{n} agents working"), update="Update after the agents",
-                    actions={"open": "Open Galaius", "pause": "Pause", "resume": "Resume", "start": "Start", "quit": "Quit"}),
+                    actions={"open": "Open Galaius", "pause": "Pause", "resume": "Resume", "start": "Start", "quit": "Quit Galaius"}),
 }
 
 
@@ -134,6 +134,8 @@ class TrayPicture:
         "connected": (34, 197, 94), "working": (34, 197, 94), "reconnecting": (245, 158, 11),
         "paused": (148, 163, 184), "off": (148, 163, 184), "refused": (239, 68, 68)}
     gradient: ClassVar[tuple[tuple[float, tuple[int, int, int]], ...]] = ((0.0, (167, 139, 250)), (0.5, (139, 92, 246)), (1.0, (34, 211, 238)))
+    #: The working pupil and its ring: a brighter green than the dot, seen at 16 px.
+    pulse: ClassVar[tuple[int, int, int]] = (74, 222, 128)
     faded: ClassVar[float] = 0.4
     #: Drawn this many times larger, then reduced: smooth edges at 16 px.
     supersample: ClassVar[int] = 4
@@ -157,16 +159,21 @@ class TrayPicture:
             mark.putalpha(mark.getchannel("A").point(lambda alpha: round(alpha * TrayPicture.faded)))
         pen = ImageDraw.Draw(mark)
         centre, radius = 49 * scale, 11 * scale
-        if shown == "working":  # a ring leaving the pupil and fading, one step per frame
-            grown = (8.5 + (frame + 1) * 1.9) * scale
+        if shown == "working":  # the pupil lit, and a bright ring leaving it and fading, one step per frame
+            lit = (*TrayPicture.pulse, 255)
+            pen.ellipse([(32 - 8.5) * scale, (32 - 8.5) * scale, (32 + 8.5) * scale, (32 + 8.5) * scale], fill=lit)
+            grown = (10.5 + frame * 1.3) * scale
             ring = Image.new("RGBA", (big, big), (0, 0, 0, 0))
             ImageDraw.Draw(ring).ellipse([32 * scale - grown, 32 * scale - grown, 32 * scale + grown, 32 * scale + grown],
-                                         outline=(*TrayPicture.dots[shown], round(255 * (1 - frame / TrayView.frames))), width=round(2.5 * scale))
+                                         outline=(*TrayPicture.pulse, round(255 - 150 * frame / (TrayView.frames - 1))), width=round(3.5 * scale))
             mark = Image.alpha_composite(mark, ring)
             pen = ImageDraw.Draw(mark)
         rim = radius + 2.5 * scale
         pen.ellipse([centre - rim, centre - rim, centre + rim, centre + rim], fill=(255, 255, 255, 255))
         pen.ellipse([centre - radius, centre - radius, centre + radius, centre + radius], fill=(*TrayPicture.dots[shown], 255))
+        if shown == "paused":  # two bars: paused on purpose, never mistaken for off
+            for left in (centre - 5.5 * scale, centre + 1.5 * scale):
+                pen.rectangle([left, centre - 6 * scale, left + 4 * scale, centre + 6 * scale], fill=(255, 255, 255, 255))
         return mark.resize((size, size), Image.Resampling.LANCZOS)
 
     @staticmethod

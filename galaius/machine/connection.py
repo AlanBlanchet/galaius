@@ -53,6 +53,7 @@ from galaius.machine.places.places import PlaceDesk
 from galaius.machine.agents import AgentSpawns, LogRing, MachineAgents, MachineSessions
 from galaius.machine.web_runs import WebRuns
 from galaius.machine.presence import PresenceFiles, PresenceWatch
+from galaius.machine.tray.launch import TrayLauncher
 from galaius.diagnostics.redaction import redact, secret_values
 from galaius.machine.programs import AgentPrograms
 from galaius.machine.projects import relocate
@@ -981,6 +982,8 @@ class MachineRunner:
     #: How often the tray icon's presence is looked at (written only when it changed), and its run count read again.
     presence_seconds = 1.0
     presence_runs_seconds = 5.0
+    #: How often the tray icon is looked for, and started again when it ended (`TrayLauncher.ensure`).
+    tray_seconds = 60.0
     #: Failed tries in a row (about 10 s with `reconnect_seconds`) before its page is told why.
     report_after_failures = 3
 
@@ -2443,11 +2446,20 @@ class MachineRunner:
         presence lock; another (an older release still leaving) holds it until it exits, and this one waits for it."""
         if self._presence_lock is None:
             self._presence_lock = await asyncio.to_thread(self.presence.files.hold)
-        with httpx.Client(verify=server_tls(), timeout=10, headers={"User-Agent": USER_AGENT}) as http:
-            page = await asyncio.to_thread(config.page, http)
-        pc, runs, read_at, written = platform.node().split(".")[0], 0, float("-inf"), None
+        # The page the last connection found, until this one asks (seconds when the server is away): the first look
+        # replaces whatever the last process left, never shown as this one's.
+        page = await asyncio.to_thread(lambda: self.presence.files.read().page)
+        asked = asyncio.create_task(asyncio.to_thread(self._page, config))
+        pc, runs, read_at, written, iconed = platform.node().split(".")[0], 0, float("-inf"), None, time.monotonic()
         try:
             while True:
+                if asked is not None and asked.done():
+                    page, asked = asked.result() or page, None
+                if sys.platform != "win32" and time.monotonic() - iconed >= self.tray_seconds:
+                    # An icon that ended (a crash) comes back; on Windows this process sits in a job barred from the
+                    # taskbar, so its icon is started by the service only (`WindowsMachineService.run`).
+                    iconed = time.monotonic()
+                    await asyncio.to_thread(TrayLauncher.ensure)
                 if time.monotonic() - read_at >= self.presence_runs_seconds:
                     runs, read_at = await asyncio.to_thread(self._live_runs, runs), time.monotonic()
                 shown = self.presence.presence(runs=runs, update_waiting=self._quiet is not None and self._quiet.waiting(), pc=pc, page=page, version=__version__)
@@ -2459,8 +2471,15 @@ class MachineRunner:
                         logger.warning("tray presence not written: %s", error)
                 await asyncio.sleep(self.presence_seconds)
         finally:
+            if asked is not None:
+                asked.cancel()
             if written is not None and self.presence.link == "refused":  # said before the process ends: only a sign-in brings it back
                 self.presence.files.write(written.model_copy(update={"link": "refused"}))
+
+    @staticmethod
+    def _page(config: MachineConfig) -> str:
+        with httpx.Client(verify=server_tls(), timeout=10, headers={"User-Agent": USER_AGENT}) as http:
+            return config.page(http)
 
     @staticmethod
     def _live_runs(before: int) -> int:

@@ -122,8 +122,8 @@ class PresenceWatch(BaseModel):
     """The connection's side: what it last heard from its server, turned into the `Presence` it writes."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    #: The link reads « reconnecting » once the server answered nothing for this long (two beats).
-    heard_within: ClassVar[float] = 6.0
+    #: The link reads « reconnecting » once the server answered nothing for this long. Three beats: a beat's payload can take seconds to read (a cold run registry), still under the server's 12 s.
+    heard_within: ClassVar[float] = 10.0
     files: PresenceFiles
     link: Link = "reconnecting"
     #: Monotonic time of the server's last answer (a pong to a beat's ping), None before the first.

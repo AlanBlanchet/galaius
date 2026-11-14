@@ -48,7 +48,15 @@ class TrayApp(BaseModel):
     _last: tuple = ()
 
     def tick(self) -> TrayView | None:
-        """The view to show now when it changed (a new state, or the next frame of the working pulse)."""
+        """The view to show now when it changed (a new state, or the next frame of the working pulse); an error
+        is logged and the icon keeps what it showed: it never ends on one."""
+        try:
+            return self._tick()
+        except Exception:  # noqa: BLE001 - whatever failed this look, the next one tries again
+            logger.exception("tray look failed")
+            return None
+
+    def _tick(self) -> TrayView | None:
         now = time.monotonic()
         if now - self._runtime_looked >= self.runtime_seconds:
             self._runtime_looked = now
@@ -75,7 +83,9 @@ class TrayApp(BaseModel):
         try:
             match action:
                 case "open":
-                    self.backend.open(self.files.read().page)
+                    presence = self.files.read()
+                    # A refused computer's page is gone: the app's home, where it is added again.
+                    self.backend.open(presence.page.split("#")[0] if presence.link == "refused" else presence.page)
                 case "pause" | "resume":
                     self.files.pause(action == "pause")
                 case "start":

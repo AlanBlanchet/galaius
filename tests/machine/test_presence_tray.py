@@ -142,7 +142,10 @@ def test_every_state_draws_its_mark_and_dot_at_every_size(shown: str, size: int)
     picture = TrayPicture.drawn(shown, 2, size)
     assert picture.size == (size, size) and picture.mode == "RGBA"
     dot = picture.getpixel((round(49 / 64 * size), round(49 / 64 * size)))
-    assert max(abs(a - b) for a, b in zip(dot[:3], TrayPicture.dots[shown])) <= 40 and dot[3] > 200, "the dot's centre is the state's colour"
+    if shown == "paused":  # its bars meet at the centre at small sizes: grey and white, no hue
+        assert max(dot[:3]) - min(dot[:3]) < 40 and dot[3] > 200
+    else:
+        assert max(abs(a - b) for a, b in zip(dot[:3], TrayPicture.dots[shown])) <= 40 and dot[3] > 200, "the dot's centre is the state's colour"
     pupil = picture.getpixel((size // 2, size // 2))[3]
     assert (pupil < 160) if shown == "off" else (pupil > 200), "off fades the mark"
     argb = TrayPicture.argb(shown, 2, size)
@@ -166,7 +169,7 @@ def test_the_panel_host_reads_the_icon_and_menu_and_a_click_reaches_its_action()
     assert properties["ToolTip"][1][3] == "Galaius · 2 agents actifs"
     kind, (revision, (root, _, children)) = call(tray.menu_path, MENU, "GetLayout", "iias", (0, -1, []))
     labels = [child[1][1]["label"][1] for child in children]
-    assert root == 0 and labels == ["pc · 2 agents actifs", "Ouvrir Galaius", "Mettre en pause", "Quitter"]
+    assert root == 0 and labels == ["pc · 2 agents actifs", "Ouvrir Galaius", "Mettre en pause", "Quitter Galaius"]
     assert [child[1][1]["enabled"][1] for child in children] == [False, True, True, True]
     for index in range(0, len(children) + 2):  # the header, a row, the root, past the end
         call(tray.menu_path, MENU, "Event", "isvu", (index, "clicked", ("s", ""), 0))
@@ -210,6 +213,7 @@ def test_this_systems_tray_shows_the_icon_then_leaves_when_asked() -> None:
 
 @pytest.mark.parametrize(("action", "paused_before", "paused_after", "service", "leaving", "opened"), [
     ("open", False, False, [], False, [PAGE]),
+    ("open-refused", False, False, [], False, [PAGE.split("#")[0]]),  # a removed computer's page is gone: the app's home
     ("pause", False, True, [], False, []),
     ("resume", True, False, [], False, []),
     ("start", True, False, ["start"], False, []),       # starting never keeps a pause the service would obey at once
@@ -218,10 +222,33 @@ def test_this_systems_tray_shows_the_icon_then_leaves_when_asked() -> None:
 def test_each_menu_row_does_its_one_thing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action: str, paused_before: bool,
                                           paused_after: bool, service: list, leaving: bool, opened: list) -> None:
     files, asked, shown = PresenceFiles(folder=tmp_path), [], []
-    files.write(Presence(link="connected", page=PAGE))
+    files.write(Presence(link="refused" if action.endswith("-refused") else "connected", page=PAGE))
     files.pause(paused_before)
     monkeypatch.setattr(TrayLauncher, "service", staticmethod(lambda verb: asked.append(verb)))
     backend = type("Backend", (PlatformTray,), {"open": lambda self, url: shown.append(url)})()
     app = TrayApp(files=files, words=FR, backend=backend)
-    app._do(action)
+    app._do(action.removesuffix("-refused"))
     assert (files.paused, asked, app.leaving, shown) == (paused_after, service, leaving, opened)
+
+
+def test_states_stay_apart_at_panel_size() -> None:
+    """Tester r1 2026-11-14: at 22 px the working pulse was a dark ring nobody could see. Working lights the pupil,
+    paused carries two bars in its dot: each pair a glance must tell apart differs where the eye looks."""
+    def pixel(shown: str, x: float, y: float) -> tuple:
+        return TrayPicture.drawn(shown, 0, 22).getpixel((round(x * 22 / 64), round(y * 22 / 64)))
+    connected, working = pixel("connected", 32, 32), pixel("working", 32, 32)
+    assert working[1] > connected[1] + 60 and working[1] > working[0] + 80, "working's pupil is green, connected's violet"
+    assert pixel("paused", 46, 49)[:3] != pixel("off", 46, 49)[:3], "paused's bar where off's dot is plain"
+
+
+def test_each_start_gets_a_unit_of_its_own(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tester r1 2026-11-14: an icon replacing itself after an update started the next one inside its own unit name,
+    refused (« already loaded »); its fallback child died with it: no icon after the second update."""
+    started: list[list[str]] = []
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(subprocess, "run", lambda command, **options: started.append(command) or subprocess.CompletedProcess(command, 0, "", ""))
+    TrayLauncher.start()
+    TrayLauncher.start()
+    units = [next(part for part in command if part.startswith("--unit=")) for command in started]
+    assert len(set(units)) == 2 and all(unit.startswith("--unit=galaius-tray-") for unit in units)

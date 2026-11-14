@@ -95,8 +95,9 @@ class TrayLauncher:
 
     @classmethod
     def start(cls) -> None:
-        """The icon process, on its own: never a child the service's stop or job takes down with it (systemd scope
-        on Linux, a breakaway on Windows where its job allows it, a session of its own elsewhere)."""
+        """The icon process, on its own: never a child its starter's stop or job takes down with it (a transient unit
+        of its own on Linux, named per start: an icon replacing itself starts the next from inside its own unit; a
+        breakaway on Windows where its job allows it; a session of its own elsewhere)."""
         command = cls.command()
         if sys.platform == "win32":
             flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
@@ -106,7 +107,7 @@ class TrayLauncher:
                 subprocess.Popen(command, creationflags=flags, close_fds=True)
             return
         if sys.platform == "linux" and shutil.which("systemd-run") is not None:
-            started = subprocess.run(["systemd-run", "--user", "--collect", "--quiet", "--unit=galaius-tray", "--", *command],
+            started = subprocess.run(["systemd-run", "--user", "--collect", "--quiet", f"--unit=galaius-tray-{os.getpid()}-{time.monotonic_ns()}", "--", *command],
                                      capture_output=True, text=True, timeout=30)
             if started.returncode == 0:
                 return
