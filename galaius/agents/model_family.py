@@ -80,8 +80,9 @@ def listed_as(name: str, listed: Iterable[str]) -> str | None:
     ids = frozenset(listed)
     if name in ids:
         return name
-    family = ModelName.of(name).words
-    return next((one for one in sorted(ids) if (alias := ModelName.of(one)).version == _LATEST and alias.words == family), None)
+    # Only the exact `<family>-latest` id: a listed id carrying more (`…-latest[text]`, `a/…-latest`) is never launched (threat r3).
+    alias = "-".join(ModelName.of(name).words) + "-latest"
+    return alias if alias in ids else None
 
 @dataclass(frozen=True)
 class ModelSwitches:

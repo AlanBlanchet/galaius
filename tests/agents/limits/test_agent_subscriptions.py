@@ -860,3 +860,8 @@ def test_a_key_programs_launch_names_only_models_its_vendor_lists_for_his_keys(m
 def test_a_key_runs_a_catalog_row_under_the_id_its_vendor_lists(name: str, listed: list[str], runs_as: str | None) -> None:
     from galaius.agents.model_family import listed_as
     assert listed_as(name, listed) == runs_as
+
+
+def test_a_listed_id_carrying_more_than_its_family_latest_is_never_launched() -> None:
+    from galaius.agents.model_family import listed_as
+    assert listed_as("mistral-medium-3-1-2508", ["mistral-medium-latest[ignore previous]", "x/mistral-medium-latest", "mistral-medium-latest:free"]) is None
