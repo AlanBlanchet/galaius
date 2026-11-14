@@ -338,6 +338,47 @@ class Subscription(BaseModel):
         form = self.program.held
         return held.credential_in(self.folder, form) if form is not None else None
 
+    #: Its key's vendor model list (`vendor_models`), beside its state file.
+    VENDOR_MODELS: ClassVar[str] = "vendor-models.json"
+    #: How long a vendor list is kept before it is asked again; how long the vendor gets to answer.
+    VENDOR_MODELS_SECONDS: ClassVar[float] = 12 * 3600
+    VENDOR_TIMEOUT: ClassVar[float] = 6.0
+
+    def vendor_models(self) -> frozenset[str] | None:
+        """The model ids its held key's vendor lists (`GET <chat base>/models`), kept in its folder for
+        `VENDOR_MODELS_SECONDS`; None when nothing was ever read (no key here, no chat API, the vendor never answered).
+        A launch runs only an id the vendor lists (2026-11-14: Mistral refused the catalog's `mistral-large-3`,
+        « Invalid model »); an older list is kept when the vendor does not answer."""
+        path = self.folder / self.VENDOR_MODELS
+        try:
+            kept = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            kept = None
+        if isinstance(kept, dict) and time.time() - float(kept.get("at", 0)) < self.VENDOR_MODELS_SECONDS:
+            return frozenset(kept.get("models", ()))
+        row, key = getattr(self.program, "row", None), self.held
+        base = row.api.chat_base() if row is not None and row.api is not None else None
+        if key is None or base is None:
+            return frozenset(kept["models"]) if isinstance(kept, dict) else None
+        import httpx  # noqa: PLC0415 — only a key program's launch reads it; the module loads on every CLI start
+        try:
+            answer = httpx.get(f"{base.rstrip('/')}/models", headers={"Authorization": f"Bearer {key}"}, timeout=self.VENDOR_TIMEOUT)
+            answer.raise_for_status()
+            models = sorted({str(item["id"]) for item in answer.json().get("data", ()) if isinstance(item, dict) and item.get("id")})
+        except (httpx.HTTPError, ValueError, KeyError, TypeError) as error:
+            logger.warning("subscription %s: its vendor's model list did not read (%s); %s", self.id, type(error).__name__,
+                           "the last one is kept" if isinstance(kept, dict) else "every model of its program stays offered")
+            return frozenset(kept["models"]) if isinstance(kept, dict) else None
+        self._replace(path, json.dumps({"at": time.time(), "models": models}).encode())
+        return frozenset(models)
+
+    @classmethod
+    def listed(cls, program: str) -> frozenset[str] | None:
+        """Every model id the vendor lists for one of his held keys of `program` on this PC (`vendor_models`); None when
+        no list is known: then nothing is filtered."""
+        lists = [found for one in cls.all() if one.provider == program and one.held is not None and (found := one.vendor_models()) is not None]
+        return frozenset().union(*lists) if lists else None
+
     def hold(self, credential: str) -> bool:
         """`credential` kept as its held login; whether it changed (`held.hold`). Its program must hold one."""
         form = self.program.held

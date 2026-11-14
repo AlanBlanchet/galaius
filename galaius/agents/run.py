@@ -30,7 +30,7 @@ from collections.abc import Callable, Iterable
 from typing import BinaryIO, ClassVar, Mapping, Sequence
 from galaius.account.caller import Caller
 from galaius.config.settings import Config
-from galaius_core import IMAGE_TYPES, AgentRefusals, AgentRevisionRef, Coded, LaunchSkipReason, NoCandidate, PassedOverCandidate, ReasoningLevel, SubscriptionCap, SubscriptionChoices
+from galaius_core import IMAGE_TYPES, AgentRefusals, AgentRevisionRef, Coded, LaunchSkipReason, NoCandidate, PassedOverCandidate, ReasoningLevel, SubscriptionCap, SubscriptionChoices, SubscriptionLimits
 from pydantic import BaseModel, ConfigDict
 
 from galaius.agents.limits import admission
@@ -195,7 +195,7 @@ def rank(
     `policy` is the one already loaded by a caller ranking many roles; otherwise it is read here.
     """
     policy = policy if policy is not None else load_policy()
-    providers = _asked(providers)
+    providers = _asked(providers, policy.rule(model) if model.startswith("@") else model)
     candidates, rows, criteria = _ranked_candidates(model, env, providers=providers, weights=weights, policy=policy)
     candidates = _switched_on(candidates, policy, model)
     if criteria is None:
@@ -231,11 +231,43 @@ def _keyed(provider: AgentProvider) -> bool:
     return (program := getattr(provider, "program", None)) is not None and program.keyed  # a test double may declare none
 
 
-def _asked(providers: Sequence[AgentProvider]) -> list[AgentProvider]:
+def _asked(providers: Sequence[AgentProvider], rule: str = "") -> list[AgentProvider]:
     """The CLIs a ranking draws on: a key program (core `Provider.key_program`, a pasted key run through Vibe) only when
-    the run names key programs alone (its subscription picked). Beside the CLIs it never joins the pool: any held key
-    would take every role whose rule its cheapest model clears (visual-critic's `@eyes` ranked a Gemini image model)."""
-    return list(providers) if all(_keyed(p) for p in providers) else [p for p in providers if not _keyed(p)]
+    the run names key programs alone (its subscription picked), or when its rule names that program (`provider ~
+    mistral`: owner 2026-11-14 « des agents où on voudra favoriser l'écriture … un Mistral »). Beside the CLIs it never
+    joins the pool otherwise: any held key would take every role whose rule its cheapest model clears (visual-critic's
+    `@eyes` ranked a Gemini image model)."""
+    if all(_keyed(p) for p in providers):
+        return list(providers)
+    named = _named_programs(rule)
+    return [p for p in providers if not _keyed(p) or p.name in named]
+
+
+def _named_programs(rule: str) -> frozenset[str]:
+    """The programs `rule`'s provider clause requires or prefers; none for a model id or a rule this galaius cannot read."""
+    if not is_criterion(rule):
+        return frozenset()
+    try:
+        criteria = Criteria.parse(rule)
+    except CriteriaError:
+        return frozenset()
+    return frozenset(name for name in (criteria.provider_require(), criteria.provider_prefer()) if name)
+
+
+def _held_keys(pinned: RunSubscription, rule: str) -> dict[str, list[RunSubscription]]:
+    """Per key program `rule` names (`_named_programs`) other than the program `pinned` runs, the subscriptions on this
+    PC holding his key of it, in their order: a run pinned to his Claude login still runs a writing role on his Mistral key
+    (main 2026-11-14 on his words « je m'attends à ce que ce soit un Mistral »). None for a lent run: a member's run never
+    reaches the owner's keys."""
+    if pinned.lent:
+        return {}
+    own = Subscription.of(pinned.subscription_id).program.name if pinned.subscription_id is not None else None
+    named = {name for name in _named_programs(rule) if name != own and name in PROVIDERS and _keyed(PROVIDERS[name])}
+    keys: dict[str, list[RunSubscription]] = {}
+    for one in Subscription.all():
+        if one.program.name in named and one.held is not None:
+            keys.setdefault(one.program.name, []).append(RunSubscription(subscription_id=one.id, limits=SubscriptionLimits()))
+    return keys
 
 
 def _ranked_candidates(
@@ -243,11 +275,11 @@ def _ranked_candidates(
 ) -> tuple[tuple[reg.LaunchCandidate, ...], dict[str, Model], Criteria | None]:
     """Candidates before the value rule, the catalog rows they name, and the parsed criterion
     (None for a plain model id)."""
-    providers = _asked(providers)
-    universe = [p for p in PROVIDERS.values() if not _keyed(p) or p in providers] + [p for p in providers if p.name not in PROVIDERS]
-    allowed = {p.name for p in providers}
     if model.startswith("@"):
         model = policy.rule(model)
+    providers = _asked(providers, model)
+    universe = [p for p in PROVIDERS.values() if not _keyed(p) or p in providers] + [p for p in providers if p.name not in PROVIDERS]
+    allowed = {p.name for p in providers}
     if not is_criterion(model):
         row = Model.by_id(model)
         candidates = tuple(
@@ -263,6 +295,9 @@ def _ranked_candidates(
         criteria = Criteria.parse(model)
     except CriteriaError as err:
         raise ModelUnavailable(sentence=f"{model!r} is not a usable model criterion: {err}") from err
+    # A key program runs only an id its vendor lists for one of his keys here (`Subscription.listed`; unknown: any).
+    listed = {p.name: Subscription.listed(p.name) for p in universe if p.name in allowed and _keyed(p)}
+    runs = lambda p, row: p.can_run(row, env) and ((known := listed.get(p.name)) is None or p.model_name(p.model_id_for(row)) in known)  # noqa: E731
     pool = lambda m: any(p.can_run(m, env) for p in universe if p.name in allowed)
     # Unpruned here: what is worth running is judged over the pool that can run, further down.
     ranked = criteria.ranked(runnable=lambda m: any(p.can_run(m, env) for p in universe), weights=weights, value=None)
@@ -278,7 +313,7 @@ def _ranked_candidates(
                                    f"benchmark board of its own, and {error}") from error
         served = tuple(
             reg.LaunchCandidate(provider=p.name, model=p.model_id_for(row), catalog_id=row.catalog_id, rank=rank)
-            for rank, row in enumerate(named) for p in universe if p.name in allowed and p.can_run(row, env)
+            for rank, row in enumerate(named) for p in universe if p.name in allowed and runs(p, row)
         )
         if served:
             return _apply_provider_constraint(criteria, served), {row.catalog_id: row for row in named}, None
@@ -286,7 +321,7 @@ def _ranked_candidates(
         reg.LaunchCandidate(provider=p.name, model=p.model_id_for(row),
                             catalog_id=row.catalog_id, rank=rank)
         for rank, row in enumerate(ranked) for p in universe
-        if p.name in allowed and p.can_run(row, env)
+        if p.name in allowed and runs(p, row)
     )
     if not candidates:
         names = ", ".join(sorted(allowed)) or "none"
@@ -1571,6 +1606,7 @@ async def run_agent(
     holder = ancestor if ancestor is not None and ancestor.subscription is not None else parent_run
     pinned = RunSubscription.resolve(subscription, parent=holder.subscription if holder is not None else None,
                                      child=parent is not None or ancestor is not None, environment=environment)
+    ranked_freely = provider is None  # no CLI named by the caller: the rule may reach a key program beside the pin
     if pinned is not None:
         environment = pinned.bound(environment)
         if pinned.subscription_id is not None:
@@ -1648,6 +1684,10 @@ async def run_agent(
     weights = policy.weights_for(agent)
     # Explicit provider only narrows the pool; every candidate uses the same preflight.
     pool = [provider] if provider is not None else list(PROVIDERS.values())
+    # His keys of the programs its rule names, beside the login it is pinned to (`_held_keys`): each such candidate runs on
+    # the first of them under its caps, as a web start's offered subscriptions do.
+    keys = _held_keys(pinned, model) if ranked_freely and pinned is not None and community is None else {}
+    pool += [PROVIDERS[name] for name in keys if PROVIDERS[name] not in pool]
     by_name = {p.name: p for p in pool}
     candidates = rank_candidates(model, environment, providers=pool, weights=weights, role=agent)
     skipped: list[reg.SkippedCandidate] = []
@@ -1676,6 +1716,7 @@ async def run_agent(
     # closed); a provider offered none runs on this PC's default login. Never two in one run.
     offered = {} if choices is None or pinned is not None else \
         {provider: [RunSubscription.of(choice) for choice in choices.of(provider)] for provider in dict.fromkeys(choice.provider for choice in choices.subscriptions)}
+    offered = {**keys, **offered}
     caps: list[SubscriptionCap] = []
     pinned_id = pinned.subscription_id if pinned is not None else None
     # The logins a candidate may run on: its provider's offered ones, in his order, else the run's own.
@@ -1936,6 +1977,9 @@ async def run_agent(
         chosen_index = index
         chosen_provider = candidate_provider
         chosen_login = login
+        if candidate.provider in keys:  # logged per call: which of his keys a run pinned to another login took
+            log.info("run %s (%s) runs %s/%s on his held key %s beside its pinned login %s", run_id, agent, candidate.provider, candidate.model,
+                     candidate_pin_id, pinned_id)
         pinned, fence = candidate_pin, candidate_fence
         chosen_ahead = launch if ahead else None
         process = candidate_process

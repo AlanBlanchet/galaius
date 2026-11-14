@@ -769,3 +769,54 @@ def test_a_key_programs_key_reaches_only_its_own_programs_launches_in_its_runs_o
             if other is not provider:
                 assert other.held.variable not in other.child_environment(overlay, mcp_wait_seconds=0)
         assert provider.held.variable not in provider.child_environment(base, mcp_wait_seconds=0)
+
+
+@pytest.mark.parametrize(("rule", "lent", "reached"), [
+    # Owner 2026-11-14 « des agents où on voudra favoriser l'écriture … un Mistral »: a writing rule names Mistral, so a run
+    # pinned to his Claude login (a child of main) runs on his Mistral key; his key, not a folder holding none.
+    ("aa.intelligence and provider ~ mistral", False, {"mistral": ["key"]}),
+    ("aa.intelligence and provider = gemini", False, {"gemini": ["gemini"]}),
+    # A rule naming no key program reaches none of his keys (visual-critic's `@eyes` once ran on a Gemini key).
+    ("aa.intelligence", False, {}),
+    ("aa.intelligence and provider ~ claude", False, {}),
+    # A member's run on a lent PC never reaches the owner's keys.
+    ("aa.intelligence and provider ~ mistral", True, {}),
+], ids=["writing-prefers-mistral", "requires-gemini", "no-program-named", "own-program-named", "lent-run"])
+def test_a_run_pinned_to_one_login_reaches_his_key_of_the_program_its_rule_names(rule: str, lent: bool, reached: dict) -> None:
+    claude = Subscription.create(uuid4(), "claude")
+    held = {"key": Subscription.create(uuid4(), "mistral"), "gemini": Subscription.create(uuid4(), "gemini")}
+    for one in held.values():
+        one.hold("placeholder-not-a-real-key")
+    Subscription.create(uuid4(), "mistral")  # a Mistral folder holding no key
+    pinned = RunSubscription(lent=True) if lent else RunSubscription(subscription_id=claude.id, limits=SubscriptionLimits())
+    found = run_module._held_keys(pinned, rule)
+    assert {name: [option.subscription_id for option in options] for name, options in found.items()} == \
+        {name: [held[label].id for label in labels] for name, labels in reached.items()}
+    # The ranking pool: a key program joins the CLIs only when the rule names it.
+    pool = {provider.name for provider in run_module._asked(list(PROVIDERS.values()), rule)}
+    assert {name for name in ("mistral", "gemini", "openrouter") if name in pool} == {name for name in ("mistral", "gemini") if f" {name}" in rule}
+
+
+def test_a_key_programs_launch_names_only_models_its_vendor_lists_for_his_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """2026-11-14: Mistral refused the catalog's `mistral-large-3` (« Invalid model »). The vendor's list for each held key
+    is kept in its folder; the ids of all his keys of a program are what it may run; no list known filters nothing; a
+    vendor that does not answer keeps the last list."""
+    import httpx
+    first, second, bare = (Subscription.create(uuid4(), "mistral") for _ in range(3))
+    first.hold("placeholder-not-a-real-key")
+    second.hold("placeholder-not-a-real-key-2")
+    asked: list[str] = []
+    def answer(url, headers, timeout):
+        asked.append(url)
+        ids = ["mistral-small-latest"] if headers["Authorization"].endswith("key") else ["mistral-medium-latest"]
+        return httpx.Response(200, json={"data": [{"id": one} for one in ids]}, request=httpx.Request("GET", url))
+    monkeypatch.setattr(httpx, "get", answer)
+    for one in (first, second):
+        (one.folder / Subscription.VENDOR_MODELS).unlink(missing_ok=True)
+    assert Subscription.listed("mistral") == {"mistral-small-latest", "mistral-medium-latest"}
+    assert all(url.endswith("/models") for url in asked) and len(asked) == 2 and bare.vendor_models() is None
+    def down(url, headers, timeout):
+        raise httpx.ConnectError("down")
+    monkeypatch.setattr(httpx, "get", down)
+    monkeypatch.setattr(Subscription, "VENDOR_MODELS_SECONDS", 0.0)  # stale: asked again, the vendor is down, the last list kept
+    assert first.vendor_models() == {"mistral-small-latest"}
