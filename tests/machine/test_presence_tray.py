@@ -15,7 +15,7 @@ from websockets.asyncio.server import serve
 
 from galaius.machine.connection import MachineConfig, MachineRunner, Paused, Woke
 from galaius.machine.presence import Presence, PresenceFiles, PresenceWatch
-from galaius.machine.tray.app import PlatformTray
+from galaius.machine.tray.app import PlatformTray, TrayApp, TrayLauncher
 from galaius.machine.tray.view import TrayPicture, TrayView, TrayWords
 
 if sys.platform == "linux":
@@ -206,3 +206,22 @@ def test_this_systems_tray_shows_the_icon_then_leaves_when_asked() -> None:
     started = time.monotonic()
     backend.run(Driver())
     assert seen == [True] and time.monotonic() - started < 10
+
+
+@pytest.mark.parametrize(("action", "paused_before", "paused_after", "service", "leaving", "opened"), [
+    ("open", False, False, [], False, [PAGE]),
+    ("pause", False, True, [], False, []),
+    ("resume", True, False, [], False, []),
+    ("start", True, False, ["start"], False, []),       # starting never keeps a pause the service would obey at once
+    ("quit", True, False, ["stop"], True, []),          # the icon leaves only once the service was asked to stop
+])
+def test_each_menu_row_does_its_one_thing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action: str, paused_before: bool,
+                                          paused_after: bool, service: list, leaving: bool, opened: list) -> None:
+    files, asked, shown = PresenceFiles(folder=tmp_path), [], []
+    files.write(Presence(link="connected", page=PAGE))
+    files.pause(paused_before)
+    monkeypatch.setattr(TrayLauncher, "service", staticmethod(lambda verb: asked.append(verb)))
+    backend = type("Backend", (PlatformTray,), {"open": lambda self, url: shown.append(url)})()
+    app = TrayApp(files=files, words=FR, backend=backend)
+    app._do(action)
+    assert (files.paused, asked, app.leaving, shown) == (paused_after, service, leaving, opened)
