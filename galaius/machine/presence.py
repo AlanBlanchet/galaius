@@ -86,12 +86,15 @@ class PresenceFiles(BaseModel):
         PRIVATE_FILES.directory(self.folder)
         return os.open(self.lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0), 0o600)
 
-    def hold(self) -> int:
-        """Takes the writer's lock, waiting while another connection (an older release leaving) holds it;
-        held until this process ends (the descriptor is never closed: the system frees it with the process)."""
+    def hold(self) -> int | None:
+        """The writer's lock if nobody holds it (None: another connection, an older release leaving, still does), kept
+        until this process ends: the descriptor is never closed, the system frees it with the process. Never waits: a
+        blocked thread would hold its process's exit until it got the lock."""
         descriptor = self._open_lock()
-        FILE_LOCK.acquire(descriptor)
-        return descriptor
+        if FILE_LOCK.try_acquire(descriptor):
+            return descriptor
+        os.close(descriptor)
+        return None
 
     def alive(self) -> bool:
         """Whether a connection process holds the lock now (a look that frees it at once)."""

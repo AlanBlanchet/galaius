@@ -2444,8 +2444,10 @@ class MachineRunner:
     async def _present(self, config: MachineConfig) -> None:
         """What the tray icon shows (`galaius.machine.presence`), written whenever it changed by the runner holding the
         presence lock; another (an older release still leaving) holds it until it exits, and this one waits for it."""
-        if self._presence_lock is None:
-            self._presence_lock = await asyncio.to_thread(self.presence.files.hold)
+        while self._presence_lock is None:
+            if (held := await asyncio.to_thread(self.presence.files.hold)) is None:
+                await asyncio.sleep(self.presence_seconds)
+            self._presence_lock = held
         # The page the last connection found, until this one asks (seconds when the server is away): the first look
         # replaces whatever the last process left, never shown as this one's.
         page = await asyncio.to_thread(lambda: self.presence.files.read().page)
@@ -2454,7 +2456,11 @@ class MachineRunner:
         try:
             while True:
                 if asked is not None and asked.done():
-                    page, asked = asked.result() or page, None
+                    if asked.exception() is None:
+                        page = asked.result() or page
+                    else:
+                        logger.warning("this computer's page not read: %s", asked.exception())
+                    asked = None
                 if sys.platform != "win32" and time.monotonic() - iconed >= self.tray_seconds:
                     # An icon that ended (a crash) comes back; on Windows this process sits in a job barred from the
                     # taskbar, so its icon is started by the service only (`WindowsMachineService.run`).

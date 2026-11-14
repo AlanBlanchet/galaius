@@ -49,7 +49,7 @@ def test_each_state_shows_its_word_and_only_the_rows_it_can_do(presence: Presenc
 @pytest.mark.parametrize(("link", "heard_ago", "paused", "expected"), [
     ("connected", 0.0, False, "connected"),
     ("connected", PresenceWatch.heard_within - 0.1, False, "connected"),
-    ("connected", PresenceWatch.heard_within + 0.1, False, "reconnecting"),  # two beats unanswered
+    ("connected", PresenceWatch.heard_within + 0.1, False, "reconnecting"),  # three beats unanswered
     ("connected", None, False, "reconnecting"),
     ("reconnecting", 0.0, False, "reconnecting"),
     ("connected", 0.0, True, "paused"),
@@ -79,6 +79,8 @@ def test_off_is_read_from_the_connections_lock_never_from_a_clock(tmp_path: Path
     try:
         assert holder.stdout.readline().strip() == "held"
         assert files.alive() and files.alive(), "looking frees the lock at once: a second look still sees it held"
+        started = time.monotonic()
+        assert files.hold() is None and time.monotonic() - started < 1, "a second connection never waits on the lock (it would hold its exit)"
     finally:
         holder.kill()
         holder.wait()
@@ -231,11 +233,12 @@ def test_each_menu_row_does_its_one_thing(tmp_path: Path, monkeypatch: pytest.Mo
     assert (files.paused, asked, app.leaving, shown) == (paused_after, service, leaving, opened)
 
 
-def test_states_stay_apart_at_panel_size() -> None:
+@pytest.mark.parametrize("size", [16, 22])  # GNOME's default panel icon is 16 px
+def test_states_stay_apart_at_panel_size(size: int) -> None:
     """Tester r1 2026-11-14: at 22 px the working pulse was a dark ring nobody could see. Working lights the pupil,
     paused carries two bars in its dot: each pair a glance must tell apart differs where the eye looks."""
     def pixel(shown: str, x: float, y: float) -> tuple:
-        return TrayPicture.drawn(shown, 0, 22).getpixel((round(x * 22 / 64), round(y * 22 / 64)))
+        return TrayPicture.drawn(shown, 0, size).getpixel((round(x * size / 64), round(y * size / 64)))
     connected, working = pixel("connected", 32, 32), pixel("working", 32, 32)
     assert working[1] > connected[1] + 60 and working[1] > working[0] + 80, "working's pupil is green, connected's violet"
     assert pixel("paused", 46, 49)[:3] != pixel("off", 46, 49)[:3], "paused's bar where off's dot is plain"
