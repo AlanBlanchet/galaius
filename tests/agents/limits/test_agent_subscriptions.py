@@ -865,3 +865,4 @@ def test_a_key_runs_a_catalog_row_under_the_id_its_vendor_lists(name: str, liste
 def test_a_listed_id_carrying_more_than_its_family_latest_is_never_launched() -> None:
     from galaius.agents.model_family import listed_as
     assert listed_as("mistral-medium-3-1-2508", ["mistral-medium-latest[ignore previous]", "x/mistral-medium-latest", "mistral-medium-latest:free"]) is None
+    assert listed_as("", ["-latest"]) is None  # tester c545b62e: an empty name has no family
