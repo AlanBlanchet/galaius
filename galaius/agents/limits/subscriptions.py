@@ -360,6 +360,10 @@ class Subscription(BaseModel):
         if self.limits() != limits:
             self._replace(self.folder / self.LIMITS, limits.model_dump_json().encode())
 
+    def forget_limits(self) -> None:
+        """Its caps forgotten: a start from the server named others of its program and not it (removed, signed out there)."""
+        (self.folder / self.LIMITS).unlink(missing_ok=True)
+
     def limits(self) -> SubscriptionLimits | None:
         """The caps a start from the server last named for it here (`remember_limits`); None: none did, so no run takes it
         beside its own login."""

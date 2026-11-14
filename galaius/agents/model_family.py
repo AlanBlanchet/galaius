@@ -72,6 +72,17 @@ class ModelName:
         return self.kin(other) and other.version == self.version
 
 
+def listed_as(name: str, listed: Iterable[str]) -> str | None:
+    """The id a vendor that lists `listed` runs `name` under: `name` itself, else its family's `-latest` alias (« mistral-medium-3-1-2508 »
+    → « mistral-medium-latest », the vendor's newest of that family); None when it lists neither. A catalog row a key's vendor
+    renamed still runs, ranked on the score the catalog holds for it (2026-11-14: Mistral lists `mistral-medium-latest`, the
+    catalog scores its dated row)."""
+    ids = frozenset(listed)
+    if name in ids:
+        return name
+    family = ModelName.of(name).words
+    return next((one for one in sorted(ids) if (alias := ModelName.of(one)).version == _LATEST and alias.words == family), None)
+
 @dataclass(frozen=True)
 class ModelSwitches:
     """The `models` switches of one policy file: `{"claude/claude-fable-5-1": false, …}`."""

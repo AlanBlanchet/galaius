@@ -52,6 +52,7 @@ from galaius.agents.policy import TOOL_PREFIX, Policy, policy_path
 from galaius.agents.catalog.profiles import overlay_for, profiles_from
 from galaius.agents.providers import PROVIDERS, AgentProvider, program_providers, ClaudeTurnSettings, UnsupportedToolPolicy, fits_argv, validate_denied_tools, _safe_process_detail
 from galaius.agents.catalog.vocabulary import TouchScope
+from galaius.agents.model_family import listed_as
 from galaius.agents.limits.subscriptions import RunSubscription, Subscription, SubscriptionCapped, SubscriptionRefused
 from galaius.agents.limits.warm import WarmStart
 from galaius.agents.catalog.server_ranking import ServerRanking, ServerRankingUnavailable
@@ -301,7 +302,17 @@ def _ranked_candidates(
         raise ModelUnavailable(sentence=f"{model!r} is not a usable model criterion: {err}") from err
     # A key program runs only an id its vendor lists for one of his keys here (`Subscription.listed`; unknown: any).
     listed = {p.name: Subscription.listed(p.name, None if among is None else among.get(p.name, ())) for p in universe if p.name in allowed and _keyed(p)}
-    runs = lambda p, row: p.can_run(row, env) and ((known := listed.get(p.name)) is None or p.model_name(p.model_id_for(row)) in known)  # noqa: E731
+
+    def launched(p: AgentProvider, row: Model) -> str | None:
+        """The id `p` launches `row` under: its own; for a key program, the id its vendor lists for it (`listed_as`: the
+        row's own or its family's `-latest`); None when its vendor lists neither."""
+        own = p.model_id_for(row)
+        if (known := listed.get(p.name)) is None:
+            return own
+        bare = p.model_name(own)
+        found = listed_as(bare, known)
+        return None if found is None else own[: len(own) - len(bare)] + found
+    runs = lambda p, row: p.can_run(row, env) and launched(p, row) is not None  # noqa: E731
     pool = lambda m: any(p.can_run(m, env) for p in universe if p.name in allowed)
     # Unpruned here: what is worth running is judged over the pool that can run, further down.
     ranked = criteria.ranked(runnable=lambda m: any(p.can_run(m, env) for p in universe), weights=weights, value=None)
@@ -316,13 +327,13 @@ def _ranked_candidates(
             raise ModelUnavailable(sentence=f"no model the {', '.join(sorted(allowed)) or 'none'} CLIs can run clears {criteria} here: this PC has no "
                                    f"benchmark board of its own, and {error}") from error
         served = tuple(
-            reg.LaunchCandidate(provider=p.name, model=p.model_id_for(row), catalog_id=row.catalog_id, rank=rank)
+            reg.LaunchCandidate(provider=p.name, model=launched(p, row), catalog_id=row.catalog_id, rank=rank)
             for rank, row in enumerate(named) for p in universe if p.name in allowed and runs(p, row)
         )
         if served:
             return _apply_provider_constraint(criteria, served), {row.catalog_id: row for row in named}, None
     candidates = tuple(
-        reg.LaunchCandidate(provider=p.name, model=p.model_id_for(row),
+        reg.LaunchCandidate(provider=p.name, model=launched(p, row),
                             catalog_id=row.catalog_id, rank=rank)
         for rank, row in enumerate(ranked) for p in universe
         if p.name in allowed and runs(p, row)
@@ -1612,10 +1623,17 @@ async def run_agent(
     pinned = RunSubscription.resolve(subscription, parent=(holder.lends or holder.subscription) if holder is not None else None,
                                      child=parent is not None or ancestor is not None, environment=environment,
                                      parent_own=holder.subscription if holder is not None and holder.lends is not None else None)
-    for choice in (choices.subscriptions if choices is not None else ()):
+    for choice in (choices.subscriptions if choices is not None and not (pinned is not None and pinned.lent) else ()):
         # The caps the server names for each of his subscriptions here, kept for a run taking one beside its login (`_held_keys`).
         with contextlib.suppress(SubscriptionRefused, OSError, ValueError):
             Subscription.of(choice.subscription_id).remember_limits(choice.limits)
+    if choices is not None and not (pinned is not None and pinned.lent):
+        # A key of a program this start names others of, and not it, is no longer one the server offers here.
+        named = {choice.subscription_id for choice in choices.subscriptions}
+        offered_programs = {choice.provider for choice in choices.subscriptions}
+        for one in Subscription.all():
+            if one.provider in offered_programs and one.id not in named and _keyed(one.program):
+                one.forget_limits()
     ranked_freely = provider is None  # no CLI named by the caller: the rule may reach a key program beside the pin
     if pinned is not None:
         environment = pinned.bound(environment)

@@ -848,3 +848,15 @@ def test_a_key_programs_launch_names_only_models_its_vendor_lists_for_his_keys(m
     first.hold("placeholder-replaced-key-2")  # another key in the same folder: its own list
     monkeypatch.setattr(Subscription, "VENDOR_MODELS_SECONDS", 3600.0)
     assert first.vendor_models() == {"mistral-medium-latest"}
+
+
+@pytest.mark.parametrize(("name", "listed", "runs_as"), [
+    ("mistral-small-latest", ["mistral-small-latest"], "mistral-small-latest"),
+    # 2026-11-14 product r2: his key lists `mistral-medium-latest`, the catalog scores the dated row: it runs as the alias.
+    ("mistral-medium-3-1-2508", ["mistral-medium-latest", "mistral-small-latest"], "mistral-medium-latest"),
+    ("mistral-large-3", ["mistral-medium-latest"], None),  # no Large of his: not run, never another family
+    ("magistral-medium-1", ["mistral-medium-latest"], None),
+], ids=["own-id", "family-latest", "other-family", "lookalike-family"])
+def test_a_key_runs_a_catalog_row_under_the_id_its_vendor_lists(name: str, listed: list[str], runs_as: str | None) -> None:
+    from galaius.agents.model_family import listed_as
+    assert listed_as(name, listed) == runs_as
