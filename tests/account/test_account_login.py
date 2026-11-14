@@ -20,7 +20,7 @@ from galaius_core import DeviceLoginStarted
 from galaius.agents.catalog.connection import CatalogConnection
 from galaius.machine.service import MACHINE_SERVICE
 from galaius.diagnostics.error_reports import MachineErrorReports
-from galaius.machine.connection import MachineRunner
+from galaius.machine.connection import MachineConfig, MachineRunner
 
 PUBLIC = "https://galaius.example.org"
 TUNNEL = "http://127.0.0.1:8817"
@@ -64,7 +64,7 @@ def joining(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                         "holds": lambda self, machine: True}.items():
         monkeypatch.setattr(account_login.AccountLogin, name, value)
     monkeypatch.setattr(account_login.AccountLogin, "synced", staticmethod(lambda connection: "Synced: nothing"))
-    monkeypatch.setattr(account_login.AccountLogin, "page", lambda self, http, machine: f"{self.server}/plateform/#data?computer={machine.machine_id.hex}")
+    monkeypatch.setattr(MachineConfig, "page", lambda self, http: f"{self.server_url}/plateform/#data?computer={self.machine_id.hex}")
     monkeypatch.setattr(type(MACHINE_SERVICE), "install", lambda self: None)
     monkeypatch.setattr(type(MACHINE_SERVICE), "after_logout", lambda self: True)
     return home
@@ -232,10 +232,10 @@ def test_logout_finishes_where_the_service_cannot_be_removed(connected: Path, mo
     (httpx.Response(404), "https://galaius.example.org/#data?computer="),   # an older server: its root
 ])
 def test_the_page_named_is_where_the_server_serves_the_app(answer: httpx.Response, expected: str) -> None:
-    account = AccountLogin.at("https://galaius.example.org")
-    machine = SimpleNamespace(machine_id=uuid4())
-    with httpx.Client(base_url=account.server, transport=httpx.MockTransport(lambda request: answer)) as http:
-        assert account.page(http, machine) == expected + machine.machine_id.hex
+    machine = MachineConfig(server_url="https://galaius.example.org", workspace_id=uuid4(), machine_id=uuid4(), token="t" * 32,
+                            permission_ceiling="read_only", working_directory=Path.home())
+    with httpx.Client(transport=httpx.MockTransport(lambda request: answer)) as http:
+        assert machine.page(http) == expected + machine.machine_id.hex
 
 
 def _started(code: str = "BCDF-GHJK") -> DeviceLoginStarted:

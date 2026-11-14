@@ -39,6 +39,7 @@ from galaius.machine.connection import JsonLines, MachineRunner
 from galaius.host.processes import end_process_tree, process_exited, process_group_options, process_started
 from galaius.host.private_files import WindowsPrivateFiles
 from galaius.upgrade.quiet import UpgradeReady
+from galaius.machine.tray.launch import TrayLauncher
 from galaius.host.windowless import windowless_process
 
 if sys.platform == "win32":
@@ -337,6 +338,7 @@ class WindowsMachineService(MachineService):
                 replace_held_open(path, path.with_suffix(".log.1"))
             sys.stdout = sys.stderr = open(path, "a", encoding="utf-8", buffering=1)  # noqa: SIM115 - lives as long as the process
         try:
+            TrayLauncher.ensure()  # before the job: a program in it may not reach the taskbar (`ui_limits`: HANDLES)
             self.held_children()
             super().run()
         except UpgradeReady:

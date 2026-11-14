@@ -13,6 +13,7 @@ from galaius_core import PLACE_LEVELS, AgentTouchScope, PlaceLevel, WorkflowNode
 
 from galaius.workflows.functions import PermissionLevel
 from galaius.machine.service import MACHINE_SERVICE, ServiceUnavailable
+from galaius.machine.tray.launch import TrayLauncher
 from galaius.machine.places.places import PlaceDesk
 from galaius.machine.places.levels import split
 from galaius.machine.connection import SCRIPT_RUNTIMES, MachineFiles, MachineRunner, ScriptExecution, connect_command
@@ -30,6 +31,8 @@ def machine_connect(
     configure_only: bool = False,
 ) -> None:
     """Save a UI-issued machine credential and connect outbound to its server."""
+    if not configure_only:
+        TrayLauncher.ensure()
     asyncio.run(connect_command(server_url, workspace_id, machine_id, None, permission_ceiling, working_directory, not configure_only))
 
 

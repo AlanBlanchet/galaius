@@ -13,6 +13,7 @@ import re
 import urllib.error
 import urllib.request
 import platform
+import random
 import time
 import shutil
 import stat
@@ -32,7 +33,7 @@ import websockets
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, TypeAdapter, ValidationError, field_validator, model_validator
 
 from galaius_core import refusal_of, PcFeature, PcFeatures, AGENT_IMAGES_WIRE, MACHINE_AGENT_REQUESTS, PROJECTS_ROOT, MACHINE_MODELS, MachineProblem, MachineProblemCode, MachineAgentSettings, MachineAgentSettingsState, MachineAgentSettingsUpdate, PlacePath, AgentRevisionRef, AgentTouchScope, ArtifactRef, EgressAllowEntry, EgressPolicy, MachineAccelerator, AgentRefusal, MachineAgentAnswer, MachineRefusal, OwnFault, OwnFaultDoing, OwnFaultKind, Refused, MachineAgentRequest, MachineCommand, MachineCommandResult, MachineDataAnswer, MachineDataRequest, MachineEvent, MachineFileEntry, MachineFileListing, MachineFileQuery, MachineFileQueryResult, MachineGitOrigin, MachineRuntime, MachineTokenSwap, PlaceLevel, ScriptFile, ScriptLanguage, UserModelOrigin
-from galaius import USER_AGENT
+from galaius import USER_AGENT, __version__
 from galaius.host.atomic_file import replace_held_open
 from galaius.prompts import mirror as prompt_mirror
 from galaius.prompts import projection as prompt_projection
@@ -51,6 +52,7 @@ from galaius.diagnostics.error_reports import MachineErrorReports
 from galaius.machine.places.places import PlaceDesk
 from galaius.machine.agents import AgentSpawns, LogRing, MachineAgents, MachineSessions
 from galaius.machine.web_runs import WebRuns
+from galaius.machine.presence import PresenceFiles, PresenceWatch
 from galaius.diagnostics.redaction import redact, secret_values
 from galaius.machine.programs import AgentPrograms
 from galaius.machine.projects import relocate
@@ -287,6 +289,15 @@ class MachineConfig(MachineAgentSettings):
 
     def endpoint(self, path: str, *, socket: bool = False) -> str:
         return self.endpoint_on(self.server_url, path, socket=socket)
+
+    def page(self, http: httpx.Client) -> str:
+        """This computer's page in the web app, where its settings live: the app is where the
+        server serves it (`/v1/install` origin, e.g. under /plateform), else at the server's root."""
+        try:
+            app = str(http.get(self.endpoint("/v1/install")).json()["origin"]).rstrip("/")
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            app = self.server_url.rstrip("/")
+        return f"{app}/#data?computer={self.machine_id.hex}"
 
     @property
     def authorization(self) -> dict[str, str]:
@@ -796,6 +807,14 @@ class EnrollmentChanged(PermissionError):
     than the connection holds: nothing runs under the old one, the runner reconnects as the new."""
 
 
+class Paused(Exception):
+    """The owner paused this computer from its tray icon: the connection closes and stays away until resumed."""
+
+
+class Woke(Exception):
+    """This computer slept (`MachineRunner.slept`): its socket is gone, connect again at once."""
+
+
 class TokenSwapped(Exception):
     """The server swapped this machine's bootstrap token and the new one is saved: the runner starts
     again on it, every task with it (none keeps the spent token)."""
@@ -950,6 +969,18 @@ class MachineRunner:
     #: about 1 s of CPU, no model turn each).
     usage_ask_seconds = 120
     reconnect_seconds = (1, 2, 5, 10, 20)
+    #: After the server said it restarts (close 1012) or a gateway answered for it mid-deploy (HTTP 502/503/504): tried
+    #: again every `restart_retry_seconds`, plus up to a second at random so its computers do not all knock at once, for
+    #: `restart_window_seconds`; then `reconnect_seconds`. One PC over 14 days (2026-11-14): 185 closes 1012, 16 gaps
+    #: over 20 s (most 139 s) while the backoff had grown to 20 s by the time the server was back.
+    restart_retry_seconds = 2.0
+    restart_window_seconds = 180.0
+    #: A wait that lasted this much longer than asked, by the wall clock or the system's (Windows counts a sleep, Linux
+    #: and macOS do not), means the computer slept: connect again at once rather than wait ~35 s for a ping to fail.
+    woke_after_seconds = 10.0
+    #: How often the tray icon's presence is looked at (written only when it changed), and its run count read again.
+    presence_seconds = 1.0
+    presence_runs_seconds = 5.0
     #: Failed tries in a row (about 10 s with `reconnect_seconds`) before its page is told why.
     report_after_failures = 3
 
@@ -990,6 +1021,9 @@ class MachineRunner:
         #: Why the last web version of the agent settings was not applied, and which one (shown on the PC's page).
         self._settings_detail, self._settings_refused = "", 0
         self._workspace_jobs = WorkspaceJobs(path=self.config_path.with_name("machine-workspaces.json"))
+        #: What the tray icon shows (`_present`), and the presence lock this runner holds once it took it.
+        self.presence = PresenceWatch(files=PresenceFiles(folder=self.config_path.parent))
+        self._presence_lock: int | None = None
         #: Staged writes waiting for the owner's review, and the web's whole-PC browse budget.
         self.reviews = PlaceReviews.default()
         self._subscriptions = SubscriptionWatch()
@@ -1091,6 +1125,7 @@ class MachineRunner:
         followed = asyncio.create_task(self._follow_up(config))
         resumed = asyncio.create_task(self._resume_paused(config))
         watched = asyncio.create_task(self._watch_subscriptions(config))
+        presenting = asyncio.create_task(self._present(config))
         swapped = False
         try:
             await self._connect(config)
@@ -1115,7 +1150,8 @@ class MachineRunner:
             handing.cancel()
             silences.cancel()
             reviewing.cancel()
-            await asyncio.gather(settler, handing, silences, reviewing, reports, followed, resumed, watched, return_exceptions=True)
+            presenting.cancel()
+            await asyncio.gather(settler, handing, silences, reviewing, reports, followed, resumed, watched, presenting, return_exceptions=True)
             for ahead in (self.warm, self.followups):  # a child started ahead never outlives its runner; ended on the loop it lives on
                 AgentSpawns.loop().call_soon_threadsafe(ahead.close)
         if swapped:
@@ -1278,8 +1314,14 @@ class MachineRunner:
                 logger.exception("telling of silent runs failed")
 
     async def _connect(self, config: MachineConfig) -> None:
-        delay_index = 0
+        delay_index, restarting_since = 0, None
         while True:
+            self.presence.link = "reconnecting"
+            if self.presence.files.paused:
+                logger.info("paused from the tray icon; connecting again once resumed", extra={"machine_id": config.machine_id})
+                while self.presence.files.paused:
+                    await asyncio.sleep(self.presence_seconds)
+                delay_index, restarting_since = 0, None
             if delay_index == self.report_after_failures:
                 # Still not in after these tries: its page says why (the server forgets it once it is in).
                 await asyncio.to_thread(self.report_problem, config, "channel_unreachable", self._last_failure, tuple(self._log_ring.lines), self._log_ring.secrets)
@@ -1294,7 +1336,8 @@ class MachineRunner:
                     # A message to an agent may show images (`PcFeature.AGENT_IMAGES`): the largest request carrying them.
                     max_size=AGENT_IMAGES_WIRE,
                 ) as socket:
-                    delay_index = 0
+                    delay_index, restarting_since = 0, None
+                    self.presence.connected()
                     self._reported_crash = ""  # in again: a later crash, even the same one, is news to its page
                     logger.info("connected to %s", endpoint, extra={"machine_id": config.machine_id, "workspace_id": config.workspace_id})
                     if self._server_restarted:
@@ -1302,15 +1345,22 @@ class MachineRunner:
                         RuntimeStore.default().request_check()
                     await socket.send(json.dumps({"type": "hello", "features": self.features(), **await asyncio.to_thread(self._beat, config)}))
                     if await self._serve(socket, config):
+                        self.presence.link = "refused"
                         return
             except EnrollmentChanged:
                 config = self.load()
                 logger.warning("machine file changed its enrollment; reconnecting with it", extra={"machine_id": config.machine_id})
                 continue
+            except Paused:
+                continue
+            except Woke as woke:
+                logger.info("%s; connecting again now", woke, extra={"machine_id": config.machine_id})
+                continue
             except PermissionError:
                 raise
             except websockets.ConnectionClosed as error:
                 if error.code in {4401, 4403}:
+                    self.presence.link = "refused"
                     logger.error("machine token was revoked or rejected; connection stopped", extra={"machine_id": config.machine_id})
                     print("Machine token was revoked or rejected; connection stopped.", file=sys.stderr)
                     return
@@ -1318,23 +1368,47 @@ class MachineRunner:
                 logger.warning("connection closed (code %s)", error.code, extra={"machine_id": config.machine_id})
                 # The server restarted: a deploy may have brought a release, checked once it answers again.
                 self._server_restarted = self._server_restarted or error.code == 1012
+                restarting_since = restarting_since or (time.monotonic() if error.code == 1012 else None)
             except websockets.InvalidStatus as error:
                 # Refused at the handshake: a revoked or unknown token answers 401/403 before the
                 # socket opens (the 4401/4403 close codes above never arrive). Stop, like a close.
                 if error.response.status_code in {401, 403}:
+                    self.presence.link = "refused"
                     logger.error("machine token was refused (HTTP %s); connection stopped", error.response.status_code, extra={"machine_id": config.machine_id})
                     print("Machine token was revoked or rejected; connection stopped.", file=sys.stderr)
                     return
                 self._last_failure = f"the server refused the connection: HTTP {error.response.status_code}"
+                restarting_since = restarting_since or (time.monotonic() if error.response.status_code in {502, 503, 504} else None)
                 logger.warning("server refused the connection: HTTP %s", error.response.status_code, extra={"machine_id": config.machine_id})
             except (OSError, TimeoutError, websockets.InvalidHandshake) as error:
                 # A server mid-deploy answers the upgrade with no or a non-101 response: retry, never exit.
                 self._last_failure = f"{endpoint} unreachable: {error or type(error).__name__}"
                 logger.warning("server unreachable: %s", error or type(error).__name__, extra={"machine_id": config.machine_id})
-            delay = self.reconnect_seconds[min(delay_index, len(self.reconnect_seconds) - 1)]
-            logger.info("reconnecting in %s s", delay, extra={"machine_id": config.machine_id})
-            await asyncio.sleep(delay)
+            delay = self.retry_delay(delay_index, restarting_since)
+            logger.info("reconnecting in %.1f s", delay, extra={"machine_id": config.machine_id})
+            await self._wait(delay)
             delay_index += 1
+
+    def retry_delay(self, failures: int, restarting_since: float | None, now: float | None = None) -> float:
+        """How long before the next try, after `failures` failed ones in a row; `restarting_since`: when the server
+        last said it restarts (`restart_retry_seconds`)."""
+        if restarting_since is not None and (time.monotonic() if now is None else now) - restarting_since < self.restart_window_seconds:
+            return self.restart_retry_seconds + random.uniform(0, 1)
+        return self.reconnect_seconds[min(failures, len(self.reconnect_seconds) - 1)]
+
+    def slept(self, monotonic_from: float, wall_from: float, asked: float) -> bool:
+        """Whether a wait of `asked` seconds begun at (`monotonic_from`, `wall_from`) took long enough that this
+        computer slept meanwhile (`woke_after_seconds`)."""
+        return max(time.monotonic() - monotonic_from, time.time() - wall_from) - asked > self.woke_after_seconds
+
+    async def _wait(self, seconds: float) -> None:
+        """`seconds`, cut short when the computer slept meanwhile: after a sleep the wait is over."""
+        started = time.monotonic()
+        while (left := seconds - (time.monotonic() - started)) > 0:
+            step, monotonic_from, wall_from = min(left, 1.0), time.monotonic(), time.time()
+            await asyncio.sleep(step)
+            if self.slept(monotonic_from, wall_from, step):
+                return
 
     async def _serve(self, socket, config: MachineConfig) -> bool:
         # Only the receiver consumes the websocket; only the worker executes commands.
@@ -1391,6 +1465,7 @@ class MachineRunner:
 
     async def _receive(self, socket, config: MachineConfig, commands: asyncio.Queue[MachineCommand | None]) -> bool:
         async for payload in socket:
+            self.presence.hear()
             response = json.loads(payload)
             if response.get("type") == "command":
                 # A full queue holds this read, as the one-at-a-time loop did: never an exit.
@@ -2346,9 +2421,55 @@ class MachineRunner:
             load_policy()
 
     async def _heartbeat(self, socket, config: MachineConfig) -> None:
+        """A beat every `heartbeat_seconds`, each followed by a ping whose answer is what the tray icon calls
+        connected (`PresenceWatch.hear`); leaves the connection when the computer slept (`Woke`) or the owner
+        paused it (`Paused`)."""
         while True:
+            monotonic_from, wall_from = time.monotonic(), time.time()
             await asyncio.sleep(self.heartbeat_seconds)
+            if self.slept(monotonic_from, wall_from, self.heartbeat_seconds):
+                raise Woke(f"this computer slept about {time.time() - wall_from:.0f} s")
+            if self.presence.files.paused:
+                raise Paused
             await socket.send(json.dumps({"type": "heartbeat", **await asyncio.to_thread(self._beat, config)}))
+            (await socket.ping()).add_done_callback(self._ponged)
+
+    def _ponged(self, answer: asyncio.Future) -> None:
+        if not answer.cancelled() and answer.exception() is None:
+            self.presence.hear()
+
+    async def _present(self, config: MachineConfig) -> None:
+        """What the tray icon shows (`galaius.machine.presence`), written whenever it changed by the runner holding the
+        presence lock; another (an older release still leaving) holds it until it exits, and this one waits for it."""
+        if self._presence_lock is None:
+            self._presence_lock = await asyncio.to_thread(self.presence.files.hold)
+        with httpx.Client(verify=server_tls(), timeout=10, headers={"User-Agent": USER_AGENT}) as http:
+            page = await asyncio.to_thread(config.page, http)
+        pc, runs, read_at, written = platform.node().split(".")[0], 0, float("-inf"), None
+        try:
+            while True:
+                if time.monotonic() - read_at >= self.presence_runs_seconds:
+                    runs, read_at = await asyncio.to_thread(self._live_runs, runs), time.monotonic()
+                shown = self.presence.presence(runs=runs, update_waiting=self._quiet is not None and self._quiet.waiting(), pc=pc, page=page, version=__version__)
+                if shown != written:
+                    try:
+                        await asyncio.to_thread(self.presence.files.write, shown)
+                        written = shown
+                    except OSError as error:  # the next look writes it
+                        logger.warning("tray presence not written: %s", error)
+                await asyncio.sleep(self.presence_seconds)
+        finally:
+            if written is not None and self.presence.link == "refused":  # said before the process ends: only a sign-in brings it back
+                self.presence.files.write(written.model_copy(update={"link": "refused"}))
+
+    @staticmethod
+    def _live_runs(before: int) -> int:
+        """Agent runs alive on this computer now (every galaius run, from the web or an editor); `before` when unreadable."""
+        try:
+            return len(reg.running_runs())
+        except (OSError, ValueError) as error:
+            logger.warning("runs unreadable for the tray: %s", error)
+            return before
 
     def _beat(self, connected: MachineConfig) -> dict[str, object]:
         """What every hello and heartbeat says: this PC's runtimes, resources, its file roots and

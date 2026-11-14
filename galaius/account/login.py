@@ -194,15 +194,6 @@ class AccountLogin(ServerAddress):
         ))
         CatalogConnection(endpoint=self.server, workspace_id=issued.workspace.id, auth_mode="machine").save()
 
-    def page(self, http: httpx.Client, machine: MachineConfig) -> str:
-        """This computer's page in the web app, where its settings live: the app is where the
-        server serves it (`/v1/install` origin, e.g. under /plateform), else at the server's root."""
-        try:
-            app = str(http.get("/v1/install").json()["origin"]).rstrip("/")
-        except (httpx.HTTPError, ValueError, KeyError, TypeError):
-            app = self.server
-        return f"{app}/#data?computer={machine.machine_id.hex}"
-
     #: How long `galaius login` waits for the server to see this computer online (its service
     #: connects within seconds; a first start on a slow PC compiles its Python first).
     online_within: ClassVar[float] = 60
@@ -254,7 +245,7 @@ class AccountLogin(ServerAddress):
         """The one line a failed install says about its error report, when its question reached the
         server: it waits, unsent, for an answer on the PC's page (nothing is asked here: owner
         2026-10-08 « After install, everything should be done from the web »)."""
-        return f"An error report is ready, not sent: answer on this computer's page: {self.page(http, machine)}" if MachineRunner.error_reports().asked() else None
+        return f"An error report is ready, not sent: answer on this computer's page: {machine.page(http)}" if MachineRunner.error_reports().asked() else None
 
     def machines(self, machine: MachineConfig) -> tuple[MachineSummary, ...]:
         """The PCs of `machine`'s workspace, read with the key this CLI signed in with (`key_path`); raises when it holds
@@ -618,7 +609,7 @@ def _handed_off(account: AccountLogin, existing: MachineConfig | None, *, allow_
             agents.applied(MachineRunner())
         _detached(account, HandedOff())
         with account.client() as http:
-            link, match = account.page(http, existing), ""
+            link, match = existing.page(http), ""
     elif (pending := Pending.read()) is not None:
         link, match = pending.link, pending.match
     else:
@@ -734,7 +725,7 @@ def _reconfigured(account: AccountLogin, existing: MachineConfig, *, agents: Age
     print(AgentChoice.described(machine))
     if machine.remote_settings:
         with account.client() as http:
-            print(f"Its agent settings can also be changed on its page: {account.page(http, machine)}")
+            print(f"Its agent settings can also be changed on its page: {machine.page(http)}")
     try:
         MACHINE_SERVICE.stop()
     except ServiceUnavailable:
@@ -759,7 +750,7 @@ def _joined(account: AccountLogin, http: httpx.Client, started: DeviceLoginStart
         print(f"Connected: {issued.machine.name} is now a machine in {workspace}")
         if not MACHINE_SERVICE.after_logout():
             print("It runs while you are signed in to this computer; it starts again at your next sign-in.")
-        print(f"Its settings (agents, folders) are on its page: {account.page(http, machine)}")
+        print(f"Its settings (agents, folders) are on its page: {machine.page(http)}")
     print(account.synced(CatalogConnection.load()))
     print(AgentChoice.described(machine))
 

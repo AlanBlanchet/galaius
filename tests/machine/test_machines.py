@@ -387,7 +387,7 @@ def test_a_server_mid_deploy_is_retried_and_a_refused_token_stops(tmp_path: Path
 
     monkeypatch.setattr(machines.websockets, "connect", connect)
     runner = MachineRunner(tmp_path / "machine.json")
-    runner.reconnect_seconds = (0,)
+    runner.reconnect_seconds, runner.restart_window_seconds = (0,), 0
     if retried:
         with pytest.raises(PermissionError):
             asyncio.run(runner.connect(_config(tmp_path, "read_only")))

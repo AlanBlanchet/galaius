@@ -29,6 +29,9 @@ dependencies = [
     "winrt-Windows.Foundation>=3.2; sys_platform == 'win32'",
     "winrt-Windows.Foundation.Collections>=3.2; sys_platform == 'win32'",
     "pyobjc-framework-Vision>=10; sys_platform == 'darwin'",
+    # the tray icon showing whether this PC is connected (galaius/machine/tray): D-Bus StatusNotifierItem on Linux, AppKit status item on macOS
+    "jeepney>=0.9,<1; sys_platform == 'linux'",
+    "pyobjc-framework-Cocoa>=10; sys_platform == 'darwin'",
     "httpx>=0.28.1",
     "uv>=0.11.25,<0.12",  # installs each signed release beside the running one (galaius/upgrade/store.py `Uv`); the self-contained program carries no other
     "cryptography>=44",  # imported directly: verifies the ed25519 signature on every automatic upgrade (galaius/upgrade/source.py)
