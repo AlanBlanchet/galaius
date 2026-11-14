@@ -21,7 +21,7 @@ from galaius.machine.tray.view import TrayPicture, TrayView, TrayWords
 if sys.platform == "linux":
     from jeepney import DBusAddress, MessageType, new_method_call
 
-    from galaius.machine.tray.linux import ITEM, MENU, PROPERTIES, StatusNotifierTray
+    from galaius.machine.tray import linux
 
 FR = TrayWords.by_language["fr"]
 PAGE = "https://galaius.example.org/plateform/#data?computer=abc"
@@ -160,7 +160,7 @@ def test_every_state_draws_its_mark_and_dot_at_every_size(shown: str, size: int)
 @pytest.mark.skipif(sys.platform != "linux", reason="the D-Bus StatusNotifierItem is Linux's")
 def test_the_panel_host_reads_the_icon_and_menu_and_a_click_reaches_its_action() -> None:
     acted: list[str] = []
-    tray = StatusNotifierTray()
+    tray = linux.StatusNotifierTray()
     tray.driver = type("Driver", (), {"leaving": False, "act": lambda self, action: acted.append(action), "tick": lambda self: None})()
     tray.view = TrayView.of(Presence(link="connected", runs=2, pc="pc", page=PAGE), True, FR)
 
@@ -168,18 +168,18 @@ def test_the_panel_host_reads_the_icon_and_menu_and_a_click_reaches_its_action()
         answer = tray.reply(new_method_call(DBusAddress(path, bus_name="x.y", interface=interface), member, signature, body), path, interface, member)
         return answer.header.message_type, answer.body
 
-    kind, (properties,) = call(tray.item_path, PROPERTIES, "GetAll", "s", (ITEM,))
+    kind, (properties,) = call(tray.item_path, linux.PROPERTIES, "GetAll", "s", (linux.ITEM,))
     assert kind == MessageType.method_return and properties["Menu"] == ("o", tray.menu_path) and properties["ItemIsMenu"] == ("b", True)
     assert [width for width, _, pixels in properties["IconPixmap"][1] if len(pixels) == 4 * width * width] == list(tray.sizes)
     assert properties["ToolTip"][1][3] == "Galaius · 2 agents actifs"
-    kind, (revision, (root, _, children)) = call(tray.menu_path, MENU, "GetLayout", "iias", (0, -1, []))
+    kind, (revision, (root, _, children)) = call(tray.menu_path, linux.MENU, "GetLayout", "iias", (0, -1, []))
     labels = [child[1][1]["label"][1] for child in children]
     assert root == 0 and labels == ["pc · 2 agents actifs", "Ouvrir Galaius", "Mettre en pause", "Quitter Galaius"]
     assert [child[1][1]["enabled"][1] for child in children] == [False, True, True, True]
     for index in range(0, len(children) + 2):  # the header, a row, the root, past the end
-        call(tray.menu_path, MENU, "Event", "isvu", (index, "clicked", ("s", ""), 0))
+        call(tray.menu_path, linux.MENU, "Event", "isvu", (index, "clicked", ("s", ""), 0))
     assert acted == ["open", "pause", "quit"], "only rows with an action act, once each"
-    assert call("/elsewhere", PROPERTIES, "GetAll", "s", (ITEM,))[0] == MessageType.error
+    assert call("/elsewhere", linux.PROPERTIES, "GetAll", "s", (linux.ITEM,))[0] == MessageType.error
 
 
 def test_this_systems_tray_shows_the_icon_then_leaves_when_asked() -> None:
