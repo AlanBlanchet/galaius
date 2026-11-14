@@ -23,6 +23,7 @@ import threading
 import time
 import uuid
 from uuid import UUID
+import contextlib
 from pathlib import Path
 import subprocess
 import tempfile
@@ -165,15 +166,15 @@ class Ranking(BaseModel):
 
 def rank_candidates(
     model: str, env: dict[str, str], *, providers: Sequence[AgentProvider], weights: str = "",
-    role: str | None = None,
+    role: str | None = None, among: Mapping[str, Sequence[UUID]] | None = None,
 ) -> tuple[reg.LaunchCandidate, ...]:
     """The ordered (CLI, model) list a launch walks — see :func:`rank`."""
-    return rank(model, env, providers=providers, weights=weights, role=role).candidates
+    return rank(model, env, providers=providers, weights=weights, role=role, among=among).candidates
 
 
 def rank(
     model: str, env: dict[str, str], *, providers: Sequence[AgentProvider], weights: str = "",
-    role: str | None = None, policy: Policy | None = None,
+    role: str | None = None, policy: Policy | None = None, among: Mapping[str, Sequence[UUID]] | None = None,
 ) -> Ranking:
     """ONE ordered list across every given CLI — "we rank based on all providers, we get the
     first one from the criteria, and if not available we get the next one".
@@ -196,7 +197,7 @@ def rank(
     """
     policy = policy if policy is not None else load_policy()
     providers = _asked(providers, policy.rule(model) if model.startswith("@") else model)
-    candidates, rows, criteria = _ranked_candidates(model, env, providers=providers, weights=weights, policy=policy)
+    candidates, rows, criteria = _ranked_candidates(model, env, providers=providers, weights=weights, policy=policy, among=among)
     candidates = _switched_on(candidates, policy, model)
     if criteria is None:
         return Ranking(candidates=candidates)
@@ -256,8 +257,9 @@ def _named_programs(rule: str) -> frozenset[str]:
 
 def _held_keys(pinned: RunSubscription, rule: str) -> dict[str, list[RunSubscription]]:
     """Per key program `rule` names (`_named_programs`) other than the program `pinned` runs, the subscriptions on this
-    PC holding his key of it, in their order: a run pinned to his Claude login still runs a writing role on his Mistral key
-    (main 2026-11-14 on his words « je m'attends à ce que ce soit un Mistral »). None for a lent run: a member's run never
+    PC holding his key of it, under the caps a start from the server last named for each (`Subscription.limits`; none
+    named: not taken, never uncapped): a run pinned to his Claude login still runs a writing role on his Mistral key (main
+    2026-11-14 on his words « je m'attends à ce que ce soit un Mistral »). None for a lent run: a member's run never
     reaches the owner's keys."""
     if pinned.lent:
         return {}
@@ -265,16 +267,18 @@ def _held_keys(pinned: RunSubscription, rule: str) -> dict[str, list[RunSubscrip
     named = {name for name in _named_programs(rule) if name != own and name in PROVIDERS and _keyed(PROVIDERS[name])}
     keys: dict[str, list[RunSubscription]] = {}
     for one in Subscription.all():
-        if one.program.name in named and one.held is not None:
-            keys.setdefault(one.program.name, []).append(RunSubscription(subscription_id=one.id, limits=SubscriptionLimits()))
+        if one.program.name in named and one.held is not None and (limits := one.limits()) is not None:
+            keys.setdefault(one.program.name, []).append(RunSubscription(subscription_id=one.id, limits=limits))
     return keys
 
 
 def _ranked_candidates(
     model: str, env: dict[str, str], *, providers: Sequence[AgentProvider], weights: str, policy: Policy,
+    among: Mapping[str, Sequence[UUID]] | None = None,
 ) -> tuple[tuple[reg.LaunchCandidate, ...], dict[str, Model], Criteria | None]:
     """Candidates before the value rule, the catalog rows they name, and the parsed criterion
-    (None for a plain model id)."""
+    (None for a plain model id). `among`: per key program, the subscriptions a launch may run it on (their vendor lists
+    bound its ids); None: every key held here (a ranking no launch follows)."""
     if model.startswith("@"):
         model = policy.rule(model)
     providers = _asked(providers, model)
@@ -296,7 +300,7 @@ def _ranked_candidates(
     except CriteriaError as err:
         raise ModelUnavailable(sentence=f"{model!r} is not a usable model criterion: {err}") from err
     # A key program runs only an id its vendor lists for one of his keys here (`Subscription.listed`; unknown: any).
-    listed = {p.name: Subscription.listed(p.name) for p in universe if p.name in allowed and _keyed(p)}
+    listed = {p.name: Subscription.listed(p.name, None if among is None else among.get(p.name, ())) for p in universe if p.name in allowed and _keyed(p)}
     runs = lambda p, row: p.can_run(row, env) and ((known := listed.get(p.name)) is None or p.model_name(p.model_id_for(row)) in known)  # noqa: E731
     pool = lambda m: any(p.can_run(m, env) for p in universe if p.name in allowed)
     # Unpruned here: what is worth running is judged over the pool that can run, further down.
@@ -1604,8 +1608,14 @@ async def run_agent(
     # The run this process descends from holds it to its subscription whatever the environment says.
     ancestor = reg.ancestor_run()
     holder = ancestor if ancestor is not None and ancestor.subscription is not None else parent_run
-    pinned = RunSubscription.resolve(subscription, parent=holder.subscription if holder is not None else None,
-                                     child=parent is not None or ancestor is not None, environment=environment)
+    # A parent running on a key beside its own login lends its children that login (`AgentRun.lends`), never the key.
+    pinned = RunSubscription.resolve(subscription, parent=(holder.lends or holder.subscription) if holder is not None else None,
+                                     child=parent is not None or ancestor is not None, environment=environment,
+                                     parent_own=holder.subscription if holder is not None and holder.lends is not None else None)
+    for choice in (choices.subscriptions if choices is not None else ()):
+        # The caps the server names for each of his subscriptions here, kept for a run taking one beside its login (`_held_keys`).
+        with contextlib.suppress(SubscriptionRefused, OSError, ValueError):
+            Subscription.of(choice.subscription_id).remember_limits(choice.limits)
     ranked_freely = provider is None  # no CLI named by the caller: the rule may reach a key program beside the pin
     if pinned is not None:
         environment = pinned.bound(environment)
@@ -1689,7 +1699,14 @@ async def run_agent(
     keys = _held_keys(pinned, model) if ranked_freely and pinned is not None and community is None else {}
     pool += [PROVIDERS[name] for name in keys if PROVIDERS[name] not in pool]
     by_name = {p.name: p for p in pool}
-    candidates = rank_candidates(model, environment, providers=pool, weights=weights, role=agent)
+    # The keys this launch may run each key program on: its held keys, a web start's offered ones, its own pin's; a lent
+    # run none, so no vendor is asked with the owner's key.
+    among: dict[str, list[UUID]] = {name: [option.subscription_id for option in options if option.subscription_id is not None] for name, options in keys.items()}
+    for choice in (choices.subscriptions if choices is not None and pinned is None else ()):
+        among.setdefault(choice.provider, []).append(choice.subscription_id)
+    if pinned is not None and pinned.subscription_id is not None:
+        among.setdefault(Subscription.of(pinned.subscription_id).program.name, []).append(pinned.subscription_id)
+    candidates = rank_candidates(model, environment, providers=pool, weights=weights, role=agent, among=among)
     skipped: list[reg.SkippedCandidate] = []
     #: How many children this run has already handed to the vendor that owns session ids.
     #: The first gets the run id itself, so `claude --resume <run_id>` works; a later one
@@ -1719,6 +1736,7 @@ async def run_agent(
     offered = {**keys, **offered}
     caps: list[SubscriptionCap] = []
     pinned_id = pinned.subscription_id if pinned is not None else None
+    lends: RunSubscription | None = None  # set once a candidate runs on a key beside its login (`_held_keys`)
     # The logins a candidate may run on: its provider's offered ones, in his order, else the run's own.
     logins = {provider: [option.subscription_id for option in options] for provider, options in offered.items()}
     # A quota note is read against the login a candidate would first run on: the first one whose window is open.
@@ -1754,7 +1772,11 @@ async def run_agent(
         candidate_provider = by_name[candidate.provider]
         candidate_pin, candidate_env = pinned, environment
         if candidate.provider in offered:
-            candidate_pin, candidate_env, passed = RunSubscription.first_under_cap(offered[candidate.provider], environment, candidate.provider)
+            options = offered[candidate.provider]
+            if _keyed(candidate_provider):  # each key runs only an id its own vendor list names
+                options = [option for option in options if option.subscription_id is None or (known := Subscription.of(option.subscription_id).vendor_models()) is None
+                           or candidate_provider.model_name(candidate.model) in known]
+            candidate_pin, candidate_env, passed = RunSubscription.first_under_cap(options, environment, candidate.provider)
             if (hold := _reopening(candidate.provider, passed.held)) is not None:
                 waits[index] = hold  # waited on should this candidate not start on another of his logins
             if candidate_pin is None:
@@ -1941,7 +1963,8 @@ async def run_agent(
             mesh_enabled=mesh, reasoning=candidate_effort, reasoning_set=reasoning,
             candidates=candidates, skipped=tuple(skipped), denied_tools=denied_tools,
             provider_session_id=vendor_session if candidate_provider.session_is_run else None,
-            agent_ref=selected_ref, definition_path=definition_path, fence=candidate_fence, subscription=candidate_pin, media=shown,
+            agent_ref=selected_ref, definition_path=definition_path, fence=candidate_fence, subscription=candidate_pin,
+            lends=pinned if candidate.provider in keys else None, media=shown,
             login=login, asked_by=asked_by, inherited_asks=inherited_asks, community=community,
         )
         # A model coming off a block is the re-check: it gets long enough to say "still refused"
@@ -1980,6 +2003,8 @@ async def run_agent(
         if candidate.provider in keys:  # logged per call: which of his keys a run pinned to another login took
             log.info("run %s (%s) runs %s/%s on his held key %s beside its pinned login %s", run_id, agent, candidate.provider, candidate.model,
                      candidate_pin_id, pinned_id)
+        if candidate.provider in keys:
+            lends = pinned  # its children run on the login it was pinned to, never on this key
         pinned, fence = candidate_pin, candidate_fence
         chosen_ahead = launch if ahead else None
         process = candidate_process
@@ -2026,7 +2051,7 @@ async def run_agent(
         reasoning=effort, reasoning_set=reasoning,
         candidates=candidates, skipped=tuple(skipped), denied_tools=denied_tools,
         provider_session_id=provider.session_named(run_id),
-        agent_ref=selected_ref, definition_path=definition_path, fence=fence, subscription=pinned, media=shown,
+        agent_ref=selected_ref, definition_path=definition_path, fence=fence, subscription=pinned, lends=lends, media=shown,
         login=chosen_login, asked_by=asked_by, inherited_asks=inherited_asks, community=community,
     )
     # This launch takes over its role's earlier ones under the same launcher that its vendor refused before a turn.

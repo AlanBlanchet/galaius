@@ -436,6 +436,9 @@ class AgentRun(OlderTokens, ContextGauge):
     #: The subscription every turn and child of this run runs on (`galaius.agents.limits.subscriptions`);
     #: None: this PC's default login.
     subscription: RunSubscription | None = None
+    #: The subscription its children run on when its own is a key it took beside that login (a writing role's Mistral key
+    #: under a Claude pin, `run._held_keys`): the key stays this run's alone. None: its children run on `subscription`.
+    lends: RunSubscription | None = None
     #: A move asked while a turn worked (his pick in a conversation, `RunMove.resume` False): made once that turn ended,
     #: before its next one starts (`carry_held`), to a subscription or to this PC's own login (`OWN_LOGIN`); None once
     #: made, refused or asked back.
@@ -1328,7 +1331,7 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
              candidates: tuple[LaunchCandidate, ...] = (),
              skipped: tuple[SkippedCandidate, ...] = (),
              denied_tools: tuple[DeniedTool, ...] = (), fence: FenceSpec | None = None,
-             subscription: RunSubscription | None = None, media: tuple[str, ...] = (),
+             subscription: RunSubscription | None = None, lends: RunSubscription | None = None, media: tuple[str, ...] = (),
              login: str = "", asked_by: tuple[str, ...] = (),
              inherited_asks: Mapping[str, float] | None = None, community: CommunityAgent | None = None) -> AgentRun:
     provider_impl = PROVIDERS.get(provider)
@@ -1343,7 +1346,7 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
                    mesh_enabled=mesh_enabled,
                    reasoning=reasoning, reasoning_set=reasoning_set,
                    candidates=candidates, skipped=skipped, denied_tools=denied_tools, fence=fence,
-                   provider_session_id=provider_session_id, subscription=subscription, login=login,
+                   provider_session_id=provider_session_id, subscription=subscription, lends=lends, login=login,
                    asked_by=asked_by, inherited_asks=dict(inherited_asks or {}), community=community,
                    lifecycle_token=secrets.token_hex(16),
                    started_at=time.time())

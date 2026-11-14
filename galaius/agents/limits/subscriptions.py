@@ -4,6 +4,7 @@ default logins (`~/.claude`, `~/.codex`) are never read or written here. A run i
 subscription (`RunSubscription`, on its record): every turn and every child runs on it, caps are checked
 before each start and on each usage reading, and its usage is kept here, last value per window."""
 
+import hashlib
 import json
 import logging
 import os
@@ -64,6 +65,18 @@ class SubscriptionState(BaseModel):
     reported_at: datetime | None = None
     identity: LoginIdentity = LoginIdentity()
     reported_identity: LoginIdentity = LoginIdentity()
+
+
+class VendorModels(BaseModel):
+    """A held key's vendor model list as its folder keeps it (`Subscription.vendor_models`): for which key (`key`, its
+    digest), when, the ids (None: never read), and whether that ask failed."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    key: str
+    at: float
+    models: frozenset[str] | None = None
+    failed: bool = False
 
 
 class Subscription(BaseModel):
@@ -338,45 +351,75 @@ class Subscription(BaseModel):
         form = self.program.held
         return held.credential_in(self.folder, form) if form is not None else None
 
+    #: Its caps as a start from the server last named them, beside its state file (an older galaius reads that file as it was).
+    LIMITS: ClassVar[str] = "server-limits.json"
+
+    def remember_limits(self, limits: SubscriptionLimits) -> None:
+        """`limits`, the caps a start from the server named for it (`SubscriptionChoice.limits`), kept for a run taking it
+        beside its own login (`run._held_keys`)."""
+        if self.limits() != limits:
+            self._replace(self.folder / self.LIMITS, limits.model_dump_json().encode())
+
+    def limits(self) -> SubscriptionLimits | None:
+        """The caps a start from the server last named for it here (`remember_limits`); None: none did, so no run takes it
+        beside its own login."""
+        try:
+            return SubscriptionLimits.model_validate_json((self.folder / self.LIMITS).read_bytes())
+        except (OSError, ValueError):
+            return None
+
     #: Its key's vendor model list (`vendor_models`), beside its state file.
     VENDOR_MODELS: ClassVar[str] = "vendor-models.json"
-    #: How long a vendor list is kept before it is asked again; how long the vendor gets to answer.
+    #: How long a vendor list is kept before it is asked again; after a failed ask, how long before the next; how long
+    #: the vendor gets to answer.
     VENDOR_MODELS_SECONDS: ClassVar[float] = 12 * 3600
+    VENDOR_RETRY_SECONDS: ClassVar[float] = 600
     VENDOR_TIMEOUT: ClassVar[float] = 6.0
 
     def vendor_models(self) -> frozenset[str] | None:
-        """The model ids its held key's vendor lists (`GET <chat base>/models`), kept in its folder for
-        `VENDOR_MODELS_SECONDS`; None when nothing was ever read (no key here, no chat API, the vendor never answered).
-        A launch runs only an id the vendor lists (2026-11-14: Mistral refused the catalog's `mistral-large-3`,
-        « Invalid model »); an older list is kept when the vendor does not answer."""
-        path = self.folder / self.VENDOR_MODELS
+        """The model ids its held key's vendor lists (`GET <chat base>/models`), kept in its folder (`VendorModels`, tied to
+        the key's digest) for `VENDOR_MODELS_SECONDS`; None when nothing was ever read (no key here, no chat API, the vendor
+        never answered). A launch runs only an id the vendor lists (2026-11-14: Mistral refused the catalog's
+        `mistral-large-3`, « Invalid model »). A vendor that does not answer keeps the last list and is asked again only
+        after `VENDOR_RETRY_SECONDS`; a file that does not parse is asked again."""
+        key = self.held
+        if key is None:
+            return None
+        digest, path, now = hashlib.sha256(key.encode()).hexdigest()[:16], self.folder / self.VENDOR_MODELS, time.time()
         try:
-            kept = json.loads(path.read_text(encoding="utf-8"))
+            kept: VendorModels | None = VendorModels.model_validate_json(path.read_bytes())
         except (OSError, ValueError):
             kept = None
-        if isinstance(kept, dict) and time.time() - float(kept.get("at", 0)) < self.VENDOR_MODELS_SECONDS:
-            return frozenset(kept.get("models", ()))
-        row, key = getattr(self.program, "row", None), self.held
+        if kept is not None and kept.key != digest:
+            kept = None
+        if kept is not None and now - kept.at < (self.VENDOR_RETRY_SECONDS if kept.failed else self.VENDOR_MODELS_SECONDS):
+            return kept.models
+        row = getattr(self.program, "row", None)
         base = row.api.chat_base() if row is not None and row.api is not None else None
-        if key is None or base is None:
-            return frozenset(kept["models"]) if isinstance(kept, dict) else None
+        if base is None:
+            return kept.models if kept is not None else None
         import httpx  # noqa: PLC0415 — only a key program's launch reads it; the module loads on every CLI start
         try:
-            answer = httpx.get(f"{base.rstrip('/')}/models", headers={"Authorization": f"Bearer {key}"}, timeout=self.VENDOR_TIMEOUT)
+            answer = httpx.get(f"{base.rstrip('/')}/models", headers={"Authorization": f"Bearer {key}"}, timeout=self.VENDOR_TIMEOUT,
+                               follow_redirects=False)
             answer.raise_for_status()
-            models = sorted({str(item["id"]) for item in answer.json().get("data", ()) if isinstance(item, dict) and item.get("id")})
-        except (httpx.HTTPError, ValueError, KeyError, TypeError) as error:
+            models = frozenset(str(item["id"]) for item in answer.json().get("data", ()) if isinstance(item, dict) and item.get("id"))
+            fresh = VendorModels(key=digest, at=now, models=models)
+        except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as error:
             logger.warning("subscription %s: its vendor's model list did not read (%s); %s", self.id, type(error).__name__,
-                           "the last one is kept" if isinstance(kept, dict) else "every model of its program stays offered")
-            return frozenset(kept["models"]) if isinstance(kept, dict) else None
-        self._replace(path, json.dumps({"at": time.time(), "models": models}).encode())
-        return frozenset(models)
+                           "the last one is kept" if kept is not None and kept.models is not None else "every model of its program stays offered")
+            fresh = VendorModels(key=digest, at=now, models=kept.models if kept is not None else None, failed=True)
+        self._replace(path, fresh.model_dump_json().encode())
+        return fresh.models
 
     @classmethod
-    def listed(cls, program: str) -> frozenset[str] | None:
-        """Every model id the vendor lists for one of his held keys of `program` on this PC (`vendor_models`); None when
-        no list is known: then nothing is filtered."""
-        lists = [found for one in cls.all() if one.provider == program and one.held is not None and (found := one.vendor_models()) is not None]
+    def listed(cls, program: str, among: Iterable[UUID] | None = None) -> frozenset[str] | None:
+        """Every model id the vendor lists for one of his held keys of `program` here (`vendor_models`), of `among` only
+        when given (the keys a run may use: a lent run none, so no vendor is asked); None when no list is known: then
+        nothing is filtered."""
+        allowed = None if among is None else frozenset(among)
+        lists = [found for one in cls.all() if one.provider == program and (allowed is None or one.id in allowed) and one.held is not None
+                 and (found := one.vendor_models()) is not None]
         return frozenset().union(*lists) if lists else None
 
     def hold(self, credential: str) -> bool:
@@ -501,17 +544,19 @@ class RunSubscription(WireRunSubscription):
         return {name: lent[name] for name in providers}
 
     @classmethod
-    def resolve(cls, asked: Self | None, *, parent: Self | None, child: bool, environment: Mapping[str, str]) -> Self | None:
+    def resolve(cls, asked: Self | None, *, parent: Self | None, child: bool, environment: Mapping[str, str],
+                parent_own: Self | None = None) -> Self | None:
         """What a new run is pinned to: what was asked; a child asking none its parent run's (from the run records and
         the process tree, never from what its environment names). A child of a lent run asking any login, or an
-        environment naming a folder of another subscription, is refused."""
+        environment naming a folder of another subscription, is refused. `parent_own`: the key its parent runs on beside
+        the login it lends its children (`AgentRun.lends`): its folder is the one a child's environment names."""
         if child and parent is not None and parent.lent and asked is not None and (asked.subscription_id, asked.lent) != (parent.subscription_id, parent.lent):
             raise SubscriptionRefused("lent", "a child of a member's run on a lent PC runs on none of its CLI logins, as its parent")
         pinned = asked if asked is not None or not child else parent
         if child and pinned is not None:
             pinned = pinned.model_copy(update={"capped": None})
         # A child's environment is its parent's: the folder it names is the parent's login, replaced by `bound`.
-        named = (pinned, parent if child else None)
+        named = (pinned, parent if child else None, parent_own if child else None)
         expected = frozenset(Path(folder).resolve() for one in named if one is not None for folder in one.overlay().values())
         if not Subscription.named_in(environment) <= expected:
             raise SubscriptionRefused("pinned_elsewhere", "this run's environment names another subscription's folder; a run uses only the subscription it is pinned to")

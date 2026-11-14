@@ -160,7 +160,7 @@ async def test_each_candidate_runs_on_its_own_providers_subscription_and_the_run
     monkeypatch.setattr(_Claude, "definition_path", lambda self, agent: definition)
     for provider in (_Codex(), _Claude()):
         install_provider(monkeypatch, provider)
-    monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None: (
+    monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None, among=None: (
         reg.LaunchCandidate(provider="claude", model="fixture-model", rank=0),))
     codex, claude = Subscription.create(uuid4(), "codex"), Subscription.create(uuid4(), "claude")
     choice = lambda held, **limits: SubscriptionChoice(provider=held.provider, subscription_id=held.id, limits=SubscriptionLimits(**limits))  # noqa: E731
@@ -218,7 +218,7 @@ async def test_a_held_login_never_hides_his_next_subscription(tmp_path: Path, mo
         rejected = json.dumps({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "rateLimitType": "seven_day", "resetsAt": int(time.time()) + 7200}})
         provider.script = f"import os,sys\nif os.environ.get('CLAUDE_CONFIG_DIR') == {str(logins['first'].folder)!r}:\n    print({rejected!r}, flush=True); sys.exit(1)\n" + _Claude.script
     install_provider(monkeypatch, provider)
-    monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None: (
+    monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None, among=None: (
         reg.LaunchCandidate(provider="claude", model="fixture-model", rank=0), reg.LaunchCandidate(provider="claude", model="lower-model", rank=1)))
     limits = {"first": SubscriptionLimits(), "second": SubscriptionLimits()}
     for name, state in (("first", first), ("second", second)):
@@ -773,7 +773,9 @@ def test_a_key_programs_key_reaches_only_its_own_programs_launches_in_its_runs_o
 
 @pytest.mark.parametrize(("rule", "lent", "reached"), [
     # Owner 2026-11-14 « des agents où on voudra favoriser l'écriture … un Mistral »: a writing rule names Mistral, so a run
-    # pinned to his Claude login (a child of main) runs on his Mistral key; his key, not a folder holding none.
+    # pinned to his Claude login (a child of main) runs on his Mistral key, under the caps the server last named for it;
+    # his key, never a folder holding none, never a key no start from the server named (its caps unknown: threat-modeler
+    # 23d649ac F1).
     ("aa.intelligence and provider ~ mistral", False, {"mistral": ["key"]}),
     ("aa.intelligence and provider = gemini", False, {"gemini": ["gemini"]}),
     # A rule naming no key program reaches none of his keys (visual-critic's `@eyes` once ran on a Gemini key).
@@ -785,38 +787,64 @@ def test_a_key_programs_key_reaches_only_its_own_programs_launches_in_its_runs_o
 def test_a_run_pinned_to_one_login_reaches_his_key_of_the_program_its_rule_names(rule: str, lent: bool, reached: dict) -> None:
     claude = Subscription.create(uuid4(), "claude")
     held = {"key": Subscription.create(uuid4(), "mistral"), "gemini": Subscription.create(uuid4(), "gemini")}
+    caps = SubscriptionLimits(weekly_percent=80)
     for one in held.values():
         one.hold("placeholder-not-a-real-key")
+        one.remember_limits(caps)
     Subscription.create(uuid4(), "mistral")  # a Mistral folder holding no key
+    uncapped = Subscription.create(uuid4(), "mistral")
+    uncapped.hold("placeholder-never-named-by-a-start")  # a key no start named: its caps unknown, never taken
     pinned = RunSubscription(lent=True) if lent else RunSubscription(subscription_id=claude.id, limits=SubscriptionLimits())
     found = run_module._held_keys(pinned, rule)
     assert {name: [option.subscription_id for option in options] for name, options in found.items()} == \
         {name: [held[label].id for label in labels] for name, labels in reached.items()}
+    assert all(option.limits == caps for options in found.values() for option in options)
     # The ranking pool: a key program joins the CLIs only when the rule names it.
     pool = {provider.name for provider in run_module._asked(list(PROVIDERS.values()), rule)}
     assert {name for name in ("mistral", "gemini", "openrouter") if name in pool} == {name for name in ("mistral", "gemini") if f" {name}" in rule}
 
 
+def test_a_child_of_a_run_on_a_side_key_runs_on_the_login_its_parent_was_pinned_to() -> None:
+    """threat-modeler 23d649ac F2: the key a writing run took beside its Claude login stays that run's; its children inherit
+    the Claude login (`AgentRun.lends`), and the key's folder its environment names is no refusal."""
+    claude, mistral = Subscription.create(uuid4(), "claude"), Subscription.create(uuid4(), "mistral")
+    login = RunSubscription(subscription_id=claude.id, limits=SubscriptionLimits())
+    key = RunSubscription(subscription_id=mistral.id, limits=SubscriptionLimits())
+    environment = key.bound({}, "mistral")  # what the writing run's own process carries
+    child = RunSubscription.resolve(None, parent=login, child=True, environment=environment, parent_own=key)
+    assert child is not None and child.subscription_id == claude.id
+    with pytest.raises(SubscriptionRefused):  # without its parent's own key named, that folder is another subscription's
+        RunSubscription.resolve(None, parent=login, child=True, environment=environment)
+
+
 def test_a_key_programs_launch_names_only_models_its_vendor_lists_for_his_keys(monkeypatch: pytest.MonkeyPatch) -> None:
-    """2026-11-14: Mistral refused the catalog's `mistral-large-3` (« Invalid model »). The vendor's list for each held key
-    is kept in its folder; the ids of all his keys of a program are what it may run; no list known filters nothing; a
-    vendor that does not answer keeps the last list."""
+    """2026-11-14: Mistral refused the catalog's `mistral-large-3` (« Invalid model »). Each held key's vendor list is kept
+    in its folder, tied to that key; a run asks only the keys it may use (none for a lent run, F7); a vendor down keeps the
+    last list and is not asked again before `VENDOR_RETRY_SECONDS` (F6); a broken file is asked again (F5); a replaced key
+    is asked again (F8)."""
     import httpx
-    first, second, bare = (Subscription.create(uuid4(), "mistral") for _ in range(3))
+    first, second = (Subscription.create(uuid4(), "mistral") for _ in range(2))
     first.hold("placeholder-not-a-real-key")
     second.hold("placeholder-not-a-real-key-2")
     asked: list[str] = []
-    def answer(url, headers, timeout):
-        asked.append(url)
+    def answer(url, headers, timeout, **_options):
+        asked.append(headers["Authorization"])
         ids = ["mistral-small-latest"] if headers["Authorization"].endswith("key") else ["mistral-medium-latest"]
         return httpx.Response(200, json={"data": [{"id": one} for one in ids]}, request=httpx.Request("GET", url))
     monkeypatch.setattr(httpx, "get", answer)
-    for one in (first, second):
-        (one.folder / Subscription.VENDOR_MODELS).unlink(missing_ok=True)
-    assert Subscription.listed("mistral") == {"mistral-small-latest", "mistral-medium-latest"}
-    assert all(url.endswith("/models") for url in asked) and len(asked) == 2 and bare.vendor_models() is None
-    def down(url, headers, timeout):
+    assert Subscription.listed("mistral", among=()) is None and asked == []  # a lent run: no key of the owner asked
+    assert Subscription.listed("mistral", among=(first.id,)) == {"mistral-small-latest"}
+    assert Subscription.listed("mistral") == {"mistral-small-latest", "mistral-medium-latest"} and len(asked) == 2  # first's kept
+    def down(url, headers, timeout, **_options):
+        asked.append("down")
         raise httpx.ConnectError("down")
     monkeypatch.setattr(httpx, "get", down)
-    monkeypatch.setattr(Subscription, "VENDOR_MODELS_SECONDS", 0.0)  # stale: asked again, the vendor is down, the last list kept
+    monkeypatch.setattr(Subscription, "VENDOR_MODELS_SECONDS", 0.0)
+    assert first.vendor_models() == {"mistral-small-latest"} and first.vendor_models() == {"mistral-small-latest"}
+    assert asked.count("down") == 1  # the failed ask waits `VENDOR_RETRY_SECONDS` before the next
+    monkeypatch.setattr(httpx, "get", answer)
+    (first.folder / Subscription.VENDOR_MODELS).write_text("{broken")
     assert first.vendor_models() == {"mistral-small-latest"}
+    first.hold("placeholder-replaced-key-2")  # another key in the same folder: its own list
+    monkeypatch.setattr(Subscription, "VENDOR_MODELS_SECONDS", 3600.0)
+    assert first.vendor_models() == {"mistral-medium-latest"}

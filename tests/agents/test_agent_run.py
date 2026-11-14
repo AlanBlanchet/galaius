@@ -584,7 +584,7 @@ async def test_a_model_under_a_quota_note_runs_last_and_a_model_refused_for_the_
     login for `UNSUPPORTED_RECHECK` — not a quota hour — so the next launch passes it over unspawned."""
     quota.forget()
     quota.record_refusal("fake", "fixture-model")
-    monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None: (
+    monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None, among=None: (
         reg.LaunchCandidate(provider="fake", model="fixture-model", rank=0),
         reg.LaunchCandidate(provider="unsupported", model="fixture-model", rank=1),
     ))
@@ -604,7 +604,7 @@ async def test_a_model_under_a_quota_note_runs_last_and_a_model_refused_for_the_
     assert asked_again is not None and quota.UNSUPPORTED_RECHECK - 60 < asked_again - time.time() <= quota.UNSUPPORTED_RECHECK
     assert quota.unsupported_until("unsupported", "fixture-model", login="another login") is None
     # The memory is never why nothing runs: with no other candidate, the refused model is asked again.
-    monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None: (
+    monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None, among=None: (
         reg.LaunchCandidate(provider="unsupported", model="fixture-model", rank=0),))
     with pytest.raises(run_module.ModelUnavailable, match="passed over for the next ranked model"):
         await run_agent(None, "do a thing", agent="tester", cwd=str(tmp_path), quota_window=0.5)

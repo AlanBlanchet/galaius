@@ -309,7 +309,7 @@ async def test_common_launcher_uses_one_catalog_for_prompt_and_policy(catalog_ho
     # The ranked list is stubbed at its entry point for the same reason the resolver is: the
     # fixture role weights `gui.screenspot`, which no catalog row scores, so a real ranking finds
     # nothing — and a real launch is not what these tests measure.
-    monkeypatch.setattr("galaius.agents.run.rank_candidates", lambda rule, env, *, providers, weights="", role=None: (
+    monkeypatch.setattr("galaius.agents.run.rank_candidates", lambda rule, env, *, providers, weights="", role=None, among=None: (
         reg.LaunchCandidate(provider=providers[0].name, model=rule, rank=0),))
     for version in (1, 2):
         catalog = AgentCatalog.refresh(connection, transport=catalog_transport(snapshot(version, unrestricted=provider_type is CodexProvider)))
@@ -887,7 +887,7 @@ async def test_a_child_delegates_through_the_capability_its_catalog_declares(adv
     monkeypatch.setattr(ClaudeCodeProvider, "command", lambda self, task, **kwargs: [sys.executable, "-c", "pass"])
     monkeypatch.setattr(ClaudeCodeProvider, "starts_ahead", False)   # its task on the command line, where `command` reads it
     monkeypatch.setattr("galaius.agents.run.resolve_model", lambda rule, env, **kwargs: ({}, "fixture-model"))
-    monkeypatch.setattr("galaius.agents.run.rank_candidates", lambda rule, env, *, providers, weights="", role=None: (
+    monkeypatch.setattr("galaius.agents.run.rank_candidates", lambda rule, env, *, providers, weights="", role=None, among=None: (
         reg.LaunchCandidate(provider=providers[0].name, model=rule, rank=0),))
     handle = await run_agent(ClaudeCodeProvider(), "Judge the pixels", delegate="ask_worker",
                              parent_run_id=parent_id, cwd=str(catalog_home), mesh=False)
@@ -921,7 +921,7 @@ async def test_local_delegation_and_resume_run_exact_parent_pin(advanced_catalog
     # The ranked list is stubbed at its entry point for the same reason the resolver is: the
     # fixture role weights `gui.screenspot`, which no catalog row scores, so a real ranking finds
     # nothing — and a real launch is not what these tests measure.
-    monkeypatch.setattr("galaius.agents.run.rank_candidates", lambda rule, env, *, providers, weights="", role=None: (
+    monkeypatch.setattr("galaius.agents.run.rank_candidates", lambda rule, env, *, providers, weights="", role=None, among=None: (
         reg.LaunchCandidate(provider=providers[0].name, model=rule, rank=0),))
     handle = await run_agent(ClaudeCodeProvider(), "Pinned task", agent=None if by_capability else "fixture-worker",
         delegate="ask_worker" if by_capability else None, parent_run_id=parent.run_id, cwd=str(catalog_home), mesh=False)
