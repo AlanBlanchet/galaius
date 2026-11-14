@@ -84,7 +84,10 @@ def test_off_is_read_from_the_connections_lock_never_from_a_clock(tmp_path: Path
     finally:
         holder.kill()
         holder.wait()
-    assert not files.alive(), "a killed connection is off at the next look"
+    deadline = time.monotonic() + 3  # Windows frees a dead process's lock a moment after it ended
+    while files.alive() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not files.alive(), "a killed connection is off within a few looks"
 
 
 @pytest.mark.parametrize(("failures", "restart_age", "low", "high"), [

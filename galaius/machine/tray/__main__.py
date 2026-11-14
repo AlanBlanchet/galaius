@@ -2,4 +2,5 @@
 
 from galaius.machine.tray.app import TrayApp
 
-raise SystemExit(TrayApp.main())
+if __name__ == "__main__":
+    raise SystemExit(TrayApp.main())

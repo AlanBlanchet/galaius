@@ -21,11 +21,17 @@ from galaius.machine.tray.launch import TrayLauncher
 from galaius.machine.tray.view import TrayAction, TrayBackend, TrayView, TrayWords
 
 if sys.platform == "win32":
-    from galaius.machine.tray.windows import WindowsTray as PlatformTray
+    from galaius.machine.tray import windows
+
+    PlatformTray = windows.WindowsTray
 elif sys.platform == "darwin":
-    from galaius.machine.tray.macos import MacTray as PlatformTray
+    from galaius.machine.tray import macos
+
+    PlatformTray = macos.MacTray
 else:
-    from galaius.machine.tray.linux import StatusNotifierTray as PlatformTray
+    from galaius.machine.tray import linux
+
+    PlatformTray = linux.StatusNotifierTray
 
 logger = logging.getLogger(__name__)
 

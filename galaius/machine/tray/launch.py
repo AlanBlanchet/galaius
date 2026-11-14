@@ -9,6 +9,7 @@ import sys
 import time
 from pathlib import Path
 from typing import ClassVar, Literal
+from uuid import uuid4
 
 from galaius.host.file_lock import FILE_LOCK
 from galaius.host.private_files import PRIVATE_FILES
@@ -100,14 +101,15 @@ class TrayLauncher:
         breakaway on Windows where its job allows it; a session of its own elsewhere)."""
         command = cls.command()
         if sys.platform == "win32":
-            flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+            # pythonw: no console to hide; its own process group, out of its starter's job where that job allows it.
+            streams = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "close_fds": True}
             try:
-                subprocess.Popen(command, creationflags=flags | subprocess.CREATE_BREAKAWAY_FROM_JOB, close_fds=True)
+                subprocess.Popen(command, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_BREAKAWAY_FROM_JOB, **streams)
             except OSError:  # a job that does not allow it: the icon then ends with the task, which starts it again
-                subprocess.Popen(command, creationflags=flags, close_fds=True)
+                subprocess.Popen(command, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP, **streams)
             return
         if sys.platform == "linux" and shutil.which("systemd-run") is not None:
-            started = subprocess.run(["systemd-run", "--user", "--collect", "--quiet", f"--unit=galaius-tray-{os.getpid()}-{time.monotonic_ns()}", "--", *command],
+            started = subprocess.run(["systemd-run", "--user", "--collect", "--quiet", f"--unit=galaius-tray-{uuid4().hex[:12]}", "--", *command],
                                      capture_output=True, text=True, timeout=30)
             if started.returncode == 0:
                 return

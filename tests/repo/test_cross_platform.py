@@ -112,6 +112,7 @@ BYPASS_ALLOWED = {
     ("upgrade/handoff.py", "os.execv"): "POSIX only: Windows hands over through a child (`continue_in`, `replace`)",
     ("machine/sign_in_browser.py", "os.startfile"): "opens the person's browser, a windowed program, no console",
     ("diagnostics/feedback.py", "os.startfile"): "opens the person's browser, a windowed program, no console",
+    ("machine/tray/windows.py", "os.startfile"): "opens the person's browser, a windowed program, no console",
 }
 #: Spawn flags that give a child a console of its own (`CREATE_NEW_CONSOLE`) or none to share with what IT starts
 #: (`DETACHED_PROCESS`: each console program it runs then opens a window): `hide_child_consoles` keeps either as asked.
