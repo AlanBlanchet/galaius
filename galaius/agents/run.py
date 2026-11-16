@@ -58,7 +58,7 @@ from galaius.agents.limits.warm import WarmStart
 from galaius.agents.catalog.server_ranking import ServerRanking, ServerRankingUnavailable
 from galaius.catalog.criteria import Criteria, CriteriaError, Valued, Variables
 from galaius.catalog.models import live_scores
-from galaius.models.registry import Model, TokenMix
+from galaius.models.registry import Model
 from galaius.models.capability import ModelCapability
 from galaius.prompts.projection import coordinator_instructions
 from galaius.runtime import config
@@ -179,7 +179,8 @@ def rank(
     :func:`resolve_model` does. The criterion itself is never relaxed: an empty list raises,
     naming the pools that were searched.
 
-    A criterion's list is ordered by the policy's `ValueRule` — score against price at `role`'s measured token mix —
+    A criterion's list is ordered by the policy's `ValueRule` — score against price at the one `TokenMix()` the server's
+    agent page prices at too —
     over that union pool: the best value runs first and every other model stays behind it as a fallback, none left
     out by name or by switch (owner 2026-11-16 « no hardcoding / deactivating models »). A plain model id is the
     caller's own choice, never second-guessed.
@@ -187,9 +188,11 @@ def rank(
     """
     policy = policy if policy is not None else load_policy()
     providers = _asked(providers, policy.rule(model) if model.startswith("@") else model)
-    candidates, valued = _ranked_candidates(model, env, providers=providers, weights=weights, policy=policy, among=among,
-                                            mix=reg.token_mix(role))
-    return Ranking(candidates=candidates, valued=valued)
+    candidates, valued = _ranked_candidates(model, env, providers=providers, weights=weights, policy=policy, among=among)
+    # The numbers in the order a launch walks them: a model no CLI here runs, or a preferred program reorders, is never
+    # shown above the one that runs first (tester 1ba7dda1: Fable printed first while Ministral launched).
+    numbers = {item.model.catalog_id: item for item in valued}
+    return Ranking(candidates=candidates, valued=tuple({c.catalog_id: numbers[c.catalog_id] for c in candidates if c.catalog_id in numbers}.values()))
 
 
 def _keyed(provider: AgentProvider) -> bool:
@@ -238,9 +241,9 @@ def _held_keys(pinned: RunSubscription, rule: str) -> dict[str, list[RunSubscrip
 
 def _ranked_candidates(
     model: str, env: dict[str, str], *, providers: Sequence[AgentProvider], weights: str, policy: Policy,
-    among: Mapping[str, Sequence[UUID]] | None = None, mix: TokenMix = TokenMix(),
+    among: Mapping[str, Sequence[UUID]] | None = None,
 ) -> tuple[tuple[reg.LaunchCandidate, ...], tuple[Valued, ...]]:
-    """Candidates in the order the policy's `ValueRule` sets over the runnable pool (prices blended by `mix`), and each
+    """Candidates in the order the policy's `ValueRule` sets over the runnable pool (prices at the one `TokenMix()`), and each
     valued model's numbers (none for a plain model id or a server-ranked list). `among`: per key program, the subscriptions a launch may run it on (their vendor lists
     bound its ids); None: every key held here (a ranking no launch follows)."""
     if model.startswith("@"):
@@ -278,7 +281,7 @@ def _ranked_candidates(
     runs = lambda p, row: p.can_run(row, env) and launched(p, row) is not None  # noqa: E731
     pool = lambda m: any(p.can_run(m, env) for p in universe if p.name in allowed)
     ranked, valued = criteria.frontier(runnable=lambda m: any(p.can_run(m, env) for p in universe), weights=weights,
-                                       value=policy.value, mix=mix)
+                                       value=policy.value)
     if (not ranked or not criteria.measured(ranked[0])) and any(term.source_only or term.ranking for term in criteria.terms) and not live_scores():
         # No board here (it is fetched with its reader's own key), so nothing ranks on a measured score: the server ranked this rule on its
         # own and its order is the launch order, its rows named here even when the bundled catalog

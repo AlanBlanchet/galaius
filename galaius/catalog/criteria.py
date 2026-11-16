@@ -378,12 +378,14 @@ class Term:
         return None if var is None else var.read(model)
 
     def holds(self, model: Model) -> bool:
+        if self.ranking:
+            # A bare ranking metric orders, never filters: a model with no number for it ranks after the measured ones
+            # (`Criteria.qualifying`; tester 1ba7dda1: Fable 5.2, Sonnet and Haiku left `aa.coding_agent_index` unseen).
+            return True
         if self.percentile:  # asked directly rather than through `Criteria`, which pre-resolves
             bar = self.resolved()
             return False if bar.percentile else bar.holds(model)
-        # A percentile bar is drawn on what the source measured: a model it never measured is outside it. A bare ranking
-        # metric only needs a number (`qualifying` ranks the source's own measures first): `aa.intelligence and provider ~
-        # mistral` dropped every Mistral model, none being on the live board, so the preference never ran.
+        # A percentile bar is drawn on what the source measured: a model it never measured is outside it.
         if self.source_only:
             var = Variables.by_name(self.field)
             if var is not None and var.measured is not None and not var.measured(model):
@@ -397,8 +399,6 @@ class Term:
             if self.field in {"price.in", "price.out"} and self.op == ">=" and self.value <= 0:
                 return True
             return False
-        if self.ranking:
-            return True
         if not self.op:
             return got > 0
         return _OPS[self.op](got, self.value)
@@ -688,11 +688,12 @@ class Criteria:
                if all(t.holds(m) for t in bars)]
         variables = self._ranking_variables()
         if variables:
-            fit.sort(key=lambda model: (
-                not self.measured(model),
-                *[variable.read(model) * (-1 if variable.higher_is_better else 1) for variable in variables],
-                model.thrift[0], model.thrift[1], model.id,
-            ))
+            def place(model: Model) -> tuple:
+                reads = [variable.read(model) for variable in variables]
+                return (any(read is None for read in reads), not self.measured(model),
+                        *[0.0 if read is None else read * (-1 if variable.higher_is_better else 1) for read, variable in zip(reads, variables)],
+                        model.thrift[0], model.thrift[1], model.id)
+            fit.sort(key=place)
             return fit
         fit.sort(key=lambda m: m.thrift)
         return fit
@@ -762,9 +763,9 @@ class Criteria:
         parsed = _parse_weights(weights)
         if parsed:
             score = self.value_score(weights)
-            weighted = [(scored[0], model) for model in fit if score is not None and (scored := score(model)) is not None]
-            weighted.sort(key=lambda pair: (-pair[0], pair[1].thrift, pair[1].id))
-            fit = [model for _score, model in weighted]
+            # A model with no weighted score ranks after the scored ones, never out of the list.
+            scored = {id(model): points[0] for model in fit if score is not None and (points := score(model)) is not None}
+            fit.sort(key=lambda model: (id(model) not in scored, -scored.get(id(model), 0.0), model.thrift, model.id))
         if value is None:
             return fit, []
         return self.valued(value, fit, weights, mix)

@@ -6,7 +6,6 @@ import logging
 import os
 from typing import TYPE_CHECKING, ClassVar, Literal, Self
 
-from galaius_core import TokenCounts
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from galaius.catalog.published import PublishedTable
@@ -95,8 +94,8 @@ class TokenMix(BaseModel):
     """How a workload's tokens split between fresh input, cache reads, cache writes and output —
     relative weights, so one price per model can be read for that workload.
 
-    Default 3:1 input:output, the usual chat shape; an agent role's MEASURED mix (its runs' token
-    counts) replaces it when there is one — agents read mostly from the prompt cache.
+    Default 3:1 input:output, the usual chat shape: the ONE mix every ranking prices at (the launcher and the server's
+    agent page), so a ranking reads the same wherever it is shown.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -118,13 +117,6 @@ class TokenMix(BaseModel):
         if self.input + self.cache_read + self.cache_write + self.output <= 0:
             raise ValueError("a token mix needs at least one token")
         return self
-
-    @classmethod
-    def of(cls, counts: TokenCounts) -> Self | None:
-        """A workload's measured tokens as its mix; None before its first counted token."""
-        if counts.counted <= 0:
-            return None
-        return cls(input=counts.input or 0, cache_read=counts.cache_read or 0, cache_write=counts.cache_write or 0, output=counts.output or 0)
 
     def __str__(self) -> str:
         names = ("input", "cache read", "cache write", "output")

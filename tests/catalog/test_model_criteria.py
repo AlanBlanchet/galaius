@@ -107,7 +107,7 @@ def test_it_selects_the_cheapest_model_that_clears_the_bar(registry):
 def test_bare_intelligence_ranks_snapshot_scores_after_the_current_board(monkeypatch):
     """A model off the live board keeps its shipped score, ranked after every model on the board: a rule preferring its
     provider (`aa.intelligence and provider ~ mistral`, no Mistral model on the board) still finds it; a model with no
-    score at all never qualifies."""
+    score at all ranks last, never out (owner 2026-11-16 « no hardcoding / deactivating models »)."""
     from galaius.catalog import models as model_catalog
 
     monkeypatch.setattr(model_catalog, "live_scores", lambda: {"current": 40.0, "weak": 10.0})
@@ -120,8 +120,8 @@ def test_bare_intelligence_ranks_snapshot_scores_after_the_current_board(monkeyp
     ):
         criterion = Criteria.parse("aa.intelligence and provider ~ mistral")
         assert Criteria.parse("aa.intelligence").choose(available_only=False).id == "current"
-        assert [model.id for model in criterion.qualifying(available_only=False)] == ["current", "weak", "snapshot", "mistral-large"]
-        assert criterion.clears(Model.by_id("mistral-large")) and not criterion.clears(Model.by_id("unscored"))
+        assert [model.id for model in criterion.qualifying(available_only=False)] == ["current", "weak", "snapshot", "mistral-large", "unscored"]
+        assert criterion.clears(Model.by_id("mistral-large")) and criterion.clears(Model.by_id("unscored"))
 
 
 def test_bare_benchmark_obeys_lower_is_better_direction():
@@ -157,7 +157,7 @@ def test_a_bare_benchmark_ranks_measured_models_after_filters(registry):
         bench._measured.clear()
 
 
-def test_a_bare_benchmark_excludes_unmeasured_and_provider_ineligible_models(registry):
+def test_a_bare_benchmark_ranks_unmeasured_last_and_runs_only_what_a_cli_runs(registry):
     bench = Benchmark.by_id("coding_index")
     assert bench is not None
     models = (
@@ -179,7 +179,7 @@ def test_a_bare_benchmark_excludes_unmeasured_and_provider_ineligible_models(reg
         assert chosen is not None and chosen.id == "allowed-low"
         assert [model.id for model in criterion.qualifying(
             available_only=False, candidates=list(models)
-        )] == ["blocked-high", "allowed-low"]
+        )] == ["blocked-high", "allowed-low", "missing"]
     finally:
         bench._measured.clear()
 

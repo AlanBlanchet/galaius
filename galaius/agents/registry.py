@@ -56,7 +56,6 @@ from galaius.isolation.fence import FenceSpec
 from galaius.host.paths import UserPaths
 from galaius.host.file_lock import LockTimeout, SoleHolder, exclusive
 from galaius.host.file_stamp import FileStamp
-from galaius.models.registry import TokenMix
 from galaius.host.pinned_directory import DescriptorDirectory, PinnedDirectory
 from galaius.host.private_files import PRIVATE_FILES
 from galaius.host.processes import detached_options, end_process_tree, platform_signals, process_ancestry, process_started, process_unit
@@ -3474,94 +3473,6 @@ def _stored_records() -> list[AgentRun]:
     except FileNotFoundError:
         return []
     return [run for run in map(_stat_cached_record, entries) if run is not None]
-
-
-#: How many of a role's newest run records its token mix is read from: its RECENT workload.
-TOKEN_MIX_WINDOW = 300
-
-#: Each record's role and tokens, keyed by run id with the (mtime_ns, size) they were read at —
-#: so a fresh process re-parses only the records written since, never the whole history.
-USAGE_INDEX_FILE = "token-counts.index"
-
-#: (run folder, its mtime_ns, window) -> each role's summed tokens. Every record write replaces a
-#: file in the folder, which moves the folder's mtime: ONE stat says whether anything changed.
-_TOKEN_TOTALS: tuple[tuple[str, int, int], dict[str, TokenCounts]] | None = None
-class TokenIndexEntry(BaseModel):
-    """One run record as the token index read it: its (mtime_ns, size) then, its role and tokens.
-    `settled` is False when it was read inside the racy window: a later process re-reads it, since
-    a rewrite in the same clock tick at the same size would otherwise pass for unchanged."""
-    mtime_ns: int
-    size: int
-    settled: bool
-    agent: str | None = None
-    usage: TokenCounts = Field(default_factory=TokenCounts)
-
-
-class TokenIndex(BaseModel):
-    entries: dict[str, TokenIndexEntry] = Field(default_factory=dict)
-
-
-#: The token index as this process last read or wrote it.
-_TOKEN_INDEX: TokenIndex | None = None
-#: A file timestamp this close to now may be followed by another write in the same clock tick
-#: (file times follow the kernel's coarse clock, a few ms): such a record is re-read and such a
-#: folder state is not cached.
-_RACY_NS = 100_000_000
-
-
-def _token_totals() -> dict[str, TokenCounts]:
-    """Each role's tokens over its `TOKEN_MIX_WINDOW` newest runs on this machine. One stat when
-    nothing changed; else a stat of each record, re-reading only those the token index has not
-    seen at their current size and mtime, and the index rewritten when it moved."""
-    global _TOKEN_TOTALS, _TOKEN_INDEX
-    folder = agents_dir()
-    try:
-        moved = folder.stat().st_mtime_ns
-    except OSError:
-        return {}
-    now = time.time_ns()
-    key = (str(folder), moved, TOKEN_MIX_WINDOW)  # read BEFORE listing: a write during it re-lists next call
-    if _TOKEN_TOTALS is not None and _TOKEN_TOTALS[0] == key:
-        return _TOKEN_TOTALS[1]
-    index_path = folder / USAGE_INDEX_FILE
-    if _TOKEN_INDEX is None:
-        try:
-            _TOKEN_INDEX = TokenIndex.model_validate_json(_read_private(index_path) or b"{}")
-        except ValueError:
-            _TOKEN_INDEX = TokenIndex()  # unreadable or an older shape: rebuilt below
-    known, index = _TOKEN_INDEX.entries, TokenIndex()
-    for path in folder.glob("*.json"):
-        try:
-            stat = path.stat()
-        except OSError:
-            continue  # removed meanwhile
-        entry = known.get(path.stem)
-        racy = stat.st_mtime_ns >= now - _RACY_NS
-        if racy or entry is None or not entry.settled or (entry.mtime_ns, entry.size) != (stat.st_mtime_ns, stat.st_size):
-            run = _read_record(path.stem) if racy else _stat_cached_record(path)
-            entry = TokenIndexEntry(mtime_ns=stat.st_mtime_ns, size=stat.st_size, settled=not racy,
-                                    agent=run.agent if run is not None else None,
-                                    usage=run.usage if run is not None else TokenCounts())
-        index.entries[path.stem] = entry
-    if index.entries != known:
-        with suppress(OSError):
-            _replace_private(index_path, index.model_dump_json().encode())
-    _TOKEN_INDEX = index
-    totals: dict[str, TokenCounts] = {}
-    counted: dict[str, int] = {}
-    for entry in sorted(index.entries.values(), key=lambda entry: entry.mtime_ns, reverse=True):
-        if not entry.agent or counted.get(entry.agent, 0) >= TOKEN_MIX_WINDOW:
-            continue
-        counted[entry.agent] = counted.get(entry.agent, 0) + 1
-        totals[entry.agent] = totals.get(entry.agent, TokenCounts()) + entry.usage
-    _TOKEN_TOTALS = (key, totals) if moved < now - _RACY_NS else None
-    return totals
-
-
-def token_mix(agent: str | None) -> TokenMix:
-    """How `agent`'s recent runs on this machine spent their tokens, summed — the workload its model
-    prices are read at. The default mix for no agent, or one with no counted token."""
-    return TokenMix.of(_token_totals().get(agent or "", TokenCounts())) or TokenMix()
 
 
 def forget(run_id: str) -> bool:

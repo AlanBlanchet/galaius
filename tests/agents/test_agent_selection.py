@@ -191,7 +191,7 @@ def scored():
 
     def score(criterion, rows):
         bench = next(item for item in Benchmark.registry() if item.variable == criterion.split()[0])
-        bench._measured.update({row[1]: row[2] for row in rows})
+        bench._measured.update({row[1]: row[2] for row in rows if row[2] is not None})
         return catalog_of(*(model(id=name, provider=vendor, score=score, input_cost=cost_in, output_cost=cost_out)
                             for vendor, name, score, cost_in, cost_out in rows))
     yield score
@@ -216,9 +216,9 @@ def test_the_cost_relation_orders_and_never_removes(team, scored, criterion, row
         assert candidates == tuple(c for c in ranking.candidates if c.provider == name)
 
 
-def test_the_policy_rate_and_the_roles_measured_mix_decide(team, scored, monkeypatch):
-    """The points per doubling come from the policy file; the price is read at the role's own token mix, from its
-    recorded runs — an output-heavy role pays the output rate. Each valued row says its numbers."""
+def test_the_policy_rate_decides_and_each_row_says_its_numbers(team, scored, monkeypatch):
+    """The points per doubling come from the policy file; prices are read at the one 3:1 mix the server's agent page
+    uses too, so both show the same order. Each valued row says its numbers, in launch order."""
     alpha, beta = team
     with scored("aa.coding_index", [("vendor-a", "edge", 60.5, 10, 50), ("vendor-a", "near", 59, 2, 10)]):
         use_policy(monkeypatch, value=ValueRule(per_doubling=0))
@@ -227,62 +227,16 @@ def test_the_policy_rate_and_the_roles_measured_mix_decide(team, scored, monkeyp
         valued = rank("aa.coding_index", {}, providers=[alpha, beta]).valued
     assert [str(item) for item in valued] == ["near: score 59, $4.00 per M tokens, value 59.0",
                                               "edge: score 60.5, $20.00 per M tokens, value 52.4"]
-    run = register_run("writer", agent="tester")
-    reg.save_run(run.model_copy(update={"usage": TokenCounts(input=100, output=900)}))
-    assert reg.token_mix("tester").shares == (0.1, 0.0, 0.0, 0.9)
-    with scored("aa.coding_index", [("vendor-a", "cheap-in", 41, 1, 30), ("vendor-a", "cheap-out", 40, 30, 1)]):
-        chat = rank("aa.coding_index", {}, providers=[alpha, beta])
-        writer = rank("aa.coding_index", {}, providers=[alpha, beta], role="tester")
-    # 3:1 input:output: "cheap-in" $8.25 vs "cheap-out" $22.75: one point more for less money
-    assert [c.model for c in chat.candidates] == ["cheap-in", "cheap-out"]
-    # 1:9: "cheap-out" $3.90 vs "cheap-in" $27.10 for one point more — a big price for a small edge
-    assert [c.model for c in writer.candidates] == ["cheap-out", "cheap-in"]
 
 
-def test_every_role_keeps_its_own_mix_however_busy_the_others(team, monkeypatch):
-    """A role whose runs are older than every other role's still prices at ITS mix; each role reads
-    only its own newest `TOKEN_MIX_WINDOW` runs; a new record is seen on the next call."""
-    monkeypatch.setattr(reg, "TOKEN_MIX_WINDOW", 2)
-    def record(agent, when, input_tokens, output_tokens):
-        run = register_run(f"{agent}-{when}", agent=agent)
-        reg.save_run(run.model_copy(update={"usage": TokenCounts(input=input_tokens, output=output_tokens)}))
-        os.utime(reg.agents_dir() / f"{run.run_id}.json", ns=(when * 10**9, when * 10**9))
-    record("tester", 1, 100, 900)
-    for when, (fresh, out) in enumerate([(900, 100), (500, 500), (500, 500)], start=10):
-        record("coder", when, fresh, out)
-    assert reg.token_mix("tester").shares == (0.1, 0.0, 0.0, 0.9)
-    assert reg.token_mix("coder").shares == (0.5, 0.0, 0.0, 0.5)  # the oldest coder run is out
-    assert reg.token_mix("nobody") == reg.TokenMix()
-    record("tester", 20, 900, 100)
-    assert reg.token_mix("tester").shares == (0.5, 0.0, 0.0, 0.5)
-    # A fresh process reads the token index, parsing only a record written since.
-    monkeypatch.setattr(reg, "_TOKEN_TOTALS", None)
-    monkeypatch.setattr(reg, "_TOKEN_INDEX", None)
-    monkeypatch.setattr(reg, "_RECORD_CACHE", {})
-    monkeypatch.setattr(reg, "_RACY_NS", 0)
-    parsed = []
-    real_read = reg._read_record
-    monkeypatch.setattr(reg, "_read_record", lambda run_id: parsed.append(run_id) or real_read(run_id))
-    assert reg.token_mix("coder").shares == (0.5, 0.0, 0.0, 0.5) and parsed == []
-    record("coder", 30, 100, 900)
-    assert reg.token_mix("coder").shares == (0.3, 0.0, 0.0, 0.7) and parsed == ["coder-30"]
-    # Read inside the racy window, a record is saved unsettled: the next process re-reads it at an
-    # unchanged mtime and size (a rewrite in the same clock tick would look identical), then trusts it.
-    def fresh_process():
-        for name in ("_TOKEN_TOTALS", "_TOKEN_INDEX"):
-            monkeypatch.setattr(reg, name, None)
-        monkeypatch.setattr(reg, "_RECORD_CACHE", {})
-        parsed.clear()
-    monkeypatch.setattr(reg, "_RACY_NS", 10**20)
-    fresh_process()
-    record("coder", 40, 100, 900)
-    reg.token_mix("coder")
-    monkeypatch.setattr(reg, "_RACY_NS", 0)
-    fresh_process()
-    reg.token_mix("coder")
-    assert "coder-40" in parsed
-    fresh_process()
-    assert reg.token_mix("coder").shares == (0.1, 0.0, 0.0, 0.9) and parsed == []
+def test_a_model_without_the_ranked_number_ranks_last_never_out(team, scored):
+    """Tester 1ba7dda1: a bare ranking metric and a weighted score dropped every model with no number for them (Fable 5.2,
+    Sonnet, Haiku under `aa.coding_agent_index`). A ranking orders; it never removes."""
+    alpha, beta = team
+    rows = [("vendor-a", "measured", 60, 4, 20), ("vendor-a", "unmeasured", None, 1, 5)]
+    with scored("aa.coding_index", rows):
+        assert [c.model for c in rank("aa.coding_index", {}, providers=[alpha, beta]).candidates] == ["measured", "unmeasured"]
+        assert [c.model for c in rank("price.in >= 0", {}, providers=[alpha, beta], weights="aa.coding_index=1").candidates] == ["measured", "unmeasured"]
 
 
 def test_nothing_runnable_names_every_pool(team):
