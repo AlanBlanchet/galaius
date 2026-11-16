@@ -709,3 +709,21 @@ class TestProviderConstraint:
     def test_prefer_conflicting_with_require_is_refused(self):
         with pytest.raises(CriteriaError):
             Criteria.parse("provider = codex and provider ~ claude")
+
+
+def test_models_without_the_ranked_number_follow_the_general_measure_not_price(registry):
+    """Tester 1ba7dda1 r2: under `aa.coding_agent_index` a 2024 Haiku ranked 4th and Fable 5.2 20th, unscored models being
+    ordered by price. Among the models lacking the ranked number, `aa.intelligence` orders, price only breaks its ties."""
+    bench = Benchmark.by_id("coding_index")
+    models = [
+        Model(provider="p", id="scored", capabilities=set(), intelligence_score=40.0, input_cost_per_million=5.0),
+        Model(provider="p", id="old-cheap", capabilities=set(), intelligence_score=10.0, input_cost_per_million=0.1),
+        Model(provider="p", id="new-strong", capabilities=set(), intelligence_score=65.0, input_cost_per_million=8.0),
+        Model(provider="p", id="no-number", capabilities=set(), input_cost_per_million=0.01),
+    ]
+    bench._measured.update({"scored": 50.0})
+    try:
+        order = Criteria.parse("aa.coding_index").qualifying(available_only=False, candidates=models)
+        assert [model.id for model in order] == ["scored", "new-strong", "old-cheap", "no-number"]
+    finally:
+        bench._measured.clear()

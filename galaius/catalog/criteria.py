@@ -533,6 +533,10 @@ class ValueRule(BaseModel):
         return [item.model for item in valued] + [model for model in models if id(model) not in ids], valued
 
 
+#: The measure a model without a ranking's own number is placed by, among the others lacking it.
+GENERAL_MEASURE = "aa.intelligence"
+
+
 @dataclass(frozen=True)
 class Criteria:
     """A model requirement, as a sentence somebody can read and change."""
@@ -688,10 +692,17 @@ class Criteria:
                if all(t.holds(m) for t in bars)]
         variables = self._ranking_variables()
         if variables:
+            general = Variables.by_name(GENERAL_MEASURE)
+
             def place(model: Model) -> tuple:
                 reads = [variable.read(model) for variable in variables]
-                return (any(read is None for read in reads), not self.measured(model),
+                missing = any(read is None for read in reads)
+                # A model without the ranked number falls back on the general measure, best first, never on price alone
+                # (tester 1ba7dda1 r2: a 2024 Haiku ranked 4th under `aa.coding_agent_index`, Fable 5.2 20th).
+                fallback = general.read(model) if missing and general is not None else None
+                return (missing, not self.measured(model),
                         *[0.0 if read is None else read * (-1 if variable.higher_is_better else 1) for read, variable in zip(reads, variables)],
+                        fallback is None, -(fallback or 0.0),
                         model.thrift[0], model.thrift[1], model.id)
             fit.sort(key=place)
             return fit
