@@ -1410,6 +1410,10 @@ def agents_models(
         print(f"{row['score']:5.1f}  {row['id']}{also}{stands_for}")
 
 
+#: How many models' score, price and value `agents policy` prints under each rule (`Ranking.valued`; --json-out: all).
+VALUED_SHOWN = 5
+
+
 def _switched_off(ranking: Ranking, policy: Policy) -> list[str]:
     """Providers of this ranking that policy switches off. When it names every candidate's, the
     role cannot start at all — said where the rule is shown, never first at the refused spawn."""
@@ -1448,7 +1452,8 @@ def agents_policy(json_out: bool = False) -> None:
                 "resolves": resolves, "why": why,
                 "ranked": [candidate.model_dump() for candidate in ranking.candidates[:3]],
                 "switched_off": _switched_off(ranking, policy),
-                "dropped": [str(item) for item in ranking.dropped],
+                "valued": [{"model": item.model.id, "score": item.score, "cost": round(item.cost, 4), "value": round(item.value, 2)}
+                           for item in ranking.valued],
                 "providers": _per_vendor(ranking, policy) if is_criterion(rule) else {},
             })
         print(json.dumps({
@@ -1488,11 +1493,10 @@ def agents_policy(json_out: bool = False) -> None:
                     note = "  ⇒ NOTHING (" + str(err).splitlines()[0].rstrip(":") + ")"
 
             print(f"  {agent:<16} {shown}{note}")
-            ahead = ranking.drops_ahead_of(3)
-            for item in ahead:
-                print(f"  {'':<16}   dropped {item}")
-            if len(ranking.dropped) > len(ahead):
-                print(f"  {'':<16}   + {len(ranking.dropped) - len(ahead)} more dropped further down the list (--json-out lists them)")
+            for item in ranking.valued[:VALUED_SHOWN]:
+                print(f"  {'':<16}   {item}")
+            if len(ranking.valued) > VALUED_SHOWN:
+                print(f"  {'':<16}   + {len(ranking.valued) - VALUED_SHOWN} more further down the list (--json-out lists them)")
     if policy.toolsets:
         print("\ntoolsets")
         for name in policy.toolsets:

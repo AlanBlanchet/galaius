@@ -469,97 +469,68 @@ def _validate_provider_constraints(constraints: list[ProviderConstraint]) -> Non
         raise CriteriaError(f"provider {name!r} is both PREFER and EXCLUDE — contradiction")
 
 
-#: Why a model left a ranking: another one is at least as good for no more money, or nearly as
-#: good for a fraction of the price.
-DropRule = Literal["dominated", "small_edge"]
-
-
-class Dropped(BaseModel):
-    """A model a ranking left out, and the model that made it pointless — with the numbers."""
+class Valued(BaseModel):
+    """One model's place under the cost relation (`ValueRule`), with the numbers that set it: its score on the
+    ranked measure, its price for the workload, and the relation of the two."""
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     model: Model
-    by: Model
-    rule: DropRule
-    score: tuple[float, ...]
-    by_score: tuple[float, ...]
+    #: Points out of 100 on the ranked measure (a weighted score's single number, several measures summed).
+    score: float
+    #: $ per million tokens, catalog rates blended by the workload's `TokenMix`.
     cost: float
-    by_cost: float
-    #: The rule's own bounds, so the sentence states the bar that applied.
-    ceiling: float
-    edge: float
+    #: `score` less what its price costs in points against the pool's cheapest model (`ValueRule.value`).
+    value: float
 
     def __str__(self) -> str:
-        score = "/".join(f"{value:g}" for value in self.score)
-        by_score = "/".join(f"{value:g}" for value in self.by_score)
-        if self.rule == "dominated":
-            return (f"{self.model.id}: dominated by {self.by.id} — score {by_score} ≥ {score}, "
-                    f"price ${self.by_cost:.2f} ≤ ${self.cost:.2f} per M tokens")
-        return (f"{self.model.id}: {self.by.id} scores {by_score}, less than {self.edge:g} points "
-                f"below {score}, for ${self.by_cost:.2f} vs ${self.cost:.2f} per M tokens "
-                f"(over {self.ceiling:g}x)")
+        return f"{self.model.id}: score {self.score:g}, ${self.cost:.2f} per M tokens, value {self.value:.1f}"
 
 
 class ValueRule(BaseModel):
-    """Intelligence against cost: which models a ranking may never run, not even as a fallback.
+    """Intelligence against cost, as ONE relation every ranking applies — never a list of models left out.
 
-    Two drops, both relative to another model in the SAME pool — so a model leaves the list
-    because something runnable there is a better deal, never because of its name:
+    value = score − per_doubling × log2((price + price_floor) / (cheapest price + price_floor))
 
-    - dominated: another model scores at least as high on every measure AND costs no more
-      (strictly better on one side; an exact twin is kept as a second route);
-    - small edge: another model costs ``ceiling`` times less and scores less than ``edge`` points
-      below — a big price for a small gain. Points are out of 100 of the measure's range, so this
-      drop needs a measure with a known scale.
+    A model must buy `per_doubling` points of the ranked measure for each doubling of its price over the
+    cheapest model in the same pool; the highest value runs first. Owner 2026-10-05: « We need some kind of
+    formula … Fable should not even come out in the formula, because intelligence vs costs surpasses anyways
+    this model »; 2026-11-16: « find the correct relations to make efficient models be chosen, so no hardcoding /
+    deactivating models ». A model leaves the top because the relation ranks it lower, never by its name; every
+    model stays in the list as a fallback.
 
-    Price is one number per model: catalog rates blended by the workload's `TokenMix`. A model
-    with no known price is never dropped and never drops another — an unknown price proves
-    nothing. Models are walked cheapest first and only KEPT models drop others, so the outcome
-    does not depend on catalog order.
+    Default 3.5 points per doubling ≈ the earlier bound of 2 points per 1.5× the price (2 / log2 1.5 = 3.42).
+    Price is the catalog's API list price blended by the role's measured `TokenMix`: it also stands for a
+    subscription's usage share, which the vendors meter in proportion to the same token prices (an assumption,
+    no vendor publishes the meter). A model with no known price or score keeps its place after the valued ones.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True, allow_inf_nan=False)
 
-    ceiling: float = Field(default=1.5, ge=1)
-    edge: float = Field(default=2.0, ge=0)
+    per_doubling: float = Field(default=3.5, ge=0)
+    #: $ per M tokens added to every price, so a model served on the machine (price 0) has a finite relation.
+    price_floor: float = Field(default=0.01, gt=0)
 
-    def prune(
-        self, models: Sequence[Model], score: Callable[[Model], tuple[float, ...] | None],
-        mix: TokenMix, *, small_edge: bool = True,
-    ) -> tuple[list[Model], list[Dropped]]:
-        """``models`` minus every dropped one, order kept, and why each left."""
-        valued = [(index, model, score(model), model.blended_cost(mix)) for index, model in enumerate(models)]
-        walk = sorted(
-            ((index, model, value, cost) for index, model, value, cost in valued if value is not None and cost is not None),
-            key=lambda item: (item[3], tuple(-v for v in item[2]), item[0]),
+    def value(self, score: float, cost: float, cheapest: float) -> float:
+        return score - self.per_doubling * math.log2((cost + self.price_floor) / (cheapest + self.price_floor))
+
+    def order(
+        self, models: Sequence[Model], score: Callable[[Model], tuple[float, ...] | None], mix: TokenMix,
+    ) -> tuple[list[Model], list[Valued]]:
+        """``models`` ordered by value, highest first (ties keep their order); models with no score or price follow, in
+        their order. Nothing is dropped. The second list: each valued model's numbers, in the new order."""
+        priced = [(model, scored, cost) for model in models
+                  if (scored := score(model)) is not None and (cost := model.blended_cost(mix)) is not None]
+        if not priced:
+            return list(models), []
+        cheapest = min(cost for _model, _scored, cost in priced)
+        valued = sorted(
+            (Valued(model=model, score=sum(scored), cost=cost, value=self.value(sum(scored), cost, cheapest))
+             for model, scored, cost in priced),
+            key=lambda item: -item.value,
         )
-        keepers: list[tuple[Model, tuple[float, ...], float]] = []
-        dropped: dict[int, Dropped] = {}
-        for index, model, value, cost in walk:
-            for by, by_value, by_cost in keepers:
-                rule = self._beats(by_value, by_cost, value, cost, small_edge)
-                if rule is not None:
-                    dropped[index] = Dropped(
-                        model=model, by=by, rule=rule, score=value, by_score=by_value,
-                        cost=cost, by_cost=by_cost, ceiling=self.ceiling, edge=self.edge,
-                    )
-                    break
-            else:
-                keepers.append((model, value, cost))
-        return ([model for index, model in enumerate(models) if index not in dropped],
-                [dropped[index] for index in sorted(dropped)])
-
-    def _beats(
-        self, by_value: tuple[float, ...], by_cost: float, value: tuple[float, ...], cost: float,
-        small_edge: bool,
-    ) -> DropRule | None:
-        pairs = list(zip(by_value, value, strict=True))
-        if by_cost <= cost and all(b >= v for b, v in pairs) and (by_cost < cost or by_value != value):
-            return "dominated"
-        if small_edge and by_cost * self.ceiling < cost and all(v - b < self.edge for b, v in pairs):
-            return "small_edge"
-        return None
+        ids = {id(item.model) for item in valued}
+        return [item.model for item in valued] + [model for model in models if id(model) not in ids], valued
 
 
 @dataclass(frozen=True)
@@ -735,24 +706,12 @@ class Criteria:
         variables = [Variables.by_name(term.field) for term in self.terms if term.ranking]
         return [v for v in variables if v is not None] if all(v is not None for v in variables) else []
 
-    def _value_variables(self) -> list[Variable]:
-        """The measures a model's worth is read on: the bare metrics it ranks on, else the measured
-        ones its bars compare (`aa.intelligence >= 90%` ranks cheapest-first, yet a model clearing it
-        that is weaker AND pricier than another is still never worth running). Prices are the
-        other axis, never a score."""
-        ranking = self._ranking_variables()
-        if ranking:
-            return ranking
-        named = dict.fromkeys(term.field for term in self.terms if term.op)
-        variables = [Variables.by_name(name) for name in named]
-        return [v for v in variables if v is not None and v.rankable]
-
-    def value_score(self, weights: str = "") -> Callable[[Model], tuple[float, ...] | None]:
-        """What "scores at least as high" means for this criterion, per model, in POINTS OUT OF 100
-        of each measure's declared range: its weighted score when weights are given, else every
-        bare metric it ranks on, higher always better. A measure with no declared range stays on
-        its own scale (only `edge_known` tells the two apart). None for a model without that
-        number, and for every model when the criterion names no measure at all."""
+    def value_score(self, weights: str = "") -> Callable[[Model], tuple[float, ...] | None] | None:
+        """What the cost relation (`ValueRule`) reads as a model's score, in POINTS OUT OF 100 of each measure's
+        declared range: its weighted score when weights are given, else every bare metric it ranks on. None when the
+        criterion ranks on no measure (a bar-only rule runs cheapest first: price already orders it) or on one with no
+        declared range (a point there has no size to weigh a price against). The callable answers None for a model
+        without that number."""
         parsed = _parse_weights(weights)
         if parsed:
             pairs = [(Variables.by_name(name), weight) for name, weight in parsed.items()]
@@ -763,34 +722,29 @@ class Criteria:
                     return None
                 return (100 * sum(score * weight for score, weight in scores if score is not None),)
             return weighted
-        variables = self._value_variables()
+        variables = self._ranking_variables()
+        if not variables or any(variable.score_range is None for variable in variables):
+            return None
 
         def measured(model: Model) -> tuple[float, ...] | None:
-            if not variables:
-                return None
             points: list[float] = []
             for variable in variables:
                 value = variable.read(model)
                 if value is None:
                     return None
-                if variable.score_range is not None:
-                    worst, best = variable.score_range
-                    value = 100 * (value - worst) / (best - worst)
-                points.append(value if variable.higher_is_better else -value)
+                worst, best = variable.score_range
+                value = 100 * (value - worst) / (best - worst)
+                points.append(value if variable.higher_is_better else 100 - value)
             return tuple(points)
         return measured
 
-    def edge_known(self, weights: str = "") -> bool:
-        """Whether a POINT of this criterion's score means something: weighted scores and measures
-        with a declared range are out of 100; a measure without one has no size for "a small edge"."""
-        return bool(_parse_weights(weights)) or all(
-            variable.score_range is not None for variable in self._value_variables())
-
-    def prune(
+    def valued(
         self, value: ValueRule, models: Sequence[Model], weights: str = "", mix: TokenMix = TokenMix(),
-    ) -> tuple[list[Model], list[Dropped]]:
-        """`value` applied with this criterion's score, prices blended by `mix`."""
-        return value.prune(models, self.value_score(weights), mix, small_edge=self.edge_known(weights))
+    ) -> tuple[list[Model], list[Valued]]:
+        """`models` ordered by `value` over this criterion's score, prices blended by `mix`; unchanged (and no numbers)
+        when the criterion ranks on no measure the relation can read (`value_score`)."""
+        score = self.value_score(weights)
+        return (list(models), []) if score is None else value.order(models, score, mix)
 
     def frontier(
         self,
@@ -800,20 +754,20 @@ class Criteria:
         candidates: list[Model] | None = None,
         value: ValueRule | None = None,
         mix: TokenMix = TokenMix(),
-    ) -> tuple[list[Model], list[Dropped]]:
-        """The ranking, and the models `value` left out of it — none unless a `ValueRule` is given:
-        the rule is a POLICY choice, read once by its owner (`galaius.agents.run.rank`) and handed
-        here, never a default some callers apply and others do not."""
+    ) -> tuple[list[Model], list[Valued]]:
+        """The ranking, and each model's numbers under `value` — none unless a `ValueRule` is given: the relation is a
+        POLICY choice, read once by its owner (`galaius.agents.run.rank`) and handed here, never a default some
+        callers apply and others do not. No model is ever left out by it."""
         fit = self.qualifying(available_only, runnable, candidates)
         parsed = _parse_weights(weights)
         if parsed:
             score = self.value_score(weights)
-            weighted = [(scored[0], model) for model in fit if (scored := score(model)) is not None]
+            weighted = [(scored[0], model) for model in fit if score is not None and (scored := score(model)) is not None]
             weighted.sort(key=lambda pair: (-pair[0], pair[1].thrift, pair[1].id))
             fit = [model for _score, model in weighted]
         if value is None:
             return fit, []
-        return self.prune(value, fit, weights, mix)
+        return self.valued(value, fit, weights, mix)
 
     def ranked(
         self,
@@ -824,8 +778,8 @@ class Criteria:
         value: ValueRule | None = None,
         mix: TokenMix = TokenMix(),
     ) -> list[Model]:
-        """Eligible candidates in the same order used for execution and selection previews,
-        without the models `value` rules out (see `ValueRule`)."""
+        """Eligible candidates in the same order used for execution and selection previews, ordered by `value`
+        when given (see `ValueRule`)."""
         return self.frontier(available_only, runnable, weights, candidates, value, mix)[0]
 
     def choose(

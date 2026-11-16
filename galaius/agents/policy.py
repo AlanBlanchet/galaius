@@ -36,7 +36,6 @@ from galaius.agents.catalog.entries import AgentCatalog
 from galaius.agents.catalog.connection import CatalogConnectionError
 from galaius.agents.tool_gateway import AgentToolList, ToolGateway
 from galaius.agents.catalog.vocabulary import TouchScope
-from galaius.agents.model_family import ModelSwitches
 from galaius.host.atomic_file import replace_held_open
 from galaius.host.file_lock import exclusive
 from galaius.config.user import UserConfig
@@ -85,9 +84,6 @@ class Policy:
     agent_tools: dict[str, list[str]] = field(default_factory=dict)
     paradigms: dict[str, list[ParadigmAssignment]] = field(default_factory=dict)
     providers: dict[str, bool] = field(default_factory=dict)
-    #: Models switched off on this machine (`"claude/claude-fable-5-1": false`): never launched, not
-    #: even as a fallback, whatever a role's criterion ranks. A local cost choice, like `providers`.
-    models: dict[str, bool] = field(default_factory=dict)
     defaults: dict[str, str] = field(default_factory=dict)
     reasoning: dict[str, str] = field(default_factory=dict)
     #: Optional model-specific effort override. Keys use the standard `provider/model` id; this
@@ -103,10 +99,9 @@ class Policy:
     #: Never a default: a CLI that cannot enforce a role's tool list is refused unless the
     #: operator names this tradeoff here.
     coarse_tool_policy: dict[str, list[str]] = field(default_factory=dict)
-    #: Intelligence against cost (`ValueRule`): `"value": {"ceiling": 1.5, "edge": 2}` — a model
-    #: costing more than `ceiling` times another for less than `edge` points more is never run.
-    #: A machine-local cost choice, like `models`; absent means the defaults. Prices are read at
-    #: each role's own measured token mix, never a mix typed here.
+    #: Intelligence against cost (`ValueRule`): `"value": {"per_doubling": 3.5}` — the points a model must score
+    #: per doubling of its price to rank above a cheaper one; it orders, never removes. A machine-local cost choice;
+    #: absent means the defaults. Prices are read at each role's own measured token mix, never a mix typed here.
     value: ValueRule = field(default_factory=ValueRule)
     catalog: AgentCatalog | None = None
     #: The external tools the server connects each role to, served on this PC by galaius's MCP
@@ -140,7 +135,6 @@ class Policy:
             agent_tools={k: list(v) for k, v in (raw.get("agent_tools") or {}).items()},
             paradigms=_parse_paradigms(raw.get("paradigms") or {}, path),
             providers=dict(raw.get("providers") or {}),
-            models=dict(raw.get("models") or {}),
             defaults=dict(raw.get("defaults") or {}),
             reasoning=dict(raw.get("reasoning") or {}),
             reasoning_models=dict(raw.get("reasoning_models") or {}),
@@ -163,9 +157,6 @@ class Policy:
         if not isinstance(raw, dict) or not isinstance(raw.get("providers", {}), dict):
             raise PolicyError("Local provider switches must be an object")
         policy.providers = dict(raw.get("providers", {}))
-        if not isinstance(raw.get("models", {}), dict):
-            raise PolicyError("Local model switches must be an object")
-        policy.models = dict(raw.get("models", {}))
         if not isinstance(raw.get("defaults", {}), dict):
             raise PolicyError("Local agent defaults must be an object")
         policy.defaults = dict(raw.get("defaults", {}))
@@ -376,17 +367,6 @@ class Policy:
         """
         return bool(self.providers.get(provider, True))
 
-    def model_active(self, provider: str, model: str, catalog_id: str | None = None) -> bool:
-        """Whether this model may run here, read under any of its names (`claude/<id>`, the
-        catalog's `anthropic/<id>`, the bare id): off when an entry switches it or an earlier
-        version of it off (`ModelSwitches`). Unmentioned means ON, like `provider_active`."""
-        return self.switches.off_by(f"{provider}/{model}", model, *((catalog_id,) if catalog_id else ())) is None
-
-    @property
-    def switches(self) -> ModelSwitches:
-        """The `models` switches, read by the one rule the guard and the watchdog read them by."""
-        return ModelSwitches.read(self.models.items())
-
     def accepts_coarse_tool_policy(self, agent: str, provider: str) -> bool:
         """Whether THIS role explicitly accepted running on a provider that can only enforce a
         SANDBOX (not this role's specific allowed/denied tool names) — named once per role, per
@@ -398,11 +378,6 @@ class Policy:
         """Flip a provider on or off and write it back, so the CLI and the panel's toggle are
         reading and writing the same one fact."""
         self.providers = self._write("providers", lambda switches: {**switches, provider: bool(active)}, path)
-
-    def set_model_active(self, model: str, active: bool, path: Path | None = None) -> None:
-        """Switch one model (`claude/<id>`) on or off and write it back: its owner's click on the web (`ModelSwitches.switched`:
-        every spelling of that model follows it). A model he turns back on runs though an earlier version stays off."""
-        self.models = self._write("models", lambda switches: {**switches, **ModelSwitches.read(switches.items()).switched(model, bool(active))}, path)
 
     def _write(self, section: str, change: Callable[[dict[str, Any]], dict[str, Any]], path: Path | None) -> dict[str, Any]:
         """Read-modify-write ONE switch section of the policy file, every other key kept as written; returns the section.
@@ -472,7 +447,7 @@ def _value_rule(raw: dict, path: Path) -> ValueRule:
     try:
         return ValueRule.model_validate(raw.get("value") or {})
     except ValueError as error:
-        raise PolicyError(f"{path}: `value` must look like {{\"ceiling\": 1.5, \"edge\": 2}} ({error})") from error
+        raise PolicyError(f"{path}: `value` must look like {{\"per_doubling\": 3.5}} ({error})") from error
 
 def _parse_paradigms(
     raw: dict[str, list[dict[str, str]]], path: Path,

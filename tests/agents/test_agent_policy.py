@@ -13,7 +13,6 @@ import json
 
 import pytest
 
-from galaius.agents.model_family import ModelSwitches
 from galaius.agents.policy import Policy, PolicyError
 from galaius.agents.providers import PROVIDERS
 from tests.support.agents import use_policy, claude_definitions
@@ -106,72 +105,6 @@ def test_providers_can_be_switched_off_from_galaius(policy_file):
     assert p.provider_active("gemini") is True
 
 
-#: Rows: (switches, names one model is known by, the entry that switches it off or None).
-FAMILY = {
-    "his Fable 5.2 under the launcher's three names": (
-        {"claude/claude-fable-5-1": False, "anthropic/claude-fable-5": False},
-        ("claude/claude-fable-5-2", "claude-fable-5-2", "anthropic/claude-fable-5-2"), "claude/claude-fable-5-1"),
-    "an earlier version stays on": ({"claude/claude-fable-5-1": False}, ("claude-fable-5",), None),
-    "the model named itself, on, wins over its family": (
-        {"claude-fable-5-1": False, "claude/claude-fable-5-2": True}, ("anthropic/claude-fable-5-2",), None),
-    "the model named itself, off": ({"claude/claude-opus-5-5": False}, ("claude-opus-5-5",), "claude/claude-opus-5-5"),
-    "a sibling family stays on": ({"claude-fable-5": False}, ("claude-fable-pro-5-2",), None),
-    "dots, dashes, a release date and a tag read as one version": (
-        {"claude-opus-4.5": False}, ("vertex_ai/claude-opus-4-5@20251101",), "claude-opus-4.5"),
-    "a version in the middle of the name": ({"gemini/gemini-2.5-pro": False}, ("gemini-3-pro",), "gemini/gemini-2.5-pro"),
-    "the same version with another suffix is another family": ({"openai/gpt-5.1": False}, ("gpt-5.2-codex",), None),
-    "a name with no version is itself only": ({"gpt-4o": False}, ("gpt-4o-mini",), None),
-    "nothing switched off": ({}, ("claude-fable-5-2",), None),
-    # Tester 235a5c61 r1: the launcher kept the bare alias and `-latest` (no catalog row), and a qualifier made another family.
-    "the bare alias runs the newest": ({"claude/claude-fable-5-1": False}, ("claude/fable", "fable"), "claude/claude-fable-5-1"),
-    "latest is the newest": ({"claude/claude-fable-5-1": False}, ("claude/claude-fable-latest",), "claude/claude-fable-5-1"),
-    "a preview or a bare latest of a later version": (
-        {"gemini-2.5-pro": False}, ("gemini-3-pro-preview", "gemini-pro-latest"), "gemini-2.5-pro"),
-    "a release candidate": ({"claude-fable-5-1": False}, ("claude-fable-5-2-rc1",), "claude-fable-5-1"),
-    "a Bedrock id, revision and all": ({"claude-fable-5-1": False}, ("us.anthropic.claude-fable-5-2-v1:0",), "claude-fable-5-1"),
-    "words around the version in either order": ({"claude-3-5-sonnet-20241022": False}, ("claude-sonnet-4-20250514",),
-                                                  "claude-3-5-sonnet-20241022"),
-    "turned back on, however it is spelled": (
-        {"claude-fable-5-1": False, "claude/claude-fable-5-2": True}, ("claude-fable-5.2", "claude-fable-5-2-20261101"), None),
-}
-
-
-@pytest.mark.parametrize(("switches", "names", "off_by"), FAMILY.values(), ids=FAMILY.keys())
-def test_a_switched_off_model_and_its_later_versions_never_run(switches, names, off_by):
-    """One rule for the launcher, the shell guard and the watchdog: a model switched off is off, and so are its later
-    versions (owner 2026-10-05 « Fable should not even come out in the formula »; 11-10 Fable 5.2 came out ON for the
-    launcher, OFF for the guard). A switch naming the model itself decides first."""
-    switch = ModelSwitches(switches)
-    assert switch.off_by(*names) == off_by
-    bare = names[-1].rsplit("/", 1)[-1]
-    assert Policy(models=switches).model_active("claude", bare, names[-1]) is (off_by is None)
-    # The guard reads the same rule in a command line, however the id is wrapped: it never lets a switched-off one through.
-    wrapped = (f"claude -p --model us.anthropic.{bare}-v1:0", f"tail {bare}.log") if any(map(str.isdigit, bare)) else ()
-    for command in (*wrapped, f"--model={names[0]}", f"claude -p --model {bare}"):
-        assert off_by is None or switch.named_in(command) is not None, command
-
-
-#: Commands under his switches (Fable 5 and 5.1 off), and whether the guard refuses them (tester 235a5c61 r1 bypasses
-#: and false positives).
-GUARD = {
-    "claude -p --model fable[1m] hi": True,
-    "ANTHROPIC_MODEL=fable claude -p hi": True,
-    "claude -p --model fable-5-2 hi": True,
-    "claude -p --model claude-fable-latest hi": True,
-    """echo '{"model": "fable"}' > settings.json""": True,
-    "codex exec -m fable hi": True,
-    """jq '.model="fable"' settings.json""": True,
-    "claude -p --model opus hi": False,
-    "git commit -m fable": False,
-    "grep -rn fable docs": False,
-}
-
-
-@pytest.mark.parametrize(("command", "refused"), GUARD.items(), ids=GUARD.keys())
-def test_the_guard_reads_a_command_by_the_launchers_rule(command, refused):
-    assert (ModelSwitches({"claude/claude-fable-5-1": False, "claude/claude-fable-5": False}).named_in(command) is not None) is refused
-
-
 def test_acting_default_is_a_machine_local_shared_touch_intent(policy_file):
     raw = json.loads(policy_file.read_text())
     raw["defaults"] = {"model": "aa.intelligence >= 30", "touch": "workspace_write"}
@@ -196,45 +129,18 @@ def test_switching_a_provider_off_and_on_round_trips(policy_file):
     assert Policy.load(policy_file).criterion_for("visual-critic") == "cap.vlm and price.in < 10"
 
 
-#: His switches (2026-10-05), clicks on ranking rows (model, on), and what then runs.
-CLICKS = {
-    "turning a later version back on": ([("claude/claude-fable-5-2", True)], {"claude-fable-5-2": True, "claude-fable-5-1": False}),
-    "turning a switched-off one on, every spelling of it": ([("claude/claude-fable-5-1", True)], {"claude-fable-5-1": True, "claude-fable-5": False}),
-    "a repeated click": ([("claude/claude-fable-5-2", True)] * 2, {"claude-fable-5-2": True}),
-    "on, then off again": ([("claude/claude-fable-5-2", True), ("claude/claude-fable-5-2", False)], {"claude-fable-5-2": False}),
-    "switching another model off": ([("claude/claude-opus-5-5", False)], {"claude-opus-5-5": False, "claude-sonnet-5-5": True}),
-}
-
-
-@pytest.mark.parametrize(("clicks", "runs"), CLICKS.values(), ids=CLICKS.keys())
-def test_a_click_switches_one_model_and_keeps_the_rest_of_the_file(policy_file, clicks, runs):
-    """His one-click switch from the web (owner 2026-11-10 « Fable 5.2 just came out and i don't see it anywhere in here »):
-    one model's entry, idempotent; the launcher reads it at once; every other key stays as he wrote it."""
-    raw = json.loads(policy_file.read_text())
-    raw["models"] = {"claude/claude-fable-5-1": False, "claude/claude-fable-5": False, "anthropic/claude-fable-5-1": False,
-                     "anthropic/claude-fable-5": False, "note": "his own text"}
-    policy_file.write_text(json.dumps(raw))
-    for model, on in clicks:
-        Policy.load(policy_file).set_model_active(model, on, path=policy_file)
-    after = Policy.load(policy_file)
-    assert {model: after.model_active("claude", model) for model in runs} == runs
-    written = json.loads(policy_file.read_text())
-    assert written["models"]["note"] == "his own text" and written["profiles"] == raw["profiles"]
-    assert ModelSwitches.read(written["models"].items()).switched(*clicks[-1]) == {k: v for k, v in written["models"].items() if k != "note"}
-
-
 def test_two_clicks_at_once_both_land_and_no_reader_sees_a_torn_file(policy_file):
-    """Tester 5c3d677e: two rows clicked at once lost one click 295 times in 300, and a reader (the launcher, the shell guard)
-    saw an empty file 241 times — reading no switch, so a switched-off model ran."""
+    """Tester 5c3d677e: two switches clicked at once lost one click 295 times in 300, and a reader (the launcher) saw an
+    empty file 241 times — reading no switch, so a switched-off provider ran."""
     import threading
     seen: list[dict] = []
     for round_ in range(20):
         start = threading.Barrier(3)
-        models = (f"claude/model-a-{round_}", f"claude/model-b-{round_}")
+        models = (f"program-a-{round_}", f"program-b-{round_}")
 
         def click(model: str) -> None:
             start.wait()
-            Policy.load(policy_file).set_model_active(model, False, path=policy_file)
+            Policy.load(policy_file).set_provider_active(model, False, path=policy_file)
 
         def read() -> None:
             start.wait()
@@ -245,7 +151,7 @@ def test_two_clicks_at_once_both_land_and_no_reader_sees_a_torn_file(policy_file
             thread.start()
         for thread in threads:
             thread.join()
-        assert set(models) <= set(json.loads(policy_file.read_text())["models"]), round_
+        assert set(models) <= set(json.loads(policy_file.read_text())["providers"]), round_
     assert all("profiles" in raw for raw in seen)
 
 

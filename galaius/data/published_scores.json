@@ -166,6 +166,408 @@
     "retrieved": "2026-09-25",
     "source_url": "https://artificialanalysis.ai/agents/coding-agents"
   },
+  "intelligence_index": {
+    "entries": [
+      {
+        "effort": "max",
+        "evidence": "primary",
+        "model_id": "claude-fable-5-2",
+        "model_name": "Claude Fable 5.2",
+        "normalized_score": 65.0,
+        "retrieved": "2026-11-16",
+        "score": 65.0,
+        "source_url": "https://artificialanalysis.ai/models/claude-fable-5-2",
+        "status": "eligible"
+      },
+      {
+        "effort": "xhigh",
+        "evidence": "primary",
+        "model_id": "claude-fable-5-2",
+        "model_name": "Claude Fable 5.2",
+        "normalized_score": 62.0,
+        "retrieved": "2026-11-16",
+        "score": 62.0,
+        "source_url": "https://artificialanalysis.ai/models/claude-fable-5-2",
+        "status": "eligible"
+      },
+      {
+        "effort": "high",
+        "evidence": "primary",
+        "model_id": "claude-fable-5-2",
+        "model_name": "Claude Fable 5.2",
+        "normalized_score": 62.0,
+        "retrieved": "2026-11-16",
+        "score": 62.0,
+        "source_url": "https://artificialanalysis.ai/models/claude-fable-5-2",
+        "status": "eligible"
+      },
+      {
+        "effort": "medium",
+        "evidence": "primary",
+        "model_id": "claude-fable-5-2",
+        "model_name": "Claude Fable 5.2",
+        "normalized_score": 56.0,
+        "retrieved": "2026-11-16",
+        "score": 56.0,
+        "source_url": "https://artificialanalysis.ai/models/claude-fable-5-2",
+        "status": "eligible"
+      },
+      {
+        "effort": "low",
+        "evidence": "primary",
+        "model_id": "claude-fable-5-2",
+        "model_name": "Claude Fable 5.2",
+        "normalized_score": 54.0,
+        "retrieved": "2026-11-16",
+        "score": 54.0,
+        "source_url": "https://artificialanalysis.ai/models/claude-fable-5-2",
+        "status": "eligible"
+      },
+      {
+        "effort": "max",
+        "evidence": "primary",
+        "model_id": "claude-opus-5-5",
+        "model_name": "Claude Opus 5.5",
+        "normalized_score": 59.0,
+        "retrieved": "2026-11-16",
+        "score": 59.0,
+        "source_url": "https://artificialanalysis.ai/models/claude-opus-5-5",
+        "status": "eligible"
+      },
+      {
+        "effort": "xhigh",
+        "evidence": "primary",
+        "model_id": "claude-opus-5-5",
+        "model_name": "Claude Opus 5.5",
+        "normalized_score": 57.0,
+        "retrieved": "2026-11-16",
+        "score": 57.0,
+        "source_url": "https://artificialanalysis.ai/models/claude-opus-5-5",
+        "status": "eligible"
+      },
+      {
+        "effort": "high",
+        "evidence": "primary",
+        "model_id": "claude-opus-5-5",
+        "model_name": "Claude Opus 5.5",
+        "normalized_score": 52.0,
+        "retrieved": "2026-11-16",
+        "score": 52.0,
+        "source_url": "https://artificialanalysis.ai/models/claude-opus-5-5",
+        "status": "eligible"
+      },
+      {
+        "effort": "medium",
+        "evidence": "primary",
+        "model_id": "claude-opus-5-5",
+        "model_name": "Claude Opus 5.5",
+        "normalized_score": 48.0,
+        "retrieved": "2026-11-16",
+        "score": 48.0,
+        "source_url": "https://artificialanalysis.ai/models/claude-opus-5-5",
+        "status": "eligible"
+      },
+      {
+        "effort": "low",
+        "evidence": "primary",
+        "model_id": "claude-opus-5-5",
+        "model_name": "Claude Opus 5.5",
+        "normalized_score": 35.0,
+        "retrieved": "2026-11-16",
+        "score": 35.0,
+        "source_url": "https://artificialanalysis.ai/models/claude-opus-5-5",
+        "status": "eligible"
+      },
+      {
+        "effort": "max",
+        "evidence": "primary",
+        "model_id": "claude-sonnet-5-5",
+        "model_name": "Claude Sonnet 5.5",
+        "normalized_score": 55.0,
+        "retrieved": "2026-11-16",
+        "score": 55.0,
+        "source_url": "https://artificialanalysis.ai/models/claude-sonnet-5-5",
+        "status": "eligible"
+      },
+      {
+        "effort": "xhigh",
+        "evidence": "primary",
+        "model_id": "claude-sonnet-5-5",
+        "model_name": "Claude Sonnet 5.5",
+        "normalized_score": 50.0,
+        "retrieved": "2026-11-16",
+        "score": 50.0,
+        "source_url": "https://artificialanalysis.ai/models/claude-sonnet-5-5",
+        "status": "eligible"
+      },
+      {
+        "effort": "high",
+        "evidence": "primary",
+        "model_id": "claude-sonnet-5-5",
+        "model_name": "Claude Sonnet 5.5",
+        "normalized_score": 42.0,
+        "retrieved": "2026-11-16",
+        "score": 42.0,
+        "source_url": "https://artificialanalysis.ai/models/claude-sonnet-5-5",
+        "status": "eligible"
+      },
+      {
+        "effort": "medium",
+        "evidence": "primary",
+        "model_id": "claude-sonnet-5-5",
+        "model_name": "Claude Sonnet 5.5",
+        "normalized_score": 31.0,
+        "retrieved": "2026-11-16",
+        "score": 31.0,
+        "source_url": "https://artificialanalysis.ai/models/claude-sonnet-5-5",
+        "status": "eligible"
+      },
+      {
+        "effort": "low",
+        "evidence": "primary",
+        "model_id": "claude-sonnet-5-5",
+        "model_name": "Claude Sonnet 5.5",
+        "normalized_score": 26.0,
+        "retrieved": "2026-11-16",
+        "score": 26.0,
+        "source_url": "https://artificialanalysis.ai/models/claude-sonnet-5-5",
+        "status": "eligible"
+      },
+      {
+        "effort": "max",
+        "evidence": "primary",
+        "model_id": "claude-haiku-5-5",
+        "model_name": "Claude Haiku 5.5",
+        "normalized_score": 36.0,
+        "retrieved": "2026-11-16",
+        "score": 36.0,
+        "source_url": "https://artificialanalysis.ai/models/claude-haiku-5-5",
+        "status": "eligible"
+      },
+      {
+        "effort": "xhigh",
+        "evidence": "primary",
+        "model_id": "claude-haiku-5-5",
+        "model_name": "Claude Haiku 5.5",
+        "normalized_score": 35.0,
+        "retrieved": "2026-11-16",
+        "score": 35.0,
+        "source_url": "https://artificialanalysis.ai/models/claude-haiku-5-5",
+        "status": "eligible"
+      },
+      {
+        "effort": "high",
+        "evidence": "primary",
+        "model_id": "claude-haiku-5-5",
+        "model_name": "Claude Haiku 5.5",
+        "normalized_score": 30.0,
+        "retrieved": "2026-11-16",
+        "score": 30.0,
+        "source_url": "https://artificialanalysis.ai/models/claude-haiku-5-5",
+        "status": "eligible"
+      },
+      {
+        "effort": "medium",
+        "evidence": "primary",
+        "model_id": "claude-haiku-5-5",
+        "model_name": "Claude Haiku 5.5",
+        "normalized_score": 25.0,
+        "retrieved": "2026-11-16",
+        "score": 25.0,
+        "source_url": "https://artificialanalysis.ai/models/claude-haiku-5-5",
+        "status": "eligible"
+      },
+      {
+        "effort": "low",
+        "evidence": "primary",
+        "model_id": "claude-haiku-5-5",
+        "model_name": "Claude Haiku 5.5",
+        "normalized_score": 19.0,
+        "retrieved": "2026-11-16",
+        "score": 19.0,
+        "source_url": "https://artificialanalysis.ai/models/claude-haiku-5-5",
+        "status": "eligible"
+      },
+      {
+        "effort": "max",
+        "evidence": "primary",
+        "model_id": "gpt-6-astra",
+        "model_name": "GPT-6 Astra",
+        "normalized_score": 57.0,
+        "retrieved": "2026-11-16",
+        "score": 57.0,
+        "source_url": "https://artificialanalysis.ai/models/gpt-6-astra",
+        "status": "eligible"
+      },
+      {
+        "effort": "xhigh",
+        "evidence": "primary",
+        "model_id": "gpt-6-astra",
+        "model_name": "GPT-6 Astra",
+        "normalized_score": 55.0,
+        "retrieved": "2026-11-16",
+        "score": 55.0,
+        "source_url": "https://artificialanalysis.ai/models/gpt-6-astra",
+        "status": "eligible"
+      },
+      {
+        "effort": "high",
+        "evidence": "primary",
+        "model_id": "gpt-6-astra",
+        "model_name": "GPT-6 Astra",
+        "normalized_score": 55.0,
+        "retrieved": "2026-11-16",
+        "score": 55.0,
+        "source_url": "https://artificialanalysis.ai/models/gpt-6-astra",
+        "status": "eligible"
+      },
+      {
+        "effort": "medium",
+        "evidence": "primary",
+        "model_id": "gpt-6-astra",
+        "model_name": "GPT-6 Astra",
+        "normalized_score": 52.0,
+        "retrieved": "2026-11-16",
+        "score": 52.0,
+        "source_url": "https://artificialanalysis.ai/models/gpt-6-astra",
+        "status": "eligible"
+      },
+      {
+        "effort": "low",
+        "evidence": "primary",
+        "model_id": "gpt-6-astra",
+        "model_name": "GPT-6 Astra",
+        "normalized_score": 43.0,
+        "retrieved": "2026-11-16",
+        "score": 43.0,
+        "source_url": "https://artificialanalysis.ai/models/gpt-6-astra",
+        "status": "eligible"
+      },
+      {
+        "effort": "max",
+        "evidence": "primary",
+        "model_id": "gpt-6-1-sol",
+        "model_name": "GPT-6.1 Sol",
+        "normalized_score": 55.0,
+        "retrieved": "2026-11-16",
+        "score": 55.0,
+        "source_url": "https://artificialanalysis.ai/models/gpt-6-1-sol",
+        "status": "eligible"
+      },
+      {
+        "effort": "xhigh",
+        "evidence": "primary",
+        "model_id": "gpt-6-1-sol",
+        "model_name": "GPT-6.1 Sol",
+        "normalized_score": 52.0,
+        "retrieved": "2026-11-16",
+        "score": 52.0,
+        "source_url": "https://artificialanalysis.ai/models/gpt-6-1-sol",
+        "status": "eligible"
+      },
+      {
+        "effort": "high",
+        "evidence": "primary",
+        "model_id": "gpt-6-1-sol",
+        "model_name": "GPT-6.1 Sol",
+        "normalized_score": 50.0,
+        "retrieved": "2026-11-16",
+        "score": 50.0,
+        "source_url": "https://artificialanalysis.ai/models/gpt-6-1-sol",
+        "status": "eligible"
+      },
+      {
+        "effort": "medium",
+        "evidence": "primary",
+        "model_id": "gpt-6-1-sol",
+        "model_name": "GPT-6.1 Sol",
+        "normalized_score": 46.0,
+        "retrieved": "2026-11-16",
+        "score": 46.0,
+        "source_url": "https://artificialanalysis.ai/models/gpt-6-1-sol",
+        "status": "eligible"
+      },
+      {
+        "effort": "low",
+        "evidence": "primary",
+        "model_id": "gpt-6-1-sol",
+        "model_name": "GPT-6.1 Sol",
+        "normalized_score": 35.0,
+        "retrieved": "2026-11-16",
+        "score": 35.0,
+        "source_url": "https://artificialanalysis.ai/models/gpt-6-1-sol",
+        "status": "eligible"
+      },
+      {
+        "effort": "high",
+        "evidence": "primary",
+        "model_id": "gemini-4-carbon",
+        "model_name": "Gemini 4 Carbon",
+        "normalized_score": 60.0,
+        "retrieved": "2026-11-16",
+        "score": 60.0,
+        "source_url": "https://artificialanalysis.ai/models/gemini-4-carbon",
+        "status": "eligible"
+      },
+      {
+        "effort": "medium",
+        "evidence": "primary",
+        "model_id": "gemini-4-carbon",
+        "model_name": "Gemini 4 Carbon",
+        "normalized_score": 58.0,
+        "retrieved": "2026-11-16",
+        "score": 58.0,
+        "source_url": "https://artificialanalysis.ai/models/gemini-4-carbon",
+        "status": "eligible"
+      },
+      {
+        "effort": "low",
+        "evidence": "primary",
+        "model_id": "gemini-4-carbon",
+        "model_name": "Gemini 4 Carbon",
+        "normalized_score": 54.0,
+        "retrieved": "2026-11-16",
+        "score": 54.0,
+        "source_url": "https://artificialanalysis.ai/models/gemini-4-carbon",
+        "status": "eligible"
+      },
+      {
+        "effort": "high",
+        "evidence": "primary",
+        "model_id": "mistral-large-4",
+        "model_name": "Mistral Large 4",
+        "normalized_score": 26.0,
+        "retrieved": "2026-11-16",
+        "score": 26.0,
+        "source_url": "https://artificialanalysis.ai/models/mistral-large-4",
+        "status": "eligible"
+      },
+      {
+        "effort": "medium",
+        "evidence": "primary",
+        "model_id": "mistral-large-4",
+        "model_name": "Mistral Large 4",
+        "normalized_score": 23.0,
+        "retrieved": "2026-11-16",
+        "score": 23.0,
+        "source_url": "https://artificialanalysis.ai/models/mistral-large-4",
+        "status": "eligible"
+      },
+      {
+        "evidence": "primary",
+        "model_id": "mistral-medium-3-5",
+        "model_name": "Mistral Medium 3.5",
+        "normalized_score": 5.0,
+        "retrieved": "2026-11-16",
+        "score": 5.0,
+        "source_url": "https://artificialanalysis.ai/models/mistral-medium-3-5",
+        "status": "eligible"
+      }
+    ],
+    "freshness": "current",
+    "retrieved": "2026-11-16",
+    "source_url": "https://artificialanalysis.ai/models"
+  },
   "screenspot": {
     "entries": [
       {

@@ -22,6 +22,7 @@ from pathlib import Path
 
 import httpx
 
+from galaius.catalog.published import PublishedTable
 from galaius.catalog.ttl_cache import TTL_SECONDS, RefreshFailed, TTLCache, age_of, describe_age
 
 _log = logging.getLogger(__name__)
@@ -285,13 +286,30 @@ def ranked_extras() -> dict[str, dict]:
 _BOARD_MEMO: dict[tuple[str, int, float], dict[str, float]] = {}
 
 
+#: The published table of Artificial Analysis's model pages (`galaius/data/published_scores.json`): every effort a model
+#: was measured at, each row naming its page and the day it was read.
+INTELLIGENCE_PAGES = "intelligence_index"
+
+
+def _effort(name: str) -> str:
+    """The effort a board row names in its parenthetical (`Claude Fable 5.2 (Medium, Default Fallback)` → `medium`); ""
+    when it names none."""
+    found = re.search(r"\(([^,)]*)", name)
+    return found.group(1).strip().lower() if found else ""
+
+
 def live_scores(path: Path | None = None) -> dict[str, float]:
-    """What the LIVE board measures, keyed by model name, best effort per model.
+    """What Artificial Analysis measures, keyed by model name, best effort per model.
 
     Scores baked into this package are a snapshot that ages the day it ships, and the panel
     already fetches the real board: ranking on the snapshot while calling the number
     `aa.intelligence` put two tabs of one window in open disagreement about which model leads.
     Missing/unreadable board reads as "nothing live", never "nothing scores".
+
+    The board as fetched may list a model at some efforts only (2026-11-16: Fable 5.2 at Medium alone, 56.4, while its
+    page reads 65 at Max): the model pages' table (`INTELLIGENCE_PAGES`) fills the efforts it lacks for a model the board
+    lists, a board row for the same model and effort winning over the page's rounded number. The board stays the
+    population: a page adds no model, and without a board nothing is read ("no board here" keeps its meaning).
     """
     board = path or leaderboard_path()
     if board is None:
@@ -304,7 +322,7 @@ def live_scores(path: Path | None = None) -> dict[str, float]:
         raw = json.loads(board.read_text())
     except (OSError, ValueError):
         return {}
-    best: dict[str, float] = {}
+    measured: dict[tuple[str, str], float] = {}
     for row in raw.get("scores") or []:
         name, value = row.get("name"), row.get("intelligence")
         if not isinstance(name, str) or not name.strip() or not isinstance(value, (int, float)):
@@ -317,8 +335,17 @@ def live_scores(path: Path | None = None) -> dict[str, float]:
         # board said 30.4, and a top-of-board criterion chose it on a number no board has
         # printed since.
         row_key = bare_model_name(_leaderboard_key(name))
-        if row_key and value > best.get(row_key, float("-inf")):
-            best[row_key] = float(value)
+        if row_key:
+            measured[(row_key, _effort(name))] = max(float(value), measured.get((row_key, _effort(name)), float("-inf")))
+    listed = {row_key for row_key, _effort_name in measured}
+    if listed and (pages := PublishedTable.load(INTELLIGENCE_PAGES)) is not None:
+        for entry in pages.entries:
+            row_key = bare_model_name(entry.model_id or _leaderboard_key(entry.model_name))
+            if row_key in listed and entry.status == "eligible":
+                measured.setdefault((row_key, (entry.effort or "").lower()), entry.score)
+    best: dict[str, float] = {}
+    for (row_key, _effort_name), value in measured.items():
+        best[row_key] = max(value, best.get(row_key, float("-inf")))
     # One entry: a changed board gets a new key, old one not worth keeping.
     _BOARD_MEMO.clear()
     _BOARD_MEMO[(str(board), stat.st_size, stat.st_mtime)] = best

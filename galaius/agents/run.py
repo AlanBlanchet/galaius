@@ -56,9 +56,9 @@ from galaius.agents.model_family import listed_as
 from galaius.agents.limits.subscriptions import RunSubscription, Subscription, SubscriptionCapped, SubscriptionRefused
 from galaius.agents.limits.warm import WarmStart
 from galaius.agents.catalog.server_ranking import ServerRanking, ServerRankingUnavailable
-from galaius.catalog.criteria import Criteria, CriteriaError, Dropped, Variables
+from galaius.catalog.criteria import Criteria, CriteriaError, Valued, Variables
 from galaius.catalog.models import live_scores
-from galaius.models.registry import Model
+from galaius.models.registry import Model, TokenMix
 from galaius.models.capability import ModelCapability
 from galaius.prompts.projection import coordinator_instructions
 from galaius.runtime import config
@@ -146,23 +146,14 @@ def resolve_model(
 
 
 class Ranking(BaseModel):
-    """A launch's ordered candidates, and the models the value rule left out of them."""
+    """A launch's ordered candidates, and each ranked model's numbers under the cost relation (`ValueRule`)."""
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     candidates: tuple[reg.LaunchCandidate, ...]
-    dropped: tuple[Dropped, ...] = ()
-    #: Catalog ids in the criterion's own order, before the value rule — where each drop stood.
-    order: tuple[str, ...] = ()
-
-    def drops_ahead_of(self, shown: int) -> tuple[Dropped, ...]:
-        """The drops that stood ahead of the last of the first `shown` candidates — the ones that
-        changed what a launch tries; a drop behind them would never have been reached anyway."""
-        if not self.candidates or not self.order:
-            return self.dropped
-        last = self.candidates[:shown][-1].catalog_id
-        bar = self.order.index(last) if last in self.order else len(self.order)
-        return tuple(d for d in self.dropped if self.order.index(d.model.catalog_id) < bar)
+    #: Score, price and value of each model the relation ordered, in launch order; empty for a plain model id or a rule
+    #: the relation cannot read (`Criteria.value_score`).
+    valued: tuple[Valued, ...] = ()
 
 
 def rank_candidates(
@@ -188,45 +179,17 @@ def rank(
     :func:`resolve_model` does. The criterion itself is never relaxed: an empty list raises,
     naming the pools that were searched.
 
-    A criterion's list then loses every model the policy's `ValueRule` rules out, priced at
-    `role`'s measured token mix: a model another one beats on score AND price, or barely beats for
-    a multiple of the price, is never launched, not even as a fallback. Each CLI's chain is judged
-    on what THAT CLI runs — a better deal only another CLI runs is no reason to drop this one's
-    fallback, since the other may be logged out or out of quota — so one provider alone is still
-    the union list filtered. A plain model id is the caller's own choice, never second-guessed.
+    A criterion's list is ordered by the policy's `ValueRule` — score against price at `role`'s measured token mix —
+    over that union pool: the best value runs first and every other model stays behind it as a fallback, none left
+    out by name or by switch (owner 2026-11-16 « no hardcoding / deactivating models »). A plain model id is the
+    caller's own choice, never second-guessed.
     `policy` is the one already loaded by a caller ranking many roles; otherwise it is read here.
     """
     policy = policy if policy is not None else load_policy()
     providers = _asked(providers, policy.rule(model) if model.startswith("@") else model)
-    candidates, rows, criteria = _ranked_candidates(model, env, providers=providers, weights=weights, policy=policy, among=among)
-    candidates = _switched_on(candidates, policy, model)
-    if criteria is None:
-        return Ranking(candidates=candidates)
-    mix = reg.token_mix(role)
-    gone: set[tuple[str, str]] = set()
-    dropped: dict[str, Dropped] = {}
-    for provider in dict.fromkeys(c.provider for c in candidates):
-        pool = [rows[c.catalog_id] for c in candidates if c.provider == provider and c.catalog_id is not None]
-        for item in criteria.prune(policy.value, pool, weights, mix)[1]:
-            gone.add((provider, item.model.catalog_id))
-            dropped.setdefault(item.model.catalog_id, item)
-    kept = tuple(c for c in candidates if (c.provider, c.catalog_id) not in gone)
-    running = {c.catalog_id for c in kept}
-    order = tuple(rows)
-    return Ranking(candidates=kept, order=order, dropped=tuple(sorted(
-        (item for name, item in dropped.items() if name not in running),
-        key=lambda item: order.index(item.model.catalog_id))))
-
-
-def _switched_on(candidates: tuple[reg.LaunchCandidate, ...], policy: Policy, model: str) -> tuple[reg.LaunchCandidate, ...]:
-    """Drop every model switched off on this machine (`Policy.models`) — never a fallback either.
-    An empty result refuses, naming the switch, rather than running a model the owner turned off."""
-    kept = tuple(c for c in candidates if policy.model_active(c.provider, c.model, c.catalog_id))
-    if candidates and not kept:
-        off = ", ".join(sorted({f"{c.provider}/{c.model}" for c in candidates}))
-        raise ModelUnavailable(sentence=f"every model {model!r} ranks is switched off on this machine ({off}); "
-                               "turn one back on under `models` in ~/.galaius/agents.json")
-    return kept
+    candidates, valued = _ranked_candidates(model, env, providers=providers, weights=weights, policy=policy, among=among,
+                                            mix=reg.token_mix(role))
+    return Ranking(candidates=candidates, valued=valued)
 
 
 def _keyed(provider: AgentProvider) -> bool:
@@ -275,10 +238,10 @@ def _held_keys(pinned: RunSubscription, rule: str) -> dict[str, list[RunSubscrip
 
 def _ranked_candidates(
     model: str, env: dict[str, str], *, providers: Sequence[AgentProvider], weights: str, policy: Policy,
-    among: Mapping[str, Sequence[UUID]] | None = None,
-) -> tuple[tuple[reg.LaunchCandidate, ...], dict[str, Model], Criteria | None]:
-    """Candidates before the value rule, the catalog rows they name, and the parsed criterion
-    (None for a plain model id). `among`: per key program, the subscriptions a launch may run it on (their vendor lists
+    among: Mapping[str, Sequence[UUID]] | None = None, mix: TokenMix = TokenMix(),
+) -> tuple[tuple[reg.LaunchCandidate, ...], tuple[Valued, ...]]:
+    """Candidates in the order the policy's `ValueRule` sets over the runnable pool (prices blended by `mix`), and each
+    valued model's numbers (none for a plain model id or a server-ranked list). `among`: per key program, the subscriptions a launch may run it on (their vendor lists
     bound its ids); None: every key held here (a ranking no launch follows)."""
     if model.startswith("@"):
         model = policy.rule(model)
@@ -295,7 +258,7 @@ def _ranked_candidates(
         if not candidates:
             names = ", ".join(sorted(allowed)) or "none"
             raise ModelUnavailable(sentence=f"The {names} CLIs cannot run model {model!r}")
-        return candidates, {}, None
+        return candidates, ()
     try:
         criteria = Criteria.parse(model)
     except CriteriaError as err:
@@ -314,12 +277,12 @@ def _ranked_candidates(
         return None if found is None else own[: len(own) - len(bare)] + found
     runs = lambda p, row: p.can_run(row, env) and launched(p, row) is not None  # noqa: E731
     pool = lambda m: any(p.can_run(m, env) for p in universe if p.name in allowed)
-    # Unpruned here: what is worth running is judged over the pool that can run, further down.
-    ranked = criteria.ranked(runnable=lambda m: any(p.can_run(m, env) for p in universe), weights=weights, value=None)
+    ranked, valued = criteria.frontier(runnable=lambda m: any(p.can_run(m, env) for p in universe), weights=weights,
+                                       value=policy.value, mix=mix)
     if (not ranked or not criteria.measured(ranked[0])) and any(term.source_only or term.ranking for term in criteria.terms) and not live_scores():
         # No board here (it is fetched with its reader's own key), so nothing ranks on a measured score: the server ranked this rule on its
         # own and its order is the launch order, its rows named here even when the bundled catalog
-        # lacks them; no score came with it, so no value rule second-guesses it (criteria None).
+        # lacks them; no score came with it, so no relation numbers go with it.
         server = ServerRanking.linked()
         try:
             named = [Model.named(catalog_id) for catalog_id in (server.ranked(model, weights) if server is not None else ())]
@@ -331,7 +294,7 @@ def _ranked_candidates(
             for rank, row in enumerate(named) for p in universe if p.name in allowed and runs(p, row)
         )
         if served:
-            return _apply_provider_constraint(criteria, served), {row.catalog_id: row for row in named}, None
+            return _apply_provider_constraint(criteria, served), ()
     candidates = tuple(
         reg.LaunchCandidate(provider=p.name, model=launched(p, row),
                             catalog_id=row.catalog_id, rank=rank)
@@ -343,8 +306,7 @@ def _ranked_candidates(
         raise ModelUnavailable(
             sentence=f"no model the {names} CLIs can run clears {criteria}:\n{criteria.explain(True, pool)}"
         )
-    rows = {row.catalog_id: row for row in ranked}
-    return _apply_provider_constraint(criteria, candidates), rows, criteria
+    return _apply_provider_constraint(criteria, candidates), tuple(valued)
 
 
 def _apply_provider_constraint(

@@ -30,7 +30,9 @@ from galaius.agents.run import (
     rank_candidates,
     run_agent,
 )
+from galaius.agents.policy import Policy
 from galaius.catalog.criteria import ValueRule
+import galaius.agents.run as run_module
 from galaius.models.registry import Benchmark
 import galaius.server.tools.agents as tools_agents
 from galaius.cli import app_commands as cli
@@ -122,68 +124,62 @@ def test_an_explicit_provider_is_a_filter_on_the_same_list(team):
     assert _ids(rank_candidates(CRITERION, {}, providers=[alpha])) == [("alpha", "a-mid", 1), ("alpha", "a-weak", 2)]
 
 
-@pytest.mark.parametrize("switch", ["beta/b-strong", "b-strong", "vendor-b/b-strong"])
-def test_a_model_switched_off_is_never_a_candidate_even_as_fallback(team, monkeypatch, switch):
-    """Owner 2026-10-05: « Woow, fable was used. Please make sure we don't activate it. It costs too much... »"""
+def test_no_model_is_switched_off_by_hand(team, monkeypatch, tmp_path):
+    """Owner 2026-11-16: « no hardcoding / deactivating models »: a `models` map left in a policy file switches nothing
+    off; the model it named keeps its place in the ranking and runs when asked by name."""
     alpha, beta = team
-    use_policy(monkeypatch, agents={"tester": CRITERION}, models={switch: False})
-    assert _ids(rank_candidates(CRITERION, {}, providers=[alpha, beta])) == [("alpha", "a-mid", 1), ("alpha", "a-weak", 2)]
-    with pytest.raises(ModelUnavailable, match="switched off"):
-        rank_candidates("b-strong", {}, providers=[beta])
+    path = tmp_path / "agents.json"
+    path.write_text(json.dumps({"agents": {"tester": CRITERION}, "models": {"beta/b-strong": False, "vendor-b/b-strong": False}}))
+    monkeypatch.setattr(run_module, "load_policy", lambda: Policy.load(path))
+    assert _ids(rank_candidates(CRITERION, {}, providers=[alpha, beta]))[0] == ("beta", "b-strong", 0)
+    assert [c.provider for c in rank_candidates("b-strong", {}, providers=[beta])] == ["beta"]
 
 
-
-#: (criterion, catalog rows as (vendor, id, score, input $, output $), CLIs given, expected ranked
-#: ids, expected drops as (id, rule, by)). Scores are the criterion's first measure, set by the
-#: test; prices $/M. `alpha` runs vendor-a, `beta` vendor-b.
+#: (criterion, catalog rows as (vendor, id, score, input $, output $), CLIs given, expected order). Scores are the
+#: criterion's first measure, set by the test; prices $/M; `ValueRule()` default: 3.5 points per doubling of price over
+#: the pool's cheapest. `alpha` runs vendor-a, `beta` vendor-b. Every row must stay in the list (none left out).
 VALUE_CASES = {
-    "dominated: weaker AND pricier never runs, not even as fallback": (
+    "a small edge for a big price: the near-tie at a fraction of the price runs first, the other stays behind": (
+        "aa.coding_index", [("vendor-a", "edge", 60.5, 10, 50), ("vendor-a", "near", 59, 2, 10)],
+        ("alpha", "beta"), ["near", "edge"],
+    ),
+    "enough points per doubling: the pricier one leads": (
+        "aa.coding_index", [("vendor-a", "strong", 70, 4, 20), ("vendor-a", "weak", 50, 1, 5)],
+        ("alpha", "beta"), ["strong", "weak"],
+    ),
+    "weaker AND pricier ranks behind, still a fallback": (
         "aa.coding_index",
         [("vendor-a", "lead", 70, 4, 20), ("vendor-a", "pricier-weaker", 69, 10, 50), ("vendor-b", "cheap", 50, 1, 5)],
-        ("alpha", "beta"), ["lead", "cheap"], [("pricier-weaker", "dominated", "lead")],
-    ),
-    "small edge for a big price: the near-tie at a fraction of the price leads": (
-        "aa.coding_index", [("vendor-a", "edge", 60.5, 10, 50), ("vendor-a", "near", 59, 2, 10)],
-        ("alpha", "beta"), ["near"], [("edge", "small_edge", "near")],
+        ("alpha", "beta"), ["lead", "pricier-weaker", "cheap"],
     ),
     "a point is out of 100 of the measure's range, also on a 0-1 scale": (
         "aa.mmmu_pro", [("vendor-a", "edge", 0.705, 10, 50), ("vendor-a", "near", 0.69, 2, 10),
                         ("vendor-a", "far", 0.80, 10, 50)],
-        ("alpha", "beta"), ["far", "near"], [("edge", "small_edge", "near")],
+        ("alpha", "beta"), ["far", "near", "edge"],
     ),
-    "a measure with no declared range keeps only the dominance rule": (
+    "a measure with no declared range keeps its own order": (
         "gui.screenspot", [("vendor-a", "edge", 0.705, 10, 50), ("vendor-a", "near", 0.69, 2, 10)],
-        ("alpha", "beta"), ["edge", "near"], [],
+        ("alpha", "beta"), ["edge", "near"],
     ),
-    "each CLI's chain is judged on what that CLI runs: a better deal elsewhere drops nothing here": (
-        "aa.coding_index",
-        [("vendor-b", "better-deal", 60, 2, 10), ("vendor-a", "fallback-a", 50, 2, 10), ("vendor-a", "worse-a", 49, 3, 15)],
-        ("alpha", "beta"), ["better-deal", "fallback-a"], [("worse-a", "dominated", "fallback-a")],
-    ),
-    "a preferred CLI only reorders; each chain is still judged on its own": (
+    "a preferred CLI only reorders the relation's order": (
         "aa.coding_index and provider ~ alpha",
         [("vendor-a", "preferred-cheap", 50, 2, 10), ("vendor-a", "preferred-worse", 49, 3, 15),
          ("vendor-b", "better-deal", 60, 2, 10), ("vendor-b", "other-worse", 55, 4, 20)],
-        ("alpha", "beta"), ["preferred-cheap", "better-deal"],
-        [("other-worse", "dominated", "better-deal"), ("preferred-worse", "dominated", "preferred-cheap")],
+        ("alpha", "beta"), ["preferred-cheap", "preferred-worse", "better-deal", "other-worse"],
     ),
-    "a bar-only criterion still ranks cheapest first, and still drops the weaker-and-pricier": (
+    "a bar-only criterion runs cheapest first": (
         "aa.coding_index >= 10",
         [("vendor-a", "pricier-weaker", 69, 10, 50), ("vendor-a", "lead", 70, 4, 20), ("vendor-a", "cheap", 50, 1, 5)],
-        ("alpha", "beta"), ["cheap", "lead"], [("pricier-weaker", "dominated", "lead")],
+        ("alpha", "beta"), ["cheap", "lead", "pricier-weaker"],
     ),
-    "cheaper and weaker is kept as the fallback": (
-        "aa.coding_index", [("vendor-a", "strong", 70, 4, 20), ("vendor-a", "weak", 50, 1, 5)],
-        ("alpha", "beta"), ["strong", "weak"], [],
-    ),
-    "an exact twin is a second route, kept": (
+    "an exact twin is a second route": (
         "aa.coding_index", [("vendor-a", "twin-a", 70, 4, 20), ("vendor-a", "twin-b", 70, 4, 20)],
-        ("alpha", "beta"), ["twin-a", "twin-b"], [],
+        ("alpha", "beta"), ["twin-a", "twin-b"],
     ),
-    "an unpriced or catalog-$0 model is never dropped and drops nothing": (
+    "an unpriced or catalog-$0 model keeps its place after the valued ones": (
         "aa.coding_index", [("vendor-a", "priced", 70, 4, 20), ("vendor-a", "unpriced", 60, None, None),
                             ("vendor-a", "placeholder-zero", 69, 0, 0)],
-        ("alpha", "beta"), ["priced", "placeholder-zero", "unpriced"], [],
+        ("alpha", "beta"), ["priced", "placeholder-zero", "unpriced"],
     ),
 }
 
@@ -204,42 +200,43 @@ def scored():
         bench._measured.update(saved.get(bench.id, {}))
 
 
-@pytest.mark.parametrize("criterion,rows,given,ranked,dropped", VALUE_CASES.values(), ids=VALUE_CASES.keys())
-def test_a_model_another_beats_on_value_is_never_a_candidate(team, scored, criterion, rows, given, ranked, dropped):
-    """Owner 2026-10-05: « Fable should not even come out in the formula, because intelligence vs
-    costs surpasses anyways this model. »"""
+@pytest.mark.parametrize("criterion,rows,given,ranked", VALUE_CASES.values(), ids=VALUE_CASES.keys())
+def test_the_cost_relation_orders_and_never_removes(team, scored, criterion, rows, given, ranked):
+    """Owner 2026-10-05: « Fable should not even come out in the formula, because intelligence vs costs surpasses anyways
+    this model »; 2026-11-16: « find the correct relations to make efficient models be chosen, so no hardcoding /
+    deactivating models »."""
     by_name = {provider.name: provider for provider in team}
     with scored(criterion, rows):
         ranking = rank(criterion, {}, providers=[by_name[name] for name in given])
         alone = {name: rank_candidates(criterion, {}, providers=[by_name[name]])
                  for name in dict.fromkeys(c.provider for c in ranking.candidates)}
     assert [c.model for c in ranking.candidates] == ranked
-    assert [(d.model.id, d.rule, d.by.id) for d in ranking.dropped] == dropped
+    assert sorted(c.model for c in ranking.candidates) == sorted(row[1] for row in rows)  # none left out
     for name, candidates in alone.items():  # one CLI alone is the same list, filtered
         assert candidates == tuple(c for c in ranking.candidates if c.provider == name)
 
 
-def test_the_policy_bounds_and_the_roles_measured_mix_decide(team, scored, monkeypatch):
-    """The ceiling / edge come from the policy file; the price is read at the role's own token
-    mix, from its recorded runs — an output-heavy role pays the output rate."""
+def test_the_policy_rate_and_the_roles_measured_mix_decide(team, scored, monkeypatch):
+    """The points per doubling come from the policy file; the price is read at the role's own token mix, from its
+    recorded runs — an output-heavy role pays the output rate. Each valued row says its numbers."""
     alpha, beta = team
     with scored("aa.coding_index", [("vendor-a", "edge", 60.5, 10, 50), ("vendor-a", "near", 59, 2, 10)]):
-        use_policy(monkeypatch, value=ValueRule(edge=1))
+        use_policy(monkeypatch, value=ValueRule(per_doubling=0))
         assert [c.model for c in rank("aa.coding_index", {}, providers=[alpha, beta]).candidates] == ["edge", "near"]
         use_policy(monkeypatch)
-        [drop] = rank("aa.coding_index", {}, providers=[alpha, beta]).dropped
-    assert str(drop) == ("edge: near scores 59, less than 2 points below 60.5, for $4.00 vs $20.00 "
-                         "per M tokens (over 1.5x)")
+        valued = rank("aa.coding_index", {}, providers=[alpha, beta]).valued
+    assert [str(item) for item in valued] == ["near: score 59, $4.00 per M tokens, value 59.0",
+                                              "edge: score 60.5, $20.00 per M tokens, value 52.4"]
     run = register_run("writer", agent="tester")
     reg.save_run(run.model_copy(update={"usage": TokenCounts(input=100, output=900)}))
     assert reg.token_mix("tester").shares == (0.1, 0.0, 0.0, 0.9)
     with scored("aa.coding_index", [("vendor-a", "cheap-in", 41, 1, 30), ("vendor-a", "cheap-out", 40, 30, 1)]):
         chat = rank("aa.coding_index", {}, providers=[alpha, beta])
         writer = rank("aa.coding_index", {}, providers=[alpha, beta], role="tester")
-    # 3:1 input:output: "cheap-in" $8.25 beats "cheap-out" $22.75 on both sides
-    assert [(d.model.id, d.rule) for d in chat.dropped] == [("cheap-out", "dominated")]
-    # 1:9: "cheap-out" $3.90 vs "cheap-in" $27.10 for one point more — a small edge, big price
-    assert [(d.model.id, d.rule) for d in writer.dropped] == [("cheap-in", "small_edge")]
+    # 3:1 input:output: "cheap-in" $8.25 vs "cheap-out" $22.75: one point more for less money
+    assert [c.model for c in chat.candidates] == ["cheap-in", "cheap-out"]
+    # 1:9: "cheap-out" $3.90 vs "cheap-in" $27.10 for one point more — a big price for a small edge
+    assert [c.model for c in writer.candidates] == ["cheap-out", "cheap-in"]
 
 
 def test_every_role_keeps_its_own_mix_however_busy_the_others(team, monkeypatch):
