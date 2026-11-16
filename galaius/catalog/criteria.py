@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, ClassVar, Literal, Sequence
 
+from galaius_core import ModelRelation
 from pydantic import BaseModel, ConfigDict, Field
 
 from galaius.catalog import source as benchmark_source
@@ -490,29 +491,29 @@ class Valued(BaseModel):
 class ValueRule(BaseModel):
     """Intelligence against cost, as ONE relation every ranking applies — never a list of models left out.
 
-    value = score − per_doubling × log2((price + price_floor) / (cheapest price + price_floor))
+    value = score + Σ weight × criterion points − cost × log2((price + price_floor) / (cheapest price + price_floor))
 
-    A model must buy `per_doubling` points of the ranked measure for each doubling of its price over the
-    cheapest model in the same pool; the highest value runs first. Owner 2026-10-05: « We need some kind of
-    formula … Fable should not even come out in the formula, because intelligence vs costs surpasses anyways
-    this model »; 2026-11-16: « find the correct relations to make efficient models be chosen, so no hardcoding /
-    deactivating models ». A model leaves the top because the relation ranks it lower, never by its name; every
-    model stays in the list as a fallback.
+    The weights are a role's `ModelRelation`, read from its online record (owner 2026-11-16 « the rules should be online,
+    not local ! »): `cost` is the points one doubling of the price over the pool's cheapest model must buy, each further
+    criterion adds its points out of 100 of its measure's range times its weight (a model without that number adds
+    none). Owner 2026-10-05: « We need some kind of formula … Fable should not even come out in the formula, because
+    intelligence vs costs surpasses anyways this model »; 2026-11-16: « find the correct relations to make efficient
+    models be chosen, so no hardcoding / deactivating models ». Every model stays in the list as a fallback.
 
-    Default 3.5 points per doubling ≈ the earlier bound of 2 points per 1.5× the price (2 / log2 1.5 = 3.42).
-    Price is the catalog's API list price blended by the role's measured `TokenMix`: it also stands for a
-    subscription's usage share, which the vendors meter in proportion to the same token prices (an assumption,
-    no vendor publishes the meter). A model with no known price or score keeps its place after the valued ones.
+    Price is the catalog's API list price blended by `TokenMix()`: it also stands for a subscription's usage share, which
+    the vendors meter in proportion to the same token prices (an assumption, no vendor publishes the meter). A model
+    with no known price or score keeps its place after the valued ones.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True, allow_inf_nan=False)
 
-    per_doubling: float = Field(default=3.5, ge=0)
+    relation: ModelRelation = Field(default_factory=ModelRelation)
     #: $ per M tokens added to every price, so a model served on the machine (price 0) has a finite relation.
     price_floor: float = Field(default=0.01, gt=0)
 
-    def value(self, score: float, cost: float, cheapest: float) -> float:
-        return score - self.per_doubling * math.log2((cost + self.price_floor) / (cheapest + self.price_floor))
+    def value(self, score: float, cost: float, cheapest: float, model: Model) -> float:
+        return (score + sum(criterion.weight * _points(criterion.name, model) for criterion in self.relation.criteria)
+                - self.relation.cost * math.log2((cost + self.price_floor) / (cheapest + self.price_floor)))
 
     def order(
         self, models: Sequence[Model], score: Callable[[Model], tuple[float, ...] | None], mix: TokenMix,
@@ -525,12 +526,29 @@ class ValueRule(BaseModel):
             return list(models), []
         cheapest = min(cost for _model, _scored, cost in priced)
         valued = sorted(
-            (Valued(model=model, score=sum(scored), cost=cost, value=self.value(sum(scored), cost, cheapest))
+            (Valued(model=model, score=sum(scored), cost=cost, value=self.value(sum(scored), cost, cheapest, model))
              for model, scored, cost in priced),
             key=lambda item: -item.value,
         )
         ids = {id(item.model) for item in valued}
         return [item.model for item in valued] + [model for model in models if id(model) not in ids], valued
+
+
+def _points(name: str, model: Model) -> float:
+    """`model`'s points out of 100 on the measure `name` (higher always better); 0 without a number or a declared range."""
+    variable = Variables.by_name(name)
+    read = None if variable is None or variable.score_range is None else variable.read(model)
+    if read is None:
+        return 0.0
+    worst, best = variable.score_range
+    points = 100 * (read - worst) / (best - worst)
+    return points if variable.higher_is_better else 100 - points
+
+
+def relation_errors(relation: ModelRelation) -> list[str]:
+    """Why `relation` cannot rank: each criterion that names no measure with a declared range (empty: it can)."""
+    return [f"{criterion.name!r} is not a measure with a known range" for criterion in relation.criteria
+            if (variable := Variables.by_name(criterion.name)) is None or not variable.rankable or variable.score_range is None]
 
 
 #: The measure a model without a ranking's own number is placed by, among the others lacking it.

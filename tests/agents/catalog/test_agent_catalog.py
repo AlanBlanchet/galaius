@@ -15,7 +15,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from pydantic import SecretStr, ValidationError
-from galaius_core import AgentCatalogSnapshot, AgentRevision, AgentRevisionRef, PromptExecutionRef, PromptKey, PromptRevision
+from galaius_core import AgentCatalogSnapshot, ModelRelation, AgentRevision, AgentRevisionRef, PromptExecutionRef, PromptKey, PromptRevision
 
 from galaius.agents.catalog.entries import AgentCatalog, AgentInstructionSet, CatalogSnapshot
 from galaius.agents.catalog import connection as catalog_connection
@@ -1551,3 +1551,18 @@ def test_a_service_with_no_app_behind_its_front_is_down_like_an_unreachable_one(
     assert held.stale and held.revision(worker_ref).revision == worker_ref.revision
     with pytest.raises(CatalogOffline):
         current.at_revision(AgentRevisionRef(id=worker_ref.id, revision=uuid4()))
+
+
+def test_ranking_weights_come_from_the_online_record_never_the_local_file(catalog_home, monkeypatch):
+    """Owner 2026-11-16 « the rules should be online, not local ! »: a role's model-choice weights are its online
+    record's (`AgentRevision.relation`, kept offline in the fetched copy); a local default rule or `value` block is
+    never read."""
+    local = catalog_home / "agents.json"
+    local.write_text(json.dumps({"defaults": {"model": "price.in >= 99", "touch": "workspace_write"}, "value": {"per_doubling": 0}}))
+    monkeypatch.setattr("galaius.agents.policy.policy_path", lambda: local)
+    connection = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode="preview", workspace_id=uuid4())
+    catalog = AgentCatalog.refresh(connection, transport=catalog_transport(snapshot(1, relation=ModelRelation(cost=6))))
+    policy = Policy.from_catalog(catalog)
+    assert policy.relation_for("fixture-worker") == ModelRelation(cost=6)
+    assert policy.relation_for("no-such-role") == ModelRelation()
+    assert "model" not in policy.defaults and policy.default_touch_intent() == "workspace_write"

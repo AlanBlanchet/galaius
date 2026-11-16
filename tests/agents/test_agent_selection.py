@@ -31,7 +31,7 @@ from galaius.agents.run import (
     run_agent,
 )
 from galaius.agents.policy import Policy
-from galaius.catalog.criteria import ValueRule
+from galaius_core import ModelRelation
 import galaius.agents.run as run_module
 from galaius.models.registry import Benchmark
 import galaius.server.tools.agents as tools_agents
@@ -217,12 +217,12 @@ def test_the_cost_relation_orders_and_never_removes(team, scored, criterion, row
 
 
 def test_the_policy_rate_decides_and_each_row_says_its_numbers(team, scored, monkeypatch):
-    """The points per doubling come from the policy file; prices are read at the one 3:1 mix the server's agent page
-    uses too, so both show the same order. Each valued row says its numbers, in launch order."""
+    """The points per doubling come from the role's online record (`ModelRelation.cost`); prices are read at the one 3:1
+    mix the server's agent page uses too, so both show the same order. Each valued row says its numbers, in launch order."""
     alpha, beta = team
     with scored("aa.coding_index", [("vendor-a", "edge", 60.5, 10, 50), ("vendor-a", "near", 59, 2, 10)]):
-        use_policy(monkeypatch, value=ValueRule(per_doubling=0))
-        assert [c.model for c in rank("aa.coding_index", {}, providers=[alpha, beta]).candidates] == ["edge", "near"]
+        use_policy(monkeypatch, model_relation={"tester": ModelRelation(cost=0)})
+        assert [c.model for c in rank("aa.coding_index", {}, providers=[alpha, beta], role="tester").candidates] == ["edge", "near"]
         use_policy(monkeypatch)
         valued = rank("aa.coding_index", {}, providers=[alpha, beta]).valued
     assert [str(item) for item in valued] == ["near: score 59, $4.00 per M tokens, value 59.0",
@@ -720,3 +720,34 @@ class TestProviderConstraintOnTheRankedList:
                    reasoning={"tester": "medium"})
         with pytest.raises(ModelUnavailable, match=r"REQUIRE"):
             await run_agent(None, "t", agent="tester", cwd=str(tmp_path), mesh=False)
+
+
+#: (role's relation, expected winner): « strong » 60 points at $16/M, « mid » 55 at $4/M, « cheap » 30 at $0.2/M.
+RELATION_WEIGHTS = {
+    "cost ignored: the best score": (ModelRelation(cost=0), "strong"),
+    "the default trade": (ModelRelation(), "mid"),
+    "leaning cost: the cheapest model within its points per doubling": (ModelRelation(cost=6), "cheap"),
+}
+
+
+@pytest.mark.parametrize(("relation", "winner"), RELATION_WEIGHTS.values(), ids=RELATION_WEIGHTS.keys())
+def test_the_roles_weights_pick_the_model_never_a_name(team, scored, monkeypatch, relation, winner):
+    """Owner 2026-11-16: « find the correct relations to make efficient models be chosen, so no hardcoding / deactivating
+    models » and « the rules should be online, not local ! »: the role's online weights alone move the pick."""
+    alpha, beta = team
+    rows = [("vendor-a", "strong", 60, 8, 40), ("vendor-a", "mid", 55, 2, 10), ("vendor-a", "cheap", 30, 0.1, 0.5)]
+    with scored("aa.coding_index", rows):
+        use_policy(monkeypatch, model_relation={"tester": relation})
+        ranking = rank("aa.coding_index", {}, providers=[alpha, beta], role="tester")
+    assert ranking.candidates[0].model == winner
+    assert sorted(c.model for c in ranking.candidates) == sorted(row[1] for row in rows)
+
+
+def test_a_further_criterion_adds_its_weighted_points(team, scored, monkeypatch):
+    """A measure beyond the ranked one (`ModelRelation.criteria`, a future slider) adds weight × its points out of 100."""
+    alpha, beta = team
+    with scored("aa.coding_index", [("vendor-a", "a", 50, 2, 10), ("vendor-a", "b", 49, 2, 10)]):
+        Benchmark.by_id("mmmu_pro")._measured.update({"b": 0.9, "a": 0.1})
+        use_policy(monkeypatch, model_relation={"tester": ModelRelation(cost=3.5, criteria=({"name": "aa.mmmu_pro", "weight": 0.5},))})
+        ranking = rank("aa.coding_index", {}, providers=[alpha, beta], role="tester")
+    assert [c.model for c in ranking.candidates] == ["b", "a"]

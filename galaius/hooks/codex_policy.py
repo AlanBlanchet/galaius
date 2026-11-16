@@ -15,7 +15,7 @@ from galaius.agents.policy import Policy, PolicyError
 from galaius.agents.catalog.entries import AgentCatalog
 from galaius.agents import registry as reg
 from galaius.agents.run import is_criterion
-from galaius.catalog.criteria import Criteria
+from galaius.catalog.criteria import Criteria, ValueRule
 
 
 _ROLE = re.compile(r"^AGENT_ROLE:\s*([a-z][a-z0-9_-]{0,79})\s*$", re.MULTILINE)
@@ -103,7 +103,7 @@ def _select(policy: Policy, role: str) -> tuple[str, str, str, str]:
         )
 
     chosen = Criteria.parse(rule).choose(runnable=eligible, weights=policy.weights_for(role),
-                                         value=policy.value)
+                                         value=ValueRule(relation=policy.relation_for(role)))
     if chosen is None:
         raise PolicyError(
             f"No native Codex model with known prices clears {role!r}: {rule!r} "

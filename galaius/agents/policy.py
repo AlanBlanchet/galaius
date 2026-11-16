@@ -39,7 +39,7 @@ from galaius.agents.catalog.vocabulary import TouchScope
 from galaius.host.atomic_file import replace_held_open
 from galaius.host.file_lock import exclusive
 from galaius.config.user import UserConfig
-from galaius.catalog.criteria import ValueRule
+from galaius_core import ModelRelation
 
 #: The two altitudes a paradigm can be projected at for one agent. Closed on purpose: a third
 #: spelling ("prompt", "sticky-note") is a typo, silent until spawn.
@@ -99,10 +99,9 @@ class Policy:
     #: Never a default: a CLI that cannot enforce a role's tool list is refused unless the
     #: operator names this tradeoff here.
     coarse_tool_policy: dict[str, list[str]] = field(default_factory=dict)
-    #: Intelligence against cost (`ValueRule`): `"value": {"per_doubling": 3.5}` — the points a model must score
-    #: per doubling of its price to rank above a cheaper one; it orders, never removes. A machine-local cost choice;
-    #: absent means the defaults. Prices are read at each role's own measured token mix, never a mix typed here.
-    value: ValueRule = field(default_factory=ValueRule)
+    #: Each role's model-choice weights (`ModelRelation`), from its ONLINE record (the server catalog, its last fetched copy
+    #: offline): owner 2026-11-16 « the rules should be online, not local ! ». A role without one ranks by the default.
+    model_relation: dict[str, ModelRelation] = field(default_factory=dict)
     catalog: AgentCatalog | None = None
     #: The external tools the server connects each role to, served on this PC by galaius's MCP
     #: server (`galaius.agents.tool_gateway`): read with the catalog, added to each role's tools.
@@ -139,7 +138,6 @@ class Policy:
             reasoning=dict(raw.get("reasoning") or {}),
             reasoning_models=dict(raw.get("reasoning_models") or {}),
             coarse_tool_policy={k: list(v) for k, v in (raw.get("coarse_tool_policy") or {}).items()},
-            value=_value_rule(raw, path),
         )
         policy.validate()
         return policy
@@ -159,13 +157,13 @@ class Policy:
         policy.providers = dict(raw.get("providers", {}))
         if not isinstance(raw.get("defaults", {}), dict):
             raise PolicyError("Local agent defaults must be an object")
-        policy.defaults = dict(raw.get("defaults", {}))
+        # Nothing about ranking is read here: a role's rule and weights are its online record's (the local default rule too).
+        policy.defaults = {key: value for key, value in raw.get("defaults", {}).items() if key != "model"}
         if not isinstance(raw.get("coarse_tool_policy", {}), dict):
             raise PolicyError("Local coarse tool-policy acceptance must be an object")
         policy.coarse_tool_policy = {
             k: list(v) for k, v in (raw.get("coarse_tool_policy") or {}).items()
         }
-        policy.value = _value_rule(raw, policy_path())
         for agent in catalog.launch_agents:
             if agent.role_key is None:
                 continue
@@ -175,6 +173,7 @@ class Policy:
                 policy.agents[agent.role_key] = agent.model.id
             policy.reasoning[agent.role_key] = agent.reasoning
             policy.relations[agent.role_key] = agent.relations
+            policy.model_relation[agent.role_key] = agent.relation
             if agent.harness_tools is not None:
                 policy.agent_tools[agent.role_key] = list(agent.harness_tools)
             policy.paradigms[agent.role_key] = [
@@ -275,6 +274,10 @@ class Policy:
         refuse a legitimate id. One character removes the whole question.
         """
         return rule.startswith("@")
+
+    def relation_for(self, agent: str | None) -> ModelRelation:
+        """`agent`'s model-choice weights, as its online record holds them; the default for a role without one."""
+        return self.model_relation.get(agent or "", ModelRelation())
 
     def criterion_for(self, agent: str) -> str | None:
         """What model rule this agent runs under: its profile's criterion, its own inline
@@ -442,12 +445,6 @@ class Policy:
         ]
 
 
-def _value_rule(raw: dict, path: Path) -> ValueRule:
-    """The file's `value` block as a `ValueRule`, refused at load when it cannot be one."""
-    try:
-        return ValueRule.model_validate(raw.get("value") or {})
-    except ValueError as error:
-        raise PolicyError(f"{path}: `value` must look like {{\"per_doubling\": 3.5}} ({error})") from error
 
 def _parse_paradigms(
     raw: dict[str, list[dict[str, str]]], path: Path,
