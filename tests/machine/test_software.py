@@ -5,12 +5,17 @@ a freedesktop Main Category (`Other` when it names none), and what is printed ne
 
 import os
 import plistlib
+import sys
 import threading
 from pathlib import Path
 
 import pytest
 
 from galaius.machine.software import AppBundles, DesktopEntries, Inventory
+
+# The readers are Linux's and macOS's (`Inventory.read` refuses Windows): their paths, FIFOs and `:`-joined XDG lists
+# only mean something there.
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="installed software is read on Linux and macOS only")
 
 SYSTEM, USER = "usr/share/applications", "home/.local/share/applications"
 
@@ -155,3 +160,9 @@ def test_mac_bundles(tmp_path: Path) -> None:
     found = {app.id: (app.categories[0], app.scope, app.version) for app in AppBundles(home=home, roots=(apps, home / "Applications")).apps()}
     assert found == {"com.apple.FinalCut": ("AudioVideo", "system", "11.0"), "com.apple.Chess": ("Game", "system", None),
                      "org.odd": ("Other", "system", None), "org.mine": ("Development", "user", None), "Weird": ("Other", "system", None)}
+
+
+def test_windows_refuses_in_one_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    with pytest.raises(NotImplementedError, match="not read on win32"):
+        Inventory.read()
