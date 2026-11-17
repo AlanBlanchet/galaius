@@ -162,6 +162,16 @@ const PROVIDER_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/;
  * Human provider output is intentionally not accepted here. It is a presentation surface and
  * its wording is allowed to change; using it as a protocol made a provider disappear silently.
  */
+/** Where a workspace-connected PC's programs are switched (`galaius agents providers --json-out` `web`: its page on the
+ *  web); null on a PC connected to no workspace, whose switches stay its own. */
+export function switchesOnWeb(stdout: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(stdout);
+    const web = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as { web?: unknown }).web : null;
+    return typeof web === "string" && /^https?:\/\//.test(web) ? web : null;
+  } catch { return null; }
+}
+
 export function parseAgentProviders(stdout: string): AgentProviderStatus[] {
   let parsed: unknown;
   try { parsed = JSON.parse(stdout); } catch { return []; }

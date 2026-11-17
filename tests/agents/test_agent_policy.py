@@ -171,11 +171,6 @@ def test_the_policy_reaches_the_spawn(policy_file, monkeypatch):
     tools = run_mod.tools_for_agent("visual-critic")
     assert "mcp__galaius__screenshot" in tools and "mcp__galaius__navigate" in tools
 
-    # A provider switched off refuses to spawn at all, and says why.
-    with pytest.raises(RuntimeError) as e:
-        run_mod.check_provider_active("codex")
-    assert "codex" in str(e.value) and "agents.json" in str(e.value)
-    run_mod.check_provider_active("claude")  # active: no raise
 
 
 def test_the_allow_list_reaches_the_vendor_command():

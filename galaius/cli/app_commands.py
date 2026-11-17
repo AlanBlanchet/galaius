@@ -25,6 +25,7 @@ from galaius.inference import ollama
 from galaius_core import refusal_of, DEFAULT_PROGRAM, AGENT_TOUCH_SCOPES, ASKED_BY_MAX, IMAGE_TYPES, Coded, CommunityKind, MachineRefusal, RefusedLine
 
 from galaius.agents import messaging
+from galaius.machine.presence import PresenceFiles
 from galaius.agents import agent_queue
 from galaius.agents.turns import handback
 from galaius.agents.catalog import relations
@@ -1597,11 +1598,14 @@ def agents_providers(
         print(f"{name} {state}")
         return
     if json_out:
+        # `web`: where a workspace-connected PC's programs are switched (its page on the web), so a picker opens it instead
+        # of writing a switch this PC no longer reads; None on a PC connected to no workspace.
         print(json.dumps({"providers": [
             {"id": p.name, "label": p.name, "active": policy.provider_active(p.name),
              "available": p.available()}
             for p in PROVIDERS.values()
-        ]}))
+        ], "web": (PresenceFiles.default().read().page or policy.catalog.connection.endpoint) if policy.catalog is not None else None,
+           "switch_place": policy.switch_place()}))
         return
     for p in PROVIDERS.values():
         switch = "on" if policy.provider_active(p.name) else "off"

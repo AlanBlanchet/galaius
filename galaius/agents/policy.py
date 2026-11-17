@@ -404,12 +404,19 @@ class Policy:
         return (f"{policy_path()}: {', '.join(self.ignored)} not obeyed here: the workspace's rules decide, changed on the web "
                 f"({self.catalog.connection.endpoint if self.catalog is not None else 'its agents page'}); remove them from the file.")
 
+    def switch_place(self) -> str:
+        """Where a program is switched on or off for this PC: the workspace's switch on the web (`programs_off`), or this
+        PC's own file when it is connected to no workspace."""
+        if self.catalog is not None:
+            return f"for every PC of the workspace, on the web ({self.catalog.connection.endpoint}): a PC's page, Settings"
+        return f"in {policy_path()} (`galaius agents providers NAME on`)"
+
     def set_provider_active(self, provider: str, active: bool, path: Path | None = None) -> None:
         """Flip a provider on or off and write it back, so the CLI and the panel's toggle are
         reading and writing the same one fact. A catalog-connected PC writes nothing: the switch is the workspace's
         (`AgentCatalogSnapshot.programs_off`), changed on the web."""
         if self.catalog is not None:
-            raise PolicyError(f"Programs are switched on and off for every PC of the workspace, on the web: {self.catalog.connection.endpoint}")
+            raise PolicyError(f"Programs are switched on and off {self.switch_place()}")
         self.providers = self._write("providers", lambda switches: {**switches, provider: bool(active)}, path)
 
     def _write(self, section: str, change: Callable[[dict[str, Any]], dict[str, Any]], path: Path | None) -> dict[str, Any]:

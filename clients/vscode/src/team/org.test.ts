@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
-  parseAgentProviders, readOrg, orgTree, spawnChoices, modelFor, spawnArgs, sendArgs, textOption, definitionFile,
+  parseAgentProviders, switchesOnWeb, readOrg, orgTree, spawnChoices, modelFor, spawnArgs, sendArgs, textOption, definitionFile,
   type Org,
 } from "./org.ts";
 
@@ -154,6 +154,15 @@ test("provider discovery accepts only the machine-readable active and available 
     codex: { label: "Codex", active: true, available: true },
   } })), [{ id: "codex", label: "Codex", active: true, available: true }]);
   assert.deepEqual(parseAgentProviders("claude on available"), []);
+});
+
+test("A workspace-connected PC's program switches are on the web: the picker opens that page, never writes a local one", () => {
+  // Owner 2026-11-16 « the rules should be online, not local ! »
+  const page = "https://galaius.ai/plateform/#data?computer=abc";
+  assert.equal(switchesOnWeb(JSON.stringify({ providers: [], web: page })), page);
+  assert.equal(switchesOnWeb(JSON.stringify({ providers: [], web: null })), null);
+  assert.equal(switchesOnWeb(JSON.stringify({ providers: [], web: "javascript:alert(1)" })), null);
+  assert.equal(switchesOnWeb("not json"), null);
 });
 
 test("Start an Agent can omit the generic plain route while generic sessions omit a role", () => {

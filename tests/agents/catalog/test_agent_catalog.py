@@ -586,6 +586,7 @@ def test_configured_policy_obeys_the_catalog_and_names_every_local_rule_it_ignor
     notice = policy.ignored_notice()
     assert notice is not None and "providers" in notice and "http://localhost:8767" in notice
     assert Policy.load().ignored_notice() is None  # said once, not at every read
+    assert policy.switch_place().startswith("for every PC of the workspace, on the web (http://localhost:8767)")
     with pytest.raises(PolicyError, match="on the web"):
         policy.set_provider_active("codex", False)
     with pytest.raises(ValueError, match="Server catalog"):

@@ -48,7 +48,7 @@ from galaius.agents.limits.ceiling import contained
 from galaius.agents.transport.events import model_spoke, stream_lines
 from galaius.isolation.fence import MEDIA_SOCKET, TOOLS_PIPE, TOOLS_SOCKET, FenceSpec, available, fenced, inside_environment
 from galaius.host.processes import process_group_options, spawnable
-from galaius.agents.policy import TOOL_PREFIX, Policy, policy_path
+from galaius.agents.policy import TOOL_PREFIX, Policy
 from galaius.agents.catalog.profiles import overlay_for, profiles_from
 from galaius.agents.providers import PROVIDERS, AgentProvider, program_providers, ClaudeTurnSettings, UnsupportedToolPolicy, fits_argv, validate_denied_tools, _safe_process_detail
 from galaius.agents.catalog.vocabulary import TouchScope
@@ -435,8 +435,8 @@ async def _unavailable(
     if not policy.provider_active(provider.name):
         return _skip(
             "provider_off",
-            f"provider intent: {provider.name} is switched off in policy; enable it in provider "
-            "settings or choose another enabled provider.",
+            f"provider intent: {provider.name} is switched off; switch it on {policy.switch_place()}, "
+            "or choose another enabled provider.",
         )
     try:
         provider.validate_permission_mode(permission_mode)
@@ -508,20 +508,6 @@ def tools_for_agent(agent: str | None) -> list[str] | None:
     if not agent:
         return None
     return load_policy().tools_for(agent)
-
-
-def check_provider_active(provider: str) -> None:
-    """Refuse to spawn through a provider the operator switched off.
-
-    "we should be able to, from galaius, chose if we activate the agents or not for a provider" —
-    off means OFF at the one place every spawn passes through, not merely hidden in a picker.
-    """
-    active = load_policy().provider_active(provider)
-    if not active:
-        raise RuntimeError(
-            f"agents are switched off for {provider!r} in {policy_path()} — "
-            f'set {{"providers": {{"{provider}": true}}}} there to use it again'
-        )
 
 
 class TaskNotHanded(RuntimeError):

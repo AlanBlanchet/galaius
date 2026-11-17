@@ -12,7 +12,7 @@ import { AgentsProvider, type GroupBy } from "./agents/agentsView";
 import { DashboardPanel } from "./dashboard/dashboard";
 import { ScopeStore, setScopeStore } from "./workspace/scopeStore";
 import {
-  definitionFile, parseAgentProviders, readOrg, sendArgs, spawnArgs, spawnChoices,
+  definitionFile, parseAgentProviders, switchesOnWeb, readOrg, sendArgs, spawnArgs, spawnChoices,
   type AgentProviderStatus,
 } from "./team/org";
 import {
@@ -738,13 +738,24 @@ export async function activate(
     }),
     /* WHICH PROVIDERS DRIVE AGENTS HERE. "we should be able to, from galaius, chose if we
      *  activate the agents or not for a provider (claude, codex, other...)". A checklist of the
-     *  providers galaius knows; unticking one switches it off at the one place every spawn
-     *  passes through ("~/.galaius/agents.json", via the CLI, so the panel and the terminal
-     *  agree on a single fact). */
+     *  providers galaius knows; on a PC connected to no workspace, unticking one switches it off in
+     *  ~/.galaius/agents.json (via the CLI, so the panel and the terminal agree on a single fact). On a
+     *  workspace-connected PC the switch is the workspace's, on the web (owner 2026-11-16 « the rules
+     *  should be online, not local ! »): the panel says so and opens that page, never writing a local one. */
     vscode.commands.registerCommand("galaius.agents.providers", async () => {
-      const providers = await agentProviderStatuses();
-      if (!providers) {
+      const listed = await galaiusCli(["agents", "providers", "--json-out"]);
+      const providers = listed.error ? null : parseAgentProviders(listed.stdout);
+      if (!providers?.length) {
         void vscode.window.showErrorMessage(cliFailure("read installed agent providers"));
+        return;
+      }
+      const web = switchesOnWeb(listed.stdout);
+      if (web) {
+        const off = providers.filter((provider) => !provider.active).map((provider) => provider.label);
+        const open = "Open on the web";
+        const chosen = await vscode.window.showInformationMessage(
+          `Programs are switched on and off for every PC of the workspace, on the web. Off now: ${off.length ? off.join(", ") : "none"}.`, open);
+        if (chosen === open) void vscode.env.openExternal(vscode.Uri.parse(web));
         return;
       }
       const picked = await vscode.window.showQuickPick(
