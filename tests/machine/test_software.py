@@ -3,7 +3,9 @@ plants entries where a PC keeps them (system and user folders) and states the li
 id wins, a hidden one masks it, web-app shortcuts, Wine entries and settings panels never enter, every app sits under
 a freedesktop Main Category (`Other` when it names none), and what is printed never carries a path or a command."""
 
+import os
 import plistlib
+import threading
 from pathlib import Path
 
 import pytest
@@ -34,18 +36,25 @@ ROWS: dict[str, tuple[dict[str, str], dict[str, tuple[str, str]]]] = {
     "browser web-apps never listed": (
         {f"{USER}/chrome-abc-Default.desktop": entry("Client portal", Exec="chrome --profile-directory=Profile 1 --app-id=abc"),
          f"{USER}/brave-crx_x.desktop": entry("Bank"), f"{USER}/FFPWA-1.desktop": entry("Mail", Exec="firefoxpwa site launch 1"),
-         f"{USER}/org.gnome.Epiphany.WebApp_1.desktop": entry("Doc", Exec="epiphany --application-mode")},
+         f"{USER}/org.gnome.Epiphany.WebApp_1.desktop": entry("Doc", Exec="epiphany --application-mode"),
+         f"{USER}/webapp-MyBank1234.desktop": entry("MyBank Web", Categories="Network;",
+             Exec="sh -c 'firefox --class WebApp-MyBank1234 --profile /h/.local/share/ice/firefox/MyBank1234 https://bank.example'"),
+         f"{USER}/gmail.desktop": entry("Gmail", Exec="chromium --app=https://mail.google.com")},
         {}),
     "Wine entries never listed": (
         {f"{USER}/wine/Programs/Tool.desktop": entry("Tool"), f"{USER}/x.desktop": entry("X", Exec="env WINEPREFIX=/p wine C:\\x.exe")},
         {}),
-    "Windows-VM launchers (WinApps) never listed": (
+    "Windows-program launchers never listed, their front ends kept": (
         {f"{USER}/cmd.desktop": entry("Cmd", Exec="/opt/x/bin/winapps cmd %F", Categories="WinApps;Windows"),
          f"{USER}/word.desktop": entry("Word", Exec="winapps word %F", Categories="Office;"),
          f"{USER}/tagged.desktop": entry("Tagged", Categories="WinApps;Office;"),
          f"{USER}/quoted.desktop": entry("Quoted", Exec='"/opt/my apps/winapps" excel %F', Categories="Office;"),
-         f"{USER}/wq.desktop": entry("Wq", Exec="'/usr/bin/wine' x.exe", Categories="Game;")},
-        {}),
+         f"{USER}/wq.desktop": entry("Wq", Exec="'/usr/bin/wine' x.exe", Categories="Game;"),
+         f"{USER}/ps.desktop": entry("Photoshop CS6", Exec="flatpak run --command=bottles-cli com.usebottles.bottles run -p Photoshop -b Adobe -- %u"),
+         f"{USER}/pol.desktop": entry("Office 2010", Exec="playonlinux --run \"Office 2010\" %F"),
+         f"{USER}/com.usebottles.bottles.desktop": entry("Bottles", Exec="bottles %u", Categories="Utility;"),
+         f"{USER}/PlayOnLinux.desktop": entry("PlayOnLinux", Exec="playonlinux %F", Categories="Game;")},
+        {"com.usebottles.bottles": ("Utility", "user"), "PlayOnLinux": ("Game", "user")}),
     "settings panels dropped, Settings beside a Main Category kept": (
         {f"{SYSTEM}/panel.desktop": entry("Panel", Categories="Settings;HardwareSettings;"),
          f"{SYSTEM}/monitor.desktop": entry("Monitor", Categories="Settings;System;Monitor;")},
@@ -58,6 +67,10 @@ ROWS: dict[str, tuple[dict[str, str], dict[str, tuple[str, str]]]] = {
         {f"{SYSTEM}/huge.desktop": entry("Huge") + "#" * 300_000, f"{SYSTEM}/ctl.desktop": entry("\x1b\x07"),
          f"{SYSTEM}/nogroup.desktop": "Name=No group\n", f"{SYSTEM}/ok.desktop": entry("Ok\x1b[31m", Categories="Office;")},
         {"ok": ("Office", "system")}),
+    "BOM, direction marks, spaced categories": (
+        {f"{SYSTEM}/bom.desktop": "\ufeff" + entry("BOM App", Categories="Office;"), f"{SYSTEM}/rlo.desktop": entry("Evil\u202eexe.txt"),
+         f"{SYSTEM}/space.desktop": entry("Space", Categories=" Game ; Development ;")},
+        {"bom": ("Office", "system"), "rlo": ("Other", "system"), "space": ("Game", "system")}),
 }
 
 
@@ -79,7 +92,7 @@ def test_menu_entries(row: str, tmp_path: Path) -> None:
     inventory = Inventory(apps=tuple(source.apps()))
     assert {app.id: (app.categories[0], app.scope) for app in inventory.apps} == expected
     printed = inventory.model_dump_json(include={"categories"})
-    for leak in (str(tmp_path), "/usr/bin", "Exec", "crx_", "Profile 1", "--app", "\x1b", "\\u001b"):
+    for leak in (str(tmp_path), "/usr/bin", "Exec", "crx_", "Profile 1", "--app", "ice/", "\x1b", "\\u001b", "\u202e", "\\u202e"):
         assert leak not in printed
     assert all(app.name and app.name.isprintable() for app in inventory.apps)
 
@@ -89,6 +102,22 @@ def test_linked_folder_not_followed(tmp_path: Path) -> None:
     (tmp_path / SYSTEM).mkdir(parents=True)
     (tmp_path / SYSTEM / "linked").symlink_to(tmp_path / "elsewhere/applications")
     assert list(source.apps()) == []
+
+
+def test_fifo_and_device_entries_never_block(tmp_path: Path) -> None:
+    source = plant(tmp_path, {f"{SYSTEM}/ok.desktop": entry("Ok")})
+    os.mkfifo(tmp_path / SYSTEM / "pipe.desktop")
+    (tmp_path / SYSTEM / "zero.desktop").symlink_to("/dev/zero")
+    found: list = []
+    reader = threading.Thread(target=lambda: found.extend(source.apps()), daemon=True)
+    reader.start()
+    reader.join(5)
+    assert not reader.is_alive() and [app.id for app in found] == ["ok"]
+
+
+def test_relative_xdg_paths_are_ignored(tmp_path: Path) -> None:
+    source = DesktopEntries(home=tmp_path, environ={"XDG_DATA_HOME": "rel/share", "XDG_DATA_DIRS": "also/rel"})
+    assert source.roots()[0] == tmp_path / ".local/share/applications" and Path("/usr/share/applications") in source.roots()
 
 
 def test_categories_in_registry_order_names_sorted(tmp_path: Path) -> None:
@@ -115,6 +144,12 @@ def test_mac_bundles(tmp_path: Path) -> None:
     bundle(home / "Applications", "Chrome Apps/Gmail.app", {"CFBundleIdentifier": "com.google.Chrome.app.abc", "CFBundleName": "Gmail"})
     bundle(home / "Applications", "Mine.app", {"CFBundleIdentifier": "org.mine", "LSApplicationCategoryType": "public.app-category.developer-tools"})
     bundle(apps, "Final Cut.app/Contents/Inner.app", {"CFBundleIdentifier": "org.inner"})
+    bundle(apps, "Dated.app", b'<?xml version="1.0"?><plist version="1.0"><dict><key>a</key><date>x</date></dict></plist>')
+    for shim, bundle_id in (("Edge site.app", "com.microsoft.edgemac.app.Default-abc"), ("Brave site.app", "com.brave.Browser.app.Default-abc"),
+                            ("Canary site.app", "com.google.Chrome.canary.app.kjgfgldnnfoeklkmfkjfagphfepbbdan")):
+        bundle(home / "Applications", f"Chrome Apps/{shim}", {"CFBundleIdentifier": bundle_id, "CFBundleName": shim})
+    bundle(home / "Applications", "Shim.app", {"CFBundleIdentifier": "org.shim", "CrAppModeShortcutID": "abc"})
+    bundle(apps, "Weird.app", {"CFBundleIdentifier": {"x": 1}, "CFBundleName": ["no"], "LSApplicationCategoryType": 3})
     found = {app.id: (app.categories[0], app.scope, app.version) for app in AppBundles(home=home, roots=(apps, home / "Applications")).apps()}
     assert found == {"com.apple.FinalCut": ("AudioVideo", "system", "11.0"), "com.apple.Chess": ("Game", "system", None),
-                     "org.odd": ("Other", "system", None), "org.mine": ("Development", "user", None)}
+                     "org.odd": ("Other", "system", None), "org.mine": ("Development", "user", None), "Weird": ("Other", "system", None)}

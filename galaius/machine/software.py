@@ -13,7 +13,9 @@ import os
 import plistlib
 import re
 import shutil
+import stat
 import sys
+import unicodedata
 from collections.abc import Iterator
 from pathlib import Path
 from typing import ClassVar, Literal
@@ -41,17 +43,41 @@ APPLE_CATEGORIES: dict[str, str] = {
     "games": "Game", "utilities": "Utility",
 }
 #: A command or id that marks a browser web-app shortcut: Chromium browsers (`crx_`, `--app-id`, `--app=`), Firefox PWAs,
-#: GNOME Web (`--application-mode`, `WebApp_`), Chrome and Safari on macOS.
-WEB_APP = re.compile(r"crx_|--app-id|--app=|firefoxpwa|--application-mode|\.WebApp_|^com\.google\.Chrome\.app\.|^com\.apple\.Safari\.WebApp\.")
-#: A command or id launching a Windows program: Wine's generated entries (under `applications/wine/`: id `wine-…`) and
-#: WinApps' Windows-VM launchers; their names are whatever Windows software he installed there.
-WINDOWS = re.compile(r"(^|[/\s\"'])(wine(64)?|winapps)([\s\"']|$)|\.wine/|^wine-", re.IGNORECASE)
+#: GNOME Web (`--application-mode`, `WebApp_`), Linux Mint's Web Apps (`webapp-…`, `--class WebApp-…`, `ice/` profiles),
+#: Chromium-family app shims and Safari web apps on macOS (`<browser id>….app.…`, `com.apple.Safari.WebApp.…`).
+WEB_APP = re.compile(r"crx_|--app-id|--app=|firefoxpwa|--application-mode|\bWebApp[-_]|/ice/|"
+                     r"^(com\.google\.Chrome|com\.microsoft\.edgemac|com\.brave\.Browser|org\.chromium\.Chromium|com\.vivaldi\.Vivaldi|"
+                     r"com\.operasoftware\.Opera)[\w.-]*?\.app\.|^com\.apple\.Safari\.WebApp\.", re.IGNORECASE)
+#: Info.plist keys only a Chromium app shim carries (its site's profile and shortcut).
+APP_SHIM_KEYS = ("CrAppModeShortcutID", "CrAppModeProfileDirName")
+#: A command or id launching a Windows program: Wine's generated entries (under `applications/wine/`: id `wine-…`),
+#: WinApps' Windows-VM launchers, Bottles' and PlayOnLinux's per-program launchers; their names are whatever Windows
+#: software he installed there (Bottles and PlayOnLinux themselves stay listed).
+WINDOWS = re.compile(r"(^|[/\s\"'])(wine(64)?|winapps)([\s\"']|$)|\.wine/|^wine-|bottles-cli\b|playonlinux\s+--run", re.IGNORECASE)
 #: Vendor categories those launchers file themselves under.
 WINDOWS_CATEGORIES = frozenset({"WinApps", "Wine"})
-#: Characters a name never prints: a terminal reads C0 / C1 controls as commands.
-CONTROLS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
-#: Largest entry file read (a real one is a few kB; a larger one is not a menu entry).
+#: Largest entry or Info.plist read (a real one is a few kB).
 ENTRY_BYTES = 256 * 1024
+
+
+def printable(text: str) -> str:
+    """`text` without Unicode's control and format characters (a terminal reads C0 / C1 controls as commands; a
+    direction mark makes a name read backwards), at most 120 characters."""
+    return "".join(char for char in text if unicodedata.category(char)[0] != "C").strip()[:120]
+
+
+def regular_bytes(path: Path) -> bytes | None:
+    """At most `ENTRY_BYTES` of `path` when it is a regular file (a link to one included); None for anything else — a
+    FIFO would block the read for ever, a device never ends — or larger, or unreadable."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    with os.fdopen(descriptor, "rb") as file:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            return None
+        raw = file.read(ENTRY_BYTES + 1)
+    return raw if len(raw) <= ENTRY_BYTES else None
 
 
 class InstalledApp(BaseModel):
@@ -59,8 +85,8 @@ class InstalledApp(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    #: Its menu entry's or bundle's id, and its menu name: both `printable`.
     id: str = Field(min_length=1)
-    #: Its menu name, control characters dropped (a terminal reads them as commands), at most 120 characters.
     name: str = Field(min_length=1)
     #: The app's own version where the OS records it beside the app (macOS bundles); None on Linux menu entries, whose
     #: `Version` key is the entry format's version, not the app's.
@@ -70,10 +96,10 @@ class InstalledApp(BaseModel):
     #: `user`: installed in his home folder (his own, can name anything); `system`: for every account of this PC.
     scope: Literal["system", "user"]
 
-    @field_validator("name", mode="before")
+    @field_validator("id", "name", mode="before")
     @classmethod
-    def _printable(cls, name: str) -> str:
-        return CONTROLS.sub("", str(name)).strip()[:120]
+    def _printable(cls, text: str) -> str:
+        return printable(text)
 
 
 class Inventory(BaseModel):
@@ -117,11 +143,11 @@ class DesktopEntries:
         self.environ = os.environ if environ is None else environ
 
     def roots(self) -> list[Path]:
-        data_home = self.environ.get("XDG_DATA_HOME") or str(self.home / ".local/share")
-        data_dirs = (self.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":")
-        user_flatpak = str(self.home / ".local/share/flatpak/exports/share")
-        listed = [data_home, user_flatpak, *data_dirs, *self.EXPORTS]
-        return [Path(path) / "applications" for path in dict.fromkeys(path for path in listed if os.path.isabs(path))]
+        # A relative path in either variable is invalid and ignored (base-directory spec); none left → the default.
+        data_home = [path for path in [self.environ.get("XDG_DATA_HOME", "")] if os.path.isabs(path)] or [str(self.home / ".local/share")]
+        data_dirs = [path for path in self.environ.get("XDG_DATA_DIRS", "").split(":") if os.path.isabs(path)] or ["/usr/local/share", "/usr/share"]
+        listed = [*data_home, str(self.home / ".local/share/flatpak/exports/share"), *data_dirs, *self.EXPORTS]
+        return [Path(path) / "applications" for path in dict.fromkeys(listed)]
 
     def apps(self) -> Iterator[InstalledApp]:
         seen: set[str] = set()
@@ -152,7 +178,7 @@ class DesktopEntries:
         if entry is None or entry.get("Type") != "Application" or entry.get("NoDisplay") == "true" or entry.get("Hidden") == "true":
             return None
         name, command = entry.get("Name", "").strip(), entry.get("Exec", "")
-        names = [name for name in entry.get("Categories", "").split(";") if name]
+        names = [name.strip() for name in entry.get("Categories", "").split(";") if name.strip()]
         if not name or WEB_APP.search(entry_id) or WEB_APP.search(command) or WINDOWS.search(command) or WINDOWS.search(entry_id) \
                 or WINDOWS_CATEGORIES.intersection(names):
             return None
@@ -167,16 +193,12 @@ class DesktopEntries:
     @staticmethod
     def _group(path: Path) -> dict[str, str] | None:
         """The `[Desktop Entry]` group's unlocalized keys; None when the file cannot be read as one."""
-        try:
-            with path.open("rb") as file:
-                raw = file.read(ENTRY_BYTES + 1)
-        except OSError:
-            return None
-        if len(raw) > ENTRY_BYTES:
+        raw = regular_bytes(path)
+        if raw is None:
             return None
         keys: dict[str, str] = {}
         inside = False
-        for line in raw.decode("utf-8", errors="replace").splitlines():
+        for line in raw.decode("utf-8-sig", errors="replace").splitlines():
             line = line.strip()
             if line.startswith("["):
                 if inside:
@@ -227,19 +249,22 @@ class AppBundles:
                 continue
 
     def _app(self, bundle: Path) -> InstalledApp | None:
+        raw = regular_bytes(bundle / "Contents" / "Info.plist")
+        if raw is None:
+            return None
         try:
-            with (bundle / "Contents" / "Info.plist").open("rb") as file:
-                info = plistlib.load(file)
-        except (OSError, plistlib.InvalidFileException, ValueError):
+            info = plistlib.loads(raw)
+        except Exception:  # untrusted bytes: plistlib raises ValueError, AttributeError, ExpatError, OverflowError… per malformation
             return None
-        if not isinstance(info, dict):
+        if not isinstance(info, dict) or any(key in info for key in APP_SHIM_KEYS):
             return None
-        bundle_id = str(info.get("CFBundleIdentifier") or bundle.stem)
+        text = {key: value for key, value in info.items() if isinstance(value, str) and value}  # a non-string value is absent
+        bundle_id = text.get("CFBundleIdentifier", bundle.stem)
         if WEB_APP.search(bundle_id):
             return None
-        name = str(info.get("CFBundleDisplayName") or info.get("CFBundleName") or bundle.stem)
-        version = info.get("CFBundleShortVersionString")
-        kind = str(info.get("LSApplicationCategoryType") or "").removeprefix("public.app-category.")
+        name = text.get("CFBundleDisplayName") or text.get("CFBundleName") or bundle.stem
+        version = text.get("CFBundleShortVersionString")
+        kind = text.get("LSApplicationCategoryType", "").removeprefix("public.app-category.")
         category = "Game" if kind.endswith("-games") else APPLE_CATEGORIES.get(kind, "Other")
         scope: Literal["system", "user"] = "user" if bundle.is_relative_to(self.home) else "system"
-        return InstalledApp(name=name, id=bundle_id, version=str(version)[:40] if version else None, categories=(category,), scope=scope)
+        return InstalledApp(name=name, id=bundle_id, version=printable(version)[:40] or None if version else None, categories=(category,), scope=scope)
