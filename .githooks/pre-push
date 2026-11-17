@@ -52,7 +52,11 @@ while read -r _local_ref local_sha _remote_ref remote_sha; do
 
   hits="$(printf '%s\n%s\n' "$_local_ref" "$_remote_ref" | private_hits "$terms")"
   [ -n "$hits" ] && { echo "pre-push: private term in a branch name (info/private-terms):" >&2; echo "$hits" >&2; status=1; }
+  [ "$public" = 1 ] && [ "$_remote_ref" = refs/heads/main ] && tested="${tested:-} $range"
 done
+# Main's own checks run on three systems at once: the tests this push touches pass here first (.githooks/affected-tests.sh).
+# shellcheck disable=SC2086
+[ "$status" = 0 ] && [ -n "${tested:-}" ] && { "$(dirname "$0")/affected-tests.sh" $tested || status=1; }
 
 [ "$status" = 0 ] || echo "pre-push: nothing was pushed. Remove the material above (or rewrite those commits) first." >&2
 exit "$status"
