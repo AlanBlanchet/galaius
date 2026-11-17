@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import socket
+import stat
 import subprocess
 import tarfile
 import time
@@ -288,6 +289,15 @@ def test_a_conversation_coming_back_keeps_its_newer_copy_and_saves_the_other(pcs
         assert taken.detail.startswith("taken from PC-B") and reg.get_run(run_id).last == "Le IKEA à 32 €"
         assert transcript == '{"type":"user","message":"trouve un matelas"}\n' and f"{run_id}.jsonl" in {path.name for path in saved}
     assert [str(item.run_id) for item in a.answer("runs").runs] == [run_id] and a.agents.runs.entry(UUID(run_id)).moved_to is None
+
+
+def _removed(folder: Path) -> None:
+    """`folder` gone, git's read-only object files included (Windows refuses to delete those as they are)."""
+    def writable(function, path, _error) -> None:
+        os.chmod(path, stat.S_IWRITE)
+        function(path)
+    if folder.exists():
+        shutil.rmtree(folder, onerror=writable)
 
 
 def _git(folder: Path, *arguments: str) -> str:
@@ -717,7 +727,7 @@ def test_a_git_folder_borrowing_another_repository_s_objects_is_neither_reported
     _git(source, "init", "-q", "-b", "main")
     _commit(source, "a.txt", "a\n", "ours")
     for name in ("objects", "refs"):
-        shutil.rmtree(source / ".git" / name)
+        _removed(source / ".git" / name)
         (source / ".git" / name).symlink_to(other / ".git" / name)
     measured, done = _sent(a, b, server)
     assert done.state == "ready" and measured.repos == () and done.repos == ()
@@ -737,10 +747,10 @@ def test_a_git_folder_linking_below_its_top_names_to_another_repository_is_neith
     inside = project / ".git"
     if "fanout" in links:
         for part in range(256):
-            shutil.rmtree(inside / "objects" / f"{part:02x}", ignore_errors=True)
+            _removed(inside / "objects" / f"{part:02x}")
             (inside / "objects" / f"{part:02x}").symlink_to(other / ".git" / "objects" / f"{part:02x}")
     if "heads" in links:
-        shutil.rmtree(inside / "refs" / "heads")
+        _removed(inside / "refs" / "heads")
         (inside / "refs" / "heads").symlink_to(other / ".git" / "refs" / "heads")
     if "index" in links:
         (inside / "index").unlink()

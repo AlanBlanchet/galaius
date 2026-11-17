@@ -67,4 +67,4 @@ def test_this_pc_names_where_agents_work_never_no_folder(monkeypatch, projects, 
     makes its project's folder, is named first."""
     monkeypatch.setattr(MachineRunner, "load", lambda self: SimpleNamespace(run_agents=True, agent_roots=roots, agent_permission="workspace_write",
                                                                            projects_root=lambda: Path(projects) if projects else None))
-    assert turn_facts.this_pc().endswith(said)
+    assert turn_facts.this_pc().endswith(said.replace("/srv/pc/.galaius/projects", str(Path("/srv/pc/.galaius/projects"))))   # as this system writes it

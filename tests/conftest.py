@@ -153,7 +153,7 @@ def _isolate_unit_configuration(
 def _turn_facts_read_nothing_real(monkeypatch):
     """A coordinator's card reads no real server, CLI or machine file in a test (`turn_facts.readers`)."""
     from galaius.agents.turns.facts import Readers
-    monkeypatch.setattr("galaius.agents.turns.facts.readers", lambda: Readers(build=lambda: "a test build", pcs=lambda: "none", this_pc=lambda: "a test PC"))
+    monkeypatch.setattr("galaius.agents.turns.facts.readers", lambda run_id=None: Readers(build=lambda: "a test build", pcs=lambda: "none", this_pc=lambda: "a test PC"))
 
 
 @pytest.fixture(autouse=True)

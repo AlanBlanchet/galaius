@@ -215,7 +215,9 @@ def lines(facts: TurnFacts, *, read: Readers | None = None, run_id: str | None =
         f"Read at this turn ({time.strftime('%H:%M:%S')}): app build {said['build']}.",
         f"His PCs, as the server sees them:\n{said['pcs']}",
         f"This PC ({socket.gethostname()}): {said['this_pc']}; logins: {logins}.",
-        *((f"This conversation moved: {said['left']}",) if said.get("left") else ()),
+        # Said only when read: a turn of a conversation that never moved, or a read that failed, adds no line.
+        *((f"This conversation moved: {moved}",) if "left" in futures and futures["left"].done() and futures["left"].exception() is None
+          and (moved := futures["left"].result()) else ()),
     ))
 
 
