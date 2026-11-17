@@ -746,3 +746,27 @@ def test_a_model_listed_at_several_efforts_reads_its_best_published_row():
     for model in Model.registry():
         if model.published_id_key in several:
             assert read(model) == max(several[model.published_id_key]), model.id
+
+
+#: Catalog ids carrying a release date, and the published row naming the same model with its date in parentheses at most.
+DATED_IDS = {
+    "date in the id, in parentheses on the row": ("mistralai/mistral-small-3-2-2506", "Mistral Small 3.2 (2506)"),
+    "no date on either": ("mistralai/mistral-medium-3-5", "Mistral Medium 3.5"),
+    "long date in the id": ("anthropic/claude-3-5-sonnet-20241022", "Claude 3.5 Sonnet"),
+}
+
+
+@pytest.mark.parametrize(("model_id", "row"), DATED_IDS.values(), ids=DATED_IDS.keys())
+def test_a_dated_catalog_id_binds_its_published_row(model_id, row):
+    """The writing table (Arena) names `Mistral Small 3.2 (2506)`; the catalog registers `mistral-small-3-2-2506`: a release
+    date is a qualifier, never part of the model's identity, so the row binds and the writing rule scores it."""
+    assert Model(id=model_id, provider="p", capabilities=set()).published_id_key == Model.published_key(row)
+
+
+def test_the_writing_measure_is_ranged_and_sourced():
+    """Owner 2026-11-17 « why is docs writer not based on other criterias than intelligence... But so find a bench »: the
+    writing roles rank on Arena's human-judged writing rating, a measure with a declared range the cost relation reads."""
+    variable = Variables.by_name("arena.writing")
+    assert variable is not None and variable.rankable and variable.score_range is not None
+    table = Benchmark.by_id("writing").published
+    assert table is not None and table.retrieved and table.source_url and len(table.entries) > 100

@@ -385,7 +385,9 @@ class Model(RegistryMixin, BaseModel):
 
     @property
     def published_id_key(self) -> str:
-        return self.published_key(self.id.split("/", 1)[-1])
+        """`published_key` of its id, a trailing release date (`-2506`, `-20241022`) dropped: a published row names the
+        model, its date in parentheses at most (`Mistral Small 3.2 (2506)`)."""
+        return self.published_key(re.sub(r"[-_.@]\d{4,}$", "", self.id.split("/", 1)[-1]))
 
     @classmethod
     def match_published(cls, name: str) -> "Model | None":
@@ -1159,13 +1161,13 @@ for _id, _name, _field, _range in (
 Benchmark._register(
     Benchmark(
         id="coding_agent_index",
-        name="Artificial Analysis Coding Agent Index v1.5",
+        name="Artificial Analysis Coding Agent Index v2.1",
         category="text",
         source="Artificial Analysis Coding Agent Index",
         namespace="aa",
         description=(
-            "Equal-weight average of DeepSWE v1.1, Terminal-Bench 4.0 and SWE-Atlas-QnA, run in "
-            "a coding agent. Per model: its best single-model agent row (vendor harness, max effort)."
+            "Equal-weight average of FrontierCode 2.0, SWE-Atlas-QnA and Terminal-Bench 4.0, run in "
+            "a coding agent. Per model: its best single-model agent row (vendor harness, any effort)."
         ),
         url="https://artificialanalysis.ai/agents/coding-agents",
         score_url="https://artificialanalysis.ai/agents/coding-agents",
@@ -1173,6 +1175,30 @@ Benchmark._register(
         score_range=(0.0, 100.0),
         higher_is_better=True,
         published=PublishedTable.load("coding_agent_index"),
+    )
+)
+
+
+# Writing, as people judge it: Arena's human-vote ratings on writing, literature and language prompts (style-controlled),
+# published as a dataset. No documentation or technical-writing benchmark exists; this is the closest human-judged one.
+Benchmark._register(
+    Benchmark(
+        id="writing",
+        name="Arena Writing, Literature & Language",
+        category="text",
+        source="Arena (ex-LMArena) human votes",
+        namespace="arena",
+        description=(
+            "Bradley-Terry rating from pairwise human votes on writing, literature and language prompts, with "
+            "style control. Per model: its best row. Chat preference, not documentation accuracy."
+        ),
+        url="https://arena.ai/leaderboard/text/industry-writing-and-literature-and-language",
+        score_url="https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset",
+        methodology_url="https://arena.ai/blog",
+        # The 2026-11-11 table spans 929 to 1529: a point of this range (8 rating points) weighs like a point of an index.
+        score_range=(800.0, 1600.0),
+        higher_is_better=True,
+        published=PublishedTable.load("arena_writing"),
     )
 )
 
