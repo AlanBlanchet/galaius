@@ -16,6 +16,7 @@ from galaius.machine.service import MACHINE_SERVICE, ServiceUnavailable
 from galaius.machine.tray.launch import TrayLauncher
 from galaius.machine.places.places import PlaceDesk
 from galaius.machine.places.levels import split
+from galaius.machine.software import Inventory
 from galaius.machine.connection import SCRIPT_RUNTIMES, MachineFiles, MachineRunner, ScriptExecution, connect_command
 
 machine_app = App(name="machine", help="Connect this computer as a workflow machine.")
@@ -80,6 +81,20 @@ def machine_places(path: str | None = None, level: PlaceLevel | None = None) -> 
             raise SystemExit(f"galaius machine places: {error}") from None
     config = runner.load()
     print(desk.view(config).model_dump_json(indent=2))
+
+
+@machine_app.command(name="software")
+def machine_software() -> None:
+    """Owner-only, on this machine: the applications installed here, filed by the freedesktop Main Categories
+    (AudioVideo, Development, Graphics, Office, … and Other). Read here, printed here, sent nowhere: each app's
+    name, id, version where the OS records it, other categories and whether it is installed for every account or
+    yours alone; never a path, a command or an icon. Browser web-app shortcuts, Wine entries and OS settings panels
+    are left out."""
+    try:
+        inventory = Inventory.read()
+    except NotImplementedError as error:
+        raise SystemExit(f"galaius machine software: {error}") from None
+    print(inventory.model_dump_json(include={"categories"}, indent=2))
 
 
 @machine_app.command(name="browse")
