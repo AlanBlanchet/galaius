@@ -704,7 +704,7 @@ def card(run: reg.AgentRun, *, mid_turn: bool = False) -> str:
     if (words := _his_words(run)) and run.community is None and run.agent in Config().agent_turn_reviews.coordinators:
         if recalled := _recalled(run, words):
             lines.append(recalled)
-        if not mid_turn and (facts := turn_facts.lines(Config().agent_turn_facts)):   # read once, as the turn starts
+        if not mid_turn and (facts := turn_facts.lines(Config().agent_turn_facts, run_id=run.run_id)):   # read once, as the turn starts
             lines.append(facts)
     goes_to = report_to(run, placed)
     lines.append(f"When this turn ends your final message goes to {goes_to} by itself: never send it, never ack a report." if goes_to

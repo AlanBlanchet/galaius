@@ -44,6 +44,10 @@ from galaius.machine.places.levels import DEPENDENCY_FOLDERS, NEVER_GRANTABLE
 from galaius.machine.projects.workspace_git import Git, WorkspaceRefused
 
 
+#: Where a copy carries its git history (`galaius.machine.projects.git_state.GitFolder.bundles`): a folder of that name
+#: in a project is never copied.
+CARRIED_GIT = ".galaius-carried-git"
+
 class PortableName:
     """A file or folder name every system the owner's PCs run can hold, and never one that acts as
     `.git`: printable UTF-8 (no invisible character HFS+ would drop), not empty, `.` or `..`, no
@@ -94,7 +98,11 @@ class WorkspaceFiles(BaseModel):
             return None
         git = Git(options=self.GIT_OPTIONS, environment={**self.environment, "GIT_TERMINAL_PROMPT": "0"}, host="", deadline=time.monotonic() + 120)
         try:
-            return [path for path in git.run("-C", str(self.folder), "ls-files", "-z", "--cached", "--recurse-submodules").split("\0") if path]
+            # A path in conflict is listed once per stage: once here (a merge left under way, tester r1). Files not yet in
+            # git and not ignored travel too: the work under way (product-critic r1 2026-11-17).
+            tracked = git.run("-C", str(self.folder), "ls-files", "-z", "--cached", "--recurse-submodules").split("\0")
+            fresh = git.run("-C", str(self.folder), "ls-files", "-z", "--others", "--exclude-standard").split("\0")
+            return list(dict.fromkeys(path for path in (*tracked, *fresh) if path))
         except (WorkspaceRefused, OSError, TimeoutError, subprocess.TimeoutExpired):
             return None
 
@@ -141,7 +149,7 @@ class WorkspaceFiles(BaseModel):
                 more = True
                 break
             path = "/".join(parts)
-            if PortableName.path(path) is None:
+            if PortableName.path(path) is None or parts[0].casefold() == CARRIED_GIT:   # that name is the copy's own history (C1)
                 reason = "name"
             elif any(NEVER_GRANTABLE.secret(part) for part in parts):
                 reason = "credential_store"
@@ -161,10 +169,14 @@ class WorkspaceFiles(BaseModel):
         left_out = tuple(WorkspaceSkip(reason=reason, count=count, examples=tuple(examples[reason]), more=more and reason == "over_limit") for reason, count in counts.items() if count)
         return WorkspacePack(files=len(files), size=size, tracked=tracked is not None, origin=origin, skipped=left_out), files
 
-    def write(self, files: list[PackedFile], archive: Path) -> None:
+    def write(self, files: list[PackedFile], archive: Path, carried: list[tuple[str, Path, int]] = ()) -> None:
         """`files` as a gzip'd tar at `archive`: plain files only, each read through `PinnedDirectory`
-        and exactly as large as when measured (a file that changed meanwhile fails the copy)."""
+        and exactly as large as when measured (a file that changed meanwhile fails the copy); then `carried`, files this
+        PC made for the copy (its git history, `GitFolder.bundles`), each under its archive name."""
         with tarfile.open(archive, "w:gz", format=tarfile.PAX_FORMAT) as packed:
+            for name, path, _size in carried:
+                with path.open("rb") as stream:
+                    add_file(packed, name, stream, os.fstat(stream.fileno()))
             for file in files:
                 with PinnedDirectory.open(self.folder, *file.parts[:-1]) as folder:
                     descriptor = folder.file(file.parts[-1], os.O_RDONLY | getattr(os, "O_BINARY", 0) | PinnedDirectory.NONBLOCK)

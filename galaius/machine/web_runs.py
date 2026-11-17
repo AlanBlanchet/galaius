@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import ClassVar
 from uuid import UUID
 
-from galaius_core import AgentRefused, AgentRunKind, AgentStartRequest, StopActor, WebFull, WebLimited, WebLoad, listed_role
+from galaius_core import AgentRefused, AgentRunKind, FolderState, AgentStartRequest, StopActor, WebFull, WebLimited, WebLoad, listed_role
 from pydantic import BaseModel, ConfigDict
 
 from galaius.agents import registry as reg
@@ -65,6 +65,11 @@ class WebRun(BaseModel):
     moved_at: float | None = None
     #: The PC it came from (`AgentImportRequest`): taken again from one, its files here are replaced.
     carried_from: str | None = None
+    #: Its project folder on the PC it last ran on, as that PC packed it (`CarriedRun.left`): what its first turn here is
+    #: told stayed there (`galaius.agents.turns.facts.left_behind`).
+    left: FolderState | None = None
+    #: When this PC took it from another (`carried_from`): its first turn here, the one no turn ended after, is told so.
+    carried_at: float | None = None
 
 
 class WebRuns(BaseModel):

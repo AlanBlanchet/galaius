@@ -38,6 +38,7 @@ from annotated_types import MaxLen
 from pydantic import BaseModel, ConfigDict, Field
 
 from galaius_core import (
+    FolderState,
     MODEL_ID_MAX,
     PROJECTS_ROOT, AGENT_TOUCH_SCOPES, AgentCompactRequest, ContextGauge, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, AgentFile, media_kind, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
     AgentAllowanceRequest, AgentMoveRequest, AgentExportRequest, AgentImportRequest, AgentReleaseRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentToolInstallRequest, AgentToolsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, AgentHeldTakeRequest, AgentHeldPutRequest, AgentRetractRequest, RetractOutcome, SubscriptionAllowance, Lent, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
@@ -65,6 +66,7 @@ from galaius.machine.programs import AgentPrograms
 from galaius.machine.tools import MachineTools
 from galaius.machine.places.places import LOG as PLACES_LOG
 from galaius.machine.projects.workspaces import MachineWorkspaces, unusable
+from galaius.machine.projects.git_state import GitFolder
 from galaius.host.pinned_directory import PinnedDirectory
 from galaius.machine.projects.project_files import ProjectFolder
 from galaius.diagnostics.redaction import mask, redact, secret_values
@@ -657,9 +659,18 @@ class MachineAgents(BaseModel):
         if run.subscription is not None and run.subscription.lent:
             raise AgentRefused("not_here", "a member's conversation on a lent computer is never copied off it")
         measure, files = RunPackFiles(run=run, program=program).measure()
+        measure = measure.model_copy(update={"folder": self._folder_state(entry)})
         transfers = self._workspaces().transfers
         threading.Thread(target=self._send_run, args=(transfers, request.transfer, files), name=f"run-send-{request.transfer}", daemon=True).start()
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, carried=measure, detail="sending")
+
+    def _folder_state(self, entry: WebRun) -> FolderState | None:
+        """Its project folder here now (`GitFolder.state`), for the PC that takes it next; None when it is no folder here."""
+        try:
+            folder = self.folder(entry.root, entry.path)
+        except (AgentRefused, PermissionError, OSError, ValueError):
+            return None
+        return GitFolder(folder=folder, environment=self._workspaces().environment).state() if folder.is_dir() else None
 
     @staticmethod
     def _send_run(transfers: WorkspaceTransfers, transfer: UUID, files: list[tuple[str, Path | bytes, int]]) -> None:
@@ -708,7 +719,7 @@ class MachineAgents(BaseModel):
             if local is not None and (local.finished_at or 0) > (sent.get("finished_at") or 0):
                 backup.mkdir(parents=True, exist_ok=True, mode=0o700)
                 os.replace(received, backup / received.name)
-                self.runs.add(entry.model_copy(update={"moved_to": None, "moved_at": None, "carried_from": carried.moved_from}))
+                self.runs.add(entry.model_copy(update={"moved_to": None, "moved_at": None, "carried_from": carried.moved_from, "left": carried.left, "carried_at": None}))   # its newer copy is here: no turn is told it moved
                 return MachineAgentAnswer(request_id=request.id, run_id=request.run_id,
                                           detail=f"kept this computer's newer copy; the copy from {carried.moved_from} is saved in {backup}")
             home = fence.state / program.name if fence is not None else reg.login_folder(program, None)
@@ -722,7 +733,7 @@ class MachineAgents(BaseModel):
         finally:
             reader.discard()
             received.unlink(missing_ok=True)
-        self.runs.add(WebRun(run_id=request.run_id, root=request.root, path=request.path, fenced=fence is not None, carried_from=carried.moved_from))
+        self.runs.add(WebRun(run_id=request.run_id, root=request.root, path=request.path, fenced=fence is not None, carried_from=carried.moved_from, left=carried.left, carried_at=time.time()))
         return MachineAgentAnswer(request_id=request.id, run_id=request.run_id, detail=f"taken from {carried.moved_from}: {moved.status}")
 
     def _release(self, request: AgentReleaseRequest) -> MachineAgentAnswer:

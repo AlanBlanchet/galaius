@@ -398,8 +398,11 @@ class FenceSpec(BaseModel):
                     guards.append((top, path, folder))
                     binds += [FenceBind(source=top / child.name, target=top / child.name, writable=False) for child in os.scandir(top)
                               if child.name.casefold() in STEERING and not child.is_symlink()]
-                    binds += [FenceBind(source=top / ".git" / name, target=top / ".git" / name, writable=False)
-                              for name in ("hooks", "config", "info") if (top / ".git" / name).exists() and not (top / ".git" / name).is_symlink()]
+                    # Its own git folder and each submodule's under `.git/modules` (threat review 2026-11-17 F1): hooks, config, info.
+                    gits = [top / ".git", *(found.parent for found in (top / ".git" / "modules").rglob("config") if found.is_file())] \
+                        if (top / ".git").is_dir() and not (top / ".git").is_symlink() else []
+                    binds += [FenceBind(source=git / name, target=git / name, writable=False)
+                              for git in gits for name in ("hooks", "config", "info") if (git / name).exists() and not (git / name).is_symlink()]
                 binds += [FenceBind(source=found, target=found, writable=False) for found in scan.instructions]
             emptied += [folder / found.relative_to(source) for found in scan.secret_folders]
             blanked += [folder / found.relative_to(source) for found in scan.secret_files]

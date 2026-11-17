@@ -52,6 +52,8 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "work/app/.git/hooks/pre-commit.sample": "#!/bin/sh\n",
         "work/app/.git/config": "[core]\n",
         "work/app/.git/HEAD": "ref: refs/heads/main\n",
+        "work/app/.git/modules/lib/config": "[core]\n",
+        "work/app/.git/modules/lib/hooks/pre-commit.sample": "#!/bin/sh\n",
         "work/app/CLAUDE.md": "the owner's instructions",
         "work/app/src/AGENTS.md": "the owner's nested instructions",
         "sandbox/app/.git/hooks/pre-commit.sample": "#!/bin/sh\n",
@@ -215,6 +217,8 @@ print(json.dumps({
     "write_new_below": attempt(write("work/app/src/new.py")),
     "git_hook": attempt(write("work/app/.git/hooks/post-checkout")),
     "git_config": attempt(write("work/app/.git/config", "[core]\n\tfsmonitor = sh -c evil\n")),
+    "submodule_git_hook": attempt(write("work/app/.git/modules/lib/hooks/post-checkout")),
+    "submodule_git_config": attempt(write("work/app/.git/modules/lib/config", "[core]\n\tfsmonitor = sh -c evil\n")),
     "repo_claude_settings": attempt(write("work/app/.claude/settings.json")),
     "folder_mcp_json": attempt(write("work/.mcp.json")),
     "folder_claude_md": attempt(write("work/CLAUDE.md")),
@@ -264,6 +268,7 @@ def test_a_fenced_agent_cannot_leave_anything_that_runs_after_it(home: Path, tmp
     assert done.returncode == 0, done.stderr
     seen = json.loads(done.stdout)
     refused = ("hidden", "see_level", "read_write", "key_in_open_folder", "pem_in_open_folder", "env_in_open_folder", "git_hook", "git_config",
+               "submodule_git_hook", "submodule_git_config",
                "existing_claude_md", "existing_nested_agents_md", "sandbox_git_hook", "config_env", "claude_settings", "localhost", "x11")
     assert {name: seen[name] for name in refused if seen[name] == "ok"} == {}
     assert seen["read"] == seen["write_existing"] == seen["write_new_below"] == seen["sandbox_top"] == seen["own_transcript"] == seen["credentials"] == "ok"
@@ -531,6 +536,8 @@ def test_a_read_only_run_drives_apps_and_writes_only_in_its_scratch(home: Path, 
     assert FenceBind(source=npm, target=npm, writable=False) in spec.turn(_Installed(cli, npm / "tool")).binds
     assert spec.writes_nothing() and fence_decides(provider, spec, "read_only")
     assert not fence_decides(provider, _spec(home, tmp_path), "read_only")  # a fence that writes somewhere leaves the CLI's own mode on
+    # A run writing its workspace inside a fence runs its shell there (its `git commit`), never a command no one approves.
+    assert fence_decides(provider, _spec(home, tmp_path), "workspace_write") and not fence_decides(provider, None, "workspace_write")
     monkeypatch.setattr(type(provider), "available", lambda self: True)
     monkeypatch.setattr(provider, "_bwrap_refusal", lambda: "no nested bwrap", raising=False)
     mesh = mesh_config(run_id="r1", role="tester", fence=spec)

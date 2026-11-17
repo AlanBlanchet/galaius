@@ -31,7 +31,7 @@ from galaius.machine.agents import LISTED_RUNS, NO_REPLAY, LogRing, MachineAgent
 from galaius.machine.editors import EditorConversations
 from galaius.machine.web_runs import WebRun, WebRuns
 from galaius.diagnostics.redaction import redact
-from galaius_core import AGENT_PROGRAMS, AgentRefused
+from galaius_core import AGENT_PROGRAMS, AgentRefused, GitRemote
 from galaius.config.user import UserConfig
 from galaius.machine import connection as machines
 from galaius.diagnostics.error_reports import MachineErrorReports
@@ -1176,8 +1176,21 @@ def test_the_submodule_walk_never_leaves_the_clone(base: Path, tmp_path: Path) -
     before = (outside / ".git" / "config").read_bytes()
     workspaces = _agents(base, tmp_path, clone_origins=("github.com/owner/*",)).workspaces
     git = Git(options=MachineWorkspaces.GIT_OPTIONS, environment={"PATH": os.environ["PATH"], "HOME": str(tmp_path)}, host="github.com", deadline=time.monotonic() + 30)
-    workspaces._submodules(git, clone, clone)
+    workspaces._submodules(git, clone, clone, GitRemote(url="https://github.com/owner/clone.git"))
     assert (outside / ".git" / "config").read_bytes() == before
+
+
+def test_a_submodule_from_another_owner_is_left_out_and_named_never_failing_the_clone(base: Path, tmp_path: Path) -> None:
+    """Threat review 2026-11-17 S1: a repository's submodule from another owner, not among the PC's origins, is never
+    fetched; the clone goes on without it and names it (before, it failed the clone: a copy without `.git` followed)."""
+    clone = base / "project" / "clone"
+    subprocess.run(["git", "init", "-q", str(clone)], check=True)
+    (clone / ".gitmodules").write_text('[submodule "x"]\n\tpath = x\n\turl = https://github.com/stranger/x.git\n')
+    subprocess.run(["git", "-C", str(clone), "update-index", "--add", "--cacheinfo", f"160000,{'a' * 40},x"], check=True)
+    workspaces = _agents(base, tmp_path, clone_origins=("github.com/owner/clone",)).workspaces
+    git = Git(options=MachineWorkspaces.GIT_OPTIONS, environment={"PATH": os.environ["PATH"], "HOME": str(tmp_path)}, host="github.com", deadline=time.monotonic() + 30)
+    assert workspaces._submodules(git, clone, clone, GitRemote(url="https://github.com/owner/clone.git")) == ["x"]
+    assert "stranger" not in (clone / ".git" / "config").read_text() and not (clone / "x" / ".git").exists()
 
 
 @pytest.mark.parametrize(("where", "root", "path"), [("project/src/aino", "project", "src/aino"), ("other/aino", "other/aino", "")])

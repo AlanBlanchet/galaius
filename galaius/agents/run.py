@@ -809,9 +809,15 @@ def require_galaius(role: str | None, tools: list[str] | None, provider: AgentPr
 
 def fence_decides(provider: AgentProvider, fence: FenceSpec | None, permission_mode: str | None) -> bool:
     """Whether a turn's writes are the fence's to refuse, not its CLI's: a read-only run inside a fence that writes
-    nothing but its scratch folder (`FenceSpec.writes_nothing`). Its CLI then runs every tool its role has (`fence_decides`
-    on the provider's command) — galaius's app tools included, a write refused by the kernel."""
-    return fence is not None and provider.touch_of(permission_mode) is TouchScope.READ_ONLY and fence.writes_nothing()
+    nothing but its scratch folder (`FenceSpec.writes_nothing`), or a run that writes its workspace inside a fence (the
+    kernel opens it its project folder alone). Its CLI then runs every tool its role has (`fence_decides` on the
+    provider's command) — galaius's app tools and its shell included (`git commit` there), a write elsewhere refused by
+    the kernel. 2026-11-17: a conversation moved to another PC, `workspace_write` there, ran as Claude's `acceptEdits`,
+    which refuses every command no one is there to approve: its `git`, `python` and `node` were refused."""
+    if fence is None:
+        return False
+    touch = provider.touch_of(permission_mode)
+    return touch is TouchScope.READ_ONLY and fence.writes_nothing() or touch is TouchScope.WORKSPACE_WRITE
 
 
 def read_only_fence(cwd: str, run_id: str) -> FenceSpec | None:
@@ -1878,9 +1884,12 @@ async def run_agent(
             fence_decides=fence_decides(candidate_provider, candidate_fence, candidate_permission_mode),
             allowed_tools=allowed_tools, reasoning=candidate_effort, coarse_accepted=candidate_coarse_accepted,
         )
-        if command_kwargs["fence_decides"]:
+        if command_kwargs["fence_decides"] and candidate_provider.touch_of(candidate_permission_mode) is TouchScope.READ_ONLY:
             brief += (f"Read-only run: {cwd} and everything you see are read-only (the system refuses a write); write files only "
                       f"in {candidate_fence.scratch}, where your galaius tools save theirs (a relative `path` lands there).\n\n")
+        elif command_kwargs["fence_decides"]:   # threat review 2026-11-17 F2: a fenced write run is told what it may write
+            brief += (f"Fenced run: you write in {cwd} alone (the system refuses a write elsewhere); the git hooks and config "
+                      f"already there are read-only.\n\n")
         if candidate_routed.get("OPENAI_BASE_URL"):
             command_kwargs["base_url"] = candidate_routed["OPENAI_BASE_URL"]
         if community is not None:

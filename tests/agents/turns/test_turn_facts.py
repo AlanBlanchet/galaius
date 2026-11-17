@@ -4,6 +4,7 @@
 import time
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -54,3 +55,16 @@ def test_his_pcs_are_read_from_the_server_each_line_or_why_not(monkeypatch, answ
     else:
         assert "- desk (this PC): online, last seen 2026-10-22 15:58 UTC" in card
         assert "- lenovo, logins not reported: offline, last seen 2026-10-22 10:31 UTC, work folders: aino" in card
+
+
+@pytest.mark.parametrize(("projects", "roots", "said"), [
+    ("/srv/pc/.galaius/projects", (), "projects folder /srv/pc/.galaius/projects (a launch makes each project's folder there); other agent folders none; agents may: workspace_write"),
+    ("/srv/pc/.galaius/projects", ("dev",), "projects folder /srv/pc/.galaius/projects (a launch makes each project's folder there); other agent folders dev; agents may: workspace_write"),
+    (None, (), "unusable (a link, a junction or a file is there); other agent folders none; agents may: workspace_write"),
+])
+def test_this_pc_names_where_agents_work_never_no_folder(monkeypatch, projects, roots, said):
+    """2026-11-17: a run working on a PC was told « agent folders none »: the projects folder, where every launch
+    makes its project's folder, is named first."""
+    monkeypatch.setattr(MachineRunner, "load", lambda self: SimpleNamespace(run_agents=True, agent_roots=roots, agent_permission="workspace_write",
+                                                                           projects_root=lambda: Path(projects) if projects else None))
+    assert turn_facts.this_pc().endswith(said)

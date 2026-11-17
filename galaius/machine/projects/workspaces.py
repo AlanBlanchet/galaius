@@ -36,7 +36,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict
 
 from galaius_core import (
-    PROJECTS_ROOT, GitRemote, MachineWorkspaceJob, WorkspaceArchive, WorkspaceCreateRequest, WorkspaceFailure, WorkspacePack, WorkspacePackRequest,
+    FOLDER_REPOS_MAX, PROJECTS_ROOT, WORKSPACE_COPY_MAX_BYTES, WORKSPACE_COPY_MAX_FILES, GitRemote, MachineWorkspaceJob, WorkspaceArchive, WorkspaceCreateRequest, WorkspaceFailure, WorkspacePack, WorkspacePackRequest,
     WorkspacePrepareRequest, WorkspaceRefresh, WorkspaceSpec, WorkspaceUpload,
 )
 from galaius.host.file_lock import exclusive
@@ -47,6 +47,7 @@ from galaius_core import AgentRefused
 from galaius.host.private_files import PRIVATE_FILES
 from galaius.machine.projects.workspace_copy import PackedFile, WorkspaceArchiveReader, WorkspaceFiles, WorkspaceTransfers
 from galaius.machine.projects.workspace_git import Git, WorkspaceRefused
+from galaius.machine.projects.git_state import GitFolder
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +169,7 @@ class MachineWorkspaces(BaseModel):
             return job
         self._room(request.root)
         return self._started(KeptJob(id=uuid4(), root=request.root, name=request.name, source="copy", state="running", started_at=datetime.now(UTC),
-                                     done=0, total=request.copy_of.size), self._receive, request.copy_of)
+                                     done=0, total=request.copy_of.size), self._receive, request.copy_of, request.history)
 
     def pack(self, request: WorkspacePackRequest, folder: Path) -> WorkspacePack:
         """What copying `folder` sends (past the copy limits, the files that fit); with
@@ -176,10 +177,12 @@ class MachineWorkspaces(BaseModel):
         measure, files = WorkspaceFiles(folder=folder, environment=self.environment).pack(self.remote_of(folder))
         if request.transfer is None:
             return measure
+        if request.history:   # what the copy carries, said with it (a size asked before a launch waits on none of this)
+            measure = measure.model_copy(update={"repos": GitFolder(folder=folder, environment=self.environment).state().repos})
         if not self._sending.acquire(blocking=False):
             raise PermissionError("another folder is being sent from this computer; wait for it to finish")
         try:
-            threading.Thread(target=self._send, args=(request.transfer, folder, files), name=f"workspace-send-{request.transfer}", daemon=True).start()
+            threading.Thread(target=self._send, args=(request.transfer, folder, files, request.history), name=f"workspace-send-{request.transfer}", daemon=True).start()
         except BaseException:
             self._sending.release()
             raise
@@ -382,14 +385,14 @@ class MachineWorkspaces(BaseModel):
         try:
             git = self._git(remote.host, self.timeout)
             git.run("clone", "--", remote.url, str(partial))
-            if submodules:
-                self._submodules(git, partial, partial)
+            skipped = self._submodules(git, partial, partial, remote) if submodules else []
             config = hashlib.sha256((partial / ".git" / "config").read_bytes()).hexdigest()
             name = self._placed(job.root, job.name, lambda root, name: root.move(partial.name, root, name))
         except BaseException:
             self._discard(job)
             raise
-        return job.model_copy(update={"name": name, "state": "ready", "detail": "", "git_config": config})
+        detail = f"submodules not fetched (not from {remote.host}/{remote.path.split('/')[0]} nor allowed on this PC): {', '.join(skipped)}"[:600] if skipped else ""
+        return job.model_copy(update={"name": name, "state": "ready", "detail": detail, "git_config": config})
 
     def _git(self, host: str, seconds: float, **environment: str) -> Git:
         """git as a clone or a refresh from the web runs it: no hook, no prompt, no LFS download, the
@@ -446,7 +449,7 @@ class MachineWorkspaces(BaseModel):
         except (PermissionError, OSError, subprocess.TimeoutExpired, TimeoutError):
             return "diverged"
 
-    def _receive(self, job: KeptJob, archive: WorkspaceArchive) -> KeptJob:
+    def _receive(self, job: KeptJob, archive: WorkspaceArchive, history: bool = False) -> KeptJob:
         """The copy downloaded (`done` recorded part by part), its files written into the job's
         hidden partial folder through `PinnedDirectory`, then moved to the first free name: never
         over anything there, nothing left behind on a failure."""
@@ -457,23 +460,32 @@ class MachineWorkspaces(BaseModel):
             self.transfers.download(archive, received, lambda done: self.jobs.put(job.model_copy(update={"done": done})))
             with self._open(job.root) as root:
                 root.mkdir(partial, 0o755)
-            WorkspaceArchiveReader(archive=archive, base=anchor, parts=(*root_parts, partial)).extract(received)
+            # `.galaius-carried-git/` read only from a copy asked to carry history (threat review 2026-11-17 C1).
+            WorkspaceArchiveReader(archive=archive, base=anchor, parts=(*root_parts, partial),
+                                   allowed=None if history else lambda parts: parts[0].casefold() != GitFolder.CARRIED).extract(received)
+            # Its git history made repositories again before it is in place (`GitFolder.rebuild`): never half a checkout.
+            repos = GitFolder(folder=anchor.joinpath(*root_parts, partial), environment=self.environment).rebuild() if history else ()
             name = self._placed(job.root, job.name, lambda root, name: root.move(partial, root, name))
         except BaseException:
             self._discard(job)
             raise
         finally:
             received.unlink(missing_ok=True)
-        return job.model_copy(update={"name": name, "state": "ready", "done": archive.size, "detail": ""})
+        return job.model_copy(update={"name": name, "state": "ready", "done": archive.size, "detail": "", "repos": repos})
 
-    def _send(self, transfer: UUID, folder: Path, files: list[PackedFile]) -> None:
-        """The upload of `files`, packed beside the runner's own data; its outcome posted to the
+    def _send(self, transfer: UUID, folder: Path, files: list[PackedFile], history: bool = False) -> None:
+        """The upload of `files` (with `history`, each repository's history on its checked-out branch too, while it
+        fits the copy's limits: `GitFolder.bundles`), packed beside the runner's own data; its outcome posted to the
         server either way (a failure as its code), the packed archive removed."""
         packed = UserPaths.data() / "transfers" / f"{transfer}.send.tar.gz"
+        bundles = UserPaths.data() / "transfers" / f"{transfer}.git"
         try:
             packed.parent.mkdir(parents=True, exist_ok=True)
-            WorkspaceFiles(folder=folder, environment=self.environment).write(files, packed)
-            self.transfers.upload(transfer, packed, len(files))
+            room = WORKSPACE_COPY_MAX_BYTES - sum(file.size for file in files)
+            carried = GitFolder(folder=folder, environment=self.environment).bundles(bundles, room) \
+                if history and len(files) + FOLDER_REPOS_MAX + 1 <= WORKSPACE_COPY_MAX_FILES else []
+            WorkspaceFiles(folder=folder, environment=self.environment).write(files, packed, carried)
+            self.transfers.upload(transfer, packed, len(files) + len(carried))
         except Exception as error:  # the thread's boundary: whatever stopped it, the server hears it
             code = error.refusal.reason if isinstance(error, WorkspaceRefused) else "disk_full" if getattr(error, "errno", None) == errno.ENOSPC else "failed"
             logger.exception("sending folder for transfer %s failed", transfer)
@@ -483,34 +495,41 @@ class MachineWorkspaces(BaseModel):
                 logger.warning("the server never heard transfer %s failed: %s", transfer, unreachable)
         finally:
             packed.unlink(missing_ok=True)
+            shutil.rmtree(bundles, ignore_errors=True)
             self._sending.release()
 
-    def _submodules(self, git: "Git", folder: Path, clone: Path, depth: int = 0) -> None:
-        """Fetches `folder`'s submodules, nested ones too, each only once its address (as git
-        resolved it, relative ones included) is checked like the repository's own. The walk follows
-        only the submodules git itself records in `folder` (its gitlinks), never `.gitmodules`
-        paths, and never leaves `clone`."""
+    def _submodules(self, git: "Git", folder: Path, clone: Path, parent: GitRemote, depth: int = 0) -> list[str]:
+        """Fetches `folder`'s submodules, nested ones too, each only once its address (as git resolved it, relative ones
+        included) is checked: one from the same host and owner as the repository cloned (`parent`), or one the owner's
+        origins allow, on a public host. Any other is left unfetched, its folder empty, and named (threat review
+        2026-11-17 S1: before, one such submodule failed the whole clone). The walk follows only the submodules git itself
+        records in `folder` (its gitlinks), never `.gitmodules` paths, and never leaves `clone`. Returns what it left out."""
         if depth >= self.SUBMODULE_DEPTH:
             raise RuntimeError(f"submodules nest deeper than {self.SUBMODULE_DEPTH} levels; refused")
         linked = [entry.split("\t", 1)[1] for entry in git.run("-C", str(folder), "ls-files", "-z", "--stage").split("\0") if entry.startswith("160000 ")]
         if not linked:
-            return
+            return []
         git.run("-C", str(folder), "submodule", "init")
+        owner, skipped = (parent.host, parent.path.split("/")[0].lower()), []
         for entry in git.run("-C", str(folder), "config", "--local", "-z", "--get-regexp", r"^submodule\..*\.url$", allow=(1,)).split("\0"):
             key, _, url = entry.partition("\n")
             if not key:
                 continue
+            section = key.removesuffix(".url")
             try:
                 remote = GitRemote(url=url)
-            except ValueError:
-                raise RuntimeError(f"submodule {key.removeprefix('submodule.').removesuffix('.url')} has an address this PC never clones from the web") from None
-            try:
-                self._allowed(remote)
-            except PermissionError as refusal:
-                raise RuntimeError(f"submodule {remote.origin}: {refusal}") from None
+                if (remote.host, remote.path.split("/")[0].lower()) != owner and not remote.allowed_by(self.origins):
+                    raise PermissionError(f"{remote.origin} is not among the repositories this PC may clone")
+                self._public_host(remote.host)
+            except (ValueError, PermissionError, WorkspaceRefused) as refusal:
+                logger.info("submodule %s left out: %s", section.removeprefix("submodule."), refusal)
+                git.run("-C", str(folder), "config", "--local", "--remove-section", section)
+                skipped.append(section.removeprefix("submodule."))
         git.run("-C", str(folder), "submodule", "update")
         for path in linked:
             nested = folder / path
             if nested.is_symlink() or not nested.resolve().is_relative_to(clone.resolve()):
                 raise RuntimeError(f"submodule path {path!r} leaves the workspace; refused")
-            self._submodules(git, nested, clone, depth + 1)
+            if (nested / ".git").exists():
+                skipped += self._submodules(git, nested, clone, parent, depth + 1)
+        return skipped
