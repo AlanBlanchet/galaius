@@ -379,15 +379,15 @@ class Model(RegistryMixin, BaseModel):
 
     @staticmethod
     def published_key(name: str) -> str:
-        """The identity a published row name (`Claude Opus 5.5 (max)`) and a bare model id
-        (`claude-opus-5.5`, `claude-opus-5-5`) share: no qualifier, lowercase, letters and digits."""
-        return re.sub(r"[^a-z0-9]", "", re.sub(r"\s*\(.*$", "", name).lower())
+        """The identity a published row name (`Claude Opus 5.5 (max)`, `Mistral Small 3.2 (2506)`, `Claude 4 Sonnet
+        20250514`) and a bare model id (`claude-opus-5.5`, `mistral-small-3-2-2506`) share: no qualifier, no trailing
+        release date (4+ digits), lowercase, letters and digits."""
+        bare = re.sub(r"\s*\(.*$", "", name).lower()
+        return re.sub(r"[^a-z0-9]", "", re.sub(r"[\s\-_.@]\d{4,}$", "", bare))
 
     @property
     def published_id_key(self) -> str:
-        """`published_key` of its id, a trailing release date (`-2506`, `-20241022`) dropped: a published row names the
-        model, its date in parentheses at most (`Mistral Small 3.2 (2506)`)."""
-        return self.published_key(re.sub(r"[-_.@]\d{4,}$", "", self.id.split("/", 1)[-1]))
+        return self.published_key(self.id.split("/", 1)[-1])
 
     @classmethod
     def match_published(cls, name: str) -> "Model | None":
