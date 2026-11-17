@@ -108,12 +108,13 @@ class _TransportRegistry(BaseModel):
 
     async def session_route(self, now: float) -> ConversationRoute:
         try:
-            active = Policy.load().provider_active("codex")
-        except PolicyError:
-            active = False
-        if not active:
+            policy = Policy.load()
+            off = None if policy.provider_active("codex") else policy.off_sentence("codex")
+        except PolicyError as error:
+            off = f"Codex sessions cannot read the agent policy: {error}"
+        if off is not None:
             self._session_availability = "policy_blocked"
-            self._session_reason = "Codex sessions are disabled by agent policy."
+            self._session_reason = off
         elif self._session is None:
             await self._open_session()
         model_ids: list[str] = []

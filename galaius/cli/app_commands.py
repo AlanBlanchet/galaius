@@ -1604,7 +1604,7 @@ def agents_providers(
             {"id": p.name, "label": p.name, "active": policy.provider_active(p.name),
              "available": p.available()}
             for p in PROVIDERS.values()
-        ], "web": (PresenceFiles.default().read().page or policy.catalog.connection.endpoint) if policy.catalog is not None else None,
+        ], "web": (f"{page}&section=web-limit" if (page := PresenceFiles.default().read().page) else policy.catalog.connection.endpoint) if policy.catalog is not None else None,
            "switch_place": policy.switch_place()}))
         return
     for p in PROVIDERS.values():

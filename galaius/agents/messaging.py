@@ -149,7 +149,7 @@ def policy_for_continuation(run, provider: AgentProvider, environment: Mapping[s
         policy = load_policy()
         policy, _ = policy.for_launch(run.agent, reference=run.agent_ref)
         if not policy.provider_active(provider.name):
-            raise ModelUnavailable(sentence=f"Agent provider {provider.name!r} is disabled by policy")
+            raise ModelUnavailable(sentence=policy.off_sentence(provider.name))
         criterion = policy.criterion_for(run.agent)
         if not criterion:
             raise ModelUnavailable(sentence=f"No model criterion for {run.agent!r}; configure it in the agent policy UI")

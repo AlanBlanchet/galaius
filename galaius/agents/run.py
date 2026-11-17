@@ -435,8 +435,7 @@ async def _unavailable(
     if not policy.provider_active(provider.name):
         return _skip(
             "provider_off",
-            f"provider intent: {provider.name} is switched off; switch it on {policy.switch_place()}, "
-            "or choose another enabled provider.",
+            f"provider intent: {policy.off_sentence(provider.name)}, or choose another enabled provider.",
         )
     try:
         provider.validate_permission_mode(permission_mode)
@@ -1635,7 +1634,7 @@ async def run_agent(
             )
     policy, agent, selected_ref = resolve_role(policy, agent, reference=agent_ref, parent=parent, delegate=delegate)
     if provider is not None and not policy.provider_active(provider.name):
-        raise ModelUnavailable(sentence=f"Agent provider {provider.name!r} is disabled by policy")
+        raise ModelUnavailable(sentence=policy.off_sentence(provider.name))
     named = run_id is not None
     run_id = run_id or str(uuid.uuid4())
     # The brief's images are the run's own from here (`RunMedia`): what its agent is handed, what its record names.

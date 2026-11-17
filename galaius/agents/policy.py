@@ -411,6 +411,10 @@ class Policy:
             return f"for every PC of the workspace, on the web ({self.catalog.connection.endpoint}): a PC's page, Settings"
         return f"in {policy_path()} (`galaius agents providers NAME on`)"
 
+    def off_sentence(self, provider: str) -> str:
+        """What every refusal of a switched-off program says: which one, and where to switch it back on."""
+        return f"{provider} is switched off; switch it on {self.switch_place()}"
+
     def set_provider_active(self, provider: str, active: bool, path: Path | None = None) -> None:
         """Flip a provider on or off and write it back, so the CLI and the panel's toggle are
         reading and writing the same one fact. A catalog-connected PC writes nothing: the switch is the workspace's

@@ -169,7 +169,7 @@ def handle(event: dict) -> dict:
         raise PolicyError("Parent run has no recorded server revision; start the parent again")
     policy, role = policy.for_launch(role, parent=parent_run.agent_ref if parent_run is not None else None)
     if not policy.provider_active("codex"):
-        raise PolicyError("Codex is disabled in the shared agent policy.")
+        raise PolicyError(policy.off_sentence("codex"))
     model, effort, rule, price = _select(policy, role)
     definition = _definition(role) if policy.catalog is None else policy.catalog.definition(role, "")
     updated = dict(arguments)
