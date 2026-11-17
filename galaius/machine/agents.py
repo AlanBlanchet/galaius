@@ -1361,7 +1361,7 @@ class MachineAgents(BaseModel):
         was (Claude Code reads its hooks when a session starts: reopened, it can be)."""
         if any(item.run_id == str(request.run_id) for item in self.runs.runs()):
             return None
-        session = next((run for run in reg.list_runs(include_foreign=True) if run.foreign and run.run_id == str(request.run_id)), None)
+        session = None if reg.get_run(str(request.run_id)) is not None else next((run for run in reg.foreign_runs() if run.run_id == str(request.run_id)), None)
         if session is None:
             return None
         stops = SessionStops()

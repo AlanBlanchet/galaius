@@ -98,6 +98,8 @@ ConversationCapability = Literal[
     "streaming", "resume", "cancel", "approvals", "collaboration"
 ]
 _RUN_ID = re.compile(r"^[A-Za-z0-9._:@+-]{1,160}$")
+#: A run's message queue beside its record (`agent_queue`): a `.json` file that is no run record.
+QUEUE_SUFFIX = ".queue.json"
 _SESSION_ID: ContextVar[str | None] = ContextVar("agent_session_id", default=None)
 
 
@@ -1201,6 +1203,12 @@ def shared_state(name: str) -> Iterator[tuple[bytes | None, Callable[[bytes], No
         raw = _read_private(path)
         yield (raw, lambda payload: _replace_private(path, payload),
                lambda: _replace_private(path.with_name(f"{path.name}.unreadable-{int(time.time())}"), raw or b""))
+
+
+def shared_state_seen(name: str) -> bytes | None:
+    """Shared state `name` (`shared_state`) as last written, read without its lock: each write replaces it whole, so a
+    reader showing it never waits behind a writer holding the lock."""
+    return _read_private(agents_dir() / f"#{name}.state")
 
 
 def sole_holder(job: str) -> SoleHolder:
@@ -2925,14 +2933,22 @@ def _derive(run: AgentRun) -> AgentRun:
              "stream_digest"}
     healed = run.model_dump(mode="json", include=owned)
     updates = {field: value for field, value in healed.items() if value != original.get(field)}
+    current = None
     if updates:
-        current = _update_fields(
-            run.run_id, updates,
-            expected={
-                field: original.get(field)
-                for field in ("pid", "exit_code", "status", "lifecycle_token")
-            },
-        )
+        # Taken only if free now: a reader never waits for a writer. 2026-11-16 a spawn under the line's lock healed
+        # every record here while a queue server held one record's lock waiting for that line: both waited ~30 min.
+        # Its holder is writing that record; the next read heals what is still stale.
+        try:
+            with lock_patience(0):
+                current = _update_fields(
+                    run.run_id, updates,
+                    expected={
+                        field: original.get(field)
+                        for field in ("pid", "exit_code", "status", "lifecycle_token")
+                    },
+                )
+        except RecordBusy:
+            current = None
         if current is not None:
             run = current
             # The OTHER half of the late-refusal gap: a run `agents spawn` detached (its own
@@ -3000,6 +3016,12 @@ def _discover_foreign() -> list[dict]:
     return found
 
 
+def foreign_runs() -> list[AgentRun]:
+    """The sessions a provider can see that galaius did not start (`_discover_foreign`), none of them derived: looking one
+    up never re-reads every stored run (`list_runs`)."""
+    return [found for raw in _discover_foreign() if (found := AgentRun.from_foreign(raw)) is not None]
+
+
 def list_runs(*, include_foreign: bool = False, session_id: str | None = None) -> list[AgentRun]:
     """Low-level lifecycle/history inventory; interactive lists use ``session_runs``.
 
@@ -3013,19 +3035,17 @@ def list_runs(*, include_foreign: bool = False, session_id: str | None = None) -
     known: set[str] = set()
     if d.exists():
         with _pinned_registry():
-            for path in sorted(d.glob("*.json")):
-                run = _read_record(path.stem)
-                if run is None or run.run_id in known or (session_id is not None and run.session_id != session_id):
-                    continue  # a corrupt or aliased record must not hide every other run
+            for run in _stored_records():
+                if run.run_id in known or (session_id is not None and run.session_id != session_id):
+                    continue  # an aliased record must not hide every other run
                 known.add(run.run_id)
                 runs.append(run)
-            runs = [_derive(r) for r in runs]
+            runs = [_derive(r.model_copy()) for r in runs]   # `_derive` heals in place: the cached record stays as read
 
     if include_foreign and session_id is None:
         known = {r.run_id for r in runs}
-        for raw in _discover_foreign():
-            found = AgentRun.from_foreign(raw)
-            if found is None or found.run_id in known:
+        for found in foreign_runs():
+            if found.run_id in known:
                 continue
             known.add(found.run_id)
             runs.append(found)
@@ -3438,6 +3458,13 @@ def trees(root_run_ids: frozenset[str]) -> list[AgentRun]:
     return newest_first(forest(root_run_ids))
 
 
+def current_runs(keep: Callable[[AgentRun], bool]) -> list[AgentRun]:
+    """The stored runs `keep` takes (asked of the record as stored), each status re-checked as `forest` lists it
+    (`_current`), oldest first: never the whole history's streams re-read (`list_runs`, ~4 s at 5,000 records), for a
+    check others wait behind (`SpawnLine`'s relation check, under the line's lock)."""
+    return sorted((_current(run) for run in _stored_records() if keep(run)), key=lambda run: run.started_at)
+
+
 def session_ids() -> frozenset[str]:
     """Every provider session galaius launched or continued: its runs' ids and the vendor session
     ids they recorded (one `stat()` per record, cached)."""
@@ -3469,10 +3496,12 @@ def _stored_records() -> list[AgentRun]:
     most of a poller's 150 ms tick."""
     try:
         with os.scandir(agents_dir()) as scan:
-            entries = sorted((entry for entry in scan if entry.name.endswith(".json") and not entry.name.startswith(".")), key=lambda entry: entry.name)
+            entries = sorted((entry for entry in scan if entry.name.endswith(".json") and not entry.name.endswith(QUEUE_SUFFIX)
+                              and not entry.name.startswith(".")), key=lambda entry: entry.name)
     except FileNotFoundError:
         return []
-    return [run for run in map(_stat_cached_record, entries) if run is not None]
+    with _pinned_registry():   # the folder checked once, not once per record (~a quarter of a listing, 2026-11-16)
+        return [run for run in map(_stat_cached_record, entries) if run is not None]
 
 
 def forget(run_id: str) -> bool:
@@ -3491,7 +3520,7 @@ def forget(run_id: str) -> bool:
         return False
     for path in (_record_path(resolved), events_path(resolved),
                  messages_path(resolved), raw_events_path(resolved), stderr_path(resolved),
-                 agents_dir() / f"{_safe_run_id(resolved)}.queue.json"):
+                 agents_dir() / f"{_safe_run_id(resolved)}{QUEUE_SUFFIX}"):
         try:
             path.unlink()
         except OSError:
@@ -3529,7 +3558,9 @@ def resolve_run_id(prefix: str) -> str | None:
         return prefix
     if stored:
         return next(iter(stored)) if len(stored) == 1 else None
-    ids = [r.run_id for r in list_runs(include_foreign=True)]
+    # No stored record has it: only a foreign session can, so only those are listed. Deriving every stored run here
+    # (`list_runs`) cost minutes and waited on their record locks (2026-11-16, an `agents spawn --for` held 30 min).
+    ids = [found.run_id for found in foreign_runs()]
     if prefix in ids:
         return prefix  # an exact id is never ambiguous, even if it prefixes another
     matches = [rid for rid in ids if rid.startswith(prefix)]

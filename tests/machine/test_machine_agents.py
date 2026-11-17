@@ -1800,8 +1800,7 @@ def test_his_editor_session_is_stopped_through_its_hook_never_typed_into(base: P
     since = stops.installed_at() or time.time()
     his = reg.AgentRun.from_foreign({"sessionId": str(session), "cwd": str(base / "project"), "kind": "interactive",
                                      "startedAt": (since + (60 if opened == "after" else -60)) * 1000})
-    listed = reg.list_runs
-    monkeypatch.setattr(reg, "list_runs", lambda **kw: [*listed(**kw), his] if kw.get("include_foreign") else listed(**kw))
+    monkeypatch.setattr(reg, "foreign_runs", lambda: [his])
     stop = _request("stop", run_id=str(session), by={"kind": "person", "name": "Alan"})
     caplog.set_level(logging.INFO, logger="galaius.machine.agents")
     # One machine-log line per press, its outcome named, whatever it is (product-critic 2607ed0f).

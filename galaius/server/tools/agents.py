@@ -25,6 +25,11 @@ from galaius.agents.spawn_line import Admission, Continued, Spawn, SpawnLine, St
 from galaius.server.core import instrumented, mcp, offloaded, shown_sites
 
 
+#: How long `agent_list` / `agent_events` may take before they answer « no answer, ask again » (`offloaded`): a list of
+#: 5,000 runs reads in ~3 s on an idle computer.
+AGENT_READ_SECONDS = 30.0
+
+
 def _fmt(run: reg.AgentRun, waiting: str | None = None) -> str:
     """One run's line; `waiting`: what `SpawnLine.waiting_said` says of it, in place of its last activity."""
     bits = [f"[{run.status}]", run.run_id[:8], f"({run.provider})", run.name]
@@ -274,7 +279,7 @@ def community_search(need: str, kind: CommunityKind | None = None) -> str:
 
 @mcp.tool(category="agents", read_only=True)
 @instrumented
-@offloaded
+@offloaded(within=AGENT_READ_SECONDS)
 def agent_list(include_foreign: bool = False, session_id: str | None = None, all_sessions: bool = False) -> str:
     """Launched runs owned by this conversation, including nested children; not the agent roster.
 
@@ -322,7 +327,7 @@ def _fenced_team() -> tuple[str, frozenset[str]] | None:
 
 @mcp.tool(category="agents")
 @instrumented
-@offloaded
+@offloaded(within=AGENT_READ_SECONDS)
 def agent_events(run_id: str, limit: int = 20) -> str:
     """What an agent has actually been doing — its most recent events, oldest first."""
     resolved = reg.resolve_run_id(run_id) or run_id
@@ -337,8 +342,7 @@ def agent_events(run_id: str, limit: int = 20) -> str:
     if not events:
         if (waiting := SpawnLine.here().describe(run_id)) is not None:
             return f"{run_id[:8]}: {waiting}"
-        known = {r.run_id for r in reg.list_runs()}
-        if resolved not in known:
+        if reg.get_run(resolved) is None:
             return f"ERROR: no agent run {run_id!r}. Use agent_list to see the run ids."
         return f"{run_id[:8]}: no events yet (it may still be starting)."
     shown = events[-max(1, limit):]

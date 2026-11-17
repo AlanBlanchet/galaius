@@ -319,7 +319,7 @@ class QueueItem(BaseModel):
 
 
 def path(run_id: str):
-    return reg.agents_dir() / f"{reg._safe_run_id(run_id)}.queue.json"
+    return reg.agents_dir() / f"{reg._safe_run_id(run_id)}{reg.QUEUE_SUFFIX}"
 
 
 def _state(run_id: str) -> dict:

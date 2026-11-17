@@ -6,6 +6,9 @@ ones. These tests pin that, because an error an agent can't act on stalls a whol
 """
 
 import ast
+import asyncio
+import threading
+import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -14,6 +17,7 @@ from galaius_core import AgentRevisionRef
 
 import galaius.server as srv
 import galaius.server.tools.agents as tools_agents
+from galaius.server.core import offloaded
 from galaius.agents import registry as reg
 from galaius.agents.transport.events import AgentEvent
 
@@ -267,3 +271,29 @@ async def test_a_restricted_mode_still_goes_through(monkeypatch):
     out = await fn(task="t", permission_mode="plan")
     assert not out.startswith("ERROR:"), out
     assert got["permission_mode"] == "plan"
+
+
+@pytest.mark.parametrize("body, said", [
+    pytest.param("slow", "gave no answer within 0.2 s", id="too-slow"),
+    pytest.param("busy", "ask again", id="record-held"),
+])
+def test_a_bounded_agent_read_answers_within_its_bound(body, said) -> None:
+    """2026-11-16: `agent_list` stayed silent 1,800 s. A read bounded by `offloaded(within=…)` answers an ERROR line in
+    time, never silence; a record lock held past it says what holds it."""
+    done = threading.Event()
+
+    def read() -> str:
+        if body == "busy":
+            raise reg.RecordBusy("the record of run r1 is held by 42 python: not taken within 0.2 s")
+        done.wait(5)
+        return "listed"
+
+    async def asked() -> tuple[str, float]:
+        started = time.monotonic()
+        answer = await offloaded(within=0.2)(read)()
+        done.set()   # the thread left running ends: a served loop keeps going, `asyncio.run` waits for it
+        return answer, time.monotonic() - started
+
+    answer, waited = asyncio.run(asked())
+    assert answer.startswith("ERROR:") and said in answer
+    assert waited < 2

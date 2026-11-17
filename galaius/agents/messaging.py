@@ -107,7 +107,7 @@ def check_deliverable(run_id: str, *, sender: str | None = None, policed: bool =
     run = reg.get_run(resolved) if resolved else None
     if run is None and resolved:
         # Only an editor session galaius did not start lacks a stored record.
-        run = next((r for r in reg.list_runs(include_foreign=True) if r.run_id == resolved), None)
+        run = next((r for r in reg.foreign_runs() if r.run_id == resolved), None)
     if run is None:
         return None, f"ERROR: no agent run {run_id!r}. Use agent_list to see the run ids."
     if getattr(run, "foreign", False):

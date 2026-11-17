@@ -1128,6 +1128,35 @@ def test_a_healed_status_is_written_back_to_disk(monkeypatch):
     assert json.loads((reg.agents_dir() / "r1.json").read_text())["status"] == "done"
 
 
+def test_a_listing_never_waits_for_a_record_lock_held_elsewhere(monkeypatch):
+    """2026-11-16: `agents list` / `agent_list` / a spawn's relation check healed each record under its lock and waited
+    on one a queue server held while it waited for the spawn line (30 min, a coordinator's turn lost). A record held
+    elsewhere is listed as derived, healed on disk by a later read once free."""
+    register_run(pid=999999)
+    reg.append_event("r1", reg.AgentEvent(kind="done", cost_usd=0.6))
+    monkeypatch.setattr(reg, "_alive", lambda pid: False)
+    held, release = threading.Event(), threading.Event()
+
+    def holder():
+        with reg.record_lock("r1"):
+            held.set()
+            release.wait(30)
+
+    thread = threading.Thread(target=holder)
+    thread.start()
+    try:
+        assert held.wait(10)
+        started = time.monotonic()
+        assert [run.status for run in reg.list_runs()] == ["done"]
+        assert time.monotonic() - started < 5
+        assert json.loads((reg.agents_dir() / "r1.json").read_text())["status"] != "done"   # left to a later read
+    finally:
+        release.set()
+        thread.join()
+    reg.list_runs()
+    assert json.loads((reg.agents_dir() / "r1.json").read_text())["status"] == "done"
+
+
 def test_an_ended_run_gets_an_observed_end_time(monkeypatch):
     """A dead process never calls finish(), so 'ended, but no end time' is the COMMON case, not an
     edge one — and a timeline cannot draw an interval without one. The last byte the child wrote

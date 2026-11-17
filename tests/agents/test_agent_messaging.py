@@ -28,7 +28,7 @@ def test_an_unknown_run_id_says_how_to_find_the_real_ones():
 def test_it_refuses_to_type_into_one_of_the_users_own_editor_sessions(monkeypatch):
     """A foreign run is a session the user is driving — galaius watches it, never types in it.
     It has no stored record: only the provider's own session listing knows it."""
-    monkeypatch.setattr(reg, "list_runs", lambda **kw: [_Foreign()])
+    monkeypatch.setattr(reg, "foreign_runs", lambda: [_Foreign()])
     error = messaging.check_deliverable("r1")[1]
     assert error and "must not type into it" in error
 

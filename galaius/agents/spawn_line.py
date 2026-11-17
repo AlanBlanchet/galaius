@@ -419,7 +419,7 @@ class Spawn(BaseModel):
         if callees == "many":
             return [run for run in self._conversation() if run.plays(role)]
         above = set(reg.ancestors(self.parent_run_id)) if self.parent_run_id is not None else set()
-        runs = [run for run in reg.list_runs() if run.plays(role) and run.run_id not in above]
+        runs = reg.current_runs(lambda run: run.plays(role) and run.run_id not in above)
         if callees == "one":
             return runs
         here = relations.project(self.parent_run_id) if self.parent_run_id is not None else relations.folder_project(self.cwd)
@@ -439,7 +439,7 @@ class Spawn(BaseModel):
         """The runs of this spawn's conversation: its caller's launch tree (`reg.conversation_of`) — a PC's web
         conversations share one session id —, else its session's; never its caller or a run above it."""
         if self.parent_run_id is None:
-            return reg.list_runs(session_id=self.session_id) if self.session_id is not None else []
+            return reg.current_runs(lambda run: run.session_id == self.session_id) if self.session_id is not None else []
         above = reg.ancestors(self.parent_run_id)
         return [run for run in reg.trees(frozenset({above[-1]})) if run.run_id not in above]
 
@@ -567,17 +567,30 @@ def _listed(name: str, kind: type[H]) -> Iterator[list[H]]:
     entry as `kind.read` says."""
     with reg.shared_state(name) as (raw, replace, keep_aside):
         try:
-            entries = json.loads(raw) if raw else []
+            listed = _entries(raw, kind)
         except ValueError as error:
             keep_aside()
             logger.warning("%s unreadable, kept aside and started over: %s", name, error)
-            entries = []
-        listed = [read for entry in (entries if isinstance(entries, list) else []) if (read := kind.read(entry)) is not None]
+            listed = []
         before = [entry.model_dump(mode="json") for entry in listed]
         yield listed
         after = [entry.model_dump(mode="json") for entry in listed]
         if after != before:
             replace(json.dumps(after, ensure_ascii=False).encode())
+
+
+def _entries(raw: bytes | None, kind: type[H]) -> list[H]:
+    """State bytes as a list of `kind`, an entry it cannot read as `kind.read` says; ValueError when not JSON."""
+    entries = json.loads(raw) if raw else []
+    return [read for entry in (entries if isinstance(entries, list) else []) if (read := kind.read(entry)) is not None]
+
+
+def _seen(name: str, kind: type[H]) -> list[H]:
+    """Shared state `name` as `_listed` reads it, without its lock and never written back (`reg.shared_state_seen`)."""
+    try:
+        return _entries(reg.shared_state_seen(name), kind)
+    except ValueError:
+        return []
 
 
 class Place(Held):
@@ -744,8 +757,7 @@ class SpawnLine(BaseModel):
     def waiting_for(self, parent_run_id: str) -> list[Place]:
         """The spawns run `parent_run_id` asked that are still in line: no record yet, so `handback.reporting` never sees
         them (2026-11-08: a child held 21 min, its parent told « no own child pending » 23 s after spawning it)."""
-        with self._places() as places:
-            return [place for place in places if place.parent_run_id == parent_run_id and place.state != "failed"]
+        return [place for place in self._places_seen() if place.parent_run_id == parent_run_id and place.state != "failed"]
 
     @contextmanager
     def _places(self) -> Iterator[list[Place]]:
@@ -759,10 +771,18 @@ class SpawnLine(BaseModel):
         """The runs set aside, those whose holder is gone dropped, and the waits ended within `waiting_gap_seconds`. Its
         own state: a waiter of an older galaius rewrites the line, and would turn an entry it cannot read there into a
         failed spawn."""
-        now = time.time()
         with _listed("spawn-aside", Aside) as asides:
-            asides[:] = [aside for aside in asides if (now - aside.left_at <= self.waiting_gap_seconds if aside.left_at is not None else aside.held())]
+            asides[:] = self._live(asides)
             yield asides
+
+    def _live(self, asides: list[Aside]) -> list[Aside]:
+        now = time.time()
+        return [aside for aside in asides if (now - aside.left_at <= self.waiting_gap_seconds if aside.left_at is not None else aside.held())]
+
+    def _places_seen(self) -> list[Place]:
+        """The line as `_places` gives it, read without its lock and never written back (`_seen`): what a reader shows
+        (`agents list`, `agents events`) never waits behind a spawn holding the line (2026-11-16)."""
+        return self._prune(_seen("spawn-line", Place))
 
     @staticmethod
     def _prune(places: list[Place]) -> list[Place]:
@@ -791,12 +811,15 @@ class SpawnLine(BaseModel):
         except (OSError, ValueError):
             return frozenset()
 
-    def _at_work(self, places: list[Place]) -> AtWork:
-        """Who takes a place now, `places` (the line, read under its lock) adding the runs starting."""
+    def _at_work(self, places: list[Place], asides: list[Aside] | None = None) -> AtWork:
+        """Who takes a place now, `places` (the line, read under its lock) adding the runs starting; `asides` as a reader
+        saw them (`_seen`), else read under their lock."""
         owners = self._owners()
         runs = [run for run in reg.running_runs() if run.kind == "process" and not run.foreign and run.run_id not in owners]
-        with self._asides() as asides:
-            listed = list(asides)
+        if asides is None:
+            with self._asides() as held:
+                asides = list(held)
+        listed = asides
         entries = {run.run_id: entry for run in runs for entry in listed if entry.run_id == run.run_id and entry.stands_aside(run)}
         aside = {run.run_id: run.parent_run_id for run in runs if run.run_id in entries}
         taken = {run.run_id: run.parent_run_id for run in runs if run.run_id not in aside}
@@ -813,10 +836,10 @@ class SpawnLine(BaseModel):
         """What the run list says of each run waiting on its agents, in place of its last activity: past
         `waiting_flag_minutes`, which runs and since when (`Aside.said`, 2026-10-17 « still wasting time / inference /
         usage on stupid things »); before, `ASIDE` while its place is free."""
-        at_work, now, flag = self._at_work([]), time.time(), self.waiting_flag_minutes * 60
+        at_work, now, flag = self._at_work([], self._live(_seen("spawn-aside", Aside))), time.time(), self.waiting_flag_minutes * 60
         giving = at_work.giving()
-        with self._places() as places:   # a resumed turn held (`resuming`): why, in place of its last activity
-            held = {place.run_id: place.said for place in places if place.spawn is None and place.state == "waiting" and place.said}
+        # a resumed turn held (`resuming`): why, in place of its last activity
+        held = {place.run_id: place.said for place in self._places_seen() if place.spawn is None and place.state == "waiting" and place.said}
         return held | {run_id: entry.said(now) if entry.waited(now) >= flag else ASIDE
                        for run_id, entry in at_work.entries.items() if run_id in giving or entry.waited(now) >= flag}
 
@@ -1067,17 +1090,17 @@ class SpawnLine(BaseModel):
     def describe(self, prefix: str, *, within: frozenset[str] | None = None) -> str | None:
         """One line on a spawn not started (`agents events` / `agent_events`), None when none matches (or its parent is
         not in `within`, the asking team, when given)."""
-        with self._places() as places:
-            found = self._match(places, prefix)
-            if found is None or (within is not None and found.parent_run_id not in within):
-                return None
-            return self._said(places, found)
+        places = self._places_seen()
+        found = self._match(places, prefix)
+        if found is None or (within is not None and found.parent_run_id not in within):
+            return None
+        return self._said(places, found)
 
     def session(self, session_id: str | None) -> list[tuple[Place, str]]:
         """The spawns not started of conversation `session_id` (every one when None), each with its line (`describe`)."""
-        with self._places() as places:
-            return [(place, self._said(places, place)) for place in places if place.asked() and place.state != "starting"
-                    and (session_id is None or (place.spawn is not None and place.spawn.session_id == session_id))]
+        places = self._places_seen()
+        return [(place, self._said(places, place)) for place in places if place.asked() and place.state != "starting"
+                and (session_id is None or (place.spawn is not None and place.spawn.session_id == session_id))]
 
     def _turn(self, run_id: str) -> Place | Literal["wait", "gone"]:
         """The waiter's look: `run_id`'s place, marked `starting`, when it may start now; else whether it waits or is gone

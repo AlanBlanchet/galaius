@@ -33,6 +33,7 @@ from galaius.agents.tool_gateway import ServedGateway
 from galaius.browser.manager import SessionRegistry, session_name
 from galaius.account.caller import Caller
 from galaius.agents import lending, messaging
+from galaius.agents import registry as run_registry
 from galaius.diagnostics.debug_output import _CURRENT_INV, Debug, resolve_output_path
 from galaius.mcp.announcement import GATEWAY_PREFIX, GatewayServed, McpAnnouncement
 from galaius.desktop.window import CaptureError
@@ -662,16 +663,32 @@ class _SessionScopedMCP(FastMCP):
 mcp = _SessionScopedMCP("galaius", lifespan=_lifespan, instructions=_instructions())
 
 
-def offloaded(fn):
+def offloaded(fn=None, *, within: float | None = None):
     """A tool body that reads run records and starts processes, made a coroutine that runs it on a worker
     thread (the caller's context carried along): one server answers every client of this computer, and a
-    second spent here in its event loop is a second every other client waits."""
+    second spent here in its event loop is a second every other client waits. `within`: a read its caller waits
+    on, answered or refused in that many seconds, its record-lock waits given up then (`registry.lock_patience`):
+    2026-11-16 `agent_list` stayed silent 1,800 s and a coordinator lost its turn."""
 
-    @functools.wraps(fn)
-    async def wrapper(*args, **kwargs):
-        return await asyncio.to_thread(fn, *args, **kwargs)
+    def wrap(fn):
+        def bounded(*args, **kwargs):
+            with run_registry.lock_patience(within):
+                return fn(*args, **kwargs)
 
-    return wrapper
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            if within is None:
+                return await asyncio.to_thread(fn, *args, **kwargs)
+            try:
+                return await asyncio.wait_for(asyncio.to_thread(bounded, *args, **kwargs), within)
+            except run_registry.RecordBusy as busy:
+                return f"ERROR: {busy}; ask again."
+            except TimeoutError:   # its thread ends on its own: every wait in it is bounded by the same patience
+                return f"ERROR: {fn.__name__} gave no answer within {within:g} s (this computer is loaded); ask again."
+
+        return wrapper
+
+    return wrap(fn) if fn is not None else wrap
 
 
 def instrumented(fn):

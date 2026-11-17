@@ -565,9 +565,11 @@ def _asker(caller: str | None) -> Asker:
 def _no_record_lock_under_the_line(monkeypatch) -> None:
     """2026-11-08: the relation check read a run's queue under its record lock while holding the line's lock; that run's
     dispatcher held the record lock and waited for the line to start its queued turn: both waited (a spawn hung 580 s).
-    Fails a test that takes a record lock (`agent_queue.items`) while the line's lock is held."""
+    2026-11-16: the same wait through the N-1 peer lookup (`reg.list_runs` healing every record under its lock) held a
+    deployer spawn and a queue server for ~30 min. Fails a test that WAITS for any run's record lock while the line's lock is
+    held; one taken only if free now (`reg.lock_patience(0)`) never waits."""
     held = {"line": False}
-    places, items = SpawnLine._places, spawn_line.agent_queue.items
+    places, lock = SpawnLine._places, reg.record_lock
 
     @contextlib.contextmanager
     def watched(self):
@@ -578,12 +580,14 @@ def _no_record_lock_under_the_line(monkeypatch) -> None:
             finally:
                 held["line"] = False
 
+    @contextlib.contextmanager
     def guarded(run_id):
-        assert not held["line"], "a run's record lock taken under the line's lock"
-        return items(run_id)
+        assert not held["line"] or reg._PATIENCE.get() == 0, f"run {run_id}'s record lock waited for under the line's lock"
+        with lock(run_id):
+            yield
 
     monkeypatch.setattr(SpawnLine, "_places", watched)
-    monkeypatch.setattr(spawn_line.agent_queue, "items", guarded)
+    monkeypatch.setattr(reg, "record_lock", guarded)
 
 
 def _deployer_policy(monkeypatch, written) -> None:
