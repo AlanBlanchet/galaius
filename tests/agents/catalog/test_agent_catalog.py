@@ -27,7 +27,7 @@ from galaius.agents.catalog.connection import (
     CatalogConnectionError,
     CatalogOffline,
 )
-from galaius.agents.policy import Policy
+from galaius.agents.policy import Policy, PolicyError
 from galaius.agents.tool_gateway import CONVERSATION_TOOLS
 from galaius.agents.providers import AgentProvider, ClaudeCodeProvider, CodexProvider, UnsupportedToolPolicy
 from unittest.mock import AsyncMock
@@ -555,22 +555,43 @@ def test_cli_sync_persists_connection_and_rebuilds_deleted_cache(linked_pc, cata
     assert "primary instruction revision 2" in definition_path.read_text()
 
 
-def test_configured_policy_ignores_local_role_rules_and_preserves_provider_switches(catalog_home, monkeypatch):
+@pytest.mark.parametrize("programs_off", [(), ("codex",), ("claude", "codex")])
+def test_configured_policy_obeys_the_catalog_and_names_every_local_rule_it_ignores_once(catalog_home, monkeypatch, programs_off):
+    """Owner 2026-11-16 « "Fable 5.2 was blocked by a hand-written entry in ~/.galaius/agents.json on this PC" the rules
+    should be online, not local ! »: on a catalog-connected PC every role rule, effort and program switch is the catalog's;
+    a key written in ~/.galaius/agents.json (a role rule, a program switch, a default model or effort, an old `models` or
+    `value` block) changes nothing and is named once; only the permission ceiling and coarse tool-policy acceptances
+    stay this PC's own."""
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(catalog_home / "registry"))
+    base = snapshot()
     value = AgentCatalog(
-        connection=CatalogConnection(endpoint="http://localhost:8767", auth_mode="preview", workspace_id=uuid4()),
-        snapshot=CatalogSnapshot.model_validate(snapshot().model_dump()), fetched_at=datetime.now(UTC),
+        connection=CatalogConnection(endpoint="http://localhost:8767", auth_mode="machine", workspace_id=uuid4()),
+        snapshot=CatalogSnapshot.model_validate(AgentCatalogSnapshot.create(base.agents, base.paradigms, programs_off=programs_off).model_dump()),
+        fetched_at=datetime.now(UTC),
     )
     (catalog_home / "agents.json").write_text(json.dumps({
-        "agents": {"fixture-worker": "@missing-local-profile"},
-        "reasoning": {"fixture-worker": "low"}, "providers": {"codex": False},
+        "agents": {"fixture-worker": "@missing-local-profile"}, "profiles": {"x": "aa.intelligence"},
+        "reasoning": {"fixture-worker": "low"}, "providers": {"codex": True, "claude": True},
+        "models": {"claude/claude-fable-5-2": False}, "value": {"per_doubling": 9},
+        "defaults": {"model": "claude/claude-haiku-5-5", "reasoning": "low", "touch": "full_access"},
+        "coarse_tool_policy": {"fixture-worker": ["codex"]},
     }))
     monkeypatch.setattr(AgentCatalog, "active", classmethod(lambda cls: value))
     policy = Policy.load()
     assert policy.criterion_for("fixture-worker") == "price.in >= 1"
     assert policy.reasoning_for("fixture-worker") == "high"
-    assert not policy.provider_active("codex")
+    assert {name for name in ("claude", "codex") if not policy.provider_active(name)} == set(programs_off)
+    assert policy.defaults == {"touch": "full_access"} and policy.accepts_coarse_tool_policy("fixture-worker", "codex")
+    assert policy.ignored == ("agents", "defaults.model", "defaults.reasoning", "models", "profiles", "providers", "reasoning", "value")
+    notice = policy.ignored_notice()
+    assert notice is not None and "providers" in notice and "http://localhost:8767" in notice
+    assert Policy.load().ignored_notice() is None  # said once, not at every read
+    with pytest.raises(PolicyError, match="on the web"):
+        policy.set_provider_active("codex", False)
     with pytest.raises(ValueError, match="Server catalog"):
         policy.assign_paradigm("fixture-worker", "local-only", "skill")
+    (catalog_home / "agents.json").write_text(json.dumps({"defaults": {"touch": "full_access"}}))
+    assert Policy.load().ignored == () and Policy.load().ignored_notice() is None
 
 
 def test_native_hook_composes_server_role_without_local_authoring(catalog_home, monkeypatch):

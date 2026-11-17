@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
+from pydantic import ValidationError
 
 import asyncio
 import base64
@@ -982,18 +983,19 @@ def test_options_for_a_role_ask_the_pc_what_its_rule_picks(base: Path, tmp_path:
     assert [(item.provider, item.model) for item in _answer(agents, _request("options", role="source-validator")).models] == [("claude", "claude-sonnet-5")]
 
 
-def test_providers_switch_through_the_cli_the_editor_uses_and_settings_survive_a_bad_answer(base: Path, tmp_path: Path) -> None:
-    """The web's provider switch is the editor toggle's own command; a PC whose model read fails
-    still answers with its providers, and says why the models are missing."""
+def test_settings_survive_a_bad_answer_and_no_pc_takes_a_program_switch(base: Path, tmp_path: Path) -> None:
+    """A PC whose model read fails still answers with its providers, and says why the models are missing. Programs are
+    switched for every PC of the workspace (its agent catalog, owner 2026-11-16 « the rules should be online, not local ! »):
+    no request switches one on a PC."""
     seen = tmp_path / "argv.json"
     recorder = ("python3", "-c", f"import json,sys; json.dump(sys.argv[1:], open({str(seen)!r}, 'w')); print('not json')")
     agents = _agents(base, tmp_path, cli=recorder)
-    switched = _answer(agents, _request("provider", provider="codex", active=False))
-    assert json.loads(seen.read_text()) == ["agents", "providers", "--name", "codex", "--state", "off"] and switched.detail == "off"
-    assert {item.provider for item in switched.providers} == set(AGENT_PROGRAMS)
+    with pytest.raises(ValidationError):
+        _request("provider", provider="codex", active=False)
     settings = _answer(agents, _request("settings"))
     assert json.loads(seen.read_text()) == ["config", "models", "--json-out"]
-    assert settings.tool_models == () and settings.detail.startswith("models not read here") and settings.providers
+    assert settings.tool_models == () and settings.detail.startswith("models not read here")
+    assert {item.provider for item in settings.providers} == set(AGENT_PROGRAMS)
 
 
 def test_settings_carry_each_tool_rule_as_the_pc_resolves_it(base: Path, tmp_path: Path) -> None:

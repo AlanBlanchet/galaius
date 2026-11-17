@@ -40,7 +40,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from galaius_core import (
     MODEL_ID_MAX,
     PROJECTS_ROOT, AGENT_TOUCH_SCOPES, AgentCompactRequest, ContextGauge, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, AgentFile, media_kind, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
-    AgentAllowanceRequest, AgentMoveRequest, AgentExportRequest, AgentImportRequest, AgentReleaseRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentToolInstallRequest, AgentToolsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, AgentHeldTakeRequest, AgentHeldPutRequest, AgentRetractRequest, RetractOutcome, SubscriptionAllowance, Lent, AgentProviderSwitchRequest, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
+    AgentAllowanceRequest, AgentMoveRequest, AgentExportRequest, AgentImportRequest, AgentReleaseRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentToolInstallRequest, AgentToolsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, AgentHeldTakeRequest, AgentHeldPutRequest, AgentRetractRequest, RetractOutcome, SubscriptionAllowance, Lent, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
     WorkspaceFailure, WorkspaceUpload, FailedMessage, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, media_key, media_paths, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest, ProjectFilesBase, ProjectFilePart,
 )
 from galaius.agents import agent_queue
@@ -436,8 +436,6 @@ class MachineAgents(BaseModel):
                 return await asyncio.to_thread(self._logs, request)
             case AgentSettingsRequest():
                 return await asyncio.to_thread(self._settings, request)
-            case AgentProviderSwitchRequest():
-                return await asyncio.to_thread(self._switch_provider, request)
             case WorkspacePrepareRequest():
                 job = await asyncio.to_thread(self._workspaces().prepare, request)
                 return MachineAgentAnswer(request_id=request.id, workspaces=(job,), detail=f"preparing {job.root}/{job.name}")
@@ -1466,15 +1464,6 @@ class MachineAgents(BaseModel):
         except (ValueError, IndexError, KeyError, TypeError) as error:
             tool_models, detail = (), f"models not read here: {self._first_line(str(error)) or self._said(done.stderr)}"[:400]
         return MachineAgentAnswer(request_id=request.id, providers=self.providers(), tool_models=tool_models, detail=detail)
-
-    def _switch_provider(self, request: AgentProviderSwitchRequest) -> MachineAgentAnswer:
-        """Through the CLI the editor's toggle uses, so both write the one policy file the same way."""
-        global _MODELS
-        done = self._run_cli("agents", "providers", "--name", request.provider, "--state", "on" if request.active else "off", timeout=30)
-        if done.returncode != 0:
-            raise RuntimeError(self._said(done.stderr) or f"not switched (exit {done.returncode})")
-        _MODELS = None  # the model list follows the switched-on CLIs
-        return MachineAgentAnswer(request_id=request.id, providers=self.providers(), detail="on" if request.active else "off")
 
     # ---- sessions: conversations that ask before acting -------------------------------------
 

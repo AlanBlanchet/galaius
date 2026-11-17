@@ -38,6 +38,7 @@ from galaius.agents.tool_gateway import AgentToolList, ToolGateway
 from galaius.agents.catalog.vocabulary import TouchScope
 from galaius.host.atomic_file import replace_held_open
 from galaius.host.file_lock import exclusive
+from galaius.host.paths import UserPaths
 from galaius.config.user import UserConfig
 from galaius_core import ModelRelation
 
@@ -62,6 +63,12 @@ class PolicyError(ValueError):
 #: How vendor CLIs address an MCP server's tools. galaius's own tools are the ones named here,
 #: so the prefix is added rather than typed forty times.
 TOOL_PREFIX = "mcp__galaius__"
+
+#: What a catalog-connected PC still reads from ~/.galaius/agents.json's `defaults`: the permission its agents start with,
+#: a ceiling the web never raises (`MachineAgentSettings`). Every rule choosing a model or a program is the catalog's.
+LOCAL_DEFAULTS = frozenset({"touch"})
+#: Beside the agent registry: the ignored keys of ~/.galaius/agents.json this PC already named once (`Policy.ignored_notice`).
+IGNORED_SAID = "ignored-local-rules.json"
 
 
 def policy_path() -> Path:
@@ -102,6 +109,9 @@ class Policy:
     #: Each role's model-choice weights (`ModelRelation`), from its ONLINE record (the server catalog, its last fetched copy
     #: offline): owner 2026-11-16 « the rules should be online, not local ! ». A role without one ranks by the default.
     model_relation: dict[str, ModelRelation] = field(default_factory=dict)
+    #: The keys of ~/.galaius/agents.json a catalog-connected PC does not obey (`from_catalog`), as `section` or
+    #: `section.key`; reported, never applied.
+    ignored: tuple[str, ...] = ()
     catalog: AgentCatalog | None = None
     #: The external tools the server connects each role to, served on this PC by galaius's MCP
     #: server (`galaius.agents.tool_gateway`): read with the catalog, added to each role's tools.
@@ -144,26 +154,27 @@ class Policy:
 
     @classmethod
     def from_catalog(cls, catalog: AgentCatalog) -> "Policy":
+        """The workspace's online rules (`catalog`, its last fetched copy offline). Of ~/.galaius/agents.json only what
+        belongs to this PC is read (`LOCAL_DEFAULTS`, the coarse tool-policy acceptances); every
+        other key there is listed in `ignored`, never obeyed — owner 2026-11-16 « the rules should be online, not local ! »."""
         policy = cls(catalog=catalog, gateway=ToolGateway.current(online=not catalog.stale))
-        # Provider installation switches are local machine preferences, not role policy.
         try:
             raw = json.loads(policy_path().read_text())
         except FileNotFoundError:
             raw = {}
         except (OSError, ValueError) as error:
-            raise PolicyError("Cannot read local provider switches") from error
-        if not isinstance(raw, dict) or not isinstance(raw.get("providers", {}), dict):
-            raise PolicyError("Local provider switches must be an object")
-        policy.providers = dict(raw.get("providers", {}))
-        if not isinstance(raw.get("defaults", {}), dict):
-            raise PolicyError("Local agent defaults must be an object")
-        # Nothing about ranking is read here: a role's rule and weights are its online record's (the local default rule too).
-        policy.defaults = {key: value for key, value in raw.get("defaults", {}).items() if key != "model"}
-        if not isinstance(raw.get("coarse_tool_policy", {}), dict):
-            raise PolicyError("Local coarse tool-policy acceptance must be an object")
-        policy.coarse_tool_policy = {
-            k: list(v) for k, v in (raw.get("coarse_tool_policy") or {}).items()
-        }
+            raise PolicyError(f"{policy_path()} is not readable ({error})") from error
+        if not isinstance(raw, dict):
+            raise PolicyError(f"{policy_path()} must hold an object")
+        defaults, coarse = raw.get("defaults") or {}, raw.get("coarse_tool_policy") or {}
+        if not isinstance(defaults, dict) or not isinstance(coarse, dict):
+            raise PolicyError(f"{policy_path()}: `defaults` and `coarse_tool_policy` must be objects")
+        policy.defaults = {key: str(value) for key, value in defaults.items() if key in LOCAL_DEFAULTS}
+        policy.coarse_tool_policy = {role: list(programs) for role, programs in coarse.items()}
+        policy.ignored = tuple(sorted(
+            [section for section in raw if section not in ("defaults", "coarse_tool_policy")]
+            + [f"defaults.{key}" for key in defaults if key not in LOCAL_DEFAULTS]))
+        policy.providers = {program: False for program in catalog.snapshot.programs_off}
         for agent in catalog.launch_agents:
             if agent.role_key is None:
                 continue
@@ -377,9 +388,28 @@ class Policy:
         `provider_active`, because here silence must never widen what a role can reach."""
         return provider in self.coarse_tool_policy.get(agent, [])
 
+    def ignored_notice(self) -> str | None:
+        """The line naming what ~/.galaius/agents.json holds that this PC does not obey (`ignored`), the first time that
+        list is seen on this PC (kept in `IGNORED_SAID`); None when nothing is ignored or it was said already."""
+        if not self.ignored:
+            return None
+        said = UserPaths.agents() / IGNORED_SAID
+        try:
+            if json.loads(said.read_text()) == list(self.ignored):
+                return None
+        except (OSError, ValueError):
+            pass
+        said.parent.mkdir(parents=True, exist_ok=True)
+        said.write_text(json.dumps(list(self.ignored)))
+        return (f"{policy_path()}: {', '.join(self.ignored)} not obeyed here: the workspace's rules decide, changed on the web "
+                f"({self.catalog.connection.endpoint if self.catalog is not None else 'its agents page'}); remove them from the file.")
+
     def set_provider_active(self, provider: str, active: bool, path: Path | None = None) -> None:
         """Flip a provider on or off and write it back, so the CLI and the panel's toggle are
-        reading and writing the same one fact."""
+        reading and writing the same one fact. A catalog-connected PC writes nothing: the switch is the workspace's
+        (`AgentCatalogSnapshot.programs_off`), changed on the web."""
+        if self.catalog is not None:
+            raise PolicyError(f"Programs are switched on and off for every PC of the workspace, on the web: {self.catalog.connection.endpoint}")
         self.providers = self._write("providers", lambda switches: {**switches, provider: bool(active)}, path)
 
     def _write(self, section: str, change: Callable[[dict[str, Any]], dict[str, Any]], path: Path | None) -> dict[str, Any]:

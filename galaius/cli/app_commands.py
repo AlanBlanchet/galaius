@@ -1460,6 +1460,7 @@ def agents_policy(json_out: bool = False) -> None:
             "policy": "server catalog" if policy.catalog is not None else str(policy_path()),
             "catalog_cursor": policy.catalog.snapshot.cursor if policy.catalog is not None else None,
             "stale": policy.catalog.stale if policy.catalog is not None else False,
+            "ignored": list(policy.ignored),
             "profiles": dict(policy.profiles), "agents": agents,
             "paradigms": {
                 agent: [{"paradigm": a.paradigm, "as": a.projection} for a in assignments]
@@ -1468,6 +1469,8 @@ def agents_policy(json_out: bool = False) -> None:
         }))
         return
     print(f"policy: {'server catalog ' + policy.catalog.snapshot.cursor if policy.catalog is not None else policy_path()}")
+    if policy.ignored:
+        print(f"not obeyed here (the workspace's rules decide): {', '.join(policy.ignored)} in {policy_path()}")
     if policy.profiles:
         print("\nprofiles")
         for name, rule in policy.profiles.items():
@@ -1558,10 +1561,10 @@ def agents_providers(
     """Which agent CLIs drive agents here — list them, or switch one on/off.
 
     ``galaius agents providers`` lists each provider as ``<name> <on|off> <availability>``, then
-    the named agents and permission intents it can resolve. ``galaius agents providers codex off``
-    switches one off at the one place every spawn passes through (``~/.galaius/agents.json``), so
-    the panel's toggle and this command read/write the same fact. Unmentioned providers are ON: a
-    CLI you installed is one you meant to use.
+    the named agents and permission intents it can resolve. On a PC connected to a workspace the
+    switches are the workspace's (its agent catalog, changed on the web) and this command only lists
+    them; on a PC connected to none, ``galaius agents providers codex off`` writes
+    ``~/.galaius/agents.json``. Unmentioned providers are ON: a CLI you installed is one you meant to use.
 
     Parameters
     ----------
@@ -1586,7 +1589,11 @@ def agents_providers(
             print(f"unknown provider {name!r}; galaius knows: {', '.join(PROVIDERS)}",
                   file=sys.stderr)
             raise SystemExit(2)
-        policy.set_provider_active(name, state == "on")
+        try:
+            policy.set_provider_active(name, state == "on")
+        except PolicyError as err:
+            print(f"ERROR: {err}", file=sys.stderr)
+            raise SystemExit(2) from err
         print(f"{name} {state}")
         return
     if json_out:

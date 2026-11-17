@@ -2421,7 +2421,8 @@ class MachineRunner:
     @staticmethod
     def _renewed_policy() -> None:
         with CatalogConnection.renewing():
-            load_policy()
+            if (notice := load_policy().ignored_notice()) is not None:
+                logger.warning(notice)
 
     async def _heartbeat(self, socket, config: MachineConfig) -> None:
         """A beat every `heartbeat_seconds`, each followed by a ping whose answer is what the tray icon calls
