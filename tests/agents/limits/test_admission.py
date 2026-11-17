@@ -210,3 +210,37 @@ def test_no_meminfo_holds_nothing_and_a_floor_of_zero_reads_none(tmp_path):
     _meminfo(tmp_path, 0.5)
     assert SoftMemory(soft_percent=85, release_percent=80, cgroup=_cgroup(tmp_path, 2.0),
                       meminfo=tmp_path / "meminfo").hold() is None
+
+
+def _pressure(tmp_path, avg10: float, avg60: float):
+    path = tmp_path / "pressure"
+    path.write_text(f"some avg10={avg10 * 2:.2f} avg60={avg60 * 2:.2f} avg300=0.00 total=1\n"
+                    f"full avg10={avg10:.2f} avg60={avg60:.2f} avg300=0.00 total=1\n")
+    return path
+
+
+@pytest.mark.parametrize(("steps", "held"), [
+    (((0.5, 0.2),), False),                # stalls under the 5 % it holds at
+    (((12.0, 4.0),), True),                # 12 % of the last 10 s: held, free memory and the slice both fine (2026-11-16)
+    (((12.0, 4.0), (0.0, 2.0)), True),     # the last 10 s calm, the last minute still over the 1 % it waits under
+    (((12.0, 4.0), (0.0, 0.6)), False),    # released
+])
+def test_the_pc_stalling_on_memory_holds_every_turn_whatever_its_free_memory(tmp_path, steps, held):
+    _meminfo(tmp_path, 10.0)
+    memory = SoftMemory(soft_percent=85, release_percent=80, cgroup=_cgroup(tmp_path, 2.0), pc_min_percent=15,
+                        pc_release_percent=20, meminfo=tmp_path / "meminfo", stall_percent=5, stall_release_percent=1,
+                        pressure=tmp_path / "pressure")
+    for avg10, avg60 in steps:
+        _pressure(tmp_path, avg10, avg60)
+        hold = memory.hold()
+    assert (hold is not None) is held
+    if held:
+        assert hold.line() == f"en pause : le PC attend sa mémoire {max(steps[-1]):.0f} % du temps, reprise sous 1 %"
+
+
+def test_no_pressure_file_or_a_stall_limit_of_zero_holds_nothing(tmp_path):
+    _pressure(tmp_path, 90.0, 90.0)
+    assert SoftMemory(soft_percent=85, release_percent=80, cgroup=_cgroup(tmp_path, 2.0), stall_percent=5,
+                      stall_release_percent=1, pressure=None).hold() is None
+    assert SoftMemory(soft_percent=85, release_percent=80, cgroup=_cgroup(tmp_path, 2.0),
+                      pressure=tmp_path / "pressure").hold() is None

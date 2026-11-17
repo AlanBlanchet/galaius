@@ -407,6 +407,11 @@ class Config(BaseSettings):
     # waits for: the slice's own share misses what other programs hold (a container stack, the browser). 0: off.
     agent_pc_available_min_percent: Annotated[int, Field(ge=0, le=100)] = 15
     agent_pc_available_release_percent: Annotated[int, Field(ge=0, le=100)] = 20
+    # The share of time every task of the PC stalls on memory (`/proc/pressure/memory` full, last 10 s) at which no agent
+    # turn starts, and the share over the last minute it waits under: free memory alone missed his browser stalling
+    # with 3 GB still free and the swap full (2026-11-16). 0: off.
+    agent_pc_memory_stall_percent: Annotated[float, Field(ge=0, le=100)] = 5.0
+    agent_pc_memory_stall_release_percent: Annotated[float, Field(ge=0, le=100)] = 1.0
     # systemd-oomd acts on the agents' slice when it stalls this share of the time on memory.
     agent_oomd_pressure_percent: Annotated[int, Field(ge=1, le=100)] = 80
     agent_cpu_percent: Annotated[int, Field(ge=1, le=100)] = 75

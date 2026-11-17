@@ -43,6 +43,9 @@ class MemoryReading(BaseModel):
     #: agents' own share can be low while other programs (a container stack, the browser) hold the rest.
     pc_available_gb: float | None = None
     pc_release_gb: float | None = None
+    #: The share of time the whole PC stalled on memory (PSI full avg10) and the share it waits under, when that holds.
+    pc_stall_percent: float | None = None
+    pc_stall_release_percent: float | None = None
 
 
 def _moment(at: datetime) -> str:
@@ -106,6 +109,9 @@ class Hold(BaseModel):
             return f"en pause : connexion {self.provider} perdue" + (", reprise sans clic une fois reconnectée sur ce PC" if promise else "")
         memory = self.cause
         assert isinstance(memory, MemoryReading)
+        if memory.pc_stall_percent is not None and memory.pc_stall_release_percent is not None:
+            return (f"en pause : le PC attend sa mémoire {memory.pc_stall_percent:.0f} % du temps"
+                    + (f", reprise sous {memory.pc_stall_release_percent:g} %" if promise else ""))
         if memory.pc_available_gb is not None and memory.pc_release_gb is not None:
             return (f"en pause : mémoire du PC à {memory.pc_available_gb:.1f} Go libres"
                     + (f", reprise au-dessus de {memory.pc_release_gb:.1f} Go" if promise else ""))
@@ -131,13 +137,16 @@ class Paused(PermissionError):
 class SoftMemory(BaseModel):
     """The agents' soft memory limits: past `soft_percent` of the slice's cap (`Config.agent_memory_soft_percent`), or
     with the PC's free memory under `pc_min_percent` of its RAM (`Config.agent_pc_available_min_percent`), no turn
-    starts, until the slice is back under `release_percent` and the PC's free memory over `pc_release_percent`.
+    starts, until the slice is back under `release_percent` and the PC's free memory over `pc_release_percent`; nor while
+    every task of the PC stalls on memory `stall_percent` of the time (`Config.agent_pc_memory_stall_percent`, PSI
+    full avg10), until its last minute is under `stall_release_percent`.
 
     The slice is measured as the kernel's working set — `memory.current` less the file cache it would drop first
     (`inactive_file`): the slice sits at its cap on page cache alone (15.0 of 15.0 GB, 8.7 GB of it in use, 2026-10-20).
     The PC as `MemAvailable`: on 2026-11-09 the slice stood at 10 of its 18.4 GB while a container stack held 8.4 GB and
-    the full swap, and the kernel's OOM killer took the person's own browser. No cgroup (no user manager), one without
-    a cap, or no `meminfo` (not Linux): that limit holds nothing."""
+    the full swap, and the kernel's OOM killer took the person's own browser. The stall: on 2026-11-16 his browser froze
+    (full avg300 17 %) while `MemAvailable` still read ~3 GB, the compressed swap full. No cgroup (no user manager), one
+    without a cap, no `meminfo` or no `pressure` file (not Linux, a kernel without PSI): that limit holds nothing."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -147,6 +156,9 @@ class SoftMemory(BaseModel):
     pc_min_percent: int = Field(default=0, ge=0, le=100)
     pc_release_percent: int = Field(default=0, ge=0, le=100)
     meminfo: Path | None = None
+    stall_percent: float = Field(default=0, ge=0, le=100)
+    stall_release_percent: float = Field(default=0, ge=0, le=100)
+    pressure: Path | None = None
 
     @model_validator(mode="after")
     def _release_past_hold(self) -> Self:
@@ -154,15 +166,20 @@ class SoftMemory(BaseModel):
             raise ValueError("the memory release share must not exceed the soft limit")
         if self.pc_release_percent < self.pc_min_percent:
             raise ValueError("the PC's free memory to resume at must not be under the share it holds at")
+        if self.stall_release_percent > self.stall_percent:
+            raise ValueError("the memory stall to resume under must not exceed the stall it holds at")
         return self
 
     @classmethod
     def here(cls, config: Config) -> Self:
-        meminfo = Path("/proc/meminfo")
+        meminfo, pressure = Path("/proc/meminfo"), Path("/proc/pressure/memory")
         return cls(soft_percent=config.agent_memory_soft_percent, release_percent=config.agent_memory_release_percent,
                    cgroup=slice_cgroup(), pc_min_percent=config.agent_pc_available_min_percent,
                    pc_release_percent=config.agent_pc_available_release_percent,
-                   meminfo=meminfo if meminfo.is_file() else None)
+                   meminfo=meminfo if meminfo.is_file() else None,
+                   stall_percent=config.agent_pc_memory_stall_percent,
+                   stall_release_percent=config.agent_pc_memory_stall_release_percent,
+                   pressure=pressure if pressure.is_file() else None)
 
     def pc_available(self) -> tuple[int, int] | None:
         """The PC's free memory (`MemAvailable`) and its RAM, in bytes; None when not measurable."""
@@ -176,6 +193,18 @@ class SoftMemory(BaseModel):
         total = fields.get("MemTotal")
         available = fields.get("MemAvailable")
         return (available, total) if available is not None and total else None
+
+    def pc_stall(self) -> tuple[float, float] | None:
+        """The share of time every task of the PC stalled on memory over the last 10 s and 60 s (PSI `full`), in percent;
+        None when not measurable."""
+        if self.pressure is None:
+            return None
+        try:
+            line = next(line for line in self.pressure.read_text().splitlines() if line.startswith("full "))
+            fields = dict(field.split("=") for field in line.split()[1:])
+            return float(fields["avg10"]), float(fields["avg60"])
+        except (OSError, ValueError, StopIteration, KeyError):
+            return None
 
     def used_percent(self) -> float | None:
         """The working set's share of the cap now, in percent; None when not measurable."""
@@ -209,19 +238,24 @@ class SoftMemory(BaseModel):
         pc_short = pc_percent is not None and pc_percent < self.pc_min_percent
         slice_clear = used is None or used < self.release_percent
         pc_clear = pc_percent is None or pc_percent >= self.pc_release_percent
+        stall = self.pc_stall() if self.stall_percent else None
+        stalled = stall is not None and stall[0] >= self.stall_percent
+        stall_clear = stall is None or stall[1] < self.stall_release_percent
         moment = time.time() if now is None else now
         with reg.shared_state("memory-hold") as (raw, write, _keep):
             since = _since(raw)
-            if (slice_clear and pc_clear) or (since is None and not slice_over and not pc_short):
+            if (slice_clear and pc_clear and stall_clear) or (since is None and not slice_over and not pc_short and not stalled):
                 if since is not None:
                     write(b"")
                 return None
             if since is None:
                 since = moment
                 write(repr(since).encode())
-        # The PC short names the PC; else the hold is the slice's own.
+        # The PC stalling names the stall, the PC short its free memory; else the hold is the slice's own.
         pc_said = (dict(pc_available_gb=pc[0] / 1e9, pc_release_gb=pc[1] * self.pc_release_percent / 100 / 1e9)
                    if pc is not None and not pc_clear else {})
+        if stall is not None and not stall_clear:
+            pc_said |= dict(pc_stall_percent=max(stall), pc_stall_release_percent=self.stall_release_percent)
         return Hold(cause=MemoryReading(at=since, used_percent=used, release_percent=self.release_percent, tenant=self.tenant(),
                                         **pc_said))
 
