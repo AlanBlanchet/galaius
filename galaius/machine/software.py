@@ -53,7 +53,7 @@ APP_SHIM_KEYS = ("CrAppModeShortcutID", "CrAppModeProfileDirName")
 #: A command or id launching a Windows program: Wine's generated entries (under `applications/wine/`: id `wine-…`),
 #: WinApps' Windows-VM launchers, Bottles' and PlayOnLinux's per-program launchers; their names are whatever Windows
 #: software he installed there (Bottles and PlayOnLinux themselves stay listed).
-WINDOWS = re.compile(r"(^|[/\s\"'])(wine(64)?|winapps)([\s\"']|$)|\.wine/|^wine-|bottles-cli\b|playonlinux\s+--run", re.IGNORECASE)
+WINDOWS = re.compile(r"(^|[/\s\"'])((wine(64)?|winapps)([\s\"']|$)|playonlinux4?[\"']?\s+--run)|\.wine/|^wine-|bottles-cli\b", re.IGNORECASE)
 #: Vendor categories those launchers file themselves under.
 WINDOWS_CATEGORIES = frozenset({"WinApps", "Wine"})
 #: Largest entry or Info.plist read (a real one is a few kB).

@@ -52,6 +52,8 @@ ROWS: dict[str, tuple[dict[str, str], dict[str, tuple[str, str]]]] = {
          f"{USER}/wq.desktop": entry("Wq", Exec="'/usr/bin/wine' x.exe", Categories="Game;"),
          f"{USER}/ps.desktop": entry("Photoshop CS6", Exec="flatpak run --command=bottles-cli com.usebottles.bottles run -p Photoshop -b Adobe -- %u"),
          f"{USER}/pol.desktop": entry("Office 2010", Exec="playonlinux --run \"Office 2010\" %F"),
+         f"{USER}/polq.desktop": entry("Office 2007", Exec="\"playonlinux\" --run \"Office 2007\""),
+         f"{USER}/polp.desktop": entry("Visio", Exec="'/opt/my apps/playonlinux4' --run Visio"),
          f"{USER}/com.usebottles.bottles.desktop": entry("Bottles", Exec="bottles %u", Categories="Utility;"),
          f"{USER}/PlayOnLinux.desktop": entry("PlayOnLinux", Exec="playonlinux %F", Categories="Game;")},
         {"com.usebottles.bottles": ("Utility", "user"), "PlayOnLinux": ("Game", "user")}),
