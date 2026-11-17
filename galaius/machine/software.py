@@ -4,7 +4,8 @@ under one of the freedesktop Main Categories, the standard a Linux menu files ap
 macOS's own `LSApplicationCategoryType` values fold into it (`APPLE_CATEGORIES`). Nothing here is sent anywhere.
 
 What never enters the list: entries a menu hides (`NoDisplay`, `Hidden`, a `TryExec` program absent), browser web-app
-shortcuts (their name is a site he visited, their command a browser profile), Wine-generated entries, OS settings panels.
+shortcuts (their name is a site he visited, their command a browser profile), Wine entries and Windows-VM launchers
+(named after whatever Windows software he installed there), OS settings panels.
 What never leaves this module: paths, commands, icons — an app is its id, name, version, categories and whether it is
 installed for the whole system or for this user only."""
 
@@ -42,8 +43,11 @@ APPLE_CATEGORIES: dict[str, str] = {
 #: A command or id that marks a browser web-app shortcut: Chromium browsers (`crx_`, `--app-id`, `--app=`), Firefox PWAs,
 #: GNOME Web (`--application-mode`, `WebApp_`), Chrome and Safari on macOS.
 WEB_APP = re.compile(r"crx_|--app-id|--app=|firefoxpwa|--application-mode|\.WebApp_|^com\.google\.Chrome\.app\.|^com\.apple\.Safari\.WebApp\.")
-#: A command or id Wine generated for a Windows program (its entries live under `applications/wine/`: id `wine-…`).
-WINE = re.compile(r"(^|[/\s\"'])wine(64)?(\s|$)|\.wine/|^wine-", re.IGNORECASE)
+#: A command or id launching a Windows program: Wine's generated entries (under `applications/wine/`: id `wine-…`) and
+#: WinApps' Windows-VM launchers; their names are whatever Windows software he installed there.
+WINDOWS = re.compile(r"(^|[/\s\"'])(wine(64)?|winapps)(\s|$)|\.wine/|^wine-", re.IGNORECASE)
+#: Vendor categories those launchers file themselves under.
+WINDOWS_CATEGORIES = frozenset({"WinApps", "Wine"})
 #: Characters a name never prints: a terminal reads C0 / C1 controls as commands.
 CONTROLS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 #: Largest entry file read (a real one is a few kB; a larger one is not a menu entry).
@@ -148,12 +152,13 @@ class DesktopEntries:
         if entry is None or entry.get("Type") != "Application" or entry.get("NoDisplay") == "true" or entry.get("Hidden") == "true":
             return None
         name, command = entry.get("Name", "").strip(), entry.get("Exec", "")
-        if not name or WEB_APP.search(entry_id) or WEB_APP.search(command) or WINE.search(command) or WINE.search(entry_id):
+        names = [name for name in entry.get("Categories", "").split(";") if name]
+        if not name or WEB_APP.search(entry_id) or WEB_APP.search(command) or WINDOWS.search(command) or WINDOWS.search(entry_id) \
+                or WINDOWS_CATEGORIES.intersection(names):
             return None
         try_exec = entry.get("TryExec")
         if try_exec and shutil.which(try_exec) is None:
             return None
-        names = [name for name in entry.get("Categories", "").split(";") if name]
         if names and set(main_categories(names)) == {"Other"} and "Settings" in names:
             return None  # an OS settings panel
         scope: Literal["system", "user"] = "user" if path.is_relative_to(self.home) else "system"

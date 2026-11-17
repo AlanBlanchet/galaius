@@ -39,6 +39,11 @@ ROWS: dict[str, tuple[dict[str, str], dict[str, tuple[str, str]]]] = {
     "Wine entries never listed": (
         {f"{USER}/wine/Programs/Tool.desktop": entry("Tool"), f"{USER}/x.desktop": entry("X", Exec="env WINEPREFIX=/p wine C:\\x.exe")},
         {}),
+    "Windows-VM launchers (WinApps) never listed": (
+        {f"{USER}/cmd.desktop": entry("Cmd", Exec="/opt/x/bin/winapps cmd %F", Categories="WinApps;Windows"),
+         f"{USER}/word.desktop": entry("Word", Exec="winapps word %F", Categories="Office;"),
+         f"{USER}/tagged.desktop": entry("Tagged", Categories="WinApps;Office;")},
+        {}),
     "settings panels dropped, Settings beside a Main Category kept": (
         {f"{SYSTEM}/panel.desktop": entry("Panel", Categories="Settings;HardwareSettings;"),
          f"{SYSTEM}/monitor.desktop": entry("Monitor", Categories="Settings;System;Monitor;")},

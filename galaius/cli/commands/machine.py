@@ -88,8 +88,8 @@ def machine_software() -> None:
     """Owner-only, on this machine: the applications installed here, filed by the freedesktop Main Categories
     (AudioVideo, Development, Graphics, Office, … and Other). Read here, printed here, sent nowhere: each app's
     name, id, version where the OS records it, other categories and whether it is installed for every account or
-    yours alone; never a path, a command or an icon. Browser web-app shortcuts, Wine entries and OS settings panels
-    are left out."""
+    yours alone; never a path, a command or an icon. Browser web-app shortcuts, Wine entries, Windows-VM launchers
+    and OS settings panels are left out."""
     try:
         inventory = Inventory.read()
     except NotImplementedError as error:
