@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
+from pydantic import ValidationError
 
 import asyncio
 import base64
@@ -989,7 +990,8 @@ def test_settings_survive_a_bad_answer_and_no_pc_takes_a_program_switch(base: Pa
     seen = tmp_path / "argv.json"
     recorder = ("python3", "-c", f"import json,sys; json.dump(sys.argv[1:], open({str(seen)!r}, 'w')); print('not json')")
     agents = _agents(base, tmp_path, cli=recorder)
-    assert _answer(agents, _request("provider", provider="codex", active=False)) is None and not seen.exists()  # retired request: no switch written
+    with pytest.raises(ValidationError):  # no request switches a program on one PC
+        _request("provider", provider="codex", active=False)
     settings = _answer(agents, _request("settings"))
     assert json.loads(seen.read_text()) == ["config", "models", "--json-out"]
     assert settings.tool_models == () and settings.detail.startswith("models not read here")

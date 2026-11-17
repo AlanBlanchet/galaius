@@ -9,7 +9,7 @@ license-files = ["LICENSE"]
 keywords = ["mcp", "automation", "browser", "desktop", "playwright", "vision", "agent", "llm"]
 requires-python = ">=3.11"
 dependencies = [
-    "galaius-core @ git+https://github.com/AlanBlanchet/galaius-core.git@d37bc5e4547340fb5952e5ca8d678e5a733e3891",
+    "galaius-core @ git+https://github.com/AlanBlanchet/galaius-core.git@78aace0af00dd5c669fd0eaaa26324a76d2da2e1",
     "cyclopts>=3.0",
     "rich>=13.0",
     # /dev/uinput absolute input (X11 + Wayland). Same `evdev` import either way: prebuilt wheels
