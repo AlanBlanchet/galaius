@@ -188,13 +188,19 @@ _BOUND_ROWS: dict[str, tuple[PublishedTable, dict[str, PublishedEntry]]] = {}
 def _bench_row(bench: Benchmark, model: Model) -> PublishedEntry | None:
     """The published row naming this model. Bound by its as-published name (`Model.published_key`):
     the stored `model_id` is a hand-kept second spelling (`claude-opus-5-5` while the catalog
-    registers `claude-opus-5.5`), never the key. Every reseller copy of a model shares its row."""
+    registers `claude-opus-5.5`), never the key. Every reseller copy of a model shares its row. A model the table lists at
+    several efforts (`low` … `max`) reads its best row, as the intelligence board does (`model_catalog.live_scores`)."""
     table = _bench_table(bench)
     if table is None:
         return None
     held = _BOUND_ROWS.get(bench.id)
     if held is None or held[0] is not table:   # a live table landing after import replaces the bound one
-        held = _BOUND_ROWS[bench.id] = (table, {Model.published_key(entry.model_name): entry for entry in _bench_entries(bench)})
+        best: dict[str, PublishedEntry] = {}
+        for entry in _bench_entries(bench):
+            key = Model.published_key(entry.model_name)
+            if key not in best or (entry.normalized_score or 0) > (best[key].normalized_score or 0):
+                best[key] = entry
+        held = _BOUND_ROWS[bench.id] = (table, best)
     return held[1].get(model.published_id_key)
 
 

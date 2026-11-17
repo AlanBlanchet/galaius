@@ -1,6 +1,6 @@
 """Coding benchmarks that exist only on a publisher's pages, carried as curated published tables.
 
-Artificial Analysis serves its Coding Agent Index v1.5 and its Terminal-Bench 4.0 run on its site,
+Artificial Analysis serves its Coding Agent Index (v2.1 read 2026-11-17) and its Terminal-Bench 4.0 run on its site,
 never in its API — a coding role ranking on the API's legacy coding field never sees the newest
 models. The tables must bind their as-published row names to registered models through
 ``Model.match_published`` and rank like any other ``aa.*`` metric.
@@ -14,12 +14,12 @@ from galaius.models.registry import Benchmark, Model
 
 from tests.support.models import catalog_of, model
 
-NEWEST = ("claude-opus-5-5", "claude-fable-5-1", "gpt-6-astra")
+NEWEST = ("claude-opus-5-5", "claude-fable-5-1", "claude-fable-5-2", "gpt-6-astra")
 
 
 @pytest.fixture(params=[
     {i: i for i in NEWEST},
-    {"claude-opus-5-5": "claude-opus-5.5", "claude-fable-5-1": "claude-fable-5.1", "gpt-6-astra": "gpt-6-astra"},
+    {"claude-opus-5-5": "claude-opus-5.5", "claude-fable-5-1": "claude-fable-5.1", "claude-fable-5-2": "claude-fable-5.2", "gpt-6-astra": "gpt-6-astra"},
 ], ids=["dashed", "dotted"])
 def newest(request):
     """The newest models as each catalog spells them — the bundled table stores `claude-opus-5-5`,
@@ -51,9 +51,10 @@ def test_rows_bind_through_match_published(newest, benchmark_id, expected):
 @pytest.mark.parametrize(
     ("variable", "model_id", "score"),
     [
-        ("aa.coding_agent_index", "claude-opus-5-5", 66.0),
-        ("aa.coding_agent_index", "claude-fable-5-1", 62.0),
-        ("aa.coding_agent_index", "gpt-6-astra", 62.0),
+        ("aa.coding_agent_index", "claude-opus-5-5", 58.2),
+        ("aa.coding_agent_index", "claude-fable-5-1", 52.5),
+        ("aa.coding_agent_index", "claude-fable-5-2", 58.5),  # its best effort (xhigh) of the five it was run at
+        ("aa.coding_agent_index", "gpt-6-astra", 53.1),
         ("aa.terminalbench_4", "claude-opus-5-5", 0.596),
         ("aa.terminalbench_4", "gpt-6-astra", 0.596),
     ],
@@ -67,7 +68,7 @@ def test_newest_models_are_scored(newest, variable, model_id, score):
 def test_bare_coding_criterion_ranks_the_leader(newest):
     criteria = Criteria.parse("aa.coding_agent_index and price.in >= 0 and price.out >= 0")
     best = criteria.choose(available_only=False)
-    assert best is not None and best.id == newest["claude-opus-5-5"]
+    assert best is not None and best.id == newest["claude-fable-5-2"]
 
 
 def test_a_table_never_mixes_versions():
@@ -80,4 +81,4 @@ def test_a_table_never_mixes_versions():
 
 def test_explain_names_the_ranked_score(newest):
     why = Criteria.parse("aa.coding_agent_index").explain(available_only=False)
-    assert f"{newest['claude-opus-5-5']} (aa.coding_agent_index 66)" in why
+    assert f"{newest['claude-fable-5-2']} (aa.coding_agent_index 58.5)" in why

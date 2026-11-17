@@ -727,3 +727,22 @@ def test_models_without_the_ranked_number_follow_the_general_measure_not_price(r
         assert [model.id for model in order] == ["scored", "new-strong", "old-cheap", "no-number"]
     finally:
         bench._measured.clear()
+
+
+def test_a_model_listed_at_several_efforts_reads_its_best_published_row():
+    """The coding-agent table lists a model at each effort it was run at (Fable 5.2: low to max). The criterion reads its
+    best row, as the intelligence board does; reading the last one ranked Fable 5.2 at its low effort."""
+    from galaius.catalog.published import PublishedTable
+    from galaius.models.registry import Model
+
+    table = PublishedTable.load("coding_agent_index")
+    assert table is not None and table.source_url and table.retrieved
+    rows: dict[str, list[float]] = {}
+    for entry in table.entries:
+        rows.setdefault(Model.published_key(entry.model_name), []).append(entry.normalized_score)
+    several = {key: scores for key, scores in rows.items() if len(scores) > 1}
+    assert several, "the table lists no model at several efforts"
+    read = Variables.by_name("aa.coding_agent_index").read
+    for model in Model.registry():
+        if model.published_id_key in several:
+            assert read(model) == max(several[model.published_id_key]), model.id
