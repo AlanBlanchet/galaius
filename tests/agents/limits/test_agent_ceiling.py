@@ -27,6 +27,15 @@ def test_the_slice_has_a_hard_cap_and_no_throttle_below_it():
     }
 
 
+def test_a_pc_naming_a_soft_limit_slows_its_agents_before_the_persons_apps():
+    """2026-11-16 / 11-17: his browser stalled (memory full avg60 up to 28 %) with the agents under their cap, a container
+    stack outside them holding the compressed swap."""
+    assert CEILING.model_copy(update={"memory_high_percent": 30}).properties(cores=12)["MemoryHigh"] == "30%"
+    with pytest.raises(ValidationError):
+        Ceiling(memory_max_percent=40, memory_high_percent=45, run_memory_max_percent=20, oomd_pressure_percent=80,
+                cpu_percent=75, cpu_weight=20)
+
+
 def test_one_run_cannot_exceed_all_agents_together():
     with pytest.raises(ValidationError):
         Ceiling(memory_max_percent=45, run_memory_max_percent=50, oomd_pressure_percent=80, cpu_percent=75, cpu_weight=20)

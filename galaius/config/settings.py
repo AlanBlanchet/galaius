@@ -398,6 +398,9 @@ class Config(BaseSettings):
     agent_turn_facts: TurnFacts = Field(default_factory=lambda: TurnFacts())
     agent_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 45
     agent_run_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 20
+    # The agents' kernel soft limit (`MemoryHigh`), a share of RAM: past it their pages are reclaimed and they slow down,
+    # the person's apps kept. 0: none (`galaius.agents.limits.ceiling` says why that is the default).
+    agent_memory_high_percent: Annotated[int, Field(ge=0, le=100)] = 0
     # The agents' soft memory limit, a share of that slice's cap: past it no agent turn starts here (a spawn, a resumed
     # turn) until the slice is back under the release share (`galaius.agents.limits.admission.SoftMemory`). Never a kernel
     # MemoryHigh: that throttle stalls every agent on reclaim (`galaius.agents.limits.ceiling`).

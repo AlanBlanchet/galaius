@@ -17,6 +17,11 @@ systemd-oomd stays as the last resort for a slice that truly thrashes, and it pa
 scopes (``ManagedOOMPreference=avoid``) while anything else in the slice — a fixture server, a
 build — can be ended instead.
 
+A PC whose other programs leave the agents less than their cap (a container stack holding the
+compressed swap, the person's browser) may name a soft limit under it (``memory_high_percent``):
+past it the agents, not the person's apps, are reclaimed and slowed. Off by default, for the stall
+described above.
+
 ``systemd-run --scope`` registers its own pid in a new scope and then execs the command, so the
 pid a caller records, signals and waits on is the agent's own.
 """
@@ -53,6 +58,8 @@ class Ceiling(BaseModel):
 
     memory_max_percent: int = Field(ge=1, le=100)
     run_memory_max_percent: int = Field(ge=1, le=100)
+    #: The agents' soft limit, a share of the PC's RAM (`MemoryHigh`); 0: none.
+    memory_high_percent: int = Field(default=0, ge=0, le=100)
     oomd_pressure_percent: int = Field(ge=1, le=100)
     cpu_percent: int = Field(ge=1, le=100)
     cpu_weight: int = Field(ge=1, le=10000)
@@ -64,6 +71,8 @@ class Ceiling(BaseModel):
     def _run_fits_in_slice(self) -> "Ceiling":
         if self.run_memory_max_percent > self.memory_max_percent:
             raise ValueError("one run's memory cap must not exceed all agents' cap")
+        if self.memory_high_percent > self.memory_max_percent:
+            raise ValueError("the agents' soft memory limit must not exceed their cap")
         return self
 
     @classmethod
@@ -71,6 +80,7 @@ class Ceiling(BaseModel):
         return cls(
             memory_max_percent=config.agent_memory_max_percent,
             run_memory_max_percent=config.agent_run_memory_max_percent,
+            memory_high_percent=config.agent_memory_high_percent,
             oomd_pressure_percent=config.agent_oomd_pressure_percent,
             cpu_percent=config.agent_cpu_percent,
             cpu_weight=config.agent_cpu_weight,
@@ -78,10 +88,10 @@ class Ceiling(BaseModel):
         )
 
     def properties(self, cores: int) -> dict[str, str]:
-        """systemd resource-control properties for :data:`SLICE`. ``MemoryHigh`` is named to clear
-        what an earlier ceiling set on this boot."""
+        """systemd resource-control properties for :data:`SLICE`. ``MemoryHigh`` is always named, so no
+        soft limit clears what an earlier ceiling set on this boot."""
         return {
-            "MemoryHigh": "infinity",
+            "MemoryHigh": f"{self.memory_high_percent}%" if self.memory_high_percent else "infinity",
             "MemoryMax": f"{self.memory_max_percent}%",
             "MemorySwapMax": "0",
             "CPUQuota": f"{max(1, cores) * self.cpu_percent}%",
