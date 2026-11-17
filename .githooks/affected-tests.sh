@@ -5,7 +5,12 @@
 # failing on Linux and macOS alike), and costs the owner a failure mail. Free and local; a Windows-only behaviour
 # still needs a Windows run.
 #   affected-tests.sh RANGE...   (git log range arguments; exit 1 when one of those tests fails)
+# Run as GitHub runs them: on a systemd computer each batch is a transient user service (`systemd-run --user`), so no
+# agent run's scope, variables or login reach a test's own child processes (an agent's scope above a test's
+# subprocess made galaius read that run's identity: a false red on a green tree), with its own memory ceiling
+# (PREPUSH_TEST_MEMORY, 4G) inside the agents' slice; elsewhere the pushing agent's variables are stripped.
 set -uo pipefail
+BATCH="${PREPUSH_TEST_BATCH:-8}" MEMORY="${PREPUSH_TEST_MEMORY:-4G}"
 # shellcheck disable=SC2068
 changed="$(git log --name-only --diff-filter=d --format= $@ -- '*.py' | sort -u)"
 [ -n "$changed" ] || exit 0
@@ -15,11 +20,31 @@ for path in $(printf '%s\n' "$changed" | grep -E '^galaius/.*\.py$'); do
   parent="${module%.*}" leaf="${module##*.}"
   picked+=$'\n'"$(grep -rlE --include='test_*.py' "\\b${module//./\\.}\\b|from ${parent//./\\.} import [^#]*\\b${leaf}\\b" tests 2>/dev/null)"
 done
-files="$(printf '%s\n' "$picked" | grep -v '^$' | sort -u | while read -r file; do [ -f "$file" ] && echo "$file"; done)"
-[ -n "$files" ] || exit 0
-echo "pre-push: $(printf '%s\n' "$files" | wc -l) test file(s) touched by this push, run here first (Linux):" >&2
-# As GitHub runs them: none of the pushing agent's own variables (a test reaching its run, login or agent places waits on them).
-# shellcheck disable=SC2046,SC2086
-env $(env | grep -oE '^(GALAIUS|CLAUDE|CODEX|ANTHROPIC)[A-Z0-9_]*' | sed 's/^/-u /') uv run --frozen -q pytest -m "not integration" -q -rfE -p no:cacheprovider $files </dev/null >&2 && exit 0
+mapfile -t files < <(printf '%s\n' "$picked" | grep -v '^$' | sort -u | while read -r file; do [ -f "$file" ] && echo "$file"; done)
+[ "${#files[@]}" -gt 0 ] || exit 0
+echo "pre-push: ${#files[@]} test file(s) touched by this push, run here first (Linux, batches of ${BATCH}):" >&2
+
+pytest_batch() {  # files...: one pytest process, as GitHub runs it
+  local test=(uv run --frozen -q pytest -m "not integration" -q -rfE -p no:cacheprovider "$@")
+  if command -v systemd-run >/dev/null && systemctl --user show-environment >/dev/null 2>&1; then
+    systemd-run --user --quiet --wait --pipe --collect --slice=galaius-agents.slice -p MemoryMax="$MEMORY" \
+      -p WorkingDirectory="$PWD" -E PATH="$PATH" -E HOME="$HOME" -E LANG="${LANG:-C.UTF-8}" "${test[@]}" </dev/null
+  else
+    # shellcheck disable=SC2046
+    env $(env | grep -oE '^(GALAIUS|CLAUDE|CODEX|ANTHROPIC)[A-Z0-9_]*' | sed 's/^/-u /') "${test[@]}" </dev/null
+  fi
+}
+
+# A test building a wheel offline (test_conversation_console) runs the project's own locked `uv` (on the test PATH),
+# whose cache GitHub's first build fills with the build backend; here a pruned cache may lack it: one online build
+# with that same uv first.
+uv run --frozen -q uv build --wheel --quiet --out-dir out/tests/prepush-wheel >/dev/null 2>&1 \
+  || echo "pre-push: could not build the wheel (offline?); a wheel test may fail" >&2
+rm -rf out/tests/prepush-wheel
+failed=0
+for ((start = 0; start < ${#files[@]}; start += BATCH)); do
+  pytest_batch "${files[@]:start:BATCH}" >&2 || failed=1
+done
+[ "$failed" = 0 ] && exit 0
 echo "pre-push: a test this push touches fails here; it would fail GitHub's checks too. Fix it, then push." >&2
 exit 1
