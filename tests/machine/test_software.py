@@ -42,7 +42,9 @@ ROWS: dict[str, tuple[dict[str, str], dict[str, tuple[str, str]]]] = {
     "Windows-VM launchers (WinApps) never listed": (
         {f"{USER}/cmd.desktop": entry("Cmd", Exec="/opt/x/bin/winapps cmd %F", Categories="WinApps;Windows"),
          f"{USER}/word.desktop": entry("Word", Exec="winapps word %F", Categories="Office;"),
-         f"{USER}/tagged.desktop": entry("Tagged", Categories="WinApps;Office;")},
+         f"{USER}/tagged.desktop": entry("Tagged", Categories="WinApps;Office;"),
+         f"{USER}/quoted.desktop": entry("Quoted", Exec='"/opt/my apps/winapps" excel %F', Categories="Office;"),
+         f"{USER}/wq.desktop": entry("Wq", Exec="'/usr/bin/wine' x.exe", Categories="Game;")},
         {}),
     "settings panels dropped, Settings beside a Main Category kept": (
         {f"{SYSTEM}/panel.desktop": entry("Panel", Categories="Settings;HardwareSettings;"),

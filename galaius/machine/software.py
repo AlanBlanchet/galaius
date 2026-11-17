@@ -45,7 +45,7 @@ APPLE_CATEGORIES: dict[str, str] = {
 WEB_APP = re.compile(r"crx_|--app-id|--app=|firefoxpwa|--application-mode|\.WebApp_|^com\.google\.Chrome\.app\.|^com\.apple\.Safari\.WebApp\.")
 #: A command or id launching a Windows program: Wine's generated entries (under `applications/wine/`: id `wine-…`) and
 #: WinApps' Windows-VM launchers; their names are whatever Windows software he installed there.
-WINDOWS = re.compile(r"(^|[/\s\"'])(wine(64)?|winapps)(\s|$)|\.wine/|^wine-", re.IGNORECASE)
+WINDOWS = re.compile(r"(^|[/\s\"'])(wine(64)?|winapps)([\s\"']|$)|\.wine/|^wine-", re.IGNORECASE)
 #: Vendor categories those launchers file themselves under.
 WINDOWS_CATEGORIES = frozenset({"WinApps", "Wine"})
 #: Characters a name never prints: a terminal reads C0 / C1 controls as commands.
