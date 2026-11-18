@@ -127,7 +127,7 @@ def machine_fence(state: Literal["on", "off"] | None = None) -> None:
 def machine_peer(state: Literal["off"] | None = None) -> None:
     """Owner-only, on this machine: whether runs that another of your PCs places here are taken. `off` refuses them at once. There is no `on`
     here: only your signed-in web session turns it on again (a run placed here could otherwise switch itself back on). No argument prints it."""
-    from galaius.machine.peer.switch import PeerSwitch  # Circular layers: the runner imports this CLI's neighbours.
+    from galaius.machine.peer.switch import PeerSwitch
 
     if state == "off":
         PeerSwitch.off()

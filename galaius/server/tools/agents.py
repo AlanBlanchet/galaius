@@ -154,7 +154,7 @@ async def agent_spawn(
     cwd: directory to work in; defaults to galaius's own working directory.
     machine: start it on another of the person's PCs instead: its name, its id, or "auto" (the other PC with the most free places). It runs there
         in `project`'s folder (a project that PC already holds), as `agent`, fenced, on the model its rule picks there (so no provider, model or
-        cwd), at most workspace_write. Returns its run_id and PC; follow it with agent_events(run_id, machine=...) and talk to it with
+        cwd), at most workspace_write. An identical start repeated within two minutes returns the run it placed (a retry never places two). Returns its run_id and PC; follow it with agent_events(run_id, machine=...) and talk to it with
         agent_send(run_id, message, machine=...). Refused with the reason when the PC is off, takes no run from other PCs, holds no such project
         or is full.
     project: with `machine`, the project (name or id) the run works on there.
@@ -481,8 +481,9 @@ async def agent_send(run_id: str, message: str, wait: bool = False, fyi: bool = 
     message: what to say — write it as a complete request; it cannot ask you a follow-up.
     wait: block until it has replied, instead of returning as soon as the message is delivered.
     fyi: a one-way note (a report, an ack, a heads-up): it reads it, and its turns never report back to you for it.
-    machine: the run is on another of the person's PCs (one you placed there with agent_spawn(machine=...), or the coordinator of the conversation you
-        work in): its PC name or id. The message is delivered there as a message from another agent, never as the person's word.
+    machine: the run is on another of the person's PCs (one you placed there with agent_spawn(machine=...)): its PC name or id. The message reaches it
+        under a header saying it comes from another agent, never as the person's word. A run placed on a PC cannot write back to the one that placed it:
+        the placing agent reads its events.
     """
     if machine is not None:
         return await asyncio.to_thread(_peer_send, machine, run_id, message)

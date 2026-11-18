@@ -54,3 +54,14 @@ def test_the_local_off_refuses_and_only_the_servers_word_turns_it_back_on(monkey
     assert PeerSwitch.is_off()
     PeerSwitch.on(said_by_server=True)
     assert fenced(monkeypatch, True, start(**placed())) is True
+
+
+def test_the_hello_names_this_process_the_seal_it_holds_and_its_local_off(tmp_path: Path) -> None:
+    from galaius.machine.peer.seal import INSTANCE, PeerSeal
+
+    seal = PeerSeal(tmp_path / "peer-seal")
+    assert seal.hello() == {"instance": str(INSTANCE), "off": False} and seal.held() is None
+    assert seal.keep({"seal": "s" * 40}) and seal.hello()["seal"] == "s" * 40
+    assert not seal.keep({"seal": "short"}) and seal.hello()["seal"] == "s" * 40         # a malformed seal never replaces the held one
+    PeerSwitch.off()
+    assert seal.hello()["off"] is True

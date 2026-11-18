@@ -1045,7 +1045,8 @@ class MachineAgents(BaseModel):
         written = self._project_env(request, folder)
         # A lent run binds only closed login folders; a start's candidates each get theirs in the walk (`run_agent`).
         homes = pinned.homes() if pinned is not None else {}
-        fenced = self.fence_agents or self._peer_fenced(request)
+        peer = self._peer_fenced(request)       # always asked: its owner's local OFF refuses a placed run whatever `fence_agents` says
+        fenced = self.fence_agents or peer
         fence, review = self._fence(request.root, folder, homes, lent=pinned is not None and pinned.lent) if fenced else (None, None)
         return folder, written, fence, review
 

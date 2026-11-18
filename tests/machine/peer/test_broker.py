@@ -171,3 +171,26 @@ def test_the_mcp_tools_place_events_send_and_stop_through_the_runner_and_say_a_r
     assert no_project.startswith("ERROR: machine needs project") and "far" in sent and events.endswith("no events yet")
     assert stopped.startswith("ERROR: no such run among yours (not_found)") and unknown.startswith("ERROR: no other PC named 'nowhere'")
     assert [call["kind"] for call in runner.calls if call["kind"] == "peer_start"] == ["peer_start"]
+
+
+def test_a_retry_keeps_its_key_inside_the_window_and_a_different_request_or_an_hour_later_does_not(monkeypatch: pytest.MonkeyPatch) -> None:
+    from galaius.machine.peer.client import PeerClient
+
+    client = PeerClient(Path("/nonexistent/peer.sock"))
+    monkeypatch.setattr(PeerClient, "asker", staticmethod(lambda: None))
+    machine, project = uuid4(), uuid4()
+    monkeypatch.setattr("galaius.machine.peer.client.time.time", lambda: 1_000_000.0)
+    first = client.key(machine, project, "tester", "", "judge x")
+    assert client.key(machine, project, "tester", "", "judge x") == first and client.key(machine, project, "tester", "", "judge y") != first
+    monkeypatch.setattr("galaius.machine.peer.client.time.time", lambda: 1_000_000.0 + 3600)
+    assert client.key(machine, project, "tester", "", "judge x") != first
+
+
+def test_a_placed_run_named_by_the_shared_mcp_server_has_no_peer_tools(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    placed_run = uuid4()
+    entries = type("Entries", (), {"entry": lambda self, run: type("Entry", (), {"placed_by": uuid4()})() if run == placed_run else None})()
+    monkeypatch.setattr(broker_module.WebRuns, "in_folder", classmethod(lambda cls, folder: entries))
+    monkeypatch.setattr(broker_module.Caller, "scope_run", classmethod(lambda cls, pid: None))      # the MCP server itself is in no run's scope
+    verified, refusal = PeerBroker.resolved(1, RunRef(run_id=placed_run, conversation_id=uuid4()))
+    assert not verified and refusal["refusal"]["code"] == "permission_denied"
+    assert PeerBroker.resolved(1, RunRef(run_id=uuid4(), conversation_id=uuid4())) == (False, None)

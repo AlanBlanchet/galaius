@@ -3,10 +3,12 @@
 It never signs in and never reads a credential: the runner holds the link, this asks it on its local socket (`PeerBroker`). A refusal is a `PeerError` with the
 server's code and sentence; a runner that is not running is `PeerUnavailable` saying that, never « sign in »."""
 
+import hashlib
 import json
 import socket
+import time
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from pydantic import TypeAdapter
 
@@ -72,6 +74,16 @@ class PeerClient:
 
     # ---- the verbs ----------------------------------------------------------------------------------------------------
 
+    #: Seconds in which one request repeated is one request: a retry after a timeout reuses its idempotency key and never places a second run.
+    WINDOW: float = 120.0
+
+    def key(self, *parts: object) -> str:
+        """The idempotency key of a request: its own words, the run asking and a time window, so a retry of it (a slow answer, a restarted call) finds what
+        it already did, and the same words an hour later are a new request."""
+        asked = self.asker()
+        material = "|".join(str(part) for part in (*parts, asked.run_id if asked else "", int(time.time() // self.WINDOW)))
+        return hashlib.sha256(material.encode()).hexdigest()[:40]
+
     def fleet(self) -> PcFleet:
         return self._of(PcFleet, PeerFleetCall())
 
@@ -79,16 +91,16 @@ class PeerClient:
         return self._of(PeerProjects, PeerProjectsCall())
 
     def start(self, target: UUID, project: UUID, role: str, text: str, *, path: str = "", key: str | None = None, permission=None, reasoning=None) -> PeerStarted:
-        return self._of(PeerStarted, PeerStart(key=key or uuid4().hex, target=target, project=project, path=path, role=role, text=text, permission=permission, reasoning=reasoning))
+        return self._of(PeerStarted, PeerStart(key=key or self.key(target, project, role, path, text), target=target, project=project, path=path, role=role, text=text, permission=permission, reasoning=reasoning))
 
     def message(self, machine: UUID, run_id: UUID, text: str, key: str | None = None) -> PeerSent:
-        return self._of(PeerSent, PeerMessage(key=key or uuid4().hex, machine=machine, run_id=run_id, text=text))
+        return self._of(PeerSent, PeerMessage(key=key or self.key(machine, run_id, text), machine=machine, run_id=run_id, text=text))
 
     def events(self, machine: UUID, run_id: UUID, cursor: int | None = None, wait_s: float = 0.0) -> PeerWindow:
         return self._of(PeerWindow, PeerEvents(machine=machine, run_id=run_id, cursor=cursor, wait_s=wait_s), seconds=wait_s + 30)
 
     def stop(self, machine: UUID, run_id: UUID, key: str | None = None) -> PeerStopped:
-        return self._of(PeerStopped, PeerStop(key=key or uuid4().hex, machine=machine, run_id=run_id))
+        return self._of(PeerStopped, PeerStop(key=key or self.key(machine, run_id, 'stop'), machine=machine, run_id=run_id))
 
     def _of(self, kind, call: PeerCallAny, seconds: float = PEER_START_SECONDS + 10):
         answer = self.ask(call, seconds)

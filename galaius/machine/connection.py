@@ -1357,7 +1357,8 @@ class MachineRunner:
                     if self._server_restarted:
                         self._server_restarted = False
                         RuntimeStore.default().request_check()
-                    await socket.send(json.dumps({"type": "hello", "features": self.features(), "peer": self.peer_seal.hello(), "peer_can_fence": available(),
+                    can_fence = (await asyncio.to_thread(available))[0]       # `available()` is (ready, why): the server reads a bool
+                    await socket.send(json.dumps({"type": "hello", "features": self.features(), "peer": self.peer_seal.hello(), "peer_can_fence": can_fence,
                                                   **await asyncio.to_thread(self._beat, config)}))
                     if await self._serve(socket, config):
                         self.presence.link = "refused"

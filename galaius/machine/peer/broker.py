@@ -115,8 +115,11 @@ class PeerBroker:
         scope = Caller.scope_run(pid)
         if process_started(pid) != before:
             return False, refused("permission_denied", "that process ended")
-        if scope and (placed := WebRuns.in_folder(UserPaths.config()).entry(UUID(str(scope)))) is not None and placed.placed_by is not None:
-            return False, refused("permission_denied", "a run another PC placed here has no peer tools")
+        entries = WebRuns.in_folder(UserPaths.config())
+        for named in {str(scope) if scope else None, str(claimed.run_id) if claimed is not None else None} - {None}:
+            # The process's own run scope AND the run it names (the shared MCP server acts for the run it names): neither may be a placed one.
+            if (placed := entries.entry(UUID(named))) is not None and placed.placed_by is not None:
+                return False, refused("permission_denied", "a run another PC placed here has no peer tools")
         record = reg.get_run(scope) if scope else None
         if record is not None and record.fence is not None:
             return False, refused("permission_denied", "a fenced run has no peer tools")
