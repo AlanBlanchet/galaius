@@ -189,6 +189,31 @@ def test_a_retry_keeps_its_key_whatever_the_instant_and_a_different_request_or_a
     clock[0] += 3600
     assert client.key(machine, project, "tester", "", "judge x") != first
     assert oct((tmp_path / "peer-keys.json").stat().st_mode & 0o777) == "0o600"
+    (tmp_path / "peer-keys.json").write_text("[1, 2]")                            # a file that is not ours never raises: a new key
+    assert PeerClient(tmp_path / "peer.sock").key(machine, project, "tester", "", "judge z")
+
+
+def test_a_start_refused_as_failed_is_asked_again_under_a_new_key_and_messages_and_stops_never_share_one(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from galaius_core import PeerRefusal, PeerSent, PeerStarted
+    from galaius.machine.peer.client import PeerClient, PeerError
+
+    monkeypatch.setattr(PeerClient, "asker", staticmethod(lambda: None))
+    client, sent = PeerClient(tmp_path / "peer.sock"), []
+
+    def ask(call, seconds=0):
+        sent.append(call)
+        if call.kind == "peer_start" and len(sent) == 1:
+            raise PeerError(PeerRefusal(code="cannot_fence", message="this start failed earlier and made no run: ask again with a new key"))
+        return PeerSent(message_id=uuid4()) if call.kind == "peer_message" else PeerStarted(dispatch_id=uuid4(), run_id=uuid4(), machine_id=call.target, machine_name="far", conversation_id=uuid4(), permission="workspace_write")
+    monkeypatch.setattr(client, "ask", ask)
+    target, project = uuid4(), uuid4()
+    with pytest.raises(PeerError):
+        client.start(target, project, "tester", "judge x")
+    client.start(target, project, "tester", "judge x")
+    assert sent[0].key != sent[1].key                                                  # refused as failed: asked again is a new request
+    client.message(target, uuid4(), "hello")
+    client.message(target, uuid4(), "hello")
+    assert sent[2].key != sent[3].key
 
 
 def test_a_placed_run_named_by_the_shared_mcp_server_has_no_peer_tools(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
