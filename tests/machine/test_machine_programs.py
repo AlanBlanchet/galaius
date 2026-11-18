@@ -307,6 +307,32 @@ def test_an_expired_login_reads_signed_out_never_ready_and_a_slow_check_keeps_th
     assert jobs.states()[0].step == "ready"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="its stand-in program is a POSIX shell script")
+def test_a_check_that_cannot_answer_never_reads_signed_out_however_long_ago_the_last_answer_was(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A signed-in login whose status check times out (load 60-80, 2026-11-18: ready, signed out, ready, in four reads) keeps its
+    last completed answer past `LOGIN_REUSE_SECONDS` too; a login never answered yet says it is unknown (`signed_in` None),
+    which the server never records as a sign-out."""
+    claude = tmp_path / "claude"
+    claude.write_text(EXPIRED_CLAUDE)
+    claude.chmod(0o755)
+    monkeypatch.setattr(type(PROVIDERS["claude"]), "available", lambda self: True)
+    monkeypatch.setattr(type(PROVIDERS["claude"]), "executable", lambda self: str(claude))
+    monkeypatch.setattr(type(PROVIDERS["claude"]), "LOGIN_REUSE_SECONDS", 0.0)
+    monkeypatch.setattr(AgentPrograms, "installable", staticmethod(lambda: (PROVIDERS["claude"],)))
+    monkeypatch.setattr(AgentPrograms, "version", lambda self, provider: "2.1.288 (Claude Code)")
+    asked = AgentProvider.login_status
+    monkeypatch.setattr(AgentProvider, "login_status", lambda self, env, timeout=10: asked(self, env, timeout=0.3))
+    (tmp_path / "claude.slow").touch()
+    never = AgentPrograms(environment={"PATH": "/usr/bin:/bin"}, log_path=tmp_path / "agent-programs.log").states()[0]
+    assert (never.step, never.signed_in) == ("signed_out", None)
+    (tmp_path / "claude.slow").unlink()
+    jobs = AgentPrograms(environment={"PATH": "/usr/bin:/bin"}, log_path=tmp_path / "agent-programs.log")
+    assert jobs.states()[0].step == "ready"
+    (tmp_path / "claude.slow").touch()
+    kept = jobs.states()[0]
+    assert (kept.step, kept.signed_in, kept.account) == ("ready", True, "alan@example.com")
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="a shell script stands in for the CLI")
 def test_a_programs_version_is_asked_again_only_once_its_executable_changed(tmp_path: Path) -> None:
     """Each look at the programs ran every login's CLI for `--version` (15 at a time, 2026-11-03)."""

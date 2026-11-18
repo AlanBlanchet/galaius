@@ -604,13 +604,14 @@ class AgentPrograms(BaseModel):
 
     def _status(self, provider: Program, environment: dict[str, str]) -> LoginStatus:
         """Its login now; a check that could not complete (a CLI slow to answer on a busy PC) is its last
-        completed answer within `LOGIN_REUSE_SECONDS`, never « signed out »; past that, unknown."""
+        completed answer, however old, never « signed out » (load 60-80 read one login ready, signed out, ready in four
+        reads, 2026-11-18); a login never answered is unknown (`signed_in` None)."""
         key = provider.name, frozenset(environment.items())
         status = asyncio.run(provider.login_status(environment))
         with self._lock:
             if status.signed_in is not None:
                 self._answered[key] = time.monotonic(), status
-            elif (last := self._answered.get(key)) is not None and time.monotonic() - last[0] < provider.LOGIN_REUSE_SECONDS:
+            elif (last := self._answered.get(key)) is not None:
                 return last[1]
         return status
 
