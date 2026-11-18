@@ -34,6 +34,12 @@ os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 os.environ.setdefault("GALAIUS_MEDIA_BACKEND", "api")
 os.environ.setdefault("GALAIUS_MEDIA_BILLING", "api_allowed")
 
+# Every child Python process a test starts reads no run scope either (`tests/support/child_site`).
+from tests.support.child_site import CHILD_SITE as _CHILD_SITE
+CHILD_SITE = str(_CHILD_SITE)
+sys.path.insert(0, CHILD_SITE)
+os.environ["PYTHONPATH"] = os.pathsep.join(dict.fromkeys([CHILD_SITE, *filter(None, os.environ.get("PYTHONPATH", "").split(os.pathsep))]))
+
 from galaius.config.user import UserConfig
 from galaius.config.dotenv import load_dotenv_for_cli
 from galaius.agents.providers import AgentProvider, ClaudeCodeProvider
@@ -159,10 +165,11 @@ def _turn_facts_read_nothing_real(monkeypatch):
 @pytest.fixture(autouse=True)
 def _in_no_run_scope(monkeypatch):
     """A test process lives in no run's scope whatever unit runs the suite (an agent's own run scope, a `systemd-run`
-    unit): a test that means a scope sets its own (`galaius.account.caller.process_unit`)."""
-    monkeypatch.setattr("galaius.account.caller.process_unit", lambda pid: None)
-    monkeypatch.setattr("galaius.account.caller.run_of_process", lambda pid: None)
-    monkeypatch.setattr("galaius.account.caller.Caller._for_no_run", False)
+    unit): a test that means a scope sets its own (`galaius.account.caller.process_unit`). Its child Python processes
+    get the same patch from `tests/support/child_site`."""
+    import galaius.account.caller as caller_module
+    from tests.support.child_site.sitecustomize import patch_caller
+    patch_caller(caller_module, monkeypatch.setattr)
 
 
 @pytest.fixture(autouse=True)

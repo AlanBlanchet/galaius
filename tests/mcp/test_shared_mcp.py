@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 import galaius.mcp_relay as relay_module
+from tests.support.child_site import isolated_module
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="shared MCP server: Unix sockets")
 
@@ -76,7 +77,7 @@ def endpoint(tmp_path, monkeypatch):
     for name in ("GALAIUS_PARENT_RUN_ID", "GALAIUS_RUN_ID", "GALAIUS_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"):
         monkeypatch.delenv(name, raising=False)
     socket = tmp_path / "s" / "mcp.sock"
-    yield {"socket": str(socket), "start": [sys.executable, "-I", "-m", "galaius.server.shared", str(socket)], "log": str(tmp_path / "server.log"), "ahead": None}
+    yield {"socket": str(socket), "start": isolated_module("galaius.server.shared", str(socket)), "log": str(tmp_path / "server.log"), "ahead": None}
     subprocess.run(["pkill", "-f", f"galaius.server.shared {socket}"], check=False)
 
 

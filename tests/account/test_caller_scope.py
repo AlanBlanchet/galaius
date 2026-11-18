@@ -2,6 +2,8 @@
 unit `systemd-run` started, then from one it named like galaius's own): the run a process acts as is read from the run
 scopes of the process and its ancestors, never from its environment or a unit's name."""
 
+import subprocess
+import sys
 import uuid
 
 import pytest
@@ -59,3 +61,11 @@ def test_the_dispatcher_acts_as_no_run_though_a_run_started_it(monkeypatch):
     Caller.serve_none()
     with Caller(environment={"GALAIUS_RUN_ID": RUN}, cwd=".", pid=ASKING).bound() as dispatcher:
         assert messaging.asking_run() is None and "GALAIUS_RUN_ID" not in dispatcher.environment and not dispatcher.unowned()
+
+
+def test_a_test_child_process_is_in_no_run_scope():
+    """Whatever unit runs the suite (an agent's run scope, a `systemd-run` service), the Python process a test starts is no run
+    and not unowned, as on GitHub's runners (`tests/support/child_site`)."""
+    probe = "from galaius.account.caller import Caller; caller = Caller.here(); print(caller.unowned(), Caller.scope_run(caller.pid))"
+    done = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=60)
+    assert done.stdout.split() == ["False", "None"], done.stderr
