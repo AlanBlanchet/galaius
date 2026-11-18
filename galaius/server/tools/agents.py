@@ -13,6 +13,8 @@ from pathlib import Path
 from galaius.account.caller import Caller
 from galaius.machine.peer.client import PeerClient, PeerError, PeerUnavailable
 from galaius.machine.peer.words import pick, place
+from galaius.host.paths import UserPaths
+from galaius.host.private_files import PRIVATE_FILES
 from galaius_core import CRITICALITIES, AgentRevisionRef, Criticality, CommunityKind, OwnerQuestion, QuestionOption
 from pydantic import ValidationError
 
@@ -554,6 +556,36 @@ async def ask_owner(subject: str, question: str, options: list[QuestionOption], 
     reason: one line, why this cannot be decided without him.
     """
     return await asyncio.to_thread(_ask, subject, question, options, recommended, criticality, reason)
+
+
+#: Characters one report may hold.
+REPORT_MAX = 200_000
+
+
+def report_path(run_id: str) -> Path:
+    """The ledger file of a run: `ledgers/<its first 8 characters>.md` beside the agent registry's folder (`~/.galaius/out`)."""
+    return UserPaths.agents().parent / "ledgers" / f"{reg.short_id(run_id)}.md"
+
+
+@mcp.tool(category="agents")
+@instrumented
+async def report_write(text: str) -> str:
+    """Write this run's report: its ledger file `~/.galaius/out/ledgers/<run id, 8 chars>.md`, replaced whole by `text`.
+
+    The one file this tool writes, whatever the role's other tools: a role with no write tool and no shell still leaves its
+    report here. Call it with the whole report each time (the file is replaced, never appended); a code or notes file is a
+    write tool's, not this one's.
+
+    text: the report, Markdown, at most 200,000 characters.
+    """
+    asker = messaging.asking_run()
+    if asker is None:
+        raise ValueError("report_write is for an agent run: no run is asking")
+    if not text.strip() or len(text) > REPORT_MAX:
+        raise ValueError(f"a report is 1 to {REPORT_MAX} characters, this one is {len(text)}")
+    path = report_path(asker)
+    await asyncio.to_thread(PRIVATE_FILES.write_text, path, text)
+    return f"written: {path} ({len(text)} characters)"
 
 
 @mcp.tool(category="agents", read_only=True)

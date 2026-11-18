@@ -22,7 +22,7 @@ from galaius.agents.catalog.connection import CatalogAuthenticationError, Catalo
 from galaius.agents.providers import PROVIDERS
 from galaius.agents.run import _role_prompt
 from galaius.host.pinned_directory import PathDirectory
-from galaius.agents.tool_gateway import CONVERSATION_TOOLS, AgentToolList, GatewayTool
+from galaius.agents.tool_gateway import CONVERSATION_TOOLS, REPORT_TOOLS, AgentToolList, GatewayTool
 from galaius.prompts.projection import (
     MANIFEST_NAME, _server_destination, _server_outputs, compile_server_prompt_projection, install_prompt_projection,
     install_server_prompt_projection,
@@ -30,6 +30,7 @@ from galaius.prompts.projection import (
 
 #: The conversation tools a role reading files is given, as its file lists them.
 CONVERSATIONS = [f'mcp__galaius__{name}' for name in CONVERSATION_TOOLS]
+REPORT = [f'mcp__galaius__{name}' for name in REPORT_TOOLS]
 
 pytestmark = pytest.mark.usefixtures("directory_backend")
 
@@ -601,15 +602,15 @@ def test_projection_lists_only_tools_this_server_can_dispatch(tmp_path):
 
 def test_projection_leaves_another_server_s_tools_alone(tmp_path):
     """Only galaius's own prefix is ours to judge — a foreign MCP tool is listed as written."""
-    listed = ['Bash', 'mcp__other__navigate', 'mcp__galaius__navigate', *CONVERSATIONS]  # Bash reads files: the conversation tools come with it
+    listed = ['Bash', 'mcp__other__navigate', 'mcp__galaius__navigate', *CONVERSATIONS, *REPORT]  # Bash reads files: the conversation tools come with it
     outputs = _server_outputs(catalog_fixture(worker_tools=listed), tmp_path / 'home', tmp_path / 'projection')
     assert _worker_header(outputs)['tools'] == listed
 
 
 @pytest.mark.parametrize(('worker_tools', 'expected'), [
     # The conversation tools for a role whose list reads files, then what the server connected it to: listed, so callable.
-    (['Read'], ['Read', *CONVERSATIONS, 'mcp__galaius__ext__Context7__query-docs']),
-    (['Write'], ['Write', 'mcp__galaius__ext__Context7__query-docs']),  # reads no file: no conversation tool
+    (['Read'], ['Read', *CONVERSATIONS, *REPORT, 'mcp__galaius__ext__Context7__query-docs']),
+    (['Write'], ['Write', *REPORT, 'mcp__galaius__ext__Context7__query-docs']),  # reads no file: no conversation tool, yet its report tool
     ([], []),                                                           # no list = every tool already: stays unrestricted
 ])
 def test_projection_gives_a_role_the_external_tools_the_server_connects_it_to(tmp_path, worker_tools, expected):

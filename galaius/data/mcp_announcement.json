@@ -766,6 +766,39 @@
      }
     },
     {
+     "name": "report_write",
+     "description": "Write this run's report: its ledger file `~/.galaius/out/ledgers/<run id, 8 chars>.md`, replaced whole by `text`.\n\nThe one file this tool writes, whatever the role's other tools: a role with no write tool and no shell still leaves its\nreport here. Call it with the whole report each time (the file is replaced, never appended); a code or notes file is a\nwrite tool's, not this one's.\n\ntext: the report, Markdown, at most 200,000 characters.",
+     "inputSchema": {
+      "properties": {
+       "text": {
+        "title": "Text",
+        "type": "string"
+       }
+      },
+      "required": [
+       "text"
+      ],
+      "title": "report_writeArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "report_writeOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "agents"
+     }
+    },
+    {
      "name": "conversation_search",
      "description": "Search the conversations this computer holds — the runs galaius started and the sessions each\nagent CLI saved (the person's editor conversations) — for every word of `query`.\n\nSearched: what was asked, what was answered, what agents told each other, each tool call by its\nleading argument. Never what a tool returned, a call searching conversations itself, or the asking\nagent's own conversation. Credentials are masked. An agent searches its own project's\nconversations (the repository its folder is in); a fenced run, a member's run on a lent PC, or a\nrun denied reading files searches none (`ConversationScope`).\n\nquery: words that must all appear in one line; \"quoted words\" must appear together.\nlimit: conversations returned, best match first: the person's own prompts, then what agents were\n    asked, answered and told each other, then tool calls (1-50).\nproject: only conversations of the project with this name (a repository's folder name).\nsince: only conversations active since this date or moment (ISO 8601, e.g. 2026-10-11; UTC unless it says).\nevery_project: the person's own session only — search every project, not just this folder's.\nRead one with conversation_read(id, around=<line>).",
      "inputSchema": {

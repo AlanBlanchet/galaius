@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 #: (`FILE_READERS`), as it gets its gateway tools; whom each call may read is decided when it is made
 #: (`ConversationScope`).
 CONVERSATION_TOOLS: tuple[str, ...] = ("conversation_search", "conversation_read")
+#: galaius's own tool writing a run's report (`report_write`): every role with a tool list gets it, as it gets its gateway tools,
+#: so a role whose list names no write tool and no shell (three `generalizer` audits ended « no write tool and no shell ») still
+#: leaves its report; what it may write is its own ledger file and nothing else.
+REPORT_TOOLS: tuple[str, ...] = ("report_write",)
 #: The harness tools that read this PC's files: a role or run with none of them reads no conversation.
 FILE_READERS = frozenset({"Read", "Bash"})
 
@@ -71,7 +75,7 @@ class AgentToolList(BaseModel):
         already reaches every one: it stays so; one with an empty list has no tool at all, gateway ones included."""
         if not tools:
             return None if tools is None else []
-        added = (*(CONVERSATION_TOOLS if FILE_READERS & set(tools) else ()), *self.names(role))
+        added = (*(CONVERSATION_TOOLS if FILE_READERS & set(tools) else ()), *REPORT_TOOLS, *self.names(role))
         return [*tools, *(f"{prefix}{name}" for name in added if f"{prefix}{name}" not in tools)]
 
     def tool(self, name: str) -> GatewayTool | None:

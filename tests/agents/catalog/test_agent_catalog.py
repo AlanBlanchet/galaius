@@ -28,7 +28,7 @@ from galaius.agents.catalog.connection import (
     CatalogOffline,
 )
 from galaius.agents.policy import Policy, PolicyError
-from galaius.agents.tool_gateway import CONVERSATION_TOOLS
+from galaius.agents.tool_gateway import CONVERSATION_TOOLS, REPORT_TOOLS
 from galaius.agents.providers import AgentProvider, ClaudeCodeProvider, CodexProvider, UnsupportedToolPolicy
 from unittest.mock import AsyncMock
 from galaius.agents.run import ModelUnavailable, launch_continuation, run_agent
@@ -41,6 +41,7 @@ from galaius.cli import app_commands
 
 #: The conversation tools a role reading files is given (`ToolGateway.granted`).
 CONVERSATIONS = [f"mcp__galaius__{name}" for name in CONVERSATION_TOOLS]
+REPORT = [f"mcp__galaius__{name}" for name in REPORT_TOOLS]
 
 
 @pytest.fixture(autouse=True)
@@ -142,7 +143,7 @@ def test_server_revisions_replace_prompt_policy_skills_and_team(catalog_home):
     policy = Policy.from_catalog(after)
     assert policy.criterion_for("fixture-worker") == "price.in >= 2"
     assert policy.reasoning_for("fixture-worker") == "low"
-    assert policy.tools_for("fixture-worker") == ["Write"]  # reads no file: no conversation tool either
+    assert policy.tools_for("fixture-worker") == ["Write", *REPORT]  # reads no file: no conversation tool; every listed role can write its report
     assert policy.weights_for("fixture-worker") == "gui.screenspot=1"
     text = after.definition("fixture-worker", "bounded task")
     assert text.index("primary instruction") < text.index("first instruction") < text.index("second instruction")
@@ -321,7 +322,7 @@ async def test_common_launcher_uses_one_catalog_for_prompt_and_policy(catalog_ho
     assert "primary instruction revision 1" in prompt(captured[0])
     assert "primary instruction revision 2" in prompt(captured[1])
     assert captured[1][1]["reasoning"] == "low"
-    assert captured[1][1]["allowed_tools"] == (None if provider_type is CodexProvider else ["Write"])
+    assert captured[1][1]["allowed_tools"] == (None if provider_type is CodexProvider else ["Write", *REPORT])
     if provider_type is ClaudeCodeProvider:
         assert captured[1][1]["agent"] == "fixture-worker"
         assert "--agents" in captured[1][2] and captured[1][2][captured[1][2].index("--allowedTools") + 1] == "mcp__galaius"  # the grant, never the toolset
@@ -955,7 +956,7 @@ async def test_local_delegation_and_resume_run_exact_parent_pin(advanced_catalog
     assert saved.model == "fixture-model-1" and saved.reasoning == "high"
     assert "primary instruction revision 1" in captured[0][1]["agent_prompt"]
     assert "primary instruction revision 2" not in captured[0][1]["agent_prompt"]
-    assert captured[0][1]["allowed_tools"] == ["Read", *CONVERSATIONS]
+    assert captured[0][1]["allowed_tools"] == ["Read", *CONVERSATIONS, *REPORT]
     assert str(worker_ref.revision) in saved.definition_path
     assert "primary instruction revision 1" in Path(saved.definition_path).read_text()
     transcript = ClaudeCodeProvider.project_folder(ClaudeCodeProvider().auth_home(os.environ), Path(saved.cwd)) / "fixture-session.jsonl"  # what its resume reads
