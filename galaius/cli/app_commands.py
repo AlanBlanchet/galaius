@@ -917,16 +917,16 @@ def agents_list(foreign: bool = False, session_id: str | None = None, all_sessio
         print("\n* not started by galaius")
 
 
-def _spawn_on_machine(machine: str, folder: str | None, task: str, *, agent: str | None, provider: str | None, model: str | None, permission: str | None) -> None:
-    """`agents spawn --machine`: the run id of an agent started on another computer, or one line why not."""
+def _spawn_on_machine(machine: str, project: str | None, folder: str | None, task: str, *, agent: str | None, provider: str | None, model: str | None, permission: str | None) -> None:
+    """`agents spawn --machine`: the run id of an agent started on another PC of yours (through this PC's own link, no second sign-in), or one line why not."""
+    from galaius.machine.peer.client import PeerClient, PeerError, PeerUnavailable  # Circular layers: the runner imports this module's neighbours.
+    from galaius.machine.peer.words import place
+
     try:
-        if folder is None:
-            raise ValueError("--machine needs --folder: an agent folder of that computer, or a folder beneath one")
-        if permission is not None and permission not in AGENT_TOUCH_SCOPES:
-            raise ValueError(f"--permission-mode on another computer is one of {', '.join(AGENT_TOUCH_SCOPES)}")
-        workspace = ServerWorkspace.configured()
-        print(workspace.start_on_machine(workspace.machine(machine), folder, task, role=agent, provider=provider, model=model, permission=permission))
-    except (ValueError, CatalogConnectionError) as error:
+        if project is None:
+            raise ValueError("--machine needs --project: the project (name or id) the run works on there")
+        print(place(PeerClient(), machine, project, task, role=agent, path=folder, permission=permission, provider=provider, model=model))
+    except (ValueError, PeerError, PeerUnavailable) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         raise SystemExit(2) from None
 
@@ -934,13 +934,16 @@ def _spawn_on_machine(machine: str, folder: str | None, task: str, *, agent: str
 @agents_app.command(name="events")
 def agents_events(run_id: str, limit: int = 30, machine: str | None = None) -> None:
     """Print what an agent run has been doing. Takes the short id `agents list` prints; with
-    --machine, the full id of a run started on that computer (`agents spawn --machine`)."""
+    --machine, the full id of a run you placed on that PC (`agents spawn --machine`)."""
 
     if machine is not None:
+        from galaius.machine.peer.client import PeerClient, PeerError, PeerUnavailable  # Circular layers: see `_spawn_on_machine`.
+        from galaius.machine.peer.words import pick
+
         try:
-            workspace = ServerWorkspace.configured()
-            events = workspace.machine_run_events(workspace.machine(machine), UUID(run_id))
-        except (ValueError, CatalogConnectionError) as error:
+            client = PeerClient()
+            events = client.events(pick(client.fleet(), machine).id, UUID(run_id)).events
+        except (ValueError, PeerError, PeerUnavailable) as error:
             print(f"ERROR: {error}", file=sys.stderr)
             raise SystemExit(2) from None
         for line in events.items[-max(1, limit):]:
@@ -1720,7 +1723,7 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
                  denied_tools: Annotated[list[str] | None, Parameter(name="--deny-tool")] = None,
                  provider_modes: Annotated[list[str] | None, Parameter(name="--provider-mode")] = None,
                  quota_window: Annotated[float, Parameter(name="--quota-window")] = CLI_QUOTA_WINDOW,
-                 machine: str | None = None, folder: str | None = None,
+                 machine: str | None = None, folder: str | None = None, project: str | None = None,
                  fence: Annotated[Path | None, Parameter(name="--fence")] = None,
                  for_run: Annotated[str | None, Parameter(name="--for")] = None,
                  continues: str | None = None, fresh: bool = False, single: bool = False, helper: bool = False,
@@ -1734,9 +1737,11 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
     --read <file> (repeatable, with --community) hands it a file: a brief, a report, a page's screenshot or text, copied
     read-only into its own folder as it starts.
 
-    --machine <name or id> starts it on another of your computers instead, through the server, in
-    --folder (an agent folder of that computer, or a folder beneath one); --permission-mode there
-    is read_only or workspace_write, never more than that computer allows. Follow it with
+    --machine <name, id or auto> starts it on another of your PCs instead (auto: the other PC with the most free
+    places), through this PC's own link: no second sign-in. --project <name or id> is the project it works on there
+    (its folder is the one that PC already holds; a project not on it yet is put there once from the web), --folder a
+    folder beneath it, --agent the role. The run is fenced there, takes the model its rule picks, and gets at most
+    workspace_write (--permission-mode read_only narrows it). Follow it with
     `galaius agents events <run id> --machine <name>`.
 
     `agents run` streams until the agent is done — right at a terminal, useless to a UI — the
@@ -1799,7 +1804,7 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
             raise SystemExit(2)
         continues = predecessor
     if machine is not None:
-        _spawn_on_machine(machine, folder, task, agent=agent, provider=provider, model=model, permission=permission_mode)
+        _spawn_on_machine(machine, project, folder, task, agent=agent, provider=provider, model=model, permission=permission_mode)
         return
     try:
         if read and community is None:

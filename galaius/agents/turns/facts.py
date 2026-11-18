@@ -58,20 +58,18 @@ def build() -> str:
 
 
 def pcs() -> str:
-    """His PCs as the server sees them now, one line each (other PCs' logins are not in what it reports)."""
-    from galaius.account.login import AccountLogin  # Circular layers: account_login imports machines, which imports the agents package.
-    from galaius.machine.connection import MachineRunner
+    """His PCs as the server sees them now, one line each, read through this PC's own runner (its link: no second sign-in). The runner not running
+    says that, never a request to sign in."""
+    from galaius.machine.peer.client import PeerClient  # Circular layers: the runner imports the agents package.
 
-    machine = MachineRunner().load()
+    fleet = PeerClient().fleet()        # a runner not running, or a refusal, is raised: the card says « not read (why) », in the runner's own words
     lines = []
-    for pc in AccountLogin.at(machine.server_url).machines(machine):
-        if pc.state == "revoked":
-            continue
+    for pc in fleet.pcs:
         seen = f", last seen {pc.last_seen_at:%Y-%m-%d %H:%M} UTC" if pc.last_seen_at else ", never seen"
-        problem = f", stopped by: {pc.problem.code}" if pc.problem is not None else ""
-        folders = f", work folders: {', '.join(pc.file_roots) or 'none'}" if pc.file_roots is not None else ""
-        here = " (this PC)" if pc.id == machine.machine_id else ", logins not reported"
-        lines.append(f"- {pc.name}{here}: {pc.state}{seen}{problem}{folders}")
+        problem = f", stopped by: {pc.problem}" if pc.problem is not None else ""
+        room = f", places free {pc.places_free}/{pc.places_total}" if pc.places_free is not None and pc.places_total is not None else ""
+        takes = ", takes runs from your other PCs" if pc.dispatchable else ""
+        lines.append(f"- {pc.name}{' (this PC)' if pc.this else ''}: {pc.state}{seen}{problem}{room}{takes}")
     return "\n".join(lines) or "none"
 
 

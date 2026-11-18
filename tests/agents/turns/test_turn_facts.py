@@ -8,9 +8,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from galaius_core import MachineSummary
+from galaius_core import PcFleet, PcState
 
-from galaius.account.login import AccountLogin
+from galaius.machine.peer.client import PeerClient, PeerUnavailable
 from galaius.agents.turns import facts as turn_facts
 from galaius.agents.turns.facts import Readers
 from galaius.config.settings import TurnFacts
@@ -39,22 +39,21 @@ def test_each_fact_is_what_was_read_now_or_says_it_was_not(this_pc, said):
     assert "app build 20261022T134400Z-e079498." in card and f": {said}; logins: claude signed in." in card and "too late" not in card
 
 
-@pytest.mark.parametrize("answer", ["two-pcs", "refused"])
-def test_his_pcs_are_read_from_the_server_each_line_or_why_not(monkeypatch, answer):
-    monkeypatch.setattr(MachineRunner, "load", lambda self: SimpleNamespace(server_url="https://galaius.example", machine_id=HERE))
-
-    def machines(self, machine):
-        if answer == "refused":
-            raise ValueError("catalog access refused (HTTP 403)")
-        return (MachineSummary(id=HERE, name="desk", state="online", last_seen_at=datetime(2026, 10, 22, 15, 58, tzinfo=UTC)),
-                MachineSummary(id=OTHER, name="lenovo", state="offline", last_seen_at=datetime(2026, 10, 22, 10, 31, tzinfo=UTC), file_roots=("aino",)))
-    monkeypatch.setattr(AccountLogin, "machines", machines)
+@pytest.mark.parametrize("answer", ["two-pcs", "down"])
+def test_his_pcs_are_read_through_this_pcs_own_runner_each_line_or_why_not(monkeypatch, answer):
+    """One credential: the card reads his PCs through the runner holding this PC's link, never asks him to sign in again."""
+    def fleet(self):
+        if answer == "down":
+            raise PeerUnavailable("this PC's galaius is not running (start it: galaius machine service restart)")
+        return PcFleet(pcs=(PcState(id=HERE, name="desk", this=True, state="online", last_seen_at=datetime(2026, 10, 22, 15, 58, tzinfo=UTC), places_free=2, places_total=3),
+                            PcState(id=OTHER, name="lenovo", state="offline", last_seen_at=datetime(2026, 10, 22, 10, 31, tzinfo=UTC))))
+    monkeypatch.setattr(PeerClient, "fleet", fleet)
     card = turn_facts.lines(TurnFacts(), read=Readers(build=lambda: "b", pcs=turn_facts.pcs, this_pc=lambda: "p"))
-    if answer == "refused":
-        assert "His PCs, as the server sees them:\nnot read (catalog access refused (HTTP 403))" in card
+    if answer == "down":
+        assert "His PCs, as the server sees them:\nnot read (this PC's galaius is not running" in card and "sign in" not in card
     else:
-        assert "- desk (this PC): online, last seen 2026-10-22 15:58 UTC" in card
-        assert "- lenovo, logins not reported: offline, last seen 2026-10-22 10:31 UTC, work folders: aino" in card
+        assert "- desk (this PC): online, last seen 2026-10-22 15:58 UTC, places free 2/3" in card
+        assert "- lenovo: offline, last seen 2026-10-22 10:31 UTC" in card
 
 
 @pytest.mark.parametrize(("projects", "roots", "said"), [

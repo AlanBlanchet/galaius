@@ -100,3 +100,22 @@ def test_a_process_inside_a_fenced_run_is_refused(monkeypatch: pytest.MonkeyPatc
     assert PeerBroker.resolved(1, claim) == (False, None)                                   # inside another run than the one it names: a claim
     monkeypatch.setattr(broker_module.Caller, "scope_run", classmethod(lambda cls, pid: str(claim.run_id)))
     assert PeerBroker.resolved(1, claim) == (True, None)                                    # inside that very run: verified
+
+
+def test_the_client_asks_the_runner_through_its_socket_and_a_runner_not_running_says_so(path: Path) -> None:
+    from galaius.machine.peer.client import PeerClient, PeerUnavailable
+
+    link = PeerLink()
+    link.attach(Socket(link, {"answer": PcFleet().model_dump(mode="json")}))
+
+    async def scenario() -> None:
+        serving = asyncio.create_task(PeerBroker(link, path).serve())
+        while not path.exists():
+            await asyncio.sleep(0.01)
+        try:
+            assert (await asyncio.to_thread(PeerClient(path).fleet)).kind == "peer_fleet"
+        finally:
+            serving.cancel()
+    asyncio.run(scenario())
+    with pytest.raises(PeerUnavailable, match="not running"):
+        PeerClient(path.with_name("absent.sock")).fleet()
