@@ -119,3 +119,55 @@ def test_the_client_asks_the_runner_through_its_socket_and_a_runner_not_running_
     asyncio.run(scenario())
     with pytest.raises(PeerUnavailable, match="not running"):
         PeerClient(path.with_name("absent.sock")).fleet()
+
+
+def test_the_mcp_tools_place_events_send_and_stop_through_the_runner_and_say_a_refusal_plainly(path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """agent_spawn / agent_events / agent_send / agent_stop with `machine`: the sentences an agent reads, from a runner answering for another PC."""
+    from galaius_core import PcState, PeerProjects, PeerProject, PeerStarted, PeerSent, PeerWindow, MachineRunEvents
+    from galaius.server.tools import agents as tools
+
+    other, project, run = uuid4(), uuid4(), uuid4()
+    answers = {
+        "peer_fleet": PcFleet(pcs=(PcState(id=uuid4(), name="here", this=True, state="online"), PcState(id=other, name="far", state="online", dispatchable=True, places_free=2, places_total=3))),
+        "peer_projects": PeerProjects(projects=(PeerProject(id=project, name="Demo"),)),
+        "peer_start": PeerStarted(dispatch_id=uuid4(), run_id=run, machine_id=other, machine_name="far", conversation_id=uuid4(), permission="workspace_write"),
+        "peer_message": PeerSent(message_id=uuid4()),
+        "peer_events": PeerWindow(events=MachineRunEvents(run_id=run)),
+    }
+
+    class Runner:
+        def __init__(self, link: PeerLink) -> None:
+            self.link, self.calls = link, []
+
+        async def send(self, text: str) -> None:
+            envelope = json.loads(text)["envelope"]
+            kind = envelope["call"]["kind"]
+            self.calls.append(envelope["call"])
+            if kind == "peer_stop":
+                self.link.resolve({"request_id": envelope["request_id"], "refusal": {"code": "not_found", "message": "no such run among yours"}})
+            else:
+                self.link.resolve({"request_id": envelope["request_id"], "answer": answers[kind].model_dump(mode="json")})
+    link = PeerLink()
+    runner = Runner(link)
+    link.attach(runner)
+    from galaius.machine.peer.client import PeerClient
+    monkeypatch.setattr(PeerClient, "__init__", lambda self, p=None: setattr(self, "path", path))
+
+    async def scenario() -> list[str]:
+        serving = asyncio.create_task(PeerBroker(link, path).serve())
+        while not path.exists():
+            await asyncio.sleep(0.01)
+        try:
+            return [await asyncio.to_thread(tools._peer_spawn, "auto", "demo", "judge x", "tester", None, None, None, None),
+                    await asyncio.to_thread(tools._peer_spawn, "far", None, "judge x", "tester", None, None, None, None),
+                    await asyncio.to_thread(tools._peer_send, "far", str(run), "hello"),
+                    await asyncio.to_thread(tools._peer_events, "far", str(run), 5),
+                    await asyncio.to_thread(tools._peer_stop, "far", str(run)),
+                    await asyncio.to_thread(tools._peer_send, "nowhere", str(run), "hello")]
+        finally:
+            serving.cancel()
+    placed, no_project, sent, events, stopped, unknown = asyncio.run(scenario())
+    assert placed.startswith(f"Started on another PC — run_id={run}") and "far" in placed
+    assert no_project.startswith("ERROR: machine needs project") and "far" in sent and events.endswith("no events yet")
+    assert stopped.startswith("ERROR: no such run among yours (not_found)") and unknown.startswith("ERROR: no other PC named 'nowhere'")
+    assert [call["kind"] for call in runner.calls if call["kind"] == "peer_start"] == ["peer_start"]

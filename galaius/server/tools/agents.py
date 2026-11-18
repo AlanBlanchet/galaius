@@ -8,8 +8,11 @@ connected.
 """
 
 import asyncio
+from uuid import UUID
 from pathlib import Path
 from galaius.account.caller import Caller
+from galaius.machine.peer.client import PeerClient, PeerError, PeerUnavailable
+from galaius.machine.peer.words import pick, place
 from galaius_core import CRITICALITIES, AgentRevisionRef, Criticality, CommunityKind, OwnerQuestion, QuestionOption
 from pydantic import ValidationError
 
@@ -43,6 +46,54 @@ def _fmt(run: reg.AgentRun, waiting: str | None = None) -> str:
     return "  " + " ".join(bits)
 
 
+def _peer(machine: str):
+    """(client, the other PC named by `machine`) for a run placed on another of the person's PCs."""
+    client = PeerClient()
+    return client, pick(client.fleet(), machine)
+
+
+def _peer_said(action) -> str:
+    try:
+        return action()
+    except (ValueError, PeerError, PeerUnavailable) as error:
+        return f"ERROR: {error}"
+
+
+def _peer_spawn(machine: str, project: str | None, task: str, agent: str | None, provider: str | None, model: str | None, permission_mode: str | None, cwd: str | None) -> str:
+    def start() -> str:
+        if project is None:
+            raise ValueError("machine needs project: the project (name or id) the run works on there")
+        if cwd is not None:
+            raise ValueError("a run placed on another PC works in the project's folder there: leave out cwd (use project)")
+        return "Started on another PC — run_id=" + place(PeerClient(), machine, project, task, role=agent, path=None, permission=permission_mode, provider=provider, model=model)
+    return _peer_said(start)
+
+
+def _peer_events(machine: str, run_id: str, limit: int) -> str:
+    def read() -> str:
+        client, pc = _peer(machine)
+        items = client.events(pc.id, UUID(run_id)).events.items[-max(1, limit):]
+        return "\n".join(f"  {item.kind:11} {item.text}" for item in items) or f"{run_id[:8]}: no events yet"
+    return _peer_said(read)
+
+
+def _peer_stop(machine: str, run_id: str) -> str:
+    def stop() -> str:
+        client, pc = _peer(machine)
+        client.stop(pc.id, UUID(run_id))
+        return f"Asked {pc.name} to stop {run_id[:8]}."
+    return _peer_said(stop)
+
+
+def _peer_send(machine: str, run_id: str, message: str) -> str:
+    def send() -> str:
+        client, pc = _peer(machine)
+        sent = client.message(pc.id, UUID(run_id), message)
+        return f"Sent to {run_id[:8]} on {pc.name} (message {str(sent.message_id)[:8]})."
+    return _peer_said(send)
+
+
+
 @mcp.tool(category="agents")
 @instrumented
 async def agent_spawn(
@@ -65,6 +116,8 @@ async def agent_spawn(
     helper: bool = False,
     community: str | None = None,
     read: list[str] | None = None,
+    machine: str | None = None,
+    project: str | None = None,
 ) -> str:
     """Start an agent to work alongside you and return its run id immediately. The role's relation to yours (its
     `relations`: who may call it, how many of its runs answer) decides: `1-N` (most roles) starts a new run for every
@@ -99,6 +152,12 @@ async def agent_spawn(
     model: does not override a configured role policy. Edit the rule in the agent UI instead.
         A named agent and a satisfiable role criterion are required; no silent model fallback.
     cwd: directory to work in; defaults to galaius's own working directory.
+    machine: start it on another of the person's PCs instead: its name, its id, or "auto" (the other PC with the most free places). It runs there
+        in `project`'s folder (a project that PC already holds), as `agent`, fenced, on the model its rule picks there (so no provider, model or
+        cwd), at most workspace_write. Returns its run_id and PC; follow it with agent_events(run_id, machine=...) and talk to it with
+        agent_send(run_id, message, machine=...). Refused with the reason when the PC is off, takes no run from other PCs, holds no such project
+        or is full.
+    project: with `machine`, the project (name or id) the run works on there.
     permission_mode: shared intent describing how much the agent may do on its own. galaius
         translates it into each provider's CLI vocabulary; an intent with no exact provider
         equivalent uses the provider's safest useful mapping. Omit to leave the CLI's own
@@ -134,6 +193,8 @@ async def agent_spawn(
         read-only into its own folder as it starts, where it reads them. Never a folder, a credential store, a hidden
         folder outside galaius's outputs, nor galaius's run records.
     """
+    if machine is not None:
+        return await asyncio.to_thread(_peer_spawn, machine, project, task, agent, provider, model, permission_mode, cwd)
     try:
         prov = provider_for(provider) if provider is not None else None
     except ValueError as e:
@@ -328,8 +389,10 @@ def _fenced_team() -> tuple[str, frozenset[str]] | None:
 @mcp.tool(category="agents")
 @instrumented
 @offloaded(within=AGENT_READ_SECONDS)
-def agent_events(run_id: str, limit: int = 20) -> str:
-    """What an agent has actually been doing — its most recent events, oldest first."""
+def agent_events(run_id: str, limit: int = 20, machine: str | None = None) -> str:
+    """What an agent has actually been doing — its most recent events, oldest first. `machine`: a run you placed on another of the person's PCs (agent_spawn(machine=...))."""
+    if machine is not None:
+        return _peer_events(machine, run_id, limit)
     resolved = reg.resolve_run_id(run_id) or run_id
     try:
         fenced = _fenced_team()
@@ -353,8 +416,10 @@ def agent_events(run_id: str, limit: int = 20) -> str:
 @mcp.tool(category="agents")
 @instrumented
 @offloaded
-def agent_stop(run_id: str) -> str:
-    """Stop a running agent (and the tool processes it spawned), or take one not started yet out of the line."""
+def agent_stop(run_id: str, machine: str | None = None) -> str:
+    """Stop a running agent (and the tool processes it spawned), or take one not started yet out of the line. `machine`: a run you placed on another of the person's PCs."""
+    if machine is not None:
+        return _peer_stop(machine, run_id)
     if reg.stop(run_id, by=reg.caller_stop_actor(Caller.environ())):
         return f"Stopped {run_id[:8]}."
     try:
@@ -402,7 +467,7 @@ def _deliver(run_id: str, message: str, fyi: bool) -> "tuple[messaging.Delivery,
 
 @mcp.tool(category="agents")
 @instrumented
-async def agent_send(run_id: str, message: str, wait: bool = False, fyi: bool = False) -> str:
+async def agent_send(run_id: str, message: str, wait: bool = False, fyi: bool = False, machine: str | None = None) -> str:
     """Send a message to another agent — it answers with its full context intact.
 
     Delivery resumes the recipient's own session rather than handing it a cold summary, so it
@@ -416,7 +481,11 @@ async def agent_send(run_id: str, message: str, wait: bool = False, fyi: bool = 
     message: what to say — write it as a complete request; it cannot ask you a follow-up.
     wait: block until it has replied, instead of returning as soon as the message is delivered.
     fyi: a one-way note (a report, an ack, a heads-up): it reads it, and its turns never report back to you for it.
+    machine: the run is on another of the person's PCs (one you placed there with agent_spawn(machine=...), or the coordinator of the conversation you
+        work in): its PC name or id. The message is delivered there as a message from another agent, never as the person's word.
     """
+    if machine is not None:
+        return await asyncio.to_thread(_peer_send, machine, run_id, message)
     sent = await asyncio.to_thread(_deliver, run_id, message, fyi)
     if isinstance(sent, str):
         return sent

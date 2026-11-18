@@ -64,8 +64,10 @@ class PeerClient:
             raise PeerUnavailable("this PC's galaius is not running (start it: galaius machine service restart)" if isinstance(error, (FileNotFoundError, ConnectionRefusedError))
                                   else f"this PC's galaius did not answer ({error})") from error
         answer = json.loads(said or b"{}")
-        if "refusal" in answer:
-            raise PeerError(PeerRefusal.model_validate(answer["refusal"]))
+        # A refusal is the runner's own (`refusal`) or the server's (the reply's `refusal`): both are typed, both raise.
+        said_no = answer.get("refusal") or answer.get("reply", {}).get("refusal")
+        if said_no:
+            raise PeerError(PeerRefusal.model_validate(said_no))
         return _ANSWER.validate_python(answer["reply"]["answer"])
 
     # ---- the verbs ----------------------------------------------------------------------------------------------------

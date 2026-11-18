@@ -3,7 +3,7 @@
   "server": "galaius",
   "name": "agent_events",
   "category": "agents",
-  "description": "What an agent has actually been doing \u2014 its most recent events, oldest first."
+  "description": "What an agent has actually been doing \u2014 its most recent events, oldest first. `machine`: a run you placed on another of the person's PCs (agent_spawn(machine=...))."
  },
  {
   "server": "galaius",
@@ -33,7 +33,7 @@
   "server": "galaius",
   "name": "agent_stop",
   "category": "agents",
-  "description": "Stop a running agent (and the tool processes it spawned), or take one not started yet out of the line."
+  "description": "Stop a running agent (and the tool processes it spawned), or take one not started yet out of the line. `machine`: a run you placed on another of the person's PCs."
  },
  {
   "server": "galaius",
