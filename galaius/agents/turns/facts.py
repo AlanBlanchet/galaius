@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from galaius_core import FolderState, RepoState
 
+from galaius.machine.peer.client import PeerClient
 from galaius.agents import registry as reg
 from galaius.agents.providers import PROVIDERS
 from galaius.config.settings import TurnFacts
@@ -60,8 +61,6 @@ def build() -> str:
 def pcs() -> str:
     """His PCs as the server sees them now, one line each, read through this PC's own runner (its link: no second sign-in). The runner not running
     says that, never a request to sign in."""
-    from galaius.machine.peer.client import PeerClient  # Circular layers: the runner imports the agents package.
-
     fleet = PeerClient().fleet()        # a runner not running, or a refusal, is raised: the card says « not read (why) », in the runner's own words
     lines = []
     for pc in fleet.pcs:

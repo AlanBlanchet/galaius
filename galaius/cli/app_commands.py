@@ -18,6 +18,8 @@ from uuid import UUID
 from cyclopts import App, Parameter
 from pydantic import ValidationError
 
+from galaius.machine.peer.client import PeerClient, PeerError, PeerUnavailable
+from galaius.machine.peer.words import pick, place
 from galaius.diagnostics import feedback
 from galaius.catalog import live_sources
 from galaius.catalog import models as model_catalog
@@ -919,9 +921,6 @@ def agents_list(foreign: bool = False, session_id: str | None = None, all_sessio
 
 def _spawn_on_machine(machine: str, project: str | None, folder: str | None, task: str, *, agent: str | None, provider: str | None, model: str | None, permission: str | None) -> None:
     """`agents spawn --machine`: the run id of an agent started on another PC of yours (through this PC's own link, no second sign-in), or one line why not."""
-    from galaius.machine.peer.client import PeerClient, PeerError, PeerUnavailable  # Circular layers: the runner imports this module's neighbours.
-    from galaius.machine.peer.words import place
-
     try:
         if project is None:
             raise ValueError("--machine needs --project: the project (name or id) the run works on there")
@@ -937,9 +936,6 @@ def agents_events(run_id: str, limit: int = 30, machine: str | None = None) -> N
     --machine, the full id of a run you placed on that PC (`agents spawn --machine`)."""
 
     if machine is not None:
-        from galaius.machine.peer.client import PeerClient, PeerError, PeerUnavailable  # Circular layers: see `_spawn_on_machine`.
-        from galaius.machine.peer.words import pick
-
         try:
             client = PeerClient()
             events = client.events(pick(client.fleet(), machine).id, UUID(run_id)).events

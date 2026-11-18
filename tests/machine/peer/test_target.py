@@ -80,3 +80,19 @@ def test_a_placed_run_leaves_one_line_on_the_pc_that_ran_it(monkeypatch: pytest.
     monkeypatch.setattr(PeerAudit, "path", staticmethod(lambda: tmp_path / "absent" / "x" / "log"))
     monkeypatch.setattr("os.open", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
     PeerAudit.started(run, None, None, asked, "pc-a", None, False, False, None)          # never raises
+
+
+def test_the_owners_local_off_refuses_a_placed_run_before_any_fence_is_built_even_with_the_fence_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The start path itself (`_prepare_start`), with `fence_agents` on: the local OFF is asked first (a short-circuiting `fence_agents or …` once skipped it)."""
+    built: list[str] = []
+    monkeypatch.setattr(agents_module, "available", lambda: (True, ""))
+    stub = SimpleNamespace(runs=SimpleNamespace(refuse_full=lambda request: None), folder=lambda root, path: Path("/x"), _project_env=lambda request, folder: 0, fence_agents=True,
+                           _peer_fenced=lambda request: MachineAgents._peer_fenced(None, request), _fence=lambda *a, **k: built.append("fence") or (None, None))
+    request = SimpleNamespace(model=None, root="r", path="", **placed())
+    MachineAgents._prepare_start(stub, request, None)
+    assert built == ["fence"]
+    PeerSwitch.off()
+    built.clear()
+    with pytest.raises(AgentRefused):
+        MachineAgents._prepare_start(stub, request, None)
+    assert built == []

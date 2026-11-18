@@ -5,10 +5,11 @@ server's code and sentence; a runner that is not running is `PeerUnavailable` sa
 
 import hashlib
 import json
+import os
 import socket
 import time
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import TypeAdapter
 
@@ -74,15 +75,33 @@ class PeerClient:
 
     # ---- the verbs ----------------------------------------------------------------------------------------------------
 
-    #: Seconds in which one request repeated is one request: a retry after a timeout reuses its idempotency key and never places a second run.
-    WINDOW: float = 120.0
+    #: Seconds a request's key is remembered: a retry inside it is the same request and reuses the key, whatever instant it falls on; the same words after it
+    #: are a new request.
+    WINDOW: float = 600.0
 
     def key(self, *parts: object) -> str:
-        """The idempotency key of a request: its own words, the run asking and a time window, so a retry of it (a slow answer, a restarted call) finds what
-        it already did, and the same words an hour later are a new request."""
+        """The idempotency key of a request: the key this PC already gave the same words from the same run within `WINDOW` seconds, else a new one. Kept in a
+        small private file (a CLI call is one process: a retry is another), so a retry after a timeout finds what it already did, at any moment — never a
+        second run."""
         asked = self.asker()
-        material = "|".join(str(part) for part in (*parts, asked.run_id if asked else "", int(time.time() // self.WINDOW)))
-        return hashlib.sha256(material.encode()).hexdigest()[:40]
+        material = hashlib.sha256("|".join(str(part) for part in (*parts, asked.run_id if asked else "")).encode()).hexdigest()
+        path, now = self.path.with_name("peer-keys.json"), time.time()
+        try:
+            known = {name: entry for name, entry in json.loads(path.read_text()).items() if now - entry[1] <= self.WINDOW}
+        except (OSError, ValueError, TypeError, IndexError):
+            known = {}
+        if material not in known:
+            known[material] = [uuid4().hex, now]
+            try:
+                path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                temporary = path.with_suffix(f".{os.getpid()}.tmp")
+                descriptor = os.open(temporary, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+                with os.fdopen(descriptor, "w") as handle:
+                    json.dump(dict(sorted(known.items(), key=lambda item: item[1][1])[-200:]), handle)
+                os.replace(temporary, path)
+            except OSError:
+                pass            # a key that could not be kept still works for this call; only a retry from another process would differ
+        return known[material][0]
 
     def fleet(self) -> PcFleet:
         return self._of(PcFleet, PeerFleetCall())

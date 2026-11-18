@@ -173,17 +173,22 @@ def test_the_mcp_tools_place_events_send_and_stop_through_the_runner_and_say_a_r
     assert [call["kind"] for call in runner.calls if call["kind"] == "peer_start"] == ["peer_start"]
 
 
-def test_a_retry_keeps_its_key_inside_the_window_and_a_different_request_or_an_hour_later_does_not(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_retry_keeps_its_key_whatever_the_instant_and_a_different_request_or_an_old_one_does_not(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from galaius.machine.peer.client import PeerClient
 
-    client = PeerClient(Path("/nonexistent/peer.sock"))
+    clock = [1_000_000.0]
+    monkeypatch.setattr("galaius.machine.peer.client.time.time", lambda: clock[0])
     monkeypatch.setattr(PeerClient, "asker", staticmethod(lambda: None))
     machine, project = uuid4(), uuid4()
-    monkeypatch.setattr("galaius.machine.peer.client.time.time", lambda: 1_000_000.0)
+    client = PeerClient(tmp_path / "peer.sock")
     first = client.key(machine, project, "tester", "", "judge x")
-    assert client.key(machine, project, "tester", "", "judge x") == first and client.key(machine, project, "tester", "", "judge y") != first
-    monkeypatch.setattr("galaius.machine.peer.client.time.time", lambda: 1_000_000.0 + 3600)
+    for pause in (2, 57, 120, 121, 250):                                        # a retry at any instant inside the window, window edges included
+        clock[0] += pause
+        assert PeerClient(tmp_path / "peer.sock").key(machine, project, "tester", "", "judge x") == first      # another process, same file
+    assert client.key(machine, project, "tester", "", "judge y") != first
+    clock[0] += 3600
     assert client.key(machine, project, "tester", "", "judge x") != first
+    assert oct((tmp_path / "peer-keys.json").stat().st_mode & 0o777) == "0o600"
 
 
 def test_a_placed_run_named_by_the_shared_mcp_server_has_no_peer_tools(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

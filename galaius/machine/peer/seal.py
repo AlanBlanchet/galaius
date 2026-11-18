@@ -24,7 +24,10 @@ class PeerSeal:
     def held(self) -> str | None:
         try:
             return PRIVATE_FILES.read_secret(self.path)
+        except FileNotFoundError:
+            return None         # never sealed yet
         except (OSError, ValueError):
+            logger.warning("the seal this PC was given cannot be read: it presents none, and the server may read that as a copy of its files", exc_info=True)
             return None
 
     def hello(self) -> dict[str, object]:
