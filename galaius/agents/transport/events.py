@@ -347,6 +347,9 @@ class AgentEvent(OlderTokens, ContextGauge):
     #: clipped by design; this is the stable key a viewer uses to pull the FULL input/output
     #: for one call out of the raw stream — prefix-matching breaks on two identical commands.
     tool_id: str = ""
+    #: For a "started": the tools its provider's session says it has (Claude's `init` line), by the names its transcript calls
+    #: them (`mcp__server__tool`); () when the provider says none (Codex), left out then. Never a guess from the role's list.
+    available_tools: tuple[str, ...] = Field(default=(), exclude_if=lambda value: not value)
     #: For a "message": which run sent it, which received it. Both sides record the same
     #: exchange, so a sequence view can draw the arrow from either transcript.
     from_run: str | None = None

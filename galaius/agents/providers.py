@@ -1878,10 +1878,10 @@ class ClaudeCodeProvider(AgentProvider):
             return AgentEvent(kind="other", session_id=sid, raw_type=kind, **ContextGauge.reported({"context_window": answer.get("maxTokens")}))
 
         if kind == "system" and raw.get("subtype") == "init":
-            tools = raw.get("tools") or []
+            tools = [tool for tool in raw.get("tools") or [] if isinstance(tool, str)]
             if isinstance(raw.get("model"), str):
                 ledger.primary = raw["model"]
-            return AgentEvent(kind="started", session_id=sid, raw_type=kind,
+            return AgentEvent(kind="started", session_id=sid, raw_type=kind, available_tools=tuple(tools),
                               text=f"session up in {raw.get('cwd', '?')} ({len(tools)} tools)")
 
         if kind == "assistant":

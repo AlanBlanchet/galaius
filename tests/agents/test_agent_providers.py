@@ -630,6 +630,13 @@ def test_the_real_stream_parses_end_to_end():
     assert kinds[-1] == "done"
 
 
+def test_the_started_event_carries_the_tools_the_session_says_it_has():
+    started = next(e for e in _events() if e.kind == "started")
+    init = next(json.loads(line) for line in FIXTURE.read_text().splitlines() if '"subtype":"init"' in line.replace(" ", ""))
+    assert started.available_tools == tuple(init["tools"]) and started.available_tools
+    assert "available_tools" not in AgentEvent(kind="started").model_dump(mode="json", exclude_none=True)
+
+
 def test_the_assistant_text_is_extracted():
     said = [e.text for e in _events() if e.kind == "text"]
     assert any("OK" in t for t in said), said
