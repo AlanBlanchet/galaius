@@ -243,13 +243,22 @@ def _started(code: str = "BCDF-GHJK") -> DeviceLoginStarted:
                               verification_uri_complete=f"https://x/plateform/link?code={code}", expires_in=600, interval=5)
 
 
+ENGLISH = ["Installed: continue in your browser", "If the page asks for a number, pick: 47",
+           "The code on that page lasts 10 minutes. Once it expired, run  galaius login  in a terminal for a new one."]
+FRENCH = ["Installé : continuez dans votre navigateur", "Si la page demande un numéro, choisissez : 47",
+          "Le code de cette page dure 10 minutes. Une fois expiré, lancez  galaius login  dans un terminal pour en obtenir un autre."]
+
+
+@pytest.mark.parametrize("language, words", [("fr_FR.UTF-8", FRENCH), ("C", ENGLISH)])
 @pytest.mark.parametrize("opened", [True, False])
-def test_detach_opens_the_approval_hands_the_wait_over_and_says_one_line(joining: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], opened: bool) -> None:
+def test_detach_opens_the_approval_hands_the_wait_over_and_says_one_line(joining: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], opened: bool,
+                                                                         language: str, words: list[str]) -> None:
     """The install line: the code is started, the waiting handed to a detached `galaius login
     --resume` (its sign-in on stdin, never on its command line), the page opened, and the installer
     ends on « Installé : continuez dans votre navigateur » (plus the link where no browser opened)."""
     monkeypatch.setattr(AccountLogin, "begun", lambda self, http, runs, open_browser, replaces=None: (_started(), False))
     monkeypatch.setattr(AccountLogin, "opened", staticmethod(lambda url: opened))
+    monkeypatch.setenv("LC_ALL", language)
     handed: list[account_login.HandedOff] = []
     monkeypatch.setattr(account_login, "_detached", lambda account, value: handed.append(value))
     monkeypatch.setattr("builtins.input", lambda question: pytest.fail(f"asked: {question}"))
@@ -258,7 +267,8 @@ def test_detach_opens_the_approval_hands_the_wait_over_and_says_one_line(joining
     received = account_login.HandedOff.model_validate_json(handoff.payload())
     assert received.started.device_code.get_secret_value() == "d" * 40 and received.agents.folders == ("dev",)
     out = capsys.readouterr().out.splitlines()
-    assert out[0] == "Installé : continuez dans votre navigateur" and out[-1] == "Si la page demande un numéro, choisissez : 47" and (len(out) == 2) == opened
+    # The install's last words, in the install script's language: the page (where no browser opened), the number, how long the code lives.
+    assert out[0] == words[0] and out[-2:] == words[1:] and (len(out) == 3) == opened
     assert not MachineRunner.default_config_path().exists()  # saved only by the detached process, once approved
     assert account_login.PRIVATE_FILES.read_text(account_login.Pending.path())  # the pending page (with its code) is private: readable only as such
 
@@ -310,10 +320,11 @@ def test_detach_on_a_connected_computer_opens_its_page_and_restarts_it_detached(
     pages: list[str] = []
     monkeypatch.setattr(account_login, "_detached", lambda account, value: handed.append(value))
     monkeypatch.setattr(AccountLogin, "opened", staticmethod(lambda url: pages.append(url) or True))
+    monkeypatch.setenv("LC_ALL", "fr_FR.UTF-8")
     capsys.readouterr()
     account_login.login(None, allow_runs=False, open_browser=True, detach=True)
     assert [value.started for value in handed] == [None] and pages and "#data?computer=" in pages[0]
-    assert capsys.readouterr().out.splitlines() == ["Installé : continuez dans votre navigateur"]
+    assert capsys.readouterr().out.splitlines() == [FRENCH[0]]  # no code was started: nothing expires
 
 
 def test_detach_is_a_real_detached_process_with_a_private_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -367,6 +378,7 @@ def test_the_install_line_signs_in_afresh_over_a_connection_the_server_no_longer
     pages: list[str] = []
     monkeypatch.setattr(account_login, "_detached", lambda account, value: handed.append(value))
     monkeypatch.setattr(AccountLogin, "opened", staticmethod(lambda url: pages.append(url) or True))
+    monkeypatch.setenv("LC_ALL", "fr_FR.UTF-8")
     account_login.login(PUBLIC, allow_runs=False, open_browser=True, detach=True)
     assert [value.started.user_code for value in handed] == ["BCDF-GHJK"] and pages == ["https://x/plateform/link?code=BCDF-GHJK"]
     assert [None if value is None else value.get_secret_value() for value in sent] == [proof]

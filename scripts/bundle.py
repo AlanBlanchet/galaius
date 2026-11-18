@@ -186,7 +186,7 @@ class Bundler(BaseModel):
             raise SystemExit(f"{path.name} is not the pinned CPython (sha256 differs)")
         return path
 
-    def build(self, target: Target, release: Release, cache: Path) -> Path:
+    def build(self, target: Target, release: Release, cache: Path) -> tuple[Path, int]:
         work = Path(tempfile.mkdtemp(prefix=f"bundle-{target.name}-", dir=self.out))
         try:
             with tarfile.open(self.fetched(target, cache)) as archive:
@@ -253,9 +253,11 @@ class Bundler(BaseModel):
                 path.unlink(missing_ok=True)
 
     @staticmethod
-    def packed(root: Path, path: Path) -> Path:
+    def packed(root: Path, path: Path) -> tuple[Path, int]:
         """The folder's content at the archive's top, in one order, owned by nobody and timeless: the same
-        release builds the same bytes."""
+        release builds the same bytes. With the bytes its files take once unpacked (what an installer says
+        is needed on disk)."""
+        unpacked = 0
         with path.open("wb") as file, gzip.GzipFile(fileobj=file, mode="wb", compresslevel=6, mtime=0) as packed, \
                 tarfile.open(fileobj=packed, mode="w", format=tarfile.PAX_FORMAT) as archive:
             for member in sorted(root.rglob("*")):
@@ -264,11 +266,12 @@ class Bundler(BaseModel):
                 info.uname = info.gname = ""
                 info.mtime = 0
                 if info.isreg():
+                    unpacked += info.size
                     with member.open("rb") as content:
                         archive.addfile(info, content)
                 else:
                     archive.addfile(info)
-        return path
+        return path, unpacked
 
     def run(self, targets: tuple[Target, ...]) -> dict:
         if sys.version_info[:2] != self.interpreter.minor:
@@ -279,8 +282,8 @@ class Bundler(BaseModel):
         cache.mkdir(exist_ok=True)
         listed = []
         for target in targets:
-            path = self.build(target, release, cache)
-            listed.append({"target": target.name, "file": path.name, "size": path.stat().st_size,
+            path, unpacked = self.build(target, release, cache)
+            listed.append({"target": target.name, "file": path.name, "size": path.stat().st_size, "unpacked": unpacked,
                            "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
         shutil.rmtree(cache)
         document = {"release_sha256": hashlib.sha256((self.release_dir / "release.json").read_bytes()).hexdigest(),

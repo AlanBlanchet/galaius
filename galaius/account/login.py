@@ -433,23 +433,45 @@ def _existing_machine() -> MachineConfig | None:
 
 
 class SaidHere(BaseModel):
-    """What `galaius login` says about this computer's earlier connection before signing it in again, in the
-    language of where it shows: an installer's output is French (it ends on `INSTALLED`), a terminal's English."""
+    """What `galaius login` says in one language: about this computer's earlier connection before signing it in again,
+    and, for the installers (`detach`), the lines ending the install. A terminal's own `galaius login` is English."""
 
     model_config = ConfigDict(frozen=True)
     #: `{machine}`, `{server}`: the server refused this computer's token (`_held`).
     not_held: str
     #: `{kind}` (an error name: the terminal's line only), `{aside}`: the machine file did not read (`UnreadableMachine`), kept aside.
     unreadable: str
+    #: The one line an installer ends with: everything after it happens in the browser.
+    installed: str
+    #: `{link}`: the page, where no browser opened.
+    open_page: str
+    #: `{match}`: approved from another network (a copied link), the page asks for it.
+    number: str
+    #: `{minutes}`: the code's life, said while it lives, with the one command that starts another once it is gone.
+    lifetime: str
 
 
-#: By `detach` (the installers).
-SAID_HERE: dict[bool, SaidHere] = {
-    False: SaidHere(not_held="This computer's connection (machine {machine}) is no longer known to {server} (removed on the web, or left by an earlier install): it signs in again.",
-                    unreadable="This computer's machine file cannot be read ({kind}); kept as {aside}, this computer signs in again."),
-    True: SaidHere(not_held="La connexion de cet ordinateur (machine {machine}) n'est plus connue de {server} (retiré sur le web, ou laissé par une installation précédente) : il se reconnecte.",
-                   unreadable="Le fichier de connexion de cet ordinateur est illisible ; gardé sous {aside}, il se reconnecte."),
+Language = Literal["en", "fr"]
+
+SAID_HERE: dict[Language, SaidHere] = {
+    "en": SaidHere(not_held="This computer's connection (machine {machine}) is no longer known to {server} (removed on the web, or left by an earlier install): it signs in again.",
+                   unreadable="This computer's machine file cannot be read ({kind}); kept as {aside}, this computer signs in again.",
+                   installed="Installed: continue in your browser", open_page="Open this page: {link}",
+                   number="If the page asks for a number, pick: {match}",
+                   lifetime="The code on that page lasts {minutes} minutes. Once it expired, run  galaius login  in a terminal for a new one."),
+    "fr": SaidHere(not_held="La connexion de cet ordinateur (machine {machine}) n'est plus connue de {server} (retiré sur le web, ou laissé par une installation précédente) : il se reconnecte.",
+                   unreadable="Le fichier de connexion de cet ordinateur est illisible ; gardé sous {aside}, il se reconnecte.",
+                   installed="Installé : continuez dans votre navigateur", open_page="Ouvrez cette page : {link}",
+                   number="Si la page demande un numéro, choisissez : {match}",
+                   lifetime="Le code de cette page dure {minutes} minutes. Une fois expiré, lancez  galaius login  dans un terminal pour en obtenir un autre."),
 }
+
+
+def said_in(detach: bool) -> SaidHere:
+    """The installers (`detach`) speak the language the install script speaks: the first of LC_ALL, LC_MESSAGES, LANG
+    that is set (French when it starts with `fr`), so one install says everything in one language."""
+    language = next((value for name in ("LC_ALL", "LC_MESSAGES", "LANG") if (value := os.environ.get(name))), "")
+    return SAID_HERE["fr" if detach and language.startswith("fr") else "en"]
 
 
 def _held(account: AccountLogin, existing: MachineConfig | None, said: SaidHere) -> MachineConfig | None:
@@ -482,7 +504,7 @@ def login(server: str | None, *, allow_runs: bool, open_browser: bool, agents: b
     signs in as a new computer; connected to another server: moved there when that server holds this computer's
     enrollment (`_moved`), else refused. `detach` (the installers): the sign-in is handed to a
     background process (`_handed_off`) and this returns at once; `resume` is that process."""
-    said, unreadable = SAID_HERE[detach], None
+    said, unreadable = said_in(detach), None
     try:
         existing = _existing_machine()
     except UnreadableMachine as error:
@@ -494,7 +516,7 @@ def login(server: str | None, *, allow_runs: bool, open_browser: bool, agents: b
         if not resume:
             existing = _held(account, existing, said)
         if detach:
-            _handed_off(account, existing, allow_runs=allow_runs, open_browser=open_browser, replaces=replaces,
+            _handed_off(account, existing, said, allow_runs=allow_runs, open_browser=open_browser, replaces=replaces,
                         agents=AgentChoice.given(agents, agent_folders, agent_opt_ins, existing or AgentChoice.joining()))
         elif resume:
             _resumed(account)
@@ -510,10 +532,6 @@ def login(server: str | None, *, allow_runs: bool, open_browser: bool, agents: b
             _reconfigured(account, existing, agents=AgentChoice.given(agents, agent_folders, agent_opt_ins, existing))
     except httpx.HTTPError as error:
         raise LoginError(f"cannot reach the server ({type(error).__name__}); check the address and your network, then run it again") from None
-
-
-#: The one line an installer ends with: everything after it happens in the browser.
-INSTALLED = "Installé : continuez dans votre navigateur"
 
 
 class HandedOff(BaseModel):
@@ -594,7 +612,7 @@ class Pending(BaseModel):
             return False
 
 
-def _handed_off(account: AccountLogin, existing: MachineConfig | None, *, allow_runs: bool, open_browser: bool, agents: AgentChoice | None,
+def _handed_off(account: AccountLogin, existing: MachineConfig | None, said: SaidHere, *, allow_runs: bool, open_browser: bool, agents: AgentChoice | None,
                 replaces: SecretStr | None = None) -> None:
     """The installers' sign-in, nothing asked and nothing waited for here. A new computer: its
     pending sign-in's page reopens if a waiter still serves one; else a code is started, its page
@@ -609,9 +627,9 @@ def _handed_off(account: AccountLogin, existing: MachineConfig | None, *, allow_
             agents.applied(MachineRunner())
         _detached(account, HandedOff())
         with account.client() as http:
-            link, match = existing.page(http), ""
+            link, match, expires_at = existing.page(http), "", None
     elif (pending := Pending.read()) is not None:
-        link, match = pending.link, pending.match
+        link, match, expires_at = pending.link, pending.match, pending.expires_at
     else:
         with account.client() as http:
             started, _ = account.begun(http, allow_runs, open_browser=False, replaces=replaces)
@@ -619,12 +637,14 @@ def _handed_off(account: AccountLogin, existing: MachineConfig | None, *, allow_
                           expires_at=datetime.now(UTC) + timedelta(seconds=started.expires_in))
         pending.write()
         _detached(account, HandedOff(started=started, agents=agents, mark=pending.mark))
-        link, match = pending.link, pending.match
-    print(INSTALLED)
+        link, match, expires_at = pending.link, pending.match, pending.expires_at
+    print(said.installed)
     if not (open_browser and account.opened(link)):
-        print(f"Ouvrez cette page : {link}")
+        print(said.open_page.format(link=link))
     if match:  # approved from another network (a copied link), the page asks for it
-        print(f"Si la page demande un numéro, choisissez : {match}")
+        print(said.number.format(match=match))
+    if expires_at is not None:  # the waiter's own word on expiry reaches login.log only, long after this terminal returned: said now
+        print(said.lifetime.format(minutes=max(1, round((expires_at - datetime.now(UTC)).total_seconds() / 60))))
 
 
 def _detached(account: AccountLogin, handed: HandedOff) -> None:

@@ -247,7 +247,7 @@ def ranked_extras() -> dict[str, dict]:
             return {}
     scores = live_scores()
     if not scores:
-        _log.warning("no benchmark board on disk: model criteria see only the bundled snapshot")
+        _log.info("no benchmark board on disk: model criteria see only the bundled snapshot")
         RANKED_CACHE.write({"fetched_at": time.time(), "models": {}})
         return {}
     try:
