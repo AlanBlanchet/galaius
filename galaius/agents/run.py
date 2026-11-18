@@ -797,6 +797,11 @@ def tools_of(policy: Policy, role: str, community: bool) -> list[str] | None:
     return [*own, *(f"{TOOL_PREFIX}{name}" for name in (REQUEST_TOOL, *LENT_TOOLS))]
 
 
+def served_tools(provider: AgentProvider, tools: list[str] | None) -> tuple[str, ...] | None:
+    """What a run's record keeps of `tools` (`AgentRun.served_tools`): the list, when `provider` serves exactly it; else None."""
+    return tuple(tools) if tools is not None and provider.exact_tools else None
+
+
 def require_galaius(role: str | None, tools: list[str] | None, provider: AgentProvider, environment: Mapping[str, str], *,
                     handed: bool, alone: bool) -> None:
     """Raises `RoleToolMissing` when `tools` (a role's, None: unrestricted, so it declares none) name galaius's and the
@@ -1940,6 +1945,7 @@ async def run_agent(
             permission_mode=candidate_permission_mode, requested_criterion=required_model,
             mesh_enabled=mesh, reasoning=candidate_effort, reasoning_set=reasoning,
             candidates=candidates, skipped=tuple(skipped), denied_tools=denied_tools,
+            served_tools=served_tools(candidate_provider, allowed_tools),
             provider_session_id=vendor_session if candidate_provider.session_is_run else None,
             agent_ref=selected_ref, definition_path=definition_path, fence=candidate_fence, subscription=candidate_pin,
             lends=pinned if candidate.provider in keys else None, media=shown,
@@ -2027,7 +2033,7 @@ async def run_agent(
         permission_mode=permission_mode, requested_criterion=required_model,
         mesh_enabled=mesh,
         reasoning=effort, reasoning_set=reasoning,
-        candidates=candidates, skipped=tuple(skipped), denied_tools=denied_tools,
+        candidates=candidates, skipped=tuple(skipped), denied_tools=denied_tools, served_tools=served_tools(provider, allowed_tools),
         provider_session_id=provider.session_named(run_id),
         agent_ref=selected_ref, definition_path=definition_path, fence=fence, subscription=pinned, lends=lends, media=shown,
         login=chosen_login, asked_by=asked_by, inherited_asks=inherited_asks, community=community,

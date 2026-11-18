@@ -288,6 +288,9 @@ class AgentProvider(ABC):
     #: agent-to-agent messaging possible without inventing a mailbox: the recipient keeps its
     #: own context instead of being handed a cold summary of it.
     can_resume: ClassVar[bool] = False
+    #: Does it serve a role exactly the tools its list names (`role_arguments`), nothing a coarser sandbox lets through?
+    #: Only then is that list a fact about the run (`AgentRun.served_tools`), which the line trusts (`spawn_line.takes_place`).
+    exact_tools: ClassVar[bool] = False
     #: Whether `rebuild_session` writes its session again from its stream: a copy of one of its conversations travels
     #: without the session's files when they are gone (`PcFeature.RUN_HOLD`).
     rebuilds_sessions: ClassVar[bool] = False
@@ -1119,6 +1122,7 @@ class ClaudeCodeProvider(AgentProvider):
     """
 
     program = AGENT_PROGRAMS["claude"]
+    exact_tools = True   # `--agents` tools, `--allowedTools`, `--disallowedTools`: the full list, enforced by the CLI
     fenced = FencedCli(folder=".claude", read=(".credentials.json", "settings.json", "CLAUDE.md", "agents", "rules", "skills", "commands", "hooks", "plugins"),
                        sessions=("projects",), copies=(".claude.json",),
                        egress=("api.anthropic.com", "console.anthropic.com", "claude.ai", "statsig.anthropic.com"),

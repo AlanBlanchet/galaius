@@ -10,7 +10,10 @@ message to an ended run waits the same way before its resumed turn starts (`agen
 Never counted nor held: the owner's own conversations — his editor sessions (no galaius process),
 the runs he starts from the web (capped there: `WebLimited`). Every other run counts, whatever its
 role: measured that day, a browser-driving critic held ~0.75 GB, a code reviewer ~0.37 GB, a builder
-0.4-0.6 GB. One exception keeps a team from blocking on itself, as make's jobserver does: a run in a
+0.4-0.6 GB. But a run served only tools that start no process and no browser (`LIGHT_TOOLS`: reading files, searching
+the web and the conversations, messaging its agents) holds no more than its CLI (0.2-0.3 GB peak, 2026-11-18): it takes no
+place (`takes_place`), the memory hold (`admission.SoftMemory`) alone holding it. That night 6 places were taken while
+12-15 runs waited, read-only thinkers among the holders. One exception keeps a team from blocking on itself, as make's jobserver does: a run in a
 place of its own and its first child at work share that place (one level only), so a lead waiting
 for the critic it started never waits behind its own place; at most twice as many runs as places.
 
@@ -51,10 +54,10 @@ from galaius.agents.turns.critic_rounds import CriticRounds, turn_of
 from galaius.agents.limits.admission import Hold, Paused, SoftMemory, turn_hold
 from galaius.agents import registry as reg
 from galaius.agents.catalog.community import CommunityAgent
-from galaius.agents.policy import Policy, PolicyError
+from galaius.agents.policy import TOOL_PREFIX, Policy, PolicyError
 from galaius.agents.providers import provider_for
 from galaius.agents.catalog.vocabulary import TouchScope
-from galaius.agents.run import ModelUnavailable, RunHandle, effective_permission_mode, load_policy, resolve_role, run_agent
+from galaius.agents.run import ModelUnavailable, RunHandle, effective_permission_mode, load_policy, resolve_role, run_agent, tools_of
 from galaius.config.settings import Config
 from galaius.isolation.fence import FenceSpec
 from galaius.machine.web_runs import WebRuns
@@ -77,7 +80,23 @@ ASIDE_GRACE_SECONDS = 15.0
 #: How long a spawn that could not start stays readable (`agents list`, `agents events`) before it is forgotten.
 FAILED_KEPT_SECONDS = 24 * 3600.0
 
+#: The tools a run may be served and still take no place (`takes_place`): none starts a process or a browser on this PC.
+#: Galaius's own by name after `TOOL_PREFIX`: its conversation reads, and its connector tools (`ext__`: calls to the server).
+LIGHT_TOOLS = frozenset({"Read", "Grep", "Glob", "LS", "NotebookRead", "WebFetch", "WebSearch", "TodoWrite", "SendMessage", "ListAgents",
+                         f"{TOOL_PREFIX}conversation_search", f"{TOOL_PREFIX}conversation_read"})
+LIGHT_PREFIXES = (f"{TOOL_PREFIX}ext__",)
+
 logger = logging.getLogger(__name__)
+
+
+def light(tools: Sequence[str] | None, denied: Sequence[str] = ()) -> bool:
+    """Whether a run served `tools` (None: not limited) minus `denied` can start no process and no browser here."""
+    return tools is not None and all(tool in LIGHT_TOOLS or tool.startswith(LIGHT_PREFIXES) or tool in denied for tool in tools)
+
+
+def takes_place(run: reg.AgentRun) -> bool:
+    """Whether `run`, at work here, takes a place: every run but a light one (`light`, from the tools its CLI serves it: `AgentRun.served_tools`)."""
+    return not light(run.served_tools, run.denied_tools)
 
 
 class Spawn(BaseModel):
@@ -351,6 +370,16 @@ class Spawn(BaseModel):
                         f"{', '.join(sorted(reg.short_id(run_id) for run_id in mine))} are at work or waiting to start: send one "
                         "of them your task (agent_send) or wait for one to finish")
         return None
+
+    def light(self, resolved: tuple[Policy, str, AgentRevisionRef | None] | None) -> bool:
+        """Whether it would run light (`light`), its role `resolved` (`_role`): it then starts without a place. Its provider is
+        ranked at start: one not serving exactly its tools records none (`AgentRun.served_tools`) and takes a place from then."""
+        if resolved is None:
+            return False
+        try:
+            return light(tools_of(resolved[0], resolved[1], self.community is not None), self.denied_tools)
+        except ModelUnavailable:
+            return False
 
     def _role_name(self) -> str | None:
         """The role it would run as (`_role`), else the agent it names."""
@@ -815,7 +844,7 @@ class SpawnLine(BaseModel):
         """Who takes a place now, `places` (the line, read under its lock) adding the runs starting; `asides` as a reader
         saw them (`_seen`), else read under their lock."""
         owners = self._owners()
-        runs = [run for run in reg.running_runs() if run.kind == "process" and not run.foreign and run.run_id not in owners]
+        runs = [run for run in reg.running_runs() if run.kind == "process" and not run.foreign and run.run_id not in owners and takes_place(run)]
         if asides is None:
             with self._asides() as held:
                 asides = list(held)
@@ -881,13 +910,15 @@ class SpawnLine(BaseModel):
         `waiting` behind every spawn already waiting, held by a waiter started here. Its relation refusing it
         (`Spawn.relation_refusal`): `RelationRefused`, no place taken."""
         run_id, me = str(uuid.uuid4()), Caller.current().pid  # the caller asking: a client gone frees its place
-        role, gone = spawn._role_name(), spawn.taken_over()
+        resolved, gone = spawn._role(), spawn.taken_over()
+        role = resolved[1] if resolved is not None else spawn.agent
         with self._places() as places:
             if (refused := spawn.relation_refusal(places, gone)) is not None:
                 raise RelationRefused(refused)
             ahead = sum(place.queued() for place in places)
             load = self.load(places)
-            starts = self._admits(places, spawn.parent_run_id, first=ahead == 0)
+            starts = (self._memory_hold() is None if spawn.light(resolved)
+                      else self._admits(places, spawn.parent_run_id, first=ahead == 0))
             places.append(Place(run_id=run_id, asked_at=time.time(), state="starting" if starts else "waiting", holder=me,
                                 holder_started=process_started(me), parent_run_id=spawn.parent_run_id, spawn=spawn, role=role))
         if not starts:
@@ -970,8 +1001,8 @@ class SpawnLine(BaseModel):
                     places[index] = place.model_copy(update={"state": "failed", "said": said[:500]})
 
     def _exempt(self, run: reg.AgentRun) -> bool:
-        """The owner's own runs (`_owners`) and what is not a galaius process here: never held."""
-        return run.kind != "process" or run.foreign or run.run_id in self._owners()
+        """The owner's own runs (`_owners`), what is not a galaius process here, and a light run (`takes_place`): never held."""
+        return run.kind != "process" or run.foreign or run.run_id in self._owners() or not takes_place(run)
 
     @contextmanager
     def resuming(self, run: reg.AgentRun) -> Iterator[bool]:

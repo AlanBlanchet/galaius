@@ -407,6 +407,10 @@ class AgentRun(OlderTokens, ContextGauge):
     candidates: tuple[LaunchCandidate, ...] = ()
     skipped: tuple[SkippedCandidate, ...] = ()
     denied_tools: tuple[DeniedTool, ...] = ()
+    #: The tools its CLI serves it, when that CLI enforces the list exactly (`AgentProvider.exact_tools`); None: not
+    #: limited, or limited only by a coarser sandbox. What the line reads to know a run can start no process (`takes_place`).
+    #: `tools` below: the ones it used.
+    served_tools: tuple[str, ...] | None = None
     prompt: PromptExecutionRef | None = None
     cataloged_at: float | None = None
     charge_path: ChargePath = "unknown"
@@ -1337,7 +1341,7 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
              definition_path: Path | None = None, session_id: str | None = None,
              candidates: tuple[LaunchCandidate, ...] = (),
              skipped: tuple[SkippedCandidate, ...] = (),
-             denied_tools: tuple[DeniedTool, ...] = (), fence: FenceSpec | None = None,
+             denied_tools: tuple[DeniedTool, ...] = (), served_tools: tuple[str, ...] | None = None, fence: FenceSpec | None = None,
              subscription: RunSubscription | None = None, lends: RunSubscription | None = None, media: tuple[str, ...] = (),
              login: str = "", asked_by: tuple[str, ...] = (),
              inherited_asks: Mapping[str, float] | None = None, community: CommunityAgent | None = None) -> AgentRun:
@@ -1352,7 +1356,7 @@ def register(*, run_id: str, pid: int | None, provider: str, name: str, task: st
                    permission_mode=permission_mode, requested_criterion=requested_criterion,
                    mesh_enabled=mesh_enabled,
                    reasoning=reasoning, reasoning_set=reasoning_set,
-                   candidates=candidates, skipped=skipped, denied_tools=denied_tools, fence=fence,
+                   candidates=candidates, skipped=skipped, denied_tools=denied_tools, served_tools=served_tools, fence=fence,
                    provider_session_id=provider_session_id, subscription=subscription, lends=lends, login=login,
                    asked_by=asked_by, inherited_asks=dict(inherited_asks or {}), community=community,
                    lifecycle_token=secrets.token_hex(16),

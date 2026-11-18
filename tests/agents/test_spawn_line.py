@@ -213,6 +213,33 @@ def test_the_owners_own_web_runs_are_not_counted(at_work, started):
     assert line.enter(_spawn()).ahead is None  # counted, it would fill the one place
 
 
+READING = ("Read", "Grep", "Glob", "SendMessage", "mcp__galaius__conversation_read", "mcp__galaius__ext__galaius__note_save")
+#: (tools its CLI serves it, None: not limited; denied; takes a place). 2026-11-18: 6 places of 6 taken while 12-15 runs
+#: waited, read-only thinkers among the holders. A place holds back memory; a run that can start no process holds its CLI's.
+TOOL_ROWS = [
+    pytest.param(READING, (), False, id="reads-files-and-conversations"),
+    pytest.param((*READING, "Bash"), (), True, id="a-shell-starts-tests-and-builds"),
+    pytest.param((*READING, "mcp__galaius__navigate"), (), True, id="a-browser"),
+    pytest.param((*READING, "Edit"), (), True, id="writes-files-not-read-only"),
+    pytest.param((*READING, "Bash"), ("Bash",), False, id="its-shell-denied"),
+    pytest.param(None, (), True, id="not-limited-or-only-by-a-coarser-sandbox"),
+]
+
+
+@pytest.mark.parametrize(("tools", "denied", "takes"), TOOL_ROWS)
+def test_only_a_run_that_can_start_a_process_or_a_browser_takes_a_place(at_work, started, monkeypatch, tools, denied, takes):
+    line = SpawnLine(limit=1, waiting_flag_minutes=5, waiting_gap_seconds=60)
+    at_work("holder", served_tools=tools, denied_tools=denied)
+    assert (line.enter(_spawn()).ahead is not None) is takes          # at work: it holds the one place, or not
+    monkeypatch.setattr(spawn_line, "tools_of", lambda policy, role, community: None if tools is None else list(tools))
+    monkeypatch.setattr(Spawn, "_role", lambda self: (Policy(), self.agent, None))
+    line = SpawnLine(limit=1, waiting_flag_minutes=5, waiting_gap_seconds=60)
+    at_work("busy", served_tools=None)                                          # the one place taken
+    assert (line.enter(_spawn().model_copy(update={"denied_tools": denied})).ahead is None) is not takes  # a light spawn starts
+    monkeypatch.setattr(SpawnLine, "_memory_hold", lambda self: type("Held", (), {"line": lambda held: "mémoire"})())
+    assert line.enter(_spawn()).ahead is not None                       # past the memory hold, none starts
+
+
 def test_a_resumed_turn_takes_its_turn_in_the_same_line_and_says_so(at_work, started):
     """A message to an ended run starts a process like a spawn: it waits its turn, and its sender is told."""
     line = SpawnLine(limit=1, waiting_flag_minutes=5, waiting_gap_seconds=60)
