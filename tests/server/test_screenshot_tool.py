@@ -96,3 +96,36 @@ async def test_inline_screenshot_writes_file(tmp_path):
         assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
     finally:
         await mgr.close()
+
+
+@pytest.mark.parametrize("fields", [{"region": (0, 0, 0, 5)}, {"region": (0, 0, 5, 5), "selector": "#x"}, {"max_width": 50, "element": 2}])
+def test_a_screenshot_step_frames_a_page_capture_only(fields):
+    with pytest.raises(ValueError):
+        ScreenshotAction(**fields)
+
+
+def test_a_screenshot_step_takes_the_standalone_tools_framing_and_no_return_image():
+    assert ScreenshotAction(region=(0, 100, 200, 200), max_width=100).region == (0, 100, 200, 200)
+    with pytest.raises(ValueError):
+        ScreenshotAction(return_image=True)  # a step always returns its image: the one parameter a model carried over from the tool
+
+
+@pytest.mark.asyncio
+async def test_inline_screenshot_region_crops_what_it_returns_and_says_how_to_map_it_back(tmp_path):
+    from PIL import Image
+    from galaius.actions.dispatch import _run_actions_browser
+
+    mgr = browser_manager()
+    try:
+        await mgr.ensure_ready()
+    except Exception as exc:  # no browser provisioned (bare CI)
+        pytest.skip(f"no launchable chromium: {exc}")
+    try:
+        page = await mgr.get_page(0)
+        await page.set_content("<title>T</title><body style='margin:0'><div style='width:600px;height:600px;background:#c00'></div></body>")
+        out = tmp_path / "framed.png"
+        result = await _run_actions_browser(mgr, [ScreenshotAction(region=(10, 20, 120, 80), max_width=60, path=str(out))], None, None, None, "default")
+        assert Image.open(out).size == (60, 40)
+        assert "capture region 120x80+10+20" in str(result), str(result)[-400:]
+    finally:
+        await mgr.close()

@@ -916,7 +916,8 @@ async def _d_evaluate_js(c: _DesktopCtx) -> None:
 async def _d_screenshot(c: _DesktopCtx) -> None:
     from galaius.server.capture import _capture_desktop  # noqa: PLC0415 — circular
 
-    screenshot_bytes, report = await _capture_desktop(c.win, c.action.query, c.action.path)
+    framing = Framing(region=c.action.region, max_width=c.action.max_width)
+    screenshot_bytes, report = await _capture_desktop(c.win, c.action.query, c.action.path, framing=framing)
     c.snapshots[c.step_idx] = screenshot_bytes
     Debug.step_save(
         c.invocation_id, c.i, c.action.type, "screenshot", screenshot_bytes, ext="png"
@@ -1209,6 +1210,10 @@ async def _run_actions_browser(
                 else:
                     state = await _capture(mgr, action.scope, current_tab)
                     snapshots[step_idx] = base64.b64decode(state.screenshot_base64)
+                    framed = ""
+                    if action.region or action.max_width:
+                        snapshots[step_idx], framed = Framing(region=action.region, max_width=action.max_width).apply(snapshots[step_idx])
+                        state = state.model_copy(update={"screenshot_base64": base64.b64encode(snapshots[step_idx]).decode()})
                     Debug.step_save(
                         invocation_id,
                         i,
@@ -1225,6 +1230,7 @@ async def _run_actions_browser(
                         report = f"{state.title} — {state.visible_text[:300]}"
                     if action.path:
                         report += f"  ({_saved_note(dest, snapshots[step_idx])})"
+                    report += f"\n{framed}" if framed else ""
                     final = state
                 step_reports.append(_step(i, action.type, report))
 

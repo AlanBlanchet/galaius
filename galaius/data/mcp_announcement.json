@@ -4613,6 +4613,47 @@
           ],
           "default": null,
           "title": "Path"
+         },
+         "region": {
+          "anyOf": [
+           {
+            "maxItems": 4,
+            "minItems": 4,
+            "prefixItems": [
+             {
+              "type": "integer"
+             },
+             {
+              "type": "integer"
+             },
+             {
+              "type": "integer"
+             },
+             {
+              "type": "integer"
+             }
+            ],
+            "type": "array"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Region"
+         },
+         "max_width": {
+          "anyOf": [
+           {
+            "exclusiveMinimum": 0,
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Max Width"
          }
         },
         "title": "ScreenshotAction",

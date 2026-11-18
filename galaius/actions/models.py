@@ -9,6 +9,7 @@ from playwright.async_api import Page
 
 from galaius.config.settings import DEFAULT_LIMIT
 from galaius.browser.settle import settle_animations
+from galaius.desktop.frames import Framing
 from galaius.browser.state import ref_locator
 
 _DND_DISPATCH_JS = (Path(__file__).parent.parent / "browser" / "js" / "dnd_dispatch.js").read_text()
@@ -517,6 +518,19 @@ class ScreenshotAction(ObservationAction):
     # an inline screenshot in a run_actions sequence can keep a frame without a follow-up tool call
     # that would re-capture a now-changed page (#27).
     path: str | None = None
+    # Same as the standalone screenshot tool's: keep only [x, y, w, h] of the capture (its own pixels), then shrink to
+    # `max_width`; the step's report says how an image point maps back to capture points. Page captures only, never an
+    # element (`selector` / `element`). A step always returns its image: there is no `return_image` here.
+    region: tuple[int, int, int, int] | None = None
+    max_width: int | None = Field(None, gt=0)
+
+    @model_validator(mode="after")
+    def _framing_is_for_page_captures(self):
+        if (self.region or self.max_width) and (self.selector is not None or self.element is not None):
+            raise ValueError("region / max_width frame a page capture, not an element: drop selector / element")
+        if self.region is not None:
+            Framing(region=self.region)  # a positive width and height
+        return self
 
 
 class WaitForAction(ObservationAction):
