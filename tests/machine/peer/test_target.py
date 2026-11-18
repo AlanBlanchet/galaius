@@ -65,3 +65,18 @@ def test_the_hello_names_this_process_the_seal_it_holds_and_its_local_off(tmp_pa
     assert not seal.keep({"seal": "short"}) and seal.hello()["seal"] == "s" * 40         # a malformed seal never replaces the held one
     PeerSwitch.off()
     assert seal.hello()["off"] is True
+
+
+def test_a_placed_run_leaves_one_line_on_the_pc_that_ran_it(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import json
+    from galaius.machine.peer.audit import PeerAudit
+
+    monkeypatch.setattr(PeerAudit, "path", staticmethod(lambda: tmp_path / "peer-audit.log"))
+    run, asked, ask_run = uuid4(), uuid4(), uuid4()
+    PeerAudit.started(run, "tester", "workspace_write", asked, "pc-a", ask_run, False, True, None)
+    line = json.loads((tmp_path / "peer-audit.log").read_text())
+    assert (line["run"], line["from_pc"], line["from_run"], line["from_run_verified"], line["fenced"]) == (str(run), str(asked), str(ask_run), False, True)
+    assert oct((tmp_path / "peer-audit.log").stat().st_mode & 0o777) == "0o600"
+    monkeypatch.setattr(PeerAudit, "path", staticmethod(lambda: tmp_path / "absent" / "x" / "log"))
+    monkeypatch.setattr("os.open", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    PeerAudit.started(run, None, None, asked, "pc-a", None, False, False, None)          # never raises

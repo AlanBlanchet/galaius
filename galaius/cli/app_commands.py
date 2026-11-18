@@ -1740,7 +1740,8 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
     --machine <name, id or auto> starts it on another of your PCs instead (auto: the other PC with the most free
     places), through this PC's own link: no second sign-in. --project <name or id> is the project it works on there
     (its folder is the one that PC already holds; a project not on it yet is put there once from the web), --folder a
-    folder beneath it, --agent the role. The run is fenced there, takes the model its rule picks, and gets at most
+    folder beneath it, --agent the role. The run is isolated in that PC's fence (a PC that cannot build one takes it only when its owner
+    allowed that), takes the model its rule picks, and gets at most
     workspace_write (--permission-mode read_only narrows it). Follow it with
     `galaius agents events <run id> --machine <name>`.
 

@@ -60,6 +60,7 @@ from galaius.agents.limits.warm import WarmStart
 from galaius.config.user import UserConfig
 from galaius.isolation.fence import FenceSpec, available
 from galaius.machine.editors import EDITOR_SESSIONS_MAX, EditorConversations
+from galaius.machine.peer.audit import PeerAudit
 from galaius.machine.peer.switch import PeerSwitch
 from galaius.machine.web_runs import HELD, WebRun, WebRuns, listed
 from galaius.machine.run_carry import RunPackFiles, RunPackReader
@@ -1023,6 +1024,8 @@ class MachineAgents(BaseModel):
                 self.reviews.attach(review, run_id)
             self.runs.add(WebRun(run_id=run_id, root=request.root, path=request.path, fenced=fence is not None, request_id=request.id,
                                  placed_by=request.placed_by.machine_id if request.placed_by is not None else None))
+            if (placed := request.placed_by) is not None:
+                PeerAudit.started(run_id, request.role, request.permission, placed.machine_id, placed.machine_name, placed.run_id, placed.by_verified, fence is not None, request.project)
             return run_id
 
         try:

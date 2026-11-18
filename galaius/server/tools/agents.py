@@ -153,7 +153,8 @@ async def agent_spawn(
         A named agent and a satisfiable role criterion are required; no silent model fallback.
     cwd: directory to work in; defaults to galaius's own working directory.
     machine: start it on another of the person's PCs instead: its name, its id, or "auto" (the other PC with the most free places). It runs there
-        in `project`'s folder (a project that PC already holds), as `agent`, fenced, on the model its rule picks there (so no provider, model or
+        in `project`'s folder (a project that PC already holds), as `agent`, isolated in that PC's fence (a PC that cannot build one takes a run only
+        when its owner allowed it), on the model its rule picks there (so no provider, model or
         cwd), at most workspace_write. An identical start repeated within two minutes returns the run it placed (a retry never places two). Returns its run_id and PC; follow it with agent_events(run_id, machine=...) and talk to it with
         agent_send(run_id, message, machine=...). Refused with the reason when the PC is off, takes no run from other PCs, holds no such project
         or is full.
