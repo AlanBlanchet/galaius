@@ -60,6 +60,7 @@ from galaius.agents.limits.warm import WarmStart
 from galaius.config.user import UserConfig
 from galaius.isolation.fence import FenceSpec, available
 from galaius.machine.editors import EDITOR_SESSIONS_MAX, EditorConversations
+from galaius.machine.peer.switch import PeerSwitch
 from galaius.machine.web_runs import HELD, WebRun, WebRuns, listed
 from galaius.machine.run_carry import RunPackFiles, RunPackReader
 from galaius.machine.programs import AgentPrograms
@@ -1020,7 +1021,8 @@ class MachineAgents(BaseModel):
                 self.followups.follow(handle.run_id, handle.process, environment=environment)
             if review is not None:
                 self.reviews.attach(review, run_id)
-            self.runs.add(WebRun(run_id=run_id, root=request.root, path=request.path, fenced=fence is not None, request_id=request.id))
+            self.runs.add(WebRun(run_id=run_id, root=request.root, path=request.path, fenced=fence is not None, request_id=request.id,
+                                 placed_by=request.placed_by.machine_id if request.placed_by is not None else None))
             return run_id
 
         try:
@@ -1043,8 +1045,23 @@ class MachineAgents(BaseModel):
         written = self._project_env(request, folder)
         # A lent run binds only closed login folders; a start's candidates each get theirs in the walk (`run_agent`).
         homes = pinned.homes() if pinned is not None else {}
-        fence, review = self._fence(request.root, folder, homes, lent=pinned is not None and pinned.lent) if self.fence_agents else (None, None)
+        fenced = self.fence_agents or self._peer_fenced(request)
+        fence, review = self._fence(request.root, folder, homes, lent=pinned is not None and pinned.lent) if fenced else (None, None)
         return folder, written, fence, review
+
+    def _peer_fenced(self, request: AgentStartRequest) -> bool:
+        """Whether a run placed here by another PC of its owner (`AgentStartSpec.placed_by`) or asking a fence (`require_fence`) is built its own fence
+        even where `fence_agents` is off (the web's own starts stay unfenced there). Refused, before anything runs, when its owner switched peer runs
+        off on this PC (`PeerSwitch`) or when no fence can be built and the server did not say its owner allowed that (`PlacedBy.unfenced_ok`)."""
+        placed = request.placed_by
+        if placed is None and not request.require_fence:
+            return False
+        if PeerSwitch.is_off():
+            raise AgentRefused("agents_off", "its owner switched off the runs other of his PCs place here (`galaius machine peer off`)")
+        ready, reason = available()
+        if not ready and not (placed is not None and placed.unfenced_ok):
+            raise AgentRefused("fence_broken", f"this PC cannot isolate the run ({reason}) and its owner did not allow runs placed here without isolation")
+        return ready
 
     def _project_env(self, request: AgentStartRequest, folder: Path) -> int:
         """The project's secrets, when the start brings them: opened with this machine's key, written

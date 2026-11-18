@@ -123,6 +123,17 @@ def machine_fence(state: Literal["on", "off"] | None = None) -> None:
     print(PlaceDesk(runner).view(config).fence.model_dump_json())
 
 
+@machine_app.command(name="peer")
+def machine_peer(state: Literal["off"] | None = None) -> None:
+    """Owner-only, on this machine: whether runs that another of your PCs places here are taken. `off` refuses them at once. There is no `on`
+    here: only your signed-in web session turns it on again (a run placed here could otherwise switch itself back on). No argument prints it."""
+    from galaius.machine.peer.switch import PeerSwitch  # Circular layers: the runner imports this CLI's neighbours.
+
+    if state == "off":
+        PeerSwitch.off()
+    print(json.dumps({"peer_runs": "off" if PeerSwitch.is_off() else "as the web sets it"}))
+
+
 @machine_app.command(name="reviews")
 def machine_reviews() -> None:
     """Owner-only, on this machine: the writes waiting for your review (agents and workflows

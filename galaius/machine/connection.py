@@ -84,6 +84,10 @@ from galaius.upgrade.quiet import QuietPoint, UpgradeReady
 from galaius.upgrade.store import RuntimeStore
 from galaius.host.pinned_directory import PinnedDirectory
 from galaius.isolation.fence import FenceSpec, available
+from galaius.machine.peer.broker import PeerBroker
+from galaius.machine.peer.link import PeerLink
+from galaius.machine.peer.seal import INSTANCE, PeerSeal
+from galaius.machine.peer.switch import PeerSwitch
 from galaius.machine.places.levels import BrowseBudget, IN_PLACE_WRITES, INSTRUCTION_NAMES, LEVEL_RANK, PlaceMap, split
 from galaius.machine.places.place_reviews import PlaceReviews, write_plain
 from galaius.machine.projects.workspace_copy import WorkspaceTransfers
@@ -1035,6 +1039,11 @@ class MachineRunner:
         #: the runs whose turn ended last (`FollowUps`).
         self.warm = WarmStart()
         self.followups = FollowUps()
+        #: Cross-PC dispatch: this runner's calls to its server on the live channel, the seal of its last accepted hello, and the local endpoint
+        #: its CLI and MCP server ask through (`galaius.machine.peer`).
+        self.peer_link = PeerLink()
+        self.peer_seal = PeerSeal(self.config_path.with_name("peer-seal"))
+        self.peer_broker = PeerBroker(self.peer_link, PeerBroker.socket_path(self.config_path))
         #: The agent programs the owner installs from the web, and their sign-in (`AgentPrograms`).
         self.programs = AgentPrograms(environment=self._system_environment(), log_path=self.config_path.with_name("agent-programs.log"),
                                       active=lambda name: load_policy().provider_active(name), usage=self._subscriptions.login_usage)
@@ -1129,6 +1138,7 @@ class MachineRunner:
         resumed = asyncio.create_task(self._resume_paused(config))
         watched = asyncio.create_task(self._watch_subscriptions(config))
         presenting = asyncio.create_task(self._present(config))
+        brokering = asyncio.create_task(self.peer_broker.serve())
         swapped = False
         try:
             await self._connect(config)
@@ -1154,7 +1164,8 @@ class MachineRunner:
             silences.cancel()
             reviewing.cancel()
             presenting.cancel()
-            await asyncio.gather(settler, handing, silences, reviewing, reports, followed, resumed, watched, presenting, return_exceptions=True)
+            brokering.cancel()
+            await asyncio.gather(settler, handing, silences, reviewing, reports, followed, resumed, watched, presenting, brokering, return_exceptions=True)
             for ahead in (self.warm, self.followups):  # a child started ahead never outlives its runner; ended on the loop it lives on
                 AgentSpawns.loop().call_soon_threadsafe(ahead.close)
         if swapped:
@@ -1346,7 +1357,8 @@ class MachineRunner:
                     if self._server_restarted:
                         self._server_restarted = False
                         RuntimeStore.default().request_check()
-                    await socket.send(json.dumps({"type": "hello", "features": self.features(), **await asyncio.to_thread(self._beat, config)}))
+                    await socket.send(json.dumps({"type": "hello", "features": self.features(), "peer": self.peer_seal.hello(), "peer_can_fence": available(),
+                                                  **await asyncio.to_thread(self._beat, config)}))
                     if await self._serve(socket, config):
                         self.presence.link = "refused"
                         return
@@ -1418,6 +1430,7 @@ class MachineRunner:
         # Ending a connection drops queued work but joins the active command before reconnecting:
         # cancelling to_thread would leave its subprocess running beside the next command.
         commands: asyncio.Queue[MachineCommand | None] = asyncio.Queue(maxsize=32)
+        self.peer_link.attach(socket)
         receiver = asyncio.create_task(self._receive(socket, config, commands))
         worker = asyncio.create_task(self._command_worker(socket, config, commands))
         heartbeat = asyncio.create_task(self._heartbeat(socket, config))
@@ -1432,6 +1445,7 @@ class MachineRunner:
                 task.result()
             return receiver in done and receiver.result()
         finally:
+            self.peer_link.detach()
             receiver.cancel()
             heartbeat.cancel()
             usage.cancel()
@@ -1499,6 +1513,12 @@ class MachineRunner:
                 except ValidationError as error:
                     raise PermissionError("the server's token swap is malformed; the token is unchanged") from error
                 self.take_token_swap(config, swap)
+            elif response.get("type") == "peer_sealed":
+                self.peer_seal.keep(response)
+            elif response.get("type") == "peer_switch":
+                PeerSwitch.on(True) if response.get("peer_runs") is True else PeerSwitch.off()
+            elif response.get("type") == "peer_reply":
+                self.peer_link.resolve(response.get("reply"))
             elif response.get("type") == "revoked":
                 return True
         return False
@@ -1533,6 +1553,8 @@ class MachineRunner:
         """What this runner's hello names (`PcFeatures`): every `PcFeature` of the galaius-core it ships with (a held sign-in
         only where one runs here, `AgentPrograms.HELD_SIGN_IN`), and each Script language it runs here."""
         features = frozenset(PcFeature) if AgentPrograms.HELD_SIGN_IN else frozenset(PcFeature) - {PcFeature.HELD_SIGN_IN}
+        # A runner names the peer features it really has: the broker needs a POSIX socket; a Windows PC is a target of peer runs, never a source.
+        features = features if PeerBroker.available else features - {PcFeature.PEER_BROKER}
         return PcFeatures(features, frozenset(ScriptRuntime.languages(cls._safe_environment().get("PATH")))).said()
 
     @staticmethod
@@ -2435,7 +2457,7 @@ class MachineRunner:
                 raise Woke(f"this computer slept about {time.time() - wall_from:.0f} s")
             if self.presence.files.paused:
                 raise Paused
-            await socket.send(json.dumps({"type": "heartbeat", **await asyncio.to_thread(self._beat, config)}))
+            await socket.send(json.dumps({"type": "heartbeat", "peer": {"instance": str(INSTANCE)}, **await asyncio.to_thread(self._beat, config)}))
             (await socket.ping()).add_done_callback(self._ponged)
 
     def _ponged(self, answer: asyncio.Future) -> None:

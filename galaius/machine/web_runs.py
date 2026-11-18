@@ -70,6 +70,8 @@ class WebRun(BaseModel):
     left: FolderState | None = None
     #: When this PC took it from another (`carried_from`): its first turn here, the one no turn ended after, is told so.
     carried_at: float | None = None
+    #: Placed here by another of its owner's PCs (`AgentStartSpec.placed_by`, the server's word): the PC that asked. Such a run gets no peer tools.
+    placed_by: UUID | None = None
 
 
 class WebRuns(BaseModel):
