@@ -370,7 +370,8 @@ def test_run_agent_forwards_tool_calls_with_arguments_results_and_the_final_toke
 def test_a_server_mid_deploy_is_retried_and_a_refused_token_stops(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: int | None, retried: bool) -> None:
     """A server being redeployed answers the upgrade with garbage (`InvalidMessage`) or a 5xx: the
     runner logs it and reconnects instead of exiting (systemd was restarting it on every deploy).
-    A 401/403 at the handshake is a refused token: the runner stops, never retries forever."""
+    A 401/403 at the handshake is a refused token: the runner stops once it repeats (`refusal_tries`), never retries forever,
+    and never on one answer (a server or proxy mid-deploy: the service is not restarted after a clean stop)."""
     import websockets
     from websockets.http11 import Response
     import galaius.machine.connection as machines
@@ -379,7 +380,7 @@ def test_a_server_mid_deploy_is_retried_and_a_refused_token_stops(tmp_path: Path
 
     def connect(*_args, **_kwargs):
         attempts.append(1)
-        if len(attempts) == 1:
+        if len(attempts) == 1 or not retried:     # a refused token is refused every time; a deploy's garbage or 5xx is answered the second time
             if status is None:
                 raise websockets.exceptions.InvalidMessage("did not receive a valid HTTP response")
             raise websockets.exceptions.InvalidStatus(Response(status, "refused", websockets.datastructures.Headers()))
@@ -393,7 +394,31 @@ def test_a_server_mid_deploy_is_retried_and_a_refused_token_stops(tmp_path: Path
             asyncio.run(runner.connect(_config(tmp_path, "read_only")))
     else:
         asyncio.run(runner.connect(_config(tmp_path, "read_only")))
-    assert len(attempts) == (2 if retried else 1)
+    assert len(attempts) == (2 if retried else runner.refusal_tries)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_one_refusal_of_the_token_is_not_a_revoked_pc(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: int) -> None:
+    """2026-11-18 « c'est toujours pas stable le fait qu'un PC soit connecté »: after a clean stop systemd does not restart the service, so one 401 from a
+    server mid-deploy left a PC that was on reading « refused » until someone restarted it. A refusal followed by an accepted connection goes on."""
+    import websockets
+    from websockets.http11 import Response
+    import galaius.machine.connection as machines
+
+    attempts: list[int] = []
+
+    def connect(*_args, **_kwargs):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise websockets.exceptions.InvalidStatus(Response(status, "refused", websockets.datastructures.Headers()))
+        raise PermissionError("accepted: stop here")
+
+    monkeypatch.setattr(machines.websockets, "connect", connect)
+    runner = MachineRunner(tmp_path / "machine.json")
+    runner.reconnect_seconds, runner.restart_window_seconds = (0,), 0
+    with pytest.raises(PermissionError):
+        asyncio.run(runner.connect(_config(tmp_path, "read_only")))
+    assert len(attempts) == 3 and runner.presence.link != "refused"
 
 
 def test_a_channel_that_keeps_failing_tells_its_page_why_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

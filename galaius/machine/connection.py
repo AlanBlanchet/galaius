@@ -974,6 +974,9 @@ class MachineRunner:
     #: about 1 s of CPU, no model turn each).
     usage_ask_seconds = 120
     reconnect_seconds = (1, 2, 5, 10, 20)
+    #: How many refusals of its token in a row stop the connection for good (the service is not restarted after a clean stop): one answer from a server
+    #: mid-deploy or a proxy is not a revoked PC, so it asks again after the usual waits (about 8 s in all) before it believes it.
+    refusal_tries = 4
     #: After the server said it restarts (close 1012) or a gateway answered for it mid-deploy (HTTP 502/503/504): tried
     #: again every `restart_retry_seconds`, plus up to a second at random so its computers do not all knock at once, for
     #: `restart_window_seconds`; then `reconnect_seconds`. One PC over 14 days (2026-11-14): 185 closes 1012, 16 gaps
@@ -1329,6 +1332,8 @@ class MachineRunner:
 
     async def _connect(self, config: MachineConfig) -> None:
         delay_index, restarting_since = 0, None
+        #: Refusals of the token in a row: the connection stops only for a refusal that repeats (`refusal_tries`), never for one answer.
+        refusals = 0
         while True:
             self.presence.link = "reconnecting"
             if self.presence.files.paused:
@@ -1350,7 +1355,7 @@ class MachineRunner:
                     # A message to an agent may show images (`PcFeature.AGENT_IMAGES`): the largest request carrying them.
                     max_size=AGENT_IMAGES_WIRE,
                 ) as socket:
-                    delay_index, restarting_since = 0, None
+                    delay_index, restarting_since, refusals = 0, None, 0
                     self.presence.connected()
                     self._reported_crash = ""  # in again: a later crash, even the same one, is news to its page
                     logger.info("connected to %s", endpoint, extra={"machine_id": config.machine_id, "workspace_id": config.workspace_id})
@@ -1376,10 +1381,13 @@ class MachineRunner:
                 raise
             except websockets.ConnectionClosed as error:
                 if error.code in {4401, 4403}:
-                    self.presence.link = "refused"
-                    logger.error("machine token was revoked or rejected; connection stopped", extra={"machine_id": config.machine_id})
-                    print("Machine token was revoked or rejected; connection stopped.", file=sys.stderr)
-                    return
+                    refusals += 1
+                    if refusals >= self.refusal_tries:
+                        self.presence.link = "refused"
+                        logger.error("machine token was revoked or rejected; connection stopped", extra={"machine_id": config.machine_id})
+                        print("Machine token was revoked or rejected; connection stopped.", file=sys.stderr)
+                        return
+                    logger.warning("machine token refused (%d of %d): asking again before stopping", refusals, self.refusal_tries, extra={"machine_id": config.machine_id})
                 self._last_failure = f"the connection closed (code {error.code})"
                 logger.warning("connection closed (code %s)", error.code, extra={"machine_id": config.machine_id})
                 # The server restarted: a deploy may have brought a release, checked once it answers again.
@@ -1389,10 +1397,14 @@ class MachineRunner:
                 # Refused at the handshake: a revoked or unknown token answers 401/403 before the
                 # socket opens (the 4401/4403 close codes above never arrive). Stop, like a close.
                 if error.response.status_code in {401, 403}:
-                    self.presence.link = "refused"
-                    logger.error("machine token was refused (HTTP %s); connection stopped", error.response.status_code, extra={"machine_id": config.machine_id})
-                    print("Machine token was revoked or rejected; connection stopped.", file=sys.stderr)
-                    return
+                    refusals += 1
+                    if refusals >= self.refusal_tries:
+                        self.presence.link = "refused"
+                        logger.error("machine token was refused (HTTP %s); connection stopped", error.response.status_code, extra={"machine_id": config.machine_id})
+                        print("Machine token was revoked or rejected; connection stopped.", file=sys.stderr)
+                        return
+                    logger.warning("machine token refused (HTTP %s, %d of %d): asking again before stopping", error.response.status_code, refusals, self.refusal_tries,
+                                   extra={"machine_id": config.machine_id})
                 self._last_failure = f"the server refused the connection: HTTP {error.response.status_code}"
                 restarting_since = restarting_since or (time.monotonic() if error.response.status_code in {502, 503, 504} else None)
                 logger.warning("server refused the connection: HTTP %s", error.response.status_code, extra={"machine_id": config.machine_id})
