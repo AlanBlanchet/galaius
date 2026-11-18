@@ -8,7 +8,8 @@
 # Run as GitHub runs them: on a systemd computer each batch is a transient user service (`systemd-run --user`), so no
 # agent run's scope, variables or login reach a test's own child processes (an agent's scope above a test's
 # subprocess made galaius read that run's identity: a false red on a green tree), with its own memory ceiling
-# (PREPUSH_TEST_MEMORY, 4G) inside the agents' slice; elsewhere the pushing agent's variables are stripped.
+# (PREPUSH_TEST_MEMORY, 4G) inside the agents' slice; elsewhere the pushing agent's variables are stripped. The locale is
+# GitHub's too (C.UTF-8, English): a pusher's own language (LANG=fr_FR.UTF-8) made tests asserting English sentences fail.
 set -uo pipefail
 BATCH="${PREPUSH_TEST_BATCH:-8}" MEMORY="${PREPUSH_TEST_MEMORY:-4G}"
 # shellcheck disable=SC2068
@@ -28,10 +29,10 @@ pytest_batch() {  # files...: one pytest process, as GitHub runs it
   local test=(uv run --frozen -q pytest -m "not integration" -q -rfE -p no:cacheprovider "$@")
   if command -v systemd-run >/dev/null && systemctl --user show-environment >/dev/null 2>&1; then
     systemd-run --user --quiet --wait --pipe --collect --slice=galaius-agents.slice -p MemoryMax="$MEMORY" \
-      -p WorkingDirectory="$PWD" -E PATH="$PATH" -E HOME="$HOME" -E LANG="${LANG:-C.UTF-8}" "${test[@]}" </dev/null
+      -p WorkingDirectory="$PWD" -E PATH="$PATH" -E HOME="$HOME" -E LANG=C.UTF-8 -E LC_ALL=C.UTF-8 -E LANGUAGE=en "${test[@]}" </dev/null
   else
     # shellcheck disable=SC2046
-    env $(env | grep -oE '^(GALAIUS|CLAUDE|CODEX|ANTHROPIC)[A-Z0-9_]*' | sed 's/^/-u /') "${test[@]}" </dev/null
+    env $(env | grep -oE '^(GALAIUS|CLAUDE|CODEX|ANTHROPIC)[A-Z0-9_]*' | sed 's/^/-u /') LANG=C.UTF-8 LC_ALL=C.UTF-8 LANGUAGE=en "${test[@]}" </dev/null
   fi
 }
 

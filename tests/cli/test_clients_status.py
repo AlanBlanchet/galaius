@@ -260,6 +260,8 @@ async def test_codex_user_install_is_discoverable_from_a_fresh_process_and_real_
         "USERPROFILE": str(user_home),
         "PATH": environment["PATH"],
         "LANG": environment["LANG"],
+        # The server is a child Python process: it reads no run scope either (`tests/support/child_site`), as on GitHub.
+        "PYTHONPATH": os.environ["PYTHONPATH"],
     }
     parameters = StdioServerParameters(
         command=registration["command"], args=registration["args"],
