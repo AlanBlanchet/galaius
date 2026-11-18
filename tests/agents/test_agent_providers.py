@@ -1374,3 +1374,17 @@ def test_a_failed_turn_says_its_cut_by_its_api_status_else_its_words(status, sai
 def test_a_turn_waits_for_its_mcp_servers(provider, given, wait, expected):
     child = PROVIDERS[provider].child_environment({"PATH": "/usr/bin", **given}, mcp_wait_seconds=wait)
     assert child.get("CLAUDE_CODE_MCP_STARTUP_WAIT_MS") == expected
+
+
+@pytest.mark.parametrize(("listed", "expected_loader"), [
+    (["Read", "Bash"], False),
+    (["Read", "mcp__galaius__conversation_search", "mcp__galaius__conversation_read", "mcp__galaius__report_write"], False),   # 3 small ones: 0.8k, never worth a call
+    (["Read", *[f"mcp__galaius__tool{n}" for n in range(4)]], True),
+    (["Read", "ToolSearch", *[f"mcp__galaius__tool{n}" for n in range(6)]], False),  # already named: never twice
+])
+def test_a_role_listing_many_mcp_tools_loads_them_on_demand(listed, expected_loader):
+    """Measured 2026-11-18 (2.1.319, same folder): a role of 18 tools, 15 galaius's, 51.3k first-turn tokens without the loader,
+    28.1k with it; one `ToolSearch` call loads a tool before its first use."""
+    definition = claude_definitions(ClaudeCodeProvider().command("t", cwd="/tmp", model=None, mcp_config=None, run_id="r", agent="x", agent_prompt="p", allowed_tools=listed))["x"]
+    assert definition["tools"].count("ToolSearch") == (1 if expected_loader or "ToolSearch" in listed else 0)
+    assert [tool for tool in definition["tools"] if tool != "ToolSearch"] == [tool for tool in listed if tool != "ToolSearch"]

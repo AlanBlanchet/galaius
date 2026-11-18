@@ -1510,6 +1510,19 @@ class ClaudeCodeProvider(AgentProvider):
                     stale.unlink()
         return str(path)
 
+    #: Claude Code's tool that loads a tool on demand. A role's tool list naming it keeps its MCP tools' schemas out of the first
+    #: turn (measured 2026-11-18, 2.1.319, haiku, same folder: a role of 18 tools, 15 of them galaius's, 51.3k tokens without
+    #: it, 28.1k with it; the CLI alone 61.7k); each such tool is loaded by one `ToolSearch` call before its first use.
+    TOOL_LOADER: ClassVar[str] = "ToolSearch"
+    #: MCP tools a role lists from which loading them on demand is worth its extra call: 3 small ones (conversations, report) weigh 0.8k.
+    DEFER_FROM: ClassVar[int] = 4
+
+    @classmethod
+    def deferred_loading(cls, allowed_tools: list[str]) -> list[str]:
+        """`allowed_tools`, with the tool loader added to a role listing `DEFER_FROM` MCP tools or more."""
+        listed = sum(tool.startswith("mcp__") for tool in allowed_tools)
+        return allowed_tools if listed < cls.DEFER_FROM or cls.TOOL_LOADER in allowed_tools else [*allowed_tools, cls.TOOL_LOADER]
+
     def role_arguments(self, agent: str | None, agent_prompt: str | None,
                        allowed_tools: list[str] | None, denied_tools: tuple[str, ...]) -> list[str]:
         self.validate_tool_policy(allowed_tools, denied_tools)
@@ -1523,7 +1536,7 @@ class ClaudeCodeProvider(AgentProvider):
                 agent_prompt = self.definition_prompt(agent)
             definition = {"description": f"Galaius role {agent}", "prompt": agent_prompt}
             if allowed_tools is not None:
-                definition["tools"] = allowed_tools
+                definition["tools"] = self.deferred_loading(allowed_tools)
             arguments += ["--agents", self.agents_argument({agent: definition})]
         if agent:
             arguments += ["--agent", agent]
