@@ -163,6 +163,16 @@ def _turn_facts_read_nothing_real(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_test_reads_this_computers_memory(monkeypatch):
+    """A test measures no real memory: `SoftMemory.here` reads this computer's cgroup, `meminfo` and memory pressure, so under
+    the load of the agents running on it every spawn a test makes queued « le PC attend sa mémoire » (pre-push, 2026-11-19: four
+    spawn tests failed at 20 % stall, each passing alone). A test that means a hold builds its own `SoftMemory`."""
+    from galaius.agents.limits.admission import SoftMemory
+    monkeypatch.setattr(SoftMemory, "here", classmethod(lambda cls, config: cls(
+        soft_percent=config.agent_memory_soft_percent, release_percent=config.agent_memory_release_percent, cgroup=None)))
+
+
+@pytest.fixture(autouse=True)
 def _in_no_run_scope(monkeypatch):
     """A test process lives in no run's scope whatever unit runs the suite (an agent's own run scope, a `systemd-run`
     unit): a test that means a scope sets its own (`galaius.account.caller.process_unit`). Its child Python processes
