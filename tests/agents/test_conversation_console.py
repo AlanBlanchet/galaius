@@ -83,6 +83,11 @@ def console_workspace(monkeypatch):
     shutil.rmtree(root)
 
 
+#: Seconds a test waits on its console child, a bound against a hang and no more: a healthy child answers in milliseconds, a cold one
+#: under the load of the agents running here took over 10 s (pre-push, 2026-11-19: 3 of this file's tests timed out, each passing alone).
+CONSOLE_WAIT = 90
+
+
 async def _open_console(workspace: Path):
     return await asyncio.create_subprocess_exec(
         "uv", "run", "--project", str(PROJECT_ROOT), "galaius", "agents", "console",
@@ -100,7 +105,7 @@ async def _exchange(process, payload: dict) -> dict:
     process.stdin.write((json.dumps(payload) + "\n").encode())
     await process.stdin.drain()
     while True:
-        line = await asyncio.wait_for(process.stdout.readline(), timeout=10)
+        line = await asyncio.wait_for(process.stdout.readline(), timeout=CONSOLE_WAIT)
         response = json.loads(line)
         if response.get("type") == "response" and response.get("request_id") == payload["request_id"]:
             return response
@@ -108,7 +113,7 @@ async def _exchange(process, payload: dict) -> dict:
 
 async def _event(process, *kinds: str) -> dict:
     while True:
-        line = await asyncio.wait_for(process.stdout.readline(), timeout=10)
+        line = await asyncio.wait_for(process.stdout.readline(), timeout=CONSOLE_WAIT)
         message = json.loads(line)
         if message.get("type") == "event" and message["event"]["kind"] in kinds:
             return message
@@ -117,12 +122,12 @@ async def _event(process, *kinds: str) -> dict:
 async def _stop_console(process) -> None:
     process.stdin.close()
     try:
-        await asyncio.wait_for(process.wait(), timeout=5)
+        await asyncio.wait_for(process.wait(), timeout=CONSOLE_WAIT)
     except TimeoutError:
         await stop_process_tree(process)  # `uv run` and the console under it, never an orphan
     stderr = process.stderr
     assert stderr is not None
-    detail = (await asyncio.wait_for(stderr.read(), timeout=10)).decode(errors="replace")
+    detail = (await asyncio.wait_for(stderr.read(), timeout=CONSOLE_WAIT)).decode(errors="replace")
     assert process.returncode == 0
     assert "Traceback" not in detail
 
@@ -657,7 +662,7 @@ async def test_fake_app_server_crosses_catalog_thread_turn_and_stream(console_wo
         })
         streamed = []
         while not any(item["event"]["kind"] in ("done", "error") for item in streamed):
-            streamed.append(json.loads(await asyncio.wait_for(stdout.readline(), timeout=10)))
+            streamed.append(json.loads(await asyncio.wait_for(stdout.readline(), timeout=CONSOLE_WAIT)))
 
         assert streamed[-1]["event"]["kind"] == "done", streamed[-1]["event"]
         assert started["run"]["provider"] == "codex"
@@ -1577,7 +1582,7 @@ async def test_collaboration_is_discrete_idempotent_and_enriched_out_of_order(
         })
         events = []
         while not any(message["event"]["kind"] in ("done", "error") for message in events):
-            line = await asyncio.wait_for(stdout.readline(), timeout=10)
+            line = await asyncio.wait_for(stdout.readline(), timeout=CONSOLE_WAIT)
             events.append(json.loads(line))
         assert events[-1]["event"]["kind"] == "done", events[-1]["event"]
         child_events = [message for message in events
@@ -1846,7 +1851,7 @@ async def test_schema_invalid_provider_request_fails_pending_rpc_and_reaps_proce
         cancelled = await asyncio.wait_for(_exchange(process, {
             "version": 1, "request_id": "cancel", "method": "cancel",
             "run_id": started["run"]["run_id"],
-        }), timeout=5)
+        }), timeout=CONSOLE_WAIT)
 
         assert cancelled["ok"] is False
         assert cancelled["error_code"] == "provider_failed"
@@ -1938,7 +1943,7 @@ async def test_host_input_failures_are_bounded_and_the_process_survives(
     try:
         stdin.write(payload)
         await stdin.drain()
-        line = await asyncio.wait_for(stdout.readline(), timeout=10)
+        line = await asyncio.wait_for(stdout.readline(), timeout=CONSOLE_WAIT)
         response = json.loads(line)
         assert response["ok"] is False
         assert response["error_code"] == "invalid_request"
