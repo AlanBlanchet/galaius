@@ -93,7 +93,8 @@ def _visible_consoles() -> set[int]:
 def test_every_beat_tells_the_server_what_the_service_hid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ConsoleWatch, "default_path", staticmethod(lambda: tmp_path / "c.jsonl"))
     ConsoleWatch(root=ROOT, path=tmp_path / "c.jsonl").record(ShownConsole.model_validate({"at": "2026-11-04T10:00:00Z", "program": "cmd.exe", "parents": ["node.exe"]}))
-    from galaius.machine.connection import MachineConfig, MachineRunner
+    from galaius.machine.connection.config import MachineConfig
+    from galaius.machine.connection.runner import MachineRunner
     from uuid import uuid4
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     runner = MachineRunner(tmp_path / "config" / "galaius" / "machine.json")

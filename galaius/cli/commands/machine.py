@@ -17,7 +17,9 @@ from galaius.machine.tray.launch import TrayLauncher
 from galaius.machine.places.places import PlaceDesk
 from galaius.machine.places.levels import split
 from galaius.machine.software import Inventory
-from galaius.machine.connection import SCRIPT_RUNTIMES, MachineFiles, MachineRunner, ScriptExecution, connect_command
+from galaius.machine.connection.files import MachineFiles
+from galaius.machine.connection.runner import MachineRunner, connect_command
+from galaius.machine.connection.script import SCRIPT_RUNTIMES, ScriptExecution
 
 machine_app = App(name="machine", help="Connect this computer as a workflow machine.")
 

@@ -8,7 +8,8 @@ from uuid import uuid4
 import pytest
 from galaius_core import EgressAllowEntry, MachineCommand, MachineRef, ScriptImplementation, WorkflowKey, WorkflowRevisionRef
 
-from galaius.machine.connection import MachineConfig, MachineRunner
+from galaius.machine.connection.config import MachineConfig
+from galaius.machine.connection.runner import MachineRunner
 from galaius.isolation.sandbox import gvisor_available
 
 pytestmark = pytest.mark.skipif(not gvisor_available(), reason="gVisor (runsc) is not installed/registered as a Docker runtime here")

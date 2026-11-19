@@ -29,7 +29,8 @@ from galaius.isolation.fence import available
 from galaius.machine.places.levels import SUGGESTED_SANDBOX, split
 
 if TYPE_CHECKING:
-    from galaius.machine.connection import MachineConfig, MachineRunner
+    from galaius.machine.connection.config import MachineConfig
+    from galaius.machine.connection.runner import MachineRunner
 
 LOG = "places.log"
 

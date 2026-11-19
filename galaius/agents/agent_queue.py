@@ -297,7 +297,7 @@ class EditorTurn(MessageTurn):
         # Circular layers: machine and run import this module.
         from galaius.agents.run import launch_editor_turn
         from galaius.machine.agents import require_continue
-        from galaius.machine.connection import MachineRunner
+        from galaius.machine.connection.runner import MachineRunner
         require_continue(MachineRunner().load().continue_conversations)
         return launch_editor_turn(provider_for(run.provider), run, prompt, environment={**Caller.environ(), **self.marks}, raw_index=raw_index, record_locked=True)
 

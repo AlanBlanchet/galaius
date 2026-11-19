@@ -13,7 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from galaius.machine.connection import MachineConfig, MachineRunner
+from galaius.machine.connection.config import MachineConfig
+from galaius.machine.connection.runner import MachineRunner
 from galaius.host.private_files import PRIVATE_FILES
 from galaius.account.tool_settings import PORTABLE_ENV
 from galaius.config.settings import Config

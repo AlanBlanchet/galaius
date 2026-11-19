@@ -75,7 +75,7 @@ def pcs() -> str:
 def this_pc() -> str:
     """Whether this PC runs agents, where (its projects folder, where a launch makes each project's folder, and any other
     agent folder the person picked), and what they may do there (its machine settings)."""
-    from galaius.machine.connection import MachineRunner  # Circular layers: machines imports the agents package.
+    from galaius.machine.connection.runner import MachineRunner  # Circular layers: machines imports the agents package.
 
     config = MachineRunner().load()
     if not config.run_agents:
@@ -90,7 +90,7 @@ def left_behind(run_id: str) -> str:
     """On the first turn of conversation `run_id` on this PC after its last one ran on another (`WebRun.carried_at`): which
     PC it left, and what of its project folder is there and not here (`Stayed`, from `WebRun.left`, that PC's folder as it
     packed it), or that the other PC did not say; "" on any other turn."""
-    from galaius.machine.connection import MachineRunner  # Circular layers: machines imports the agents package.
+    from galaius.machine.connection.runner import MachineRunner  # Circular layers: machines imports the agents package.
 
     entry = WebRuns.in_folder(UserPaths.config()).entry(UUID(reg.conversation_of(run_id)))
     record = reg.get_run(str(entry.run_id)) if entry is not None else None

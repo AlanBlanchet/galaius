@@ -35,7 +35,8 @@ from pydantic import BaseModel, ConfigDict
 
 from galaius.diagnostics.error_reports import MachineErrorReports
 from galaius.host.atomic_file import replace_held_open
-from galaius.machine.connection import JsonLines, MachineRunner
+from galaius.machine.connection.logs import JsonLines
+from galaius.machine.connection.runner import MachineRunner
 from galaius.host.processes import end_process_tree, process_exited, process_group_options, process_started
 from galaius.host.private_files import WindowsPrivateFiles
 from galaius.upgrade.quiet import UpgradeReady

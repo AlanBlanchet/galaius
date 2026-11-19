@@ -22,7 +22,7 @@ from galaius.config.settings import Config
 from galaius.account.address import ServerAddress
 from galaius.config.user import UserConfig
 from galaius.host.file_lock import exclusive
-from galaius.machine.connection import MachineRunner
+from galaius.machine.connection.runner import MachineRunner
 from galaius.host.private_files import PRIVATE_FILES
 from galaius.upgrade.release import BuildIdentity, Release, ReleaseOrder, ReleaseRefused
 from galaius.upgrade.source import ReleaseKeys, ReleaseSource

@@ -1,4 +1,4 @@
-from galaius_core import TokenCounts
+from galaius_core import AgentRevisionRef, TokenCounts
 import asyncio
 import hashlib
 import hmac
@@ -29,13 +29,18 @@ from galaius.prompts import mirror as prompt_mirror
 from galaius.prompts import projection as prompt_projection
 from galaius.account import workspace as server_workspace
 from galaius.agents.catalog.connection import CatalogConnection
+from galaius.agents.catalog.entries import AgentCatalog
 from galaius.cli.commands import machine as machine_command
 from galaius.cli.commands.machine import _described_step
 from galaius.workflows.functions import FunctionRegistry, discover_python, discover_shell
 from galaius.host.private_files import PRIVATE_FILES
 from tests.support.private_files import loosen
 from galaius.account.tls import server_tls
-from galaius.machine.connection import CommandFiles, CommandLogs, MachineConfig, MachineFiles, MachineRunner, SCRIPT_RUNTIMES, ScriptRuntime
+from galaius.machine.connection.config import MachineConfig
+from galaius.machine.connection.files import CommandFiles, MachineFiles
+from galaius.machine.connection.logs import CommandLogs
+from galaius.machine.connection.runner import MachineRunner
+from galaius.machine.connection.script import SCRIPT_RUNTIMES, ScriptRuntime
 from galaius.account.address import ServerAddress
 
 PUBLIC_SERVER = "https://galaius.example.org"
@@ -93,7 +98,7 @@ def test_machine_config_round_trips_token_with_owner_only_permissions(tmp_path: 
     assert ("iwm_" in path.read_text()) != (sys.platform == "win32")  # Windows keeps the token DPAPI-sealed on disk
 
 
-from galaius.machine.connection import connect_command
+from galaius.machine.connection.runner import connect_command
 from galaius.host.processes import shell_path
 import galaius
 from galaius.diagnostics.error_reports import MachineErrorReports
@@ -157,8 +162,8 @@ def test_accelerators_reports_none_when_no_gpu_is_detected(tmp_path: Path, monke
 
 def test_accelerators_reports_apple_silicon_without_a_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PATH", "")
-    monkeypatch.setattr("galaius.machine.connection.sys.platform", "darwin")
-    monkeypatch.setattr("galaius.machine.connection.platform.machine", lambda: "arm64")
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
 
     assert MachineRunner._accelerators() == [{"kind": "mps", "name": "Apple GPU", "memory_mb": 0}]
 
@@ -174,7 +179,7 @@ def test_resources_reports_real_cpu_count_positive_ram_and_free_disk(tmp_path: P
 
 
 def test_resources_falls_back_to_one_cpu_when_the_count_is_unknown(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("galaius.machine.connection.os.cpu_count", lambda: None)
+    monkeypatch.setattr("os.cpu_count", lambda: None)
 
     assert MachineRunner._resources(tmp_path)["cpu_count"] == 1
 
@@ -322,7 +327,7 @@ def test_run_script_kills_a_hanging_process_on_timeout(tmp_path: Path, monkeypat
 
 def test_run_agent_forwards_tool_calls_with_arguments_results_and_the_final_token_totals(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from galaius.agents.transport.events import AgentEvent
-    import galaius.machine.connection as machines
+    import galaius.machine.connection.runs as machines
 
     events = [
         AgentEvent(kind="tool", tool="Bash", tool_input="ls -la", tool_id="t1"),
@@ -352,9 +357,9 @@ def test_run_agent_forwards_tool_calls_with_arguments_results_and_the_final_toke
 
     monkeypatch.setattr(machines, "run_agent", fake_run_agent)
     monkeypatch.setattr(machines.reg, "read_events", lambda _run_id: events)
-    monkeypatch.setattr(machines.AgentCatalog, "reference", staticmethod(lambda *_args: None))
+    monkeypatch.setattr(AgentCatalog, "reference", staticmethod(lambda *_args: None))
     socket = Socket()
-    result = asyncio.run(MachineRunner()._run_agent(machines.AgentRevisionRef(id=uuid4(), revision=uuid4()), "task", _config(tmp_path, "read_only"), socket, uuid4()))
+    result = asyncio.run(MachineRunner()._run_agent(AgentRevisionRef(id=uuid4(), revision=uuid4()), "task", _config(tmp_path, "read_only"), socket, uuid4()))
 
     assert result == "finished"
     assert socket.sent == [
@@ -374,7 +379,6 @@ def test_a_server_mid_deploy_is_retried_and_a_refused_token_stops(tmp_path: Path
     and never on one answer (a server or proxy mid-deploy: the service is not restarted after a clean stop)."""
     import websockets
     from websockets.http11 import Response
-    import galaius.machine.connection as machines
 
     attempts: list[int] = []
 
@@ -386,7 +390,7 @@ def test_a_server_mid_deploy_is_retried_and_a_refused_token_stops(tmp_path: Path
             raise websockets.exceptions.InvalidStatus(Response(status, "refused", websockets.datastructures.Headers()))
         raise PermissionError("stop here")
 
-    monkeypatch.setattr(machines.websockets, "connect", connect)
+    monkeypatch.setattr(websockets, "connect", connect)
     runner = MachineRunner(tmp_path / "machine.json")
     runner.reconnect_seconds, runner.restart_window_seconds = (0,), 0
     if retried:
@@ -403,7 +407,6 @@ def test_one_refusal_of_the_token_is_not_a_revoked_pc(tmp_path: Path, monkeypatc
     server mid-deploy left a PC that was on reading « refused » until someone restarted it. A refusal followed by an accepted connection goes on."""
     import websockets
     from websockets.http11 import Response
-    import galaius.machine.connection as machines
 
     attempts: list[int] = []
 
@@ -413,7 +416,7 @@ def test_one_refusal_of_the_token_is_not_a_revoked_pc(tmp_path: Path, monkeypatc
             raise websockets.exceptions.InvalidStatus(Response(status, "refused", websockets.datastructures.Headers()))
         raise PermissionError("accepted: stop here")
 
-    monkeypatch.setattr(machines.websockets, "connect", connect)
+    monkeypatch.setattr(websockets, "connect", connect)
     runner = MachineRunner(tmp_path / "machine.json")
     runner.reconnect_seconds, runner.restart_window_seconds = (0,), 0
     with pytest.raises(PermissionError):
@@ -424,7 +427,6 @@ def test_one_refusal_of_the_token_is_not_a_revoked_pc(tmp_path: Path, monkeypatc
 def test_a_channel_that_keeps_failing_tells_its_page_why_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """After `report_after_failures` tries in a row the runner sends the last error over HTTPS
     (`POST /v1/machine/problem`, its own token masked), once per streak; it keeps retrying."""
-    import galaius.machine.connection as machines
 
     tries: list[int] = []
     sent: list[httpx.Request] = []
@@ -437,8 +439,8 @@ def test_a_channel_that_keeps_failing_tells_its_page_why_once(tmp_path: Path, mo
             raise PermissionError("stop here")
         raise OSError(f"[SSL: CERTIFICATE_VERIFY_FAILED] while sending {token}")
 
-    monkeypatch.setattr(machines.websockets, "connect", connect)
-    monkeypatch.setattr(machines.httpx, "post", lambda url, timeout, **options: sent.append(httpx.Request("POST", url, **options)) or httpx.Response(204))
+    monkeypatch.setattr(websockets, "connect", connect)
+    monkeypatch.setattr(httpx, "post", lambda url, timeout, **options: sent.append(httpx.Request("POST", url, **options)) or httpx.Response(204))
     runner = MachineRunner(tmp_path / "machine.json")
     runner.reconnect_seconds = (0,)
     with pytest.raises(PermissionError):
@@ -458,8 +460,8 @@ def test_a_channel_that_keeps_failing_tells_its_page_why_once(tmp_path: Path, mo
 
     # Its owner said yes on the PC's page: the next look uploads that draft, once, then forgets it.
     uploaded: list[httpx.Request] = []
-    monkeypatch.setattr(machines.httpx, "get", lambda url, timeout, **options: httpx.Response(200, json={"id": str(draft.id)}))
-    monkeypatch.setattr(machines.httpx, "put", lambda url, timeout, **options: uploaded.append(httpx.Request("PUT", url, **options)) or httpx.Response(201))
+    monkeypatch.setattr(httpx, "get", lambda url, timeout, **options: httpx.Response(200, json={"id": str(draft.id)}))
+    monkeypatch.setattr(httpx, "put", lambda url, timeout, **options: uploaded.append(httpx.Request("PUT", url, **options)) or httpx.Response(201))
     assert reports.deliver(config) == 1 and reports.drafts() == []
     assert uploaded[0].url.path == f"/v1/machine/error-report/{draft.id}" and token not in uploaded[0].content.decode()
     assert reports.deliver(config) == 0, "nothing left to send"
@@ -468,7 +470,6 @@ def test_a_channel_that_keeps_failing_tells_its_page_why_once(tmp_path: Path, mo
 def test_a_report_is_masked_and_its_question_asked_until_the_server_takes_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The home folder, the machine token and terminal colours never enter a draft; a question the
     server did not take (network down) is asked again by the next look, not lost for a week."""
-    import galaius.machine.connection as machines
 
     config = _config(tmp_path, "read_only")
     token = config.token.get_secret_value()
@@ -480,8 +481,8 @@ def test_a_report_is_masked_and_its_question_asked_until_the_server_takes_it(tmp
             raise httpx.ConnectError("network down")
         return httpx.Response(201, json={})
 
-    monkeypatch.setattr(machines.httpx, "post", post)
-    monkeypatch.setattr(machines.httpx, "get", lambda url, timeout, **options: httpx.Response(204))
+    monkeypatch.setattr(httpx, "post", post)
+    monkeypatch.setattr(httpx, "get", lambda url, timeout, **options: httpx.Response(204))
     reports = MachineRunner.error_reports().model_copy(update={"retry": timedelta(0)})  # the next look, not a minute later
     line = f"\x1b[31mopening {Path.home()}/projets/out.md with Bearer {token}\x1b[0m"
     draft = reports.prepare(config, "crashed", "RuntimeError: gone", (line,))
@@ -489,7 +490,7 @@ def test_a_report_is_masked_and_its_question_asked_until_the_server_takes_it(tmp
     assert reports.deliver(config) == 0 and len(posts) == 2 and reports.drafts()[0].asked, "asked again by the next look"
     # An install's problem words are the service log's raw end (a program the PC ran may have written it):
     # they name the problem on its page, never the report's question or lines.
-    monkeypatch.setattr(machines.httpx, "post", lambda url, timeout, **options: posts.append(httpx.Request("POST", url, **options)) or httpx.Response(201 if "error-report" in url else 204))
+    monkeypatch.setattr(httpx, "post", lambda url, timeout, **options: posts.append(httpx.Request("POST", url, **options)) or httpx.Response(201 if "error-report" in url else 204))
     MachineRunner.report_problem(config, "service_stopped", "my-script: customer list exported to /srv/clients.csv", ("17:44:05 error galaius.machine.connection: service stopped",))
     question = json.loads(posts[-2].content)
     assert question["message"] == "17:44:05 error galaius.machine.connection: service stopped" and "clients.csv" not in posts[-2].content.decode()
@@ -510,12 +511,11 @@ def test_a_problem_met_again_is_one_question_and_a_full_window_waits_its_retry_a
     draft, one question. The server keeps 10 questions a PC a day (429 + Retry-After): the question
     waits that long, silent, and an older question still waiting is dropped for the newer one (the
     server keeps one open question a PC) — 18 drafts re-asked every minute logged 160 refusals in 19 min."""
-    import galaius.machine.connection as machines
 
     config = _config(tmp_path, "read_only")
     posts: list[httpx.Request] = []
-    monkeypatch.setattr(machines.httpx, "post", lambda url, timeout, **options: posts.append(httpx.Request("POST", url, **options)) or httpx.Response(429, headers={"Retry-After": "3600"}))
-    monkeypatch.setattr(machines.httpx, "get", lambda url, timeout, **options: httpx.Response(204))
+    monkeypatch.setattr(httpx, "post", lambda url, timeout, **options: posts.append(httpx.Request("POST", url, **options)) or httpx.Response(429, headers={"Retry-After": "3600"}))
+    monkeypatch.setattr(httpx, "get", lambda url, timeout, **options: httpx.Response(204))
     reports = MachineRunner.error_reports()
     with caplog.at_level(logging.WARNING, logger="galaius.diagnostics.error_reports"):
         older = reports.prepare(config, "crashed", "KeyError: 'hello'", ())
@@ -535,10 +535,9 @@ def test_a_problem_met_again_is_one_question_and_a_full_window_waits_its_retry_a
 ])
 def test_a_refused_question_waits_what_the_server_says_and_never_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, retry_after: Callable[[], str], wait: timedelta) -> None:
     """Retry-After in seconds or as an HTTP date, at most `keep`; missing or unreadable: the PC's own wait."""
-    import galaius.machine.connection as machines
 
     header = retry_after().encode("latin-1")
-    monkeypatch.setattr(machines.httpx, "post", lambda url, timeout, **options: httpx.Response(429, headers=[(b"Retry-After", header)]))
+    monkeypatch.setattr(httpx, "post", lambda url, timeout, **options: httpx.Response(429, headers=[(b"Retry-After", header)]))
     draft = MachineRunner.error_reports().prepare(_config(tmp_path, "read_only"), "crashed", "KeyError: 'hello'", ())
     assert draft is not None and draft.ask_after is not None and abs(draft.ask_after - datetime.now(UTC) - wait) < timedelta(minutes=1)
 
@@ -593,7 +592,7 @@ def test_his_pc_transcribes_a_recording_with_the_warm_speech_worker(tmp_path: Pa
             asked.update(json.loads(Path(request_path).read_text()))
             return {"text": "Montre-moi mes PC.", "language": "fr", "seconds": 1.9}
 
-    monkeypatch.setattr("galaius.machine.connection.ensure_speech_env", lambda cache_root, report: Path("/env/bin/python"))
+    monkeypatch.setattr("galaius.machine.connection.commands.ensure_speech_env", lambda cache_root, report: Path("/env/bin/python"))
     runner = MachineRunner()
     monkeypatch.setattr(runner, "_worker", lambda script, cfg: Worker() if script == "speech_infer.py" else None)
 
@@ -620,7 +619,7 @@ def test_run_user_model_dispatches_workspace_provider_before_the_vendor_catalog_
         called["ran"] = True
         return {"ok": True}
 
-    monkeypatch.setattr("galaius.machine.connection.MachineRunner._run_user_model", fake_run_user_model)
+    monkeypatch.setattr("galaius.machine.connection.commands.Commands._run_user_model", fake_run_user_model)
 
     result = MachineRunner()._run_model(command, config)
 
@@ -826,7 +825,7 @@ def test_command_preserves_owner_changes_and_persists_replay_protection(tmp_path
 def test_an_agent_step_runs_only_once_the_owner_turned_agents_on_here(tmp_path, monkeypatch, run_agents, status):
     """`galaius login` adds a computer with agent steps off: a signed agent command is refused
     until `galaius machine agents on` on that computer, and the agent CLI never starts."""
-    from galaius.machine.connection import AgentRevisionRef
+    from galaius_core import AgentRevisionRef
     from galaius_core import AgentImplementation
 
     runner = MachineRunner(tmp_path / "config" / "machine.json")

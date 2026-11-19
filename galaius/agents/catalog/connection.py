@@ -81,7 +81,7 @@ class CatalogConnection(BaseModel):
 
     endpoint: str
     workspace_id: UUID | None = None
-    #: `machine`: this PC's own link (`galaius.machine.connection.MachineConfig`): its endpoint, company and
+    #: `machine`: this PC's own link (`galaius.machine.connection.config.MachineConfig`): its endpoint, company and
     #: token are read from the link on every load, so a re-linked PC is followed with no step. Never
     #: written to the connection file: the link is its only record (one writer, `MachineRunner`), so
     #: no install or sync rewrites a file other running galaius processes read.
@@ -141,7 +141,7 @@ class CatalogConnection(BaseModel):
     def _link():
         """This PC's machine link, None when it is not linked."""
         # Circular layers: machines imports agents.run -> registry -> this module.
-        from galaius.machine.connection import MachineRunner
+        from galaius.machine.connection.runner import MachineRunner
 
         path = MachineRunner.default_config_path()
         return MachineRunner.read(path) if path.exists() else None

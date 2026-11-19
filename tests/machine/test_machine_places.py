@@ -19,7 +19,9 @@ from pydantic import ValidationError
 from galaius_core import MACHINE_AGENT_REQUESTS, MachineFence, NoCandidate, OwnFault
 from galaius_core.wire import internals
 from galaius.agents.run import ModelUnavailable
-from galaius.machine.connection import MachineConfig, MachineRunner, said_of
+from galaius.machine.connection.config import MachineConfig
+from galaius.machine.connection.faults import said_of
+from galaius.machine.connection.runner import MachineRunner
 from galaius.machine.places.place_reviews import PlaceReviews
 
 pytestmark = pytest.mark.usefixtures("directory_backend")

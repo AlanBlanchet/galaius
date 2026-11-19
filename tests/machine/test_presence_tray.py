@@ -13,7 +13,9 @@ import pytest
 import websockets
 from websockets.asyncio.server import serve
 
-from galaius.machine.connection import MachineConfig, MachineRunner, Paused, Woke
+from galaius.machine.connection.config import MachineConfig
+from galaius.machine.connection.faults import Paused, Woke
+from galaius.machine.connection.runner import MachineRunner
 from galaius.machine.presence import Presence, PresenceFiles, PresenceWatch
 from galaius.machine.tray.app import PlatformTray, TrayApp, TrayLauncher
 from galaius.machine.tray.view import TrayPicture, TrayView, TrayWords

@@ -14,7 +14,7 @@ from galaius.machine.peer.client import PeerClient, PeerUnavailable
 from galaius.agents.turns import facts as turn_facts
 from galaius.agents.turns.facts import Readers
 from galaius.config.settings import TurnFacts
-from galaius.machine.connection import MachineRunner
+from galaius.machine.connection.runner import MachineRunner
 
 HERE, OTHER = uuid.UUID(int=1), uuid.UUID(int=2)
 

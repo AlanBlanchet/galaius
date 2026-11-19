@@ -418,7 +418,7 @@ def test_a_linked_pc_reads_the_catalog_with_its_own_link_and_follows_a_relink(li
     names it reads with its link's company; one naming its link keeps the company chosen with
     `prompts use`. Either reads with the machine token, and a re-link (new token, new company) is
     followed with no step; an unlinked PC is told to link again, in words."""
-    from galaius.machine.connection import MachineRunner
+    from galaius.machine.connection.runner import MachineRunner
 
     chosen = uuid4()
     CatalogConnection(endpoint="http://127.0.0.1:8767", workspace_id=chosen, auth_mode=saved).save()
@@ -523,7 +523,8 @@ def machine_transport(value, token: str, status=200):
 @pytest.fixture
 def linked_pc(catalog_home, monkeypatch):
     """This PC linked to a server: its machine link carries server, company and machine token."""
-    from galaius.machine.connection import MachineConfig, MachineRunner
+    from galaius.machine.connection.config import MachineConfig
+    from galaius.machine.connection.runner import MachineRunner
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(catalog_home / "xdg"))
     link = MachineConfig(server_url="http://127.0.0.1:8767", workspace_id=uuid4(), machine_id=uuid4(), token="iwm_" + "a" * 48,

@@ -18,7 +18,7 @@ produces a local weights directory — the image itself is the artifact):
   already has a bearer token for (the same `iwm_...` token `galaius machine connect` uses for the
   machine-channel websocket), never a new credential minted for this.
 - `docker_image`: `pull_docker_image` only pulls and confirms the image exists; the machine has no
-  proven sandboxed runtime to actually RUN one yet (see `machine/connection.py`'s `_run_user_model`).
+  proven sandboxed runtime to actually RUN one yet (see `machine/connection/commands.py`'s `_run_user_model`).
 
 Every weight-bearing branch re-checks the bytes it fetched (`galaius.inference.weights`) before
 returning a path — defense in depth: the SOURCE's claim was already checked once at registration
@@ -112,7 +112,7 @@ def _fetch_from_server(origin: UserModelOrigin, model_id: str, cache_root: Path,
 def pull_docker_image(origin: UserModelOrigin, timeout: float = 900) -> str:
     """`docker pull`s `origin.image` and returns the pulled reference — confirms the registered
     image still exists and is reachable, real, useful work even though this machine cannot yet run
-    it (`machine/connection.py`'s `_run_user_model` refuses execution right after this, by name)."""
+    it (`machine/connection/commands.py`'s `_run_user_model` refuses execution right after this, by name)."""
     reference = origin.image or ""
     if not reference:
         raise ValueError("docker origin has no image reference")

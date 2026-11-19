@@ -20,7 +20,8 @@ from galaius_core import DeviceLoginStarted
 from galaius.agents.catalog.connection import CatalogConnection
 from galaius.machine.service import MACHINE_SERVICE
 from galaius.diagnostics.error_reports import MachineErrorReports
-from galaius.machine.connection import MachineConfig, MachineRunner
+from galaius.machine.connection.config import MachineConfig
+from galaius.machine.connection.runner import MachineRunner
 
 PUBLIC = "https://galaius.example.org"
 TUNNEL = "http://127.0.0.1:8817"

@@ -23,7 +23,7 @@ from galaius.agents.providers import ClaudeCodeProvider
 from galaius.agents.turns import facts as turn_facts
 from galaius.machine.projects import workspace_git, workspaces
 from galaius.machine.projects.git_state import GitFolder
-from galaius.machine.connection import MachineRunner
+from galaius.machine.connection.runner import MachineRunner
 from galaius.machine.projects.workspace_copy import WorkspaceRefused
 from galaius.machine.web_runs import WebRun
 from tests.machine.test_machine_agents import TransferServer, _agents, _answer, _request, _settled

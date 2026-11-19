@@ -23,7 +23,7 @@ from galaius.agents.policy import Policy
 from galaius.agents.providers import PROJECT_SETTINGS_OFF, ClaudeCodeProvider, ClaudeTurnSettings
 from galaius.cli.app_commands import agents_work_for
 from galaius.isolation.fence import FenceSpec
-from galaius.machine.connection import MachineRunner
+from galaius.machine.connection.runner import MachineRunner
 from galaius.agents.catalog.relations import CARD_HEADING
 from tests.support.agents import QueueProvider, said, setup_queue
 

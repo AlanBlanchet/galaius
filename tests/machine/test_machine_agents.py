@@ -37,9 +37,10 @@ from galaius.machine.web_runs import WebRun, WebRuns
 from galaius.diagnostics.redaction import redact
 from galaius_core import AGENT_PROGRAMS, AgentRefused, GitRemote
 from galaius.config.user import UserConfig
-from galaius.machine import connection as machines
+from galaius.machine.connection import faults as machines
 from galaius.diagnostics.error_reports import MachineErrorReports
-from galaius.machine.connection import MachineConfig, MachineRunner
+from galaius.machine.connection.config import MachineConfig
+from galaius.machine.connection.runner import MachineRunner
 from galaius.agents.limits import admission
 from galaius.agents.policy import PolicyError
 from galaius.agents.providers import UnsupportedToolPolicy
