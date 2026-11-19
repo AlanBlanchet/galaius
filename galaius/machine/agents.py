@@ -29,8 +29,8 @@ import threading
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
-from pathlib import Path
+from contextlib import AsyncExitStack, contextmanager
+from pathlib import Path, PurePosixPath
 from typing import ClassVar, TypeVar
 from uuid import UUID, uuid4
 
@@ -40,7 +40,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from galaius_core import (
     FolderState,
     MODEL_ID_MAX,
-    PROJECTS_ROOT, AGENT_TOUCH_SCOPES, AgentCompactRequest, ContextGauge, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, AgentFile, media_kind, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
+    PROJECTS_ROOT, AGENT_TOUCH_SCOPES, AgentCompactRequest, ContextGauge, MACHINE_AGENT_MEDIA, MACHINE_AGENT_READ, MACHINE_AGENT_TAIL, AgentAnswerRequest, AgentMedia, AgentMediaRequest, AgentFile, AttachedFile, FileStory, HandedFile, OWNER_MAKER, media_kind, image_type, AgentContinueRequest, AgentFoldersRequest, AgentInteraction, AgentLogsRequest, AgentOptionsRequest,
     AgentAllowanceRequest, AgentMoveRequest, AgentExportRequest, AgentImportRequest, AgentReleaseRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentToolInstallRequest, AgentToolsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, AgentHeldTakeRequest, AgentHeldPutRequest, AgentRetractRequest, RetractOutcome, SubscriptionAllowance, Lent, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
     WorkspaceFailure, WorkspaceUpload, FailedMessage, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, media_key, media_paths, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest, ProjectFilesBase, ProjectFilePart,
 )
@@ -1004,15 +1004,21 @@ class MachineAgents(BaseModel):
             """The whole start, recorded as a web run even when the request that asked for it is
             gone (cancelled, past its bound): a started agent is never left untracked."""
             try:
-                with reg.session_context(self.session, environment=environment), self.staged(request.images) as images:
-                    # The launcher's supervisor window (not the terminal's 20 s): the run shows at
-                    # once; a quota refusal after it is that run's failure, in the list.
-                    handle = await run_agent(
-                        provider_for(request.provider) if request.provider is not None else None, request.text,
-                        cwd=str(folder), agent=str(request.role), permission_mode=self.scope(request.permission), image_paths=images,
-                        quota_window=4.0, fence=fence, environment=environment, warm=self.warm, subscription=pinned, choices=request,
-                        reasoning=request.reasoning,
-                    )
+                async with AsyncExitStack() as stack:
+                    pulled = await asyncio.to_thread(stack.enter_context, self._pulled(request.files)) if request.files else ()
+                    brief = request.text + agent_queue.handed_lines(tuple(HandedFile(key=file.key, name=file.name, story=FileStory(maker=OWNER_MAKER, at=time.time())) for file, _path in pulled))
+                    with reg.session_context(self.session, environment=environment), self.staged(request.images) as images:
+                        # The launcher's supervisor window (not the terminal's 20 s): the run shows at
+                        # once; a quota refusal after it is that run's failure, in the list.
+                        handle = await run_agent(
+                            provider_for(request.provider) if request.provider is not None else None, brief,
+                            cwd=str(folder), agent=str(request.role), permission_mode=self.scope(request.permission), image_paths=images,
+                            quota_window=4.0, fence=fence, environment=environment, warm=self.warm, subscription=pinned, choices=request,
+                            reasoning=request.reasoning,
+                        )
+                    # Kept for the run the moment it exists (its agent's first call to open one comes after a model turn, never before).
+                    if pulled:
+                        await asyncio.to_thread(self._keep_attached, handle.run_id, pulled)
             except BaseException:
                 if review is not None:
                     self.reviews.discard(review)
@@ -1118,8 +1124,51 @@ class MachineAgents(BaseModel):
                 self.reviews.discard(review)
             raise
 
+    @contextmanager
+    def _pulled(self, files: tuple[AttachedFile, ...]) -> Iterator[tuple[tuple[AttachedFile, Path], ...]]:
+        """Each file a message names (`AttachedFile`) pulled from the server's relay into a scratch file of this PC, gone when the block ends:
+        (file, scratch) each. AgentRefused `not_here`: the relay holds none of that key, or it cannot be reached."""
+        scratch = UserPaths.data() / "transfers"
+        scratch.mkdir(mode=0o700, parents=True, exist_ok=True)
+        made: list[Path] = []
+        try:
+            pulled = []
+            for file in files:
+                target = scratch / f"{uuid4()}.file"
+                made.append(target)
+                try:
+                    self._workspaces().transfers.pull_file(file.key, target)
+                except WorkspaceRefused as refusal:
+                    raise AgentRefused("not_here", f"{file.name}: {refusal}") from refusal
+                pulled.append((file, target))
+            yield tuple(pulled)
+        finally:
+            for target in made:
+                target.unlink(missing_ok=True)
+
+    def _attach(self, run_id: str, files: tuple[AttachedFile, ...]) -> tuple[HandedFile, ...]:
+        """`files` pulled and kept for run `run_id` (`_pulled`, `_keep_attached`): none, nothing asked of the server."""
+        if not files:
+            return ()
+        with self._pulled(files) as pulled:
+            return self._keep_attached(run_id, pulled)
+
+    @staticmethod
+    def _keep_attached(run_id: str, pulled: tuple[tuple[AttachedFile, Path], ...]) -> tuple[HandedFile, ...]:
+        """Each pulled file kept for run `run_id` under its key, made by the person who attached it (`OWNER_MAKER`): what its message names."""
+        kept = []
+        for file, path in pulled:
+            held = reg.RunFiles.entry(run_id, file.key) if reg.RunFiles.holds(run_id, file.key) else None
+            if held is None:
+                held = HandedFile(key=file.key, name=file.name, story=FileStory(maker=OWNER_MAKER, at=time.time()))
+                reg.RunFiles.keep(run_id, path, PurePosixPath(file.key).suffix, file.key, held)
+            kept.append(held.model_copy(update={"name": file.name}))
+        return tuple(kept)
+
     async def _send(self, request: AgentSendRequest) -> MachineAgentAnswer:
         run = await asyncio.to_thread(self._pinned_run, request)
+        if request.files and self._kind(request.run_id) != "agent":
+            raise AgentRefused("in_editor", "a file attached to a message reaches an agent started here, not an editor's conversation")
         if request.reasoning is not None and self._kind(request.run_id) != "agent":
             raise AgentRefused("in_editor", "an editor conversation runs at the effort its editor sets; only an agent's is set here")
         media = await asyncio.to_thread(reg.RunMedia.keep, run.run_id, request.images)
@@ -1136,7 +1185,8 @@ class MachineAgents(BaseModel):
         environment = await asyncio.to_thread(self.launcher_environment_in, Path(run.cwd))
         # What he wrote before that never reached the agent goes first, in order (`AgentSendRequest.earlier`).
         missed = await asyncio.to_thread(self._earlier, run, request, environment)
-        turn = agent_queue.MessageTurn(media=media)
+        handed = await asyncio.to_thread(self._attach, run.run_id, request.files)
+        turn = agent_queue.MessageTurn(media=media, handed=handed)
         # Set before the message is queued (the turn it starts reads it), back as it was if the message is not.
         if request.reasoning is not None:
             await asyncio.to_thread(reg.reasoning_set, run.run_id, request.reasoning)

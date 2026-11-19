@@ -197,15 +197,14 @@ class MessageTurn(QueuedTurn):
 
     def refusal(self, text: str, provider: AgentProvider) -> str | None:
         """Why it is not sent: nothing in it. Never its length (`prompt` files what one turn does not take in)."""
-        return "message must contain text, an image or a file." if not text.strip() and not self.media and not self.files else None
+        return "message must contain text, an image or a file." if not text.strip() and not self.media and not self.files and not self.handed else None
 
     def hand(self, sender: str, recipient: str) -> Self:
         """This turn with each of its files kept for `recipient` (the sender holds each: ValueError otherwise), what its text names."""
         return self.model_copy(update={"handed": tuple(reg.RunFiles.hand(sender, recipient, key) for key in dict.fromkeys(self.files))})
 
     def entry(self, text: str, origin: reg.AgentRun | None) -> str | None:
-        said = text + handed_lines(self.handed)
-        return said if origin is None else origin.handoff_header() + said
+        return text if origin is None else origin.handoff_header() + text
 
     def prompt(self, run: reg.AgentRun, message_id: str, *, native_images: bool = False, mid_turn: bool = False) -> str | None:
         """Opened by who wrote it and what that writer is to `run` (`relations.heading`); a turn it starts, by where `run`
@@ -213,7 +212,7 @@ class MessageTurn(QueuedTurn):
         message = reg.message_for(run.run_id, message_id)
         if message is None:
             return None
-        text = message.text if native_images else reg.RunMedia.mentioned(message.text, self.shown(run))
+        text = (message.text if native_images else reg.RunMedia.mentioned(message.text, self.shown(run))) + handed_lines(message.files)
         return "\n\n".join(part for part in (None if mid_turn else card(run), heading(message, run, mid_turn=mid_turn), self._inline(run, text)) if part)
 
     def _inline(self, run: reg.AgentRun, text: str) -> str:

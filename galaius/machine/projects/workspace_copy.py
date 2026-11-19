@@ -36,7 +36,7 @@ from pydantic import BaseModel, ConfigDict
 
 from galaius_core import (
     RESERVED_DEVICE_NAMES, WORKSPACE_ARCHIVE_MAX_BYTES, WORKSPACE_COPY_EXAMINED, WORKSPACE_COPY_MAX_BYTES, WORKSPACE_COPY_MAX_FILES, WORKSPACE_SKIP_EXAMPLES, WORKSPACE_TRANSFER_PART,
-    GitRemote, WorkspaceArchive, WorkspacePack, WorkspaceSkip, WorkspaceSkipReason, WorkspaceUpload,
+    FILE_RELAY_PART_ROUTE, KEPT_FILE_MAX, GitRemote, WorkspaceArchive, WorkspacePack, WorkspaceSkip, WorkspaceSkipReason, WorkspaceUpload,
 )
 
 from galaius.host.pinned_directory import PinnedDirectory
@@ -223,6 +223,45 @@ class WorkspaceTransfers(BaseModel):
             if wait is None:
                 raise WorkspaceRefused("transfer_failed", failure)
             time.sleep(wait)
+
+    def pull_file(self, key: str, target: Path) -> int:
+        """The file the server's relay holds under `key` (`FILE_RELAY_PART_ROUTE`) streamed into the new file `target`, its size; its bytes must
+        hash to `key` and weigh at most `KEPT_FILE_MAX`. Retried as every call here; a refusal (not held, over the ceiling) raises at once."""
+        waits, url = iter(self.WAITS), self.endpoint(FILE_RELAY_PART_ROUTE.format(key=key))
+        while True:
+            try:
+                with httpx.stream("GET", url, headers=self.headers, timeout=self.timeout) as response:
+                    if response.status_code < 500 and response.status_code not in {408, 429}:
+                        if response.is_error:
+                            raise WorkspaceRefused("transfer_failed", f"the server does not hold {key} (HTTP {response.status_code})")
+                        whole, size = hashlib.sha256(), 0
+                        with target.open("wb") as handle:
+                            for part in response.iter_bytes(WORKSPACE_TRANSFER_PART):
+                                size += len(part)
+                                if size > KEPT_FILE_MAX:
+                                    raise WorkspaceRefused("transfer_failed", f"{key} is larger than a file kept here holds")
+                                whole.update(part)
+                                handle.write(part)
+                        if whole.hexdigest()[:20] != key[:20]:
+                            raise WorkspaceRefused("transfer_failed", f"{key} arrived damaged (hash mismatch)")
+                        return size
+                    failure = f"the server answered HTTP {response.status_code}"
+            except httpx.HTTPError as error:
+                failure = f"the server is unreachable ({type(error).__name__})"
+            wait = next(waits, None)
+            if wait is None:
+                raise WorkspaceRefused("transfer_failed", failure)
+            time.sleep(wait)
+
+    def push_file(self, key: str, source: Path) -> None:
+        """The file at `source` put in the server's relay under `key` (`FILE_RELAY_PART_ROUTE`): what another PC of the company then pulls. A refusal
+        (the link's hourly limit, too large) raises at once, naming it."""
+        with source.open("rb") as stream:
+            response = httpx.put(self.endpoint(FILE_RELAY_PART_ROUTE.format(key=key)), headers=self.headers, content=stream, timeout=self.timeout)
+        if response.status_code == 429:
+            raise WorkspaceRefused("transfer_failed", "this PC's link carried its hourly limit of bytes: the file waits for the hour to move on")
+        if response.is_error:
+            raise WorkspaceRefused("transfer_failed", f"the server refused the file (HTTP {response.status_code})")
 
     def upload(self, transfer: UUID, archive: Path, files: int) -> WorkspaceArchive:
         """Every part of `archive`, then the `WorkspaceUpload` that ends the transfer."""
