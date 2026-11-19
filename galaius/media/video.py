@@ -232,7 +232,7 @@ class Kinocut:
         return said
 
 
-def edit(spec: VideoEdit) -> Edited:
+def edit(spec: VideoEdit, *, sources: tuple[str, ...] = (), replaces: str | None = None) -> Edited:
     """`spec` run here: its inputs read only where the asking run may read, the result saved where it may write."""
     kinocut = Kinocut(MachineTools.program("video_editing"))
     work_root = MachineTools.folder("video_editing") / "work"
@@ -250,7 +250,7 @@ def edit(spec: VideoEdit) -> Edited:
         if video.suffix != target:
             output = work / f"converted{target}"
             said, video = kinocut.run(Convert(to=target[1:]), video, copies, output, work), output
-        written = save(spec.output, video, replace=spec.replace)
+        written = save(spec.output, video, replace=spec.replace, sources=sources, replaces=replaces)
     duration, resolution = said.get("duration"), said.get("resolution")
     return Edited(written, float(duration) if isinstance(duration, int | float) else None, str(resolution) if resolution and target in VIDEO_OUT else None)
 

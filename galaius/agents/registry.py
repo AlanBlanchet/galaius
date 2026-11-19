@@ -33,14 +33,14 @@ from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager, suppress
 from contextvars import ContextVar
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, BinaryIO, ClassVar, Literal, NamedTuple, Self, Unpack
 from uuid import UUID
 
 from pydantic import ConfigDict, BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
 from galaius.agents.limits import quota
 from galaius.usage_dialects import CountedTokens, OlderTokens
-from galaius_core import OPEN_MAX, OwnerQuestion, ASKED_BY_MAX, LaunchSkipReason, ReasoningLevel, RecordedReasoning, FILE_KEY, KEPT_FILE_MAX, MACHINE_AGENT_MEDIA, MEDIA_KEY, file_key, MODEL_ID_MAX, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor, TokenCounts
+from galaius_core import OPEN_MAX, OwnerQuestion, ASKED_BY_MAX, LaunchSkipReason, ReasoningLevel, RecordedReasoning, FILE_KEY, KEPT_FILE_MAX, MACHINE_AGENT_MEDIA, MEDIA_KEY, file_key, MODEL_ID_MAX, FileStory, HandedFile, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor, TokenCounts
 
 from galaius.agents.transport.events import (
     CONTEXT_FIELDS, PERSON_SENDER, AgentEvent, MessageFields, RunCut, UsageLedger, WakeReply, answered_line, its_work, model_spoke,
@@ -1041,17 +1041,50 @@ class RunFiles:
         # `.kept` last: no reader of `*.json` records ever takes a kept JSON file for a run.
         return agents_dir() / f"{_safe_run_id(run_id)}.file.{key}.kept"
 
+    @staticmethod
+    def entry_path(run_id: str, key: str) -> Path:
+        if not re.fullmatch(FILE_KEY, key):
+            raise ValueError("not a kept file's name")
+        return agents_dir() / f"{_safe_run_id(run_id)}.file.{key}.story"
+
     @classmethod
-    def keep(cls, run_id: str, content: bytes | Path, suffix: str, key: str | None = None) -> str:
+    def holds(cls, run_id: str, key: str) -> bool:
+        """Whether run `run_id` holds the file kept under `key`: it made it, or it was handed it (`hand`)."""
+        return bool(re.fullmatch(FILE_KEY, key)) and cls.path(run_id, key).is_file()
+
+    @classmethod
+    def entry(cls, run_id: str, key: str) -> HandedFile | None:
+        """The name and story run `run_id` holds for `key`; None for a file it holds with none (kept before stories), or none at all."""
+        try:
+            return HandedFile.model_validate_json(cls.entry_path(run_id, key).read_bytes())
+        except (OSError, ValueError):
+            return None
+
+    @classmethod
+    def keep(cls, run_id: str, content: bytes | Path, suffix: str, key: str | None = None, entry: HandedFile | None = None) -> str:
         """`content` (its bytes, or the private file the tool made them in, read in parts, never whole) kept for run
         `run_id` as a file of format `suffix` (one it holds already is left as it is); its key (`key`: already hashed by
-        the caller, `file_key`). ValueError: larger than `KEPT_FILE_MAX` (`fits`)."""
+        the caller, `file_key`), and its name and story (`entry`) when it holds none yet (the first one said stays).
+        ValueError: larger than `KEPT_FILE_MAX` (`fits`)."""
         parts: Callable[[], Iterable[bytes]] = (lambda: (content,)) if isinstance(content, bytes) else (lambda: file_parts(content))
         cls.fits(len(content) if isinstance(content, bytes) else content.stat().st_size)
         key = key or file_key(parts(), suffix)
         if not cls.path(run_id, key).is_file():
             _replace_private(cls.path(run_id, key), parts())
+        if entry is not None and not cls.entry_path(run_id, key).is_file():
+            _replace_private(cls.entry_path(run_id, key), entry.model_dump_json().encode())
         return key
+
+    @classmethod
+    def hand(cls, sender_id: str, recipient_id: str, key: str) -> HandedFile:
+        """The file kept under `key` for run `sender_id`, kept for run `recipient_id` as well, its bytes and its name and story
+        as the sender holds them (one copy per run, one key): what the message handing it names. ValueError: the sender
+        holds none."""
+        if not cls.holds(sender_id, key):
+            raise ValueError(f"{key}: not a file this run holds")
+        held = cls.entry(sender_id, key) or HandedFile(key=key, name=key, story=FileStory(maker=sender_id, at=time.time()))
+        cls.keep(recipient_id, cls.path(sender_id, key), PurePosixPath(key).suffix, key, held)
+        return held
 
 
 def file_parts(path: Path) -> Iterator[bytes]:

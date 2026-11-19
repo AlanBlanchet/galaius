@@ -459,7 +459,7 @@ def agent_providers() -> str:
     return "Agent providers:\n" + "\n".join(lines)
 
 
-def _deliver(run_id: str, message: str, fyi: bool) -> "tuple[messaging.Delivery, str | None] | str":
+def _deliver(run_id: str, message: str, fyi: bool, files: tuple[str, ...] = ()) -> "tuple[messaging.Delivery, str | None] | str":
     """`agent_send`'s delivery (records and a dispatcher process): the delivery and what its turn waits for, or the refusal."""
     if reg.resolve_run_id(run_id) is None and (waiting := SpawnLine.here().describe(run_id)) is not None:
         return f"ERROR: {run_id[:8]} has not started ({waiting}); send once it runs."
@@ -467,13 +467,14 @@ def _deliver(run_id: str, message: str, fyi: bool) -> "tuple[messaging.Delivery,
     if (refused := messaging.send_refusal(run_id)) is not None:
         return f"ERROR: {refused}"
     # Shared with `galaius agents send`, so both surfaces use one routing and policy lifecycle.
-    delivery = messaging.deliver_message(run_id, message, turn=agent_queue.MessageTurn(fyi=fyi))
+    delivery = messaging.deliver_message(run_id, message, turn=agent_queue.MessageTurn(fyi=fyi, files=files))
     return delivery, SpawnLine.here().waits(delivery.run_id) if delivery.state == "queued" else None
 
 
 @mcp.tool(category="agents")
 @instrumented
-async def agent_send(run_id: str, message: str, wait: bool = False, fyi: bool = False, machine: str | None = None) -> str:
+async def agent_send(run_id: str, message: str, wait: bool = False, fyi: bool = False, machine: str | None = None,
+                     files: list[str] | None = None) -> str:
     """Send a message to another agent — it answers with its full context intact.
 
     Delivery resumes the recipient's own session rather than handing it a cold summary, so it
@@ -487,13 +488,18 @@ async def agent_send(run_id: str, message: str, wait: bool = False, fyi: bool = 
     message: what to say — write it as a complete request; it cannot ask you a follow-up.
     wait: block until it has replied, instead of returning as soon as the message is delivered.
     fyi: a one-way note (a report, an ack, a heads-up): it reads it, and its turns never report back to you for it.
+    files: the keys of kept files to hand it (up to 10; keys you made with create_file / keep_file or were handed, never paths: keep_file
+        a file first). Each is kept for it as it is now — whatever you do to your copy later — with who made it and from what, and it writes one into
+        its own folder with open_file. Handing a file never lets it read yours.
     machine: the run is on another of the person's PCs (one you placed there with agent_spawn(machine=...)): its PC name or id. The message reaches it
         under a header saying it comes from another agent, never as the person's word. A run placed on a PC cannot write back to the one that placed it:
         the placing agent reads its events.
     """
+    if machine is not None and files:
+        return "ERROR: files are handed to a run on this PC; a run on another PC reads the files it is asked for."
     if machine is not None:
         return await asyncio.to_thread(_peer_send, machine, run_id, message)
-    sent = await asyncio.to_thread(_deliver, run_id, message, fyi)
+    sent = await asyncio.to_thread(_deliver, run_id, message, fyi, tuple(files or ()))
     if isinstance(sent, str):
         return sent
     delivery, waiting = sent

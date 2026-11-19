@@ -13,7 +13,8 @@ from galaius.media.video import AnyStep, VideoEdit, edit
 
 @mcp.tool(category="media")
 @instrumented
-async def edit_video(input: str, steps: list[AnyStep], output: str, replace: bool = False) -> str:
+async def edit_video(input: str, steps: list[AnyStep], output: str, replace: bool = False, from_files: list[str] | None = None,
+                     replaces: str | None = None) -> str:
     """Edit a video in your working folder — cut it, join clips, caption it, lay text over it, resize it, take its
     sound — on this PC, at no cost, and show the result in the person's chat as a video they can play and download.
 
@@ -28,12 +29,13 @@ async def edit_video(input: str, steps: list[AnyStep], output: str, replace: boo
     - {"op": "extract_audio"}: its sound alone, the last step, with an .mp3 or .wav `output`.
 
     `output`: where the result goes (.mp4 or .webm for a video; its suffix picks the format). replace: write over a file
-    already there (refused otherwise). Returns where it was written, its length and size, and what it cost ($0), or why
+    already there (refused otherwise). from_files, replaces: the keys of the kept files you made this from and the one it
+    takes the place of (see keep_file). Returns where it was written, its length and size, and what it cost ($0), or why
     nothing was written.
     """
     try:
         spec = VideoEdit(input=input, steps=steps, output=output, replace=replace)
-        edited = await asyncio.to_thread(edit, spec)
+        edited = await asyncio.to_thread(lambda: edit(spec, sources=tuple(from_files or ()), replaces=replaces))
     except ValidationError as error:
         return "Nothing edited: " + "; ".join(str(problem["msg"]).removeprefix("Value error, ") for problem in error.errors())
     except ToolNotReady as error:
@@ -46,4 +48,4 @@ async def edit_video(input: str, steps: list[AnyStep], output: str, replace: boo
     said = (f"Made by {tool.package} {tool.version} on this PC: video editing on {platform.node() or 'this PC'}: $0 (local, nothing charged).\n"
             f"  {written.path} ({facts})")
     # The token is how the chat finds the file to offer (the copy kept under that key), never a path.
-    return said if written.key is None else f"{said} {file_token(written.key, written.path.name)}\nIt shows in the person's chat, to play and download."
+    return said if written.key is None else f"{said} {file_token(written.key, written.path.name, written.story)}\nIt shows in the person's chat, to play and download."

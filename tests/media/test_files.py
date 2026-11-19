@@ -220,3 +220,55 @@ def test_a_community_agent_s_deck_reaches_the_chat_unread_by_the_run_that_starte
     for refused, why in refusals:
         with pytest.raises((ValueError, OSError), match=why):
             write(FileSpec(path="leak.pptx", content_from=str(refused)), replace=False)
+
+
+@pytest.mark.parametrize("name", ["report.docx", "figures.xlsx", "photo.png", "take.mkv", "scene.blend", "README"])
+def test_a_file_of_any_format_is_kept_under_one_key_with_its_story_and_handed_by_that_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    """A file made any way (a shell here) has no key until its maker keeps it; kept, it carries its maker, what it came from and
+    what it replaces, whatever its format; a run handed its key holds the bytes as they were handed, even after the
+    maker overwrites its own file, and writes them out from the key alone. No code differs between the formats."""
+    from galaius_core import OWNER_MAKER, file_key, key_suffix
+    from galaius.agents.agent_queue import MessageTurn, handed_lines
+    from galaius.media.files import keep, open_kept
+    register_run(run_id="maker")
+    register_run(run_id="reader")
+    _as(monkeypatch, "maker")
+    source = write(FileSpec(path="in.csv", rows=ROWS), replace=False)
+    (tmp_path / name).write_bytes(b"made by a shell " + name.encode())
+    assert not reg.RunFiles.holds("maker", file_key(b"made by a shell " + name.encode(), key_suffix(name)))
+    kept = keep(name, sources=[source.key])
+    assert kept.key == file_key(b"made by a shell " + name.encode(), key_suffix(name)) and kept.story.maker == "maker" and kept.story.sources == (source.key,)
+    (tmp_path / name).write_bytes(b"overwritten afterwards")
+    turn = MessageTurn(files=(kept.key,)).hand("maker", "reader")
+    (handed,) = turn.handed
+    assert handed.story == kept.story and kept.key in handed_lines(turn.handed) and "run maker" in handed_lines(turn.handed)
+    _as(monkeypatch, "reader")
+    (tmp_path / "inbox").mkdir()
+    monkeypatch.chdir(tmp_path / "inbox")
+    opened = open_kept(kept.key, f"opened/{name}", replace=False)
+    assert opened.path.read_bytes() == b"made by a shell " + name.encode() and opened.key == kept.key and opened.story == kept.story
+    # A key a run does not hold is no key to it; a story names only files its maker holds.
+    with pytest.raises(ValueError, match="not a file this run holds"):
+        open_kept(file_key(b"nobody has this", ".txt"), "x.txt", replace=False)
+    with pytest.raises(ValueError, match="not a file this run holds"):
+        MessageTurn(files=(file_key(b"nobody has this", ".txt"),)).hand("reader", "maker")
+    with pytest.raises(ValueError, match="not a file this run holds"):
+        write(FileSpec(path="out.md", content="x"), replace=False, sources=[file_key(b"nobody has this", ".txt")])
+    assert OWNER_MAKER not in handed_lines(turn.handed)
+
+
+def test_keep_file_never_keeps_a_credential_a_link_or_a_person_s_own_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from galaius.media.files import keep
+    register_run(run_id="maker")
+    for hidden in (".env", "id_rsa", "keys/server.pem", "credentials.json"):
+        (tmp_path / hidden).parent.mkdir(exist_ok=True)
+        (tmp_path / hidden).write_text("secret")
+    (tmp_path / "ok.txt").write_text("fine")
+    (tmp_path / "link.txt").symlink_to(tmp_path / "ok.txt")
+    with pytest.raises(PermissionError, match="keeps a file for an agent run"):
+        keep("ok.txt")
+    _as(monkeypatch, "maker")
+    for refused in (".env", "id_rsa", "keys/server.pem", "credentials.json", "link.txt", "../ok.txt", "missing.txt"):
+        with pytest.raises((ValueError, PermissionError, OSError)):
+            keep(refused)
+    assert keep("ok.txt").key

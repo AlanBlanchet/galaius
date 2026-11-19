@@ -25,7 +25,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Self
 
-from galaius_core import AGENT_IMAGES_MAX, MEDIA_KEY, AgentRevisionRef, Refused
+from galaius_core import AGENT_IMAGES_MAX, MEDIA_KEY, OWNER_MAKER, AgentRevisionRef, HandedFile, Refused
 from galaius_core.wire import readable
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -141,6 +141,21 @@ BRIEF_MAX = 64_000
 INLINE_CHARS = 100_000
 #: The opening of a filed message its turn shows inline, so the agent knows what it is about to read.
 FILED_OPENING = 2_000
+#: The most kept files one message hands over.
+FILES_PER_MESSAGE = 10
+
+
+def handed_lines(files: tuple[HandedFile, ...]) -> str:
+    """The lines a message ends with for the kept files it hands over: each key, its name, who made it and from what; none: nothing."""
+    if not files:
+        return ""
+    lines = ["", "", "Files handed to you, each kept for you under its key (write one into your folder with open_file(key, path)):"]
+    for file in files:
+        made = "the person" if file.story.maker == OWNER_MAKER else f"run {file.story.maker[:8]}"
+        origin = f", from {', '.join(file.story.sources)}" if file.story.sources else ""
+        replaced = f", replacing {file.story.replaces}" if file.story.replaces else ""
+        lines.append(f"- {file.key}  {file.name}  (made by {made}{origin}{replaced})")
+    return "\n".join(lines)
 
 
 def filed(run: reg.AgentRun, text: str) -> str:
@@ -172,15 +187,25 @@ class MessageTurn(QueuedTurn):
     #: dispatcher running an older galaius cannot read an item with a field it does not know (2026-10-17: a note stuck
     #: in a coordinator's queue cut each of its `galaius agents wait` short, never delivered).
     reports: tuple[str, ...] = Field(default=(), exclude=True)
+    #: The keys of the kept files it hands over (`HandedFile`): kept for its recipient when queued (`hand`), named in its text.
+    #: Acts when it is queued, never written to the queue file (a dispatcher of an older galaius reads no field it does not know).
+    files: tuple[str, ...] = Field(default=(), exclude=True, max_length=FILES_PER_MESSAGE)
+    #: What `hand` kept for the recipient, set when queued.
+    handed: tuple[HandedFile, ...] = Field(default=(), exclude=True)
     mid_turn = True
     unaccepted = "resumed turn ended in an error before it replied; resend explicitly"
 
     def refusal(self, text: str, provider: AgentProvider) -> str | None:
         """Why it is not sent: nothing in it. Never its length (`prompt` files what one turn does not take in)."""
-        return "message must contain text or an image." if not text.strip() and not self.media else None
+        return "message must contain text, an image or a file." if not text.strip() and not self.media and not self.files else None
+
+    def hand(self, sender: str, recipient: str) -> Self:
+        """This turn with each of its files kept for `recipient` (the sender holds each: ValueError otherwise), what its text names."""
+        return self.model_copy(update={"handed": tuple(reg.RunFiles.hand(sender, recipient, key) for key in dict.fromkeys(self.files))})
 
     def entry(self, text: str, origin: reg.AgentRun | None) -> str | None:
-        return text if origin is None else origin.handoff_header() + text
+        said = text + handed_lines(self.handed)
+        return said if origin is None else origin.handoff_header() + said
 
     def prompt(self, run: reg.AgentRun, message_id: str, *, native_images: bool = False, mid_turn: bool = False) -> str | None:
         """Opened by who wrote it and what that writer is to `run` (`relations.heading`); a turn it starts, by where `run`
@@ -211,7 +236,7 @@ class MessageTurn(QueuedTurn):
         return self if self.reports else self.model_copy(update={"fyi": True})
 
     def event_fields(self) -> MessageFields:
-        return {"media": self.media, "fyi": self.fyi, "reports": self.reports}
+        return {"media": self.media, "files": self.handed, "fyi": self.fyi, "reports": self.reports}
 
     def begin_locked(self, run: reg.AgentRun) -> reg.AgentRun:
         if self.agent_ref is None or self.agent_ref == run.agent_ref:

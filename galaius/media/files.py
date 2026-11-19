@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from abc import ABC, abstractmethod
 from contextlib import contextmanager, suppress
 from collections.abc import Iterable, Iterator
@@ -24,7 +25,7 @@ from pathlib import Path, PurePosixPath
 from typing import Annotated, BinaryIO, ClassVar, Literal, NamedTuple
 
 from docx import Document
-from galaius_core import CREATE_FILE_TYPES, FILE_CONTENT_TYPES, file_key
+from galaius_core import CREATE_FILE_TYPES, FILE_CONTENT_TYPES, FILE_KEY, KEPT_FILE_MAX, FileStory, HandedFile, file_key, key_suffix, project_hidden
 from docx.shared import Mm
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
@@ -410,16 +411,18 @@ class Written(NamedTuple):
     size: int
     #: Its kept copy's key (`reg.RunFiles`) when an agent run asked; None for a person's own session.
     key: str | None
+    #: What its key carries (`FileStory`): the run that made it, from which kept files, in place of which.
+    story: FileStory | None = None
 
 
-def write(spec: FileSpec, *, replace: bool) -> Written:
+def write(spec: FileSpec, *, replace: bool, sources: Iterable[str] = (), replaces: str | None = None) -> Written:
     """`spec` written as its format in the caller's working folder (`save`), a mail draft's attachments read first
     (`_attachments`: for an agent run, only files it wrote itself)."""
     if spec.attach:
         spec = spec.model_copy(update={"attached": _attachments(spec.attach, asking())})
     if spec.content_from is not None:
         spec = spec.model_copy(update={"content": passed_on(spec.content_from, asking())})
-    return save(spec.path, FileFormat.of(spec).bytes(spec), replace=replace)
+    return save(spec.path, FileFormat.of(spec).bytes(spec), replace=replace, sources=sources, replaces=replaces)
 
 
 #: The most a community agent's file weighs that its caller passes on (`passed_on`).
@@ -457,11 +460,11 @@ def asking() -> "reg.AgentRun | None":
     return reg.get_run(asked) if asked is not None else None
 
 
-def writable(path: str) -> tuple[str, Caller, "reg.AgentRun | None", Path]:
+def writable(path: str, *, any_suffix: bool = False) -> tuple[str, Caller, "reg.AgentRun | None", Path]:
     """Where `save` would write `path`, refused (ValueError, PermissionError) where it may not: a path of `kept_path`, a
     run that reads only, a fenced run's level that is no `write` / `sandbox`. Asked before a paid job (`galaius.media.platform`),
     so nothing is charged that cannot be kept."""
-    path = kept_path(path)
+    path = kept_path(path, None if any_suffix else FILE_CONTENT_TYPES)
     caller = Caller.current()
     run = asking()
     target = caller.cwd.resolve() / path
@@ -472,19 +475,21 @@ def writable(path: str) -> tuple[str, Caller, "reg.AgentRun | None", Path]:
     return path, caller, run, target
 
 
-def save(path: str, data: bytes | Path, *, replace: bool) -> Written:
+def save(path: str, data: bytes | Path, *, replace: bool, sources: Iterable[str] = (), replaces: str | None = None, any_suffix: bool = False) -> Written:
     """`data` (its bytes, or a private file a tool made them in, copied in parts and hashed as they are written, never read
     whole) saved at `path` (`kept_path`: one of `FILE_TYPES`) in the caller's working folder: only where the caller's
     run may write (its fence's `write` / `sandbox` levels, its project folder; anywhere in that folder for a run with no
     fence, which writes there itself), every folder on the way reached without a link and made when missing, a file
     already there only when `replace`, written whole or not at all; then kept for the web (`reg.RunFiles`) under the run
     asking (`asking`), refused before anything is written when larger than it keeps (`RunFiles.fits`). What `create_file`
-    and every file tool write (`galaius.media.platform`, `galaius.media.video`)."""
-    path, caller, run, target = writable(path)
+    and every file tool write (`galaius.media.platform`, `galaius.media.video`). `any_suffix`: a file of any format (`open_kept`), not only `FILE_TYPES`. `sources` and `replaces`: the kept files (keys
+    the run holds) the agent says it made this from and in place of, recorded in its story."""
+    path, caller, run, target = writable(path, any_suffix=any_suffix)
     *folders, name = PurePosixPath(path).parts
-    suffix, size = PurePosixPath(path).suffix.lower(), len(data) if isinstance(data, bytes) else data.stat().st_size
+    suffix, size = key_suffix(path), len(data) if isinstance(data, bytes) else data.stat().st_size
     if run is not None:
         reg.RunFiles.fits(size)
+    story = story_of(run, sources, replaces)
     with PinnedDirectory.open(caller.cwd.resolve(), *folders, create=True) as folder:
         staged = f".{name}.{os.urandom(6).hex()}.new"
         with os.fdopen(folder.file(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644), "wb") as handle:
@@ -504,7 +509,62 @@ def save(path: str, data: bytes | Path, *, replace: bool) -> Written:
         finally:
             with suppress(FileNotFoundError):
                 folder.unlink(staged)
-    return Written(target, size, reg.RunFiles.keep(run.run_id, data, suffix, key) if run is not None else None)
+    kept = reg.RunFiles.keep(run.run_id, data, suffix, key, HandedFile(key=key, name=name, story=story)) if run is not None and story is not None else None
+    return Written(target, size, kept, story)
+
+
+def story_of(run: "reg.AgentRun | None", sources: Iterable[str], replaces: str | None) -> FileStory | None:
+    """The story a file `run` makes now carries: its maker, the kept files the agent says it made it from and in place of (each
+    one `run` holds: made or handed), the time. None for a person's own session, which keeps nothing. ValueError: a key
+    it does not hold, or more sources than a story names."""
+    if run is None:
+        if sources or replaces:
+            raise ValueError("from_files and replaces name files an agent run holds: this session is none")
+        return None
+    named = tuple(dict.fromkeys(sources))
+    for key in (*named, *([replaces] if replaces else [])):
+        if not reg.RunFiles.holds(run.run_id, key):
+            raise ValueError(f"{key}: not a file this run holds (made here, or handed to it by key)")
+    try:
+        return FileStory(maker=run.run_id, sources=named, replaces=replaces, at=time.time())
+    except ValueError as error:
+        raise ValueError(str(error).splitlines()[0]) from error
+
+
+def keep(path: str, *, sources: Iterable[str] = (), replaces: str | None = None) -> Written:
+    """The file at `path` in the caller's working folder, of any format, kept under its key for the run asking (`reg.RunFiles`):
+    what a file made any other way (a shell, a program, another tool) becomes a file other agents are handed by key and the
+    person sees as a card. Read as any working file is (`_working`: no link, no hidden or credential-store name, its fence's
+    levels), at most `KEPT_FILE_MAX`. ValueError / PermissionError: why not; a person's own session keeps nothing."""
+    run = asking()
+    if run is None:
+        raise PermissionError("keep_file keeps a file for an agent run; this session is none")
+    if any(project_hidden(part) for part in PurePosixPath(path).parts):
+        raise ValueError(f"{path}: a hidden file or a credential store is never kept")
+    story = story_of(run, sources, replaces)
+    assert story is not None
+    scratch = Path(tempfile.mkdtemp(prefix="keep-", dir=reg.agents_dir()))
+    try:
+        copied = scratch / "copy"
+        size = copy_working(path, copied, KEPT_FILE_MAX)
+        name = PurePosixPath(path).name
+        suffix = key_suffix(name)
+        key = file_key(reg.file_parts(copied), suffix)
+        reg.RunFiles.keep(run.run_id, copied, suffix, key, HandedFile(key=key, name=name, story=story))
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    return Written(Caller.current().cwd.resolve() / path, size, key, story)
+
+
+def open_kept(key: str, path: str, *, replace: bool) -> Written:
+    """The file kept under `key` for the run asking (made by it, or handed to it) written at `path` in the caller's working
+    folder as `save` writes any file: its bytes exactly the key's. ValueError / PermissionError: why not."""
+    run = asking()
+    if run is None or not reg.RunFiles.holds(run.run_id, key):
+        raise ValueError(f"{key}: not a file this run holds (made here, or handed to it by key)")
+    written = save(path.strip(), reg.RunFiles.path(run.run_id, key), replace=replace, any_suffix=True)
+    held = reg.RunFiles.entry(run.run_id, key)
+    return written._replace(story=held.story if held is not None else written.story)
 
 
 #: The most a mail draft's attachments weigh together: the draft stays under what its chat card downloads

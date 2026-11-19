@@ -860,7 +860,7 @@ class MachineAgents(BaseModel):
         by its first bytes. A path a later step overwrote serves its CURRENT bytes. Or the part from `offset` of one file
         a file tool kept for it (`RunFiles`, by the hash of its bytes): that copy alone, never a path any step names."""
         run = self._require_run(request.run_id)
-        if media_kind(request.name) == "file":
+        if media_kind(request.name, request.as_file) == "file":
             data, size = self._plain_file(reg.RunFiles.path(run.run_id, request.name), "file", request.offset)
             return MachineAgentAnswer(request_id=request.id, file=AgentFile.of(data, request.name, request.offset, size))
         path = reg.RunMedia.path(run.run_id, request.name)

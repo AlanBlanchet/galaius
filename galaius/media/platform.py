@@ -36,7 +36,7 @@ class MediaMade(BaseModel):
                     f"ask again with max_cost_usd of at least {quote.high_usd:.4f} to make it.")
         cost = "price unknown" if self.answer.cost_usd is None else f"${self.answer.cost_usd:.4f}"
         lines = [f"Made by {quote.provider}/{quote.model}, {cost} charged to the person you work for in Galaius (Facturation), run {self.answer.run_id}:"]
-        lines += [f"  {written.path} ({written.size:,} bytes)" + ("" if written.key is None else f" {file_token(written.key, written.path.name)}")
+        lines += [f"  {written.path} ({written.size:,} bytes)" + ("" if written.key is None else f" {file_token(written.key, written.path.name, written.story)}")
                   for written in self.written]
         if any(written.key is not None for written in self.written):
             lines.append("Each file shows in the person's chat as a file to download.")

@@ -16,7 +16,7 @@ from typing import Any, Literal, Self, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from galaius_core import CompactionTrigger, ContextGauge, TokenCounts, UsageWindow
+from galaius_core import CompactionTrigger, ContextGauge, HandedFile, TokenCounts, UsageWindow
 
 from galaius.usage_dialects import CountedTokens, OlderTokens
 
@@ -317,6 +317,7 @@ class MessageFields(TypedDict, total=False):
     """What a message's transcript entry records beside its text and its two ends (`AgentEvent`'s fields of the name)."""
 
     media: tuple[str, ...]
+    files: tuple[HandedFile, ...]
     for_run: str | None
     fyi: bool
     reports: tuple[str, ...]
@@ -368,6 +369,8 @@ class AgentEvent(OlderTokens, ContextGauge):
     relation: Relation | None = Field(default=None, exclude_if=lambda value: value is None)
     #: For a "prompt" or a "message": the images it showed, by their name among its run's media (`RunMedia`).
     media: tuple[str, ...] = ()
+    #: For a "message": the kept files it handed over by key (`HandedFile`: key, name, story), each now kept for its recipient too.
+    files: tuple[HandedFile, ...] = Field(default=(), exclude_if=lambda value: not value)
     #: Where this sits in the vendor's raw stream — for a MESSAGE, how many raw lines existed
     #: when sent. Vendor writes no timestamps, so this lets a message show where it actually
     #: happened, not dumped after every reply it caused.

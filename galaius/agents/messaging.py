@@ -298,6 +298,13 @@ def _queue_message(
             return repeat  # queued meanwhile, by another process
         message_id = message_id or secrets.token_hex(16)
         origin = reg.get_run(speaker)
+        if isinstance(turn, agent_queue.MessageTurn) and turn.files:
+            if origin is None:
+                return Delivery(state="error", text="ERROR: only an agent run hands over files by key.", run_id=run.run_id)
+            try:
+                turn = turn.hand(speaker, run.run_id)
+            except ValueError as handed_error:
+                return Delivery(state="error", text=f"ERROR: {handed_error}", run_id=run.run_id)
         entry = turn.entry(message, origin)
         kind = None if origin is None or entry is None else relations.relation(origin, run, message, reports=turn.event_fields().get("reports", ()))
         if kind is Relation.REPORT:
