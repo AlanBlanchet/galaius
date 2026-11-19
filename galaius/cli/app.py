@@ -40,23 +40,23 @@ app.command(
     help="Run the MCP server over stdio.",
 )
 app.command(
-    "galaius.cli.app_commands:status", name="status",
+    "galaius.cli.commands.status:status", name="status",
     help="Show registrations, model setup, desktop readiness, and recent usage.",
 )
 app.command(
-    "galaius.cli.app_commands:install", name="install",
+    "galaius.cli.commands.status:install", name="install",
     help="Register the galaius MCP server with a coding client.",
 )
 app.command(
-    "galaius.cli.app_commands:providers", name="providers",
+    "galaius.cli.commands.status:providers", name="providers",
     help="List subscription CLIs plus API/local providers and grounding models.",
 )
 app.command(
-    "galaius.cli.app_commands:dashboard", name="dashboard",
+    "galaius.cli.commands.status:dashboard", name="dashboard",
     help="Show the status dashboard in the terminal.",
 )
 app.command(
-    "galaius.cli.app_commands:usage", name="usage",
+    "galaius.cli.commands.status:usage", name="usage",
     help="Summarise local VLM spend, tokens, and calls.",
 )
 app.command(
@@ -64,23 +64,23 @@ app.command(
     help="Automatic upgrades: status, check now, pin, turn off, go back.",
 )
 app.command(
-    "galaius.cli.app_commands:report", name="report",
+    "galaius.cli.commands.status:report", name="report",
     help="Report a problem or idea about galaius.",
 )
 app.command(
-    "galaius.cli.app_commands:doctor", name="doctor",
+    "galaius.cli.commands.status:doctor", name="doctor",
     help="Diagnose the environment and optionally deliver fixes.",
 )
 app.command(
-    "galaius.cli.app_commands:refresh_live_data", name="refresh",
+    "galaius.cli.commands.status:refresh_live_data", name="refresh",
     help="Refresh the live model catalog and benchmark scores.",
 )
 app.command(
-    "galaius.cli.app_commands:config_app", name="config",
+    "galaius.cli.commands.config:config_app", name="config",
     help="Manage personal server preferences and local machine settings.",
 )
 app.command(
-    "galaius.cli.app_commands:agents_app", name="agents",
+    "galaius.cli.commands.agents:agents_app", name="agents",
     help="Spawn and supervise agent runs across providers.",
 )
 app.command(

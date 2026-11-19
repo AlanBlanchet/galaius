@@ -16,7 +16,7 @@ from galaius.agents import run as run_module
 from galaius.agents.providers import ClaudeCodeProvider, CodexProvider
 from tests.support.agents import use_policy
 from galaius.cli.app import app
-from galaius.cli import app_commands
+from galaius.cli.commands.agents import runs as cli_runs
 from galaius.server.tools import agents as tools_agents
 from galaius.config.user import UserConfig
 
@@ -182,11 +182,11 @@ def test_cli_parser_scope_and_all_opt_in(capsys, monkeypatch):
 def test_cli_spawn_harness_scope_and_explicit_scope_reach_registry(monkeypatch, capsys):
     async def launch(provider, task, **kwargs):
         return recorded(task, parent_run_id=kwargs["parent_run_id"])
-    monkeypatch.setattr(app_commands, "_run_agent_for_cli", launch)
+    monkeypatch.setattr(cli_runs, "_run_agent_for_cli", launch)
     monkeypatch.setenv("CODEX_THREAD_ID", "harness-thread")
-    app_commands.agents_spawn("automatic", agent="tester")
-    app_commands.agents_spawn("explicit", agent="tester", session_id="chosen-thread")
-    app_commands.agents_spawn("nested", agent="tester", parent_run_id="explicit")
+    cli_runs.agents_spawn("automatic", agent="tester")
+    cli_runs.agents_spawn("explicit", agent="tester", session_id="chosen-thread")
+    cli_runs.agents_spawn("nested", agent="tester", parent_run_id="explicit")
     assert reg.get_run("automatic").session_id == "harness-thread"
     assert reg.get_run("explicit").session_id == "chosen-thread"
     assert reg.get_run("nested").session_id == "chosen-thread"

@@ -8,7 +8,8 @@ import json
 
 import pytest
 
-from galaius.cli import app_commands
+from galaius.cli.commands.agents import runs as cli_runs
+from galaius.cli.commands import status as cli_status
 from galaius.agents.providers import ClaudeCodeProvider, CodexProvider, MEDIA_PROVIDERS
 from galaius.config.settings import Config
 from galaius.config.user import UserConfig
@@ -25,7 +26,7 @@ def _only_zai(monkeypatch):
 
 
 def test_resolved_models_helper_names_every_task_with_its_role_knob(_only_zai, capsys):
-    app_commands._print_resolved_models()
+    cli_status._print_resolved_models()
     out = capsys.readouterr().out
     # the view is TASK-centric — each thing a user does is named...
     for task in ("screenshot", "get_interactive_elements", "transcribe", "review_ui", "measure_ui"):
@@ -39,20 +40,20 @@ def test_resolved_models_helper_names_every_task_with_its_role_knob(_only_zai, c
 
 def test_resolved_models_helper_flags_a_missing_key(monkeypatch, capsys):
     monkeypatch.setattr("galaius.models.registry.Model.is_available", lambda self: False)  # nothing reachable
-    app_commands._print_resolved_models()
+    cli_status._print_resolved_models()
     out = capsys.readouterr().out
     assert "⚠" in out and "no model available" in out  # nothing resolving is called out, never silent
     assert "fall back to frontier" in out   # low/medium honestly report the absence of a sovereign key
 
 
 def test_providers_includes_the_resolved_selection(_only_zai, capsys):
-    app_commands.providers()
+    cli_status.providers()
     out = capsys.readouterr().out
     assert "Resolved selection" in out and "zai/glm-4.5v" in out
 
 
 def test_media_transport_status_is_registry_derived_and_actionable(monkeypatch, capsys):
-    app_module = importlib.import_module("galaius.cli.app_commands")
+    app_module = importlib.import_module("galaius.cli.commands.status")
     monkeypatch.setattr(ClaudeCodeProvider, "available", lambda self: True)
     monkeypatch.setattr(CodexProvider, "available", lambda self: False)
     config = Config(
@@ -128,7 +129,7 @@ async def test_list_providers_refreshes_a_live_config_file_edit(
 
 
 def test_modes_prints_one_tab_separated_row_per_mode(capsys):
-    from galaius.cli.app_commands import agents_modes
+    from galaius.cli.commands.agents.providers import agents_modes
 
     from galaius.agents.providers import ClaudeCodeProvider
 
@@ -146,7 +147,7 @@ def test_modes_prints_one_tab_separated_row_per_mode(capsys):
 def test_the_unrestricted_mode_is_flagged_in_the_machine_output(capsys):
     """The panel has to mark it. A flag it must infer from wording would break the day the
     wording changes — the same failure that made `agents definitions` exist."""
-    from galaius.cli.app_commands import agents_modes
+    from galaius.cli.commands.agents.providers import agents_modes
 
     agents_modes(provider="claude")
     flagged = [r.split("\t")[0] for r in capsys.readouterr().out.splitlines()
@@ -156,7 +157,7 @@ def test_the_unrestricted_mode_is_flagged_in_the_machine_output(capsys):
 
 def test_a_provider_with_no_verified_modes_prints_nothing(capsys, monkeypatch):
     """Not a line of prose: a caller splitting on newlines would read it as a mode."""
-    from galaius.cli.app_commands import agents_modes
+    from galaius.cli.commands.agents.providers import agents_modes
 
     monkeypatch.setattr(CodexProvider, "permission_modes", lambda self: ())
     agents_modes(provider="codex")
@@ -175,7 +176,7 @@ def test_discovered_prints_one_json_object_per_line(monkeypatch, capsys):
     import json
 
     from galaius.agents import registry as reg
-    from galaius.cli.app_commands import agents_discovered
+    from galaius.cli.commands.agents.providers import agents_discovered
 
     monkeypatch.setattr(reg, "_discover_foreign", lambda: [
         {"sessionId": "s-1", "name": "sheets-ab", "cwd": "/workspace/xp/sheets",
@@ -196,7 +197,7 @@ def test_discovered_files_each_session_under_its_project(capsys, monkeypatch, tm
     import json
 
     from galaius.agents import registry as reg
-    from galaius.cli.app_commands import agents_discovered
+    from galaius.cli.commands.agents.providers import agents_discovered
 
     sheets = tmp_path / "xp" / "sheets"
     (sheets / ".git").mkdir(parents=True)
@@ -210,7 +211,7 @@ def test_discovered_files_each_session_under_its_project(capsys, monkeypatch, tm
 def test_discovered_prints_nothing_when_there_are_none(capsys, monkeypatch):
     """Not a line of prose — the caller parses each line as JSON."""
     from galaius.agents import registry as reg
-    from galaius.cli.app_commands import agents_discovered
+    from galaius.cli.commands.agents.providers import agents_discovered
 
     monkeypatch.setattr(reg, "_discover_foreign", lambda: [])
     agents_discovered()
@@ -226,7 +227,7 @@ def test_a_broken_discovery_is_LOUD_rather_than_an_empty_answer(capsys, monkeypa
     import pytest as _pytest
 
     from galaius.agents import registry as reg
-    from galaius.cli.app_commands import agents_discovered
+    from galaius.cli.commands.agents.providers import agents_discovered
 
     def boom():
         raise OSError("no such directory")
@@ -260,8 +261,8 @@ def test_the_permission_flag_spelling_is_pinned_end_to_end(monkeypatch):
         got.update(kwargs)
         return _Handle()
 
-    monkeypatch.setattr(app_commands, "_run_agent_for_cli", _spawn)
-    app_commands.agents_spawn("do a thing", permission_mode="plan")
+    monkeypatch.setattr(cli_runs, "_run_agent_for_cli", _spawn)
+    cli_runs.agents_spawn("do a thing", permission_mode="plan")
     assert got.get("permission_mode") == "plan", (
         "the CLI did not receive the mode the panel sends — the flag spelling has drifted")
 
@@ -275,7 +276,7 @@ def test_an_unknown_mode_at_the_CLI_reads_like_every_other_error(monkeypatch, ca
     monkeypatch.setattr("galaius.agents.run.load_policy", lambda: pytest.fail("invalid mode must be rejected before policy loading"))
 
     with pytest.raises(SystemExit) as exit_info:
-        app_commands.agents_spawn("t", agent="tester", permission_mode="definitely-not-a-mode")
+        cli_runs.agents_spawn("t", agent="tester", permission_mode="definitely-not-a-mode")
     assert exit_info.value.code != 0
     said = capsys.readouterr()
     combined = said.out + said.err
@@ -293,7 +294,7 @@ def test_agents_run_reports_a_bad_mode_too(monkeypatch, capsys):
     monkeypatch.setattr("galaius.agents.run.load_policy", lambda: pytest.fail("invalid mode must be rejected before policy loading"))
 
     with pytest.raises(SystemExit) as exit_info:
-        app_commands.agents_run("t", agent="tester", permission_mode="definitely-not-a-mode")
+        cli_runs.agents_run("t", agent="tester", permission_mode="definitely-not-a-mode")
     assert exit_info.value.code != 0
     combined = "".join(capsys.readouterr())
     assert "ERROR" in combined and "definitely-not-a-mode" in combined, combined
@@ -311,33 +312,33 @@ def test_the_doctor_reports_the_criterion_when_one_governs_the_role(monkeypatch,
     """
     monkeypatch.setattr("galaius.models.registry.Model.is_available", lambda self: self.id == "zai/glm-4.5v")
     monkeypatch.setattr(runtime_config, "image_criteria", "cap.vlm and aa.intelligence >= 1")
-    app_commands._print_resolved_models()
+    cli_status._print_resolved_models()
     out = capsys.readouterr().out
     assert "criterion" in out.lower(), "the line says a criterion is what decides"
     assert "cap.vlm and aa.intelligence >= 1" in out, "and names the rule, not just its answer"
 
 
 def test_agent_provider_json_preserves_disabled_and_unavailable_choices(monkeypatch, capsys):
-    from galaius.cli import app_commands
+    from galaius.cli.commands.agents import providers as cli_providers
     from galaius.agents.policy import Policy
 
     policy = Policy(providers={"claude": False})
     monkeypatch.setattr(Policy, "load", classmethod(lambda cls: policy))
     monkeypatch.setattr(ClaudeCodeProvider, "available", lambda self: True)
     monkeypatch.setattr(CodexProvider, "available", lambda self: False)
-    app_commands.agents_providers(json_out=True)
+    cli_providers.agents_providers(json_out=True)
     rows = {row["id"]: row for row in json.loads(capsys.readouterr().out)["providers"]}
     assert rows["claude"] == {"id": "claude", "label": "claude", "active": False, "available": True}
     assert rows["codex"] == {"id": "codex", "label": "codex", "active": True, "available": False}
 
 
 def test_agent_provider_json_listing_never_mutates_policy(monkeypatch, capsys):
-    from galaius.cli import app_commands
+    from galaius.cli.commands.agents import providers as cli_providers
     from galaius.agents.policy import Policy
 
     monkeypatch.setattr(Policy, "load", classmethod(lambda cls: Policy()))
     monkeypatch.setattr(Policy, "set_provider_active", lambda *args: pytest.fail("must not mutate"))
     with pytest.raises(SystemExit) as error:
-        app_commands.agents_providers("codex", "off", json_out=True)
+        cli_providers.agents_providers("codex", "off", json_out=True)
     assert error.value.code == 2
     assert "omit name and state" in capsys.readouterr().err

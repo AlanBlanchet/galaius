@@ -21,7 +21,7 @@ from galaius.agents import registry as reg
 from galaius.agents.catalog.connection import CatalogAuthenticationError, CatalogConnectionError
 from galaius.agents.policy import Policy
 from galaius.agents.providers import PROJECT_SETTINGS_OFF, ClaudeCodeProvider, ClaudeTurnSettings
-from galaius.cli.app_commands import agents_work_for
+from galaius.cli.commands.agents.runs import agents_work_for
 from galaius.isolation.fence import FenceSpec
 from galaius.machine.connection.runner import MachineRunner
 from galaius.agents.catalog.relations import CARD_HEADING

@@ -201,7 +201,7 @@ def test_workspace_token_refused_before_credential_file_access(tmp_path):
 
 
 def test_cli_status_and_revision_guard_never_project_secrets(settings_server, capsys):
-    from galaius.cli.app_commands import config_status, config_set
+    from galaius.cli.commands.config import config_status, config_set
     UserConfig.PATH.write_text("OPENAI_API_KEY=s3c\nGALAIUS_IMAGE_CRITERIA=recovery\n")
     config_status(json_out=True)
     view = json.loads(capsys.readouterr().out)
@@ -238,7 +238,7 @@ async def test_tui_keyboard_save_conflict_retains_draft(settings_server, monkeyp
 
 @pytest.mark.parametrize("client", ["tui", "cli"])
 def test_removed_connection_never_turns_server_draft_into_local_write(settings_server, monkeypatch, client):
-    from galaius.cli.app_commands import _settings_change
+    from galaius.cli.commands.config import _settings_change
     base = ServerToolSettings.configured().read()
     UserConfig.PATH.write_text("# recovery\nGALAIUS_VIDEO_FPS=7\n")
     before = UserConfig.PATH.read_bytes()
@@ -252,7 +252,7 @@ def test_removed_connection_never_turns_server_draft_into_local_write(settings_s
 
 
 def test_import_preview_is_allowlisted_diff_without_upload(settings_server, capsys):
-    from galaius.cli.app_commands import config_import_preview
+    from galaius.cli.commands.config import config_import_preview
     UserConfig.PATH.write_text("GALAIUS_VIDEO_FPS=12\nOPENAI_API_KEY=s3c\nGALAIUS_MEDIA_BILLING=api_allowed\n")
     config_import_preview(json_out=True)
     output = capsys.readouterr().out
@@ -286,7 +286,7 @@ def test_malformed_save_never_publishes_cache_or_claims_success(settings_server,
 
 
 def test_cli_structured_argv_reaches_typed_cas(settings_server, capsys):
-    from galaius.cli.app_commands import config_app
+    from galaius.cli.commands.config import config_app
     with pytest.raises(SystemExit) as exited:
         config_app(["set", "video.fps", "12", "--expected-revision", "0", "--account-id",
             str(settings_server["bootstrap"].account.account_id), "--json-out"])
@@ -352,7 +352,7 @@ async def test_machine_connection_runs_on_local_settings(machine_connection, fps
 
 @pytest.mark.parametrize("lang,sentence", [("fr_FR.UTF-8", "Ce PC est connecté comme machine de travail"), ("en_US.UTF-8", "This PC is connected as a work machine")])
 def test_machine_connection_refuses_personal_write_in_plain_words(machine_connection, monkeypatch, capsys, lang, sentence):
-    from galaius.cli.app_commands import config_set, config_unset
+    from galaius.cli.commands.config import config_set, config_unset
     monkeypatch.setenv("LANG", lang)
     before = UserConfig.PATH.read_bytes()
     for write in (lambda: config_set("video.fps", "12"), lambda: config_unset("video.fps")):
@@ -372,7 +372,7 @@ def test_machine_connection_refuses_personal_write_in_plain_words(machine_connec
 
 def test_machine_connection_notice_is_said_once(machine_connection, monkeypatch, capsys):
     import io
-    from galaius.cli.app_commands import config_set
+    from galaius.cli.commands.config import config_set
     from galaius.account.tool_settings import MachineNotice
     class Terminal(io.StringIO):
         def isatty(self):

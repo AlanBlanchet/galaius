@@ -200,7 +200,7 @@ def cli_policy(policy_file, monkeypatch):
 
 def test_variables_lists_every_comparison_with_its_source(capsys):
     """The discovery surface: you cannot write `aa.mmmu > 0.7` if nothing tells you it exists."""
-    from galaius.cli.app_commands import agents_variables
+    from galaius.cli.commands.agents.models import agents_variables
 
     agents_variables()
     out = capsys.readouterr().out
@@ -210,7 +210,7 @@ def test_variables_lists_every_comparison_with_its_source(capsys):
 
 
 def test_policy_shows_what_each_agent_resolves_to(cli_policy, capsys):
-    from galaius.cli.app_commands import agents_policy
+    from galaius.cli.commands.agents.models import agents_policy
 
     agents_policy()
     out = capsys.readouterr().out
@@ -228,7 +228,7 @@ def test_a_role_no_switched_on_provider_can_run_says_so_in_the_policy(cli_policy
     """2026-11-03: every coding role ranked only a Codex model while Codex was off; the policy
     printed it as an ordinary ranking and each spawn was refused. Each switched-off candidate is
     marked `(off)`, and zero startable candidates is said where the rule is, text and JSON."""
-    from galaius.cli.app_commands import agents_policy
+    from galaius.cli.commands.agents.models import agents_policy
 
     for provider in PROVIDERS:
         Policy.load(cli_policy).set_provider_active(provider, provider not in off, cli_policy)
@@ -249,7 +249,7 @@ def test_a_role_no_switched_on_provider_can_run_says_so_in_the_policy(cli_policy
 def test_providers_toggle_from_the_cli(cli_policy, capsys):
     """"chose if we activate the agents or not for a provider" — one command, and it persists."""
     from galaius.agents.policy import Policy
-    from galaius.cli.app_commands import agents_providers
+    from galaius.cli.commands.agents.providers import agents_providers
 
     agents_providers()                      # list
     out = capsys.readouterr().out
@@ -333,7 +333,7 @@ def test_the_cli_says_one_line_when_nothing_clears_a_criterion(monkeypatch, caps
     every other galaius failure prints one actionable ERROR line — and the model was resolved
     AFTER the vendor argv had been built, so the binary would have been handed the raw text."""
     import galaius.agents.providers as providers
-    from galaius.cli.app_commands import agents_spawn
+    from galaius.cli.commands.agents.runs import agents_spawn
 
     monkeypatch.setattr(providers.ClaudeCodeProvider, "available", lambda self: True)
     # This test isolates criterion failure, with the caller's conversation already known.
@@ -369,7 +369,7 @@ def test_agents_models_ranks_what_can_be_compared(capsys, monkeypatch):
     the REGISTRY scores — id, score, rank — newest measure first, as JSON for the panel."""
     import json as _json
 
-    from galaius.cli.app_commands import agents_models
+    from galaius.cli.commands.agents.models import agents_models
     from galaius.models.registry import Model
 
     with catalog_of(
@@ -389,7 +389,7 @@ def test_agents_models_lists_each_model_once_not_once_per_provider_alias(capsys,
     distinct model, the plainest id, its aliases counted; the rank is over DISTINCT models."""
     import json as _json
 
-    from galaius.cli.app_commands import agents_models
+    from galaius.cli.commands.agents.models import agents_models
     from galaius.models.registry import Model
 
     with catalog_of(
@@ -446,7 +446,7 @@ def test_agents_models_scores_the_alias_a_picker_offers(capsys):
     resolved to the best-scored model it stands for, and comes back carrying that model's score."""
     import json as _json
 
-    from galaius.cli.app_commands import agents_models
+    from galaius.cli.commands.agents.models import agents_models
     from galaius.models.registry import Model
 
     with catalog_of(
@@ -473,7 +473,7 @@ def test_agents_models_ranks_by_competition_not_by_list_position(capsys):
     shared rank says so rather than pretending to break the tie."""
     import json as _json
 
-    from galaius.cli.app_commands import agents_models
+    from galaius.cli.commands.agents.models import agents_models
     from galaius.models.registry import Model
 
     with catalog_of(
@@ -495,7 +495,7 @@ def test_agents_models_names_the_aliases_it_absorbed(capsys):
     second list can drop what is already ranked above it."""
     import json as _json
 
-    from galaius.cli.app_commands import agents_models
+    from galaius.cli.commands.agents.models import agents_models
     from galaius.models.registry import Model
 
     with catalog_of(
@@ -518,7 +518,7 @@ def test_agents_models_falls_back_to_the_closest_ranked_relative(capsys):
     model itself; a name sharing too little resolves to nothing at all."""
     import json as _json
 
-    from galaius.cli.app_commands import agents_models
+    from galaius.cli.commands.agents.models import agents_models
     from galaius.models.registry import Model
 
     with catalog_of(
@@ -542,7 +542,7 @@ def test_rank_is_over_the_board_not_over_what_this_machine_can_reach(capsys, mon
     import json as _json
 
     from galaius.catalog import models as mcat
-    from galaius.cli.app_commands import agents_models
+    from galaius.cli.commands.agents.models import agents_models
     from galaius.models.registry import Model
 
     board = tmp_path / "board.json"
@@ -575,7 +575,7 @@ def test_the_ranking_scores_every_model_the_board_measures(capsys, monkeypatch, 
     import json as _json
 
     from galaius.catalog import models as mcat
-    from galaius.cli.app_commands import agents_models
+    from galaius.cli.commands.agents.models import agents_models
     from galaius.models.registry import Model
 
     board = tmp_path / "board.json"
@@ -616,7 +616,7 @@ def test_a_different_version_is_never_passed_off_as_the_one_asked_for(capsys, mo
     import json as _json
 
     from galaius.catalog import models as mcat
-    from galaius.cli.app_commands import agents_models
+    from galaius.cli.commands.agents.models import agents_models
     from galaius.models.registry import Model
 
     board = tmp_path / "board.json"
@@ -650,7 +650,7 @@ def test_a_criterion_can_be_asked_what_it_picks_today(capsys, monkeypatch, tmp_p
     import json as _json
 
     from galaius.catalog import models as mcat
-    from galaius.cli.app_commands import agents_criterion
+    from galaius.cli.commands.agents.models import agents_criterion
     from galaius.models.registry import Model
 
     board = tmp_path / "board.json"
@@ -692,7 +692,7 @@ def test_the_policy_says_which_rule_governs_an_agent_and_what_it_means_today(
     is a criterion at all, and the model it comes out as right now.
     """
     from galaius.catalog import models as mcat
-    from galaius.cli.app_commands import agents_policy
+    from galaius.cli.commands.agents.models import agents_policy
     from galaius.models.registry import Model
 
     board = tmp_path / "board.json"
@@ -730,7 +730,7 @@ def test_a_criterion_answers_PER_VENDOR_CLI_because_that_is_who_will_run_it(
     the catalog-wide winner would offer a rule that refuses the moment it is used.
     """
     from galaius.catalog import models as mcat
-    from galaius.cli.app_commands import agents_criterion
+    from galaius.cli.commands.agents.models import agents_criterion
     from galaius.models.registry import Model
 
     board = tmp_path / "board.json"

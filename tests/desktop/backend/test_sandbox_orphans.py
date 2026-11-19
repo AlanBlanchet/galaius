@@ -283,7 +283,7 @@ def test_a_headless_xvfb_is_deliberately_left_alone():
 def test_doctor_labels_an_ownerless_sandbox_so_the_extra_window_is_explained(capsys, monkeypatch):
     """"Why do I see two Xephyr windows?" — one per galaius server is BY DESIGN, one with no
     owner left is the leak. The report has to tell those two apart, or every window looks wrong."""
-    from galaius.cli.app_commands import _print_sandboxes
+    from galaius.cli.commands.status import _print_sandboxes
 
     monkeypatch.setattr(orphans, "_list_x_servers", lambda: [
         _proc(10, 1, _OURS),        # adopted → orphan

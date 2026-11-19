@@ -710,7 +710,7 @@ PASTED_PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAD
 def test_a_message_sent_with_an_image_shows_it_to_the_run_it_reaches(tmp_path, monkeypatch, capsys, content, words, sent):
     """Owner 2026-10-20: an image sent from the web to a running agent never reached it (its PC's mirror ran
     `galaius agents send RUN TEXT`, words alone). `--image` keeps it with the run and queues the message showing it."""
-    from galaius.cli.app_commands import agents_send
+    from galaius.cli.commands.agents.runs import agents_send
 
     provider = _continuation_policy(monkeypatch)
     register_run("r1", name="reviewer", provider=provider.name, task="t", pid=1234, agent="tester", provider_session_id="vendor-r1")
@@ -735,7 +735,7 @@ def test_a_message_sent_with_an_image_shows_it_to_the_run_it_reaches(tmp_path, m
 def test_the_id_its_sender_gives_a_message_is_the_one_its_run_records(monkeypatch, capsys, message_id, recorded):
     """Owner 2026-10-21: his message showed twice (the web paired its copy with the run's by words + clock).
     `--message-id` (the web's outbox row) is the id the run's transcript records it under; sent again, nothing new."""
-    from galaius.cli.app_commands import agents_send
+    from galaius.cli.commands.agents.runs import agents_send
 
     provider = _continuation_policy(monkeypatch)
     register_run("r1", name="reviewer", provider=provider.name, task="t", pid=1234, agent="tester", provider_session_id="vendor-r1")

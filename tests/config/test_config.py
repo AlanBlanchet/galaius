@@ -161,7 +161,7 @@ async def test_unknown_provider_key_no_probe(_check_env):
 
 def test_non_media_setting_skips_probe(_check_env, capsys):
     """`config set desktop.target nested` must not fire a model call."""
-    from galaius.cli.app_commands import config_set
+    from galaius.cli.commands.config import config_set
 
     config_set("desktop.target", "nested")
     out = capsys.readouterr().out
@@ -175,7 +175,7 @@ def test_set_value_breaking_shell_sourcing_warns(_check_env, capsys):
     unquoted; every `source ~/.galaius/config.env` then ran `and` as a command, and nothing
     ever said so. The set site is where the user is watching — the warning belongs there.
     """
-    from galaius.cli.app_commands import config_set
+    from galaius.cli.commands.config import config_set
 
     config_set("media.criteria", "cap.vlm and aa.intelligence >= 40")
     out = capsys.readouterr().out
@@ -186,7 +186,7 @@ def test_set_value_breaking_shell_sourcing_warns(_check_env, capsys):
 def test_written_file_sources_cleanly(_check_env, capsys):
     """Whatever `config set` writes, `bash -c 'source file'` must exit 0."""
     import subprocess
-    from galaius.cli.app_commands import config_set
+    from galaius.cli.commands.config import config_set
 
     config_set("media.criteria", "cap.vlm and aa.intelligence >= 40")
     proc = subprocess.run(
@@ -204,7 +204,7 @@ def test_quoted_value_reads_back_unquoted(_check_env, tmp_path, monkeypatch):
     `'cap.vlm and …'` WITH quotes, and the next criterion parse failed on the leading quote.
     The file is one store with two readers (python, bash) — the pair must compose.
     """
-    from galaius.cli.app_commands import config_set
+    from galaius.cli.commands.config import config_set
 
     config_set("media.criteria", "cap.vlm and aa.intelligence >= 40")
     assert UserConfig.get("media.criteria") == "cap.vlm and aa.intelligence >= 40"

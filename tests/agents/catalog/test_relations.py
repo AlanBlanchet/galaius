@@ -256,7 +256,7 @@ def two_projects(team, tmp_path, monkeypatch):
 
 
 def _send_cli(capsys, **flags) -> str:
-    from galaius.cli.app_commands import agents_send
+    from galaius.cli.commands.agents.runs import agents_send
     with pytest.raises(SystemExit):
         agents_send(IDS["coordinator"], "take it all", **flags)
     return capsys.readouterr().out

@@ -1012,7 +1012,7 @@ def test_settings_carry_each_tool_rule_as_the_pc_resolves_it(base: Path, tmp_pat
 
 
 def test_a_rule_that_cannot_be_read_says_why_instead_of_resolving(monkeypatch: pytest.MonkeyPatch) -> None:
-    from galaius.cli import app_commands
+    from galaius.cli.commands import config as cli_config
     from galaius.config.settings import Config
 
     class Settings:  # the runtime proxy's surface, without reading this computer's account
@@ -1020,8 +1020,8 @@ def test_a_rule_that_cannot_be_read_says_why_instead_of_resolving(monkeypatch: p
         def refresh(self): return self
         def __getattr__(self, name): return getattr(self.inner, name)
 
-    monkeypatch.setattr(app_commands, "config", Settings())
-    roles = {role["role"]: role for role in app_commands._tool_models()["roles"]}
+    monkeypatch.setattr(cli_config, "config", Settings())
+    roles = {role["role"]: role for role in cli_config._tool_models()["roles"]}
     assert roles["audio"]["configured"] and roles["audio"]["models"] == [] and roles["audio"]["reason"]
     assert not roles["sovereign"]["configured"] and roles["sovereign"]["criterion"] == "cap.vlm"
     assert set(roles) == {"image", "component", "video", "audio", "sovereign"}

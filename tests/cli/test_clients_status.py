@@ -13,7 +13,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 import galaius.cli.clients as clients
-from galaius.cli import app_commands
+from galaius.cli.commands import status as cli_status
 from galaius.cli.clients import ClientTarget, JsonClient, MCPServer, Scope, TomlClient
 
 
@@ -100,7 +100,7 @@ def test_codex_install_respects_the_selected_scope(monkeypatch, tmp_path, scope)
         '[mcp_servers.galaius]\ncommand = "stale-galaius"\nargs = ["old"]\n'
     )
     config_path.write_text(stale)
-    app_commands.install("codex", scope=scope, project=project)
+    cli_status.install("codex", scope=scope, project=project)
 
     if scope == Scope.user:
         assert calls == [["codex", "mcp", "add", "galaius", "--", str(galaius_binary), "mcp"]]
@@ -112,7 +112,7 @@ def test_codex_install_respects_the_selected_scope(monkeypatch, tmp_path, scope)
         assert document["mcp_servers"]["galaius"] == {"command": "galaius", "args": ["mcp"]}
         assert str(galaius_binary) not in config_path.read_text()
         first_install = config_path.read_bytes()
-        app_commands.install("codex", scope=scope, project=project)
+        cli_status.install("codex", scope=scope, project=project)
         assert config_path.read_bytes() == first_install
         assert config_path.read_text().count("[mcp_servers.galaius]") == 1
 
@@ -141,7 +141,7 @@ def test_codex_project_install_preserves_malformed_toml(monkeypatch, tmp_path):
     config_path.write_bytes(malformed)
 
     with pytest.raises(ValueError, match="invalid TOML.*left unchanged"):
-        app_commands.install("codex", scope=Scope.project, project=tmp_path)
+        cli_status.install("codex", scope=Scope.project, project=tmp_path)
 
     assert config_path.read_bytes() == malformed
     assert calls == []
@@ -165,7 +165,7 @@ def test_codex_cli_absent_uses_the_selected_config_scope(monkeypatch, tmp_path, 
         lambda command: str(galaius_binary) if command == "galaius" else None,
     )
 
-    app_commands.install("codex", scope=scope, project=project)
+    cli_status.install("codex", scope=scope, project=project)
 
     config_path = (
         user_home / ".codex" / "config.toml"
@@ -186,7 +186,7 @@ def test_codex_install_explains_activation(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(clients.shutil, "which", lambda command: str(binary_dir / command))
     monkeypatch.setattr(clients.subprocess, "run", lambda command, check: None)
 
-    app_commands.install("codex", scope=Scope.user, project=tmp_path)
+    cli_status.install("codex", scope=Scope.user, project=tmp_path)
     output = capsys.readouterr().out
 
     assert "codex mcp get galaius" in output

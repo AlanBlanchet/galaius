@@ -1032,7 +1032,7 @@ def test_definitions_command_prints_one_name_per_line(capsys, tmp_path, monkeypa
     home.mkdir(parents=True)
     for name in ("code-reviewer", "researcher"):
         (home / f"{name}.md").write_text("---\n---\n")
-    importlib.import_module("galaius.cli.app_commands").agents_definitions()
+    importlib.import_module("galaius.cli.commands.agents.providers").agents_definitions()
     assert capsys.readouterr().out.split() == ["code-reviewer", "researcher"]
 
 
@@ -1040,7 +1040,7 @@ def test_definitions_command_is_silent_when_there_are_none(capsys, tmp_path, mon
     """Empty output, not a message: the caller is a parser, and prose would become a fake agent."""
     import importlib
 
-    importlib.import_module("galaius.cli.app_commands").agents_definitions()
+    importlib.import_module("galaius.cli.commands.agents.providers").agents_definitions()
     assert capsys.readouterr().out.strip() == ""
 
 
