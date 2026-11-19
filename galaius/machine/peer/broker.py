@@ -67,14 +67,30 @@ class PeerBroker:
         if not self.available:
             await asyncio.Event().wait()
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if await self.held():
+            # Another runner process of this user already serves this socket (two processes on one link: the server calls that a takeover): this one never
+            # takes it from the live one, and never deletes it when it ends.
+            logger.warning("another process already serves %s: this one serves no local peer call", self.path)
+            await asyncio.Event().wait()
         self.path.unlink(missing_ok=True)
         server = await asyncio.start_unix_server(self._handle, path=str(self.path), limit=BROKER_FRAME_MAX)
         os.chmod(self.path, 0o600)
+        mine = self.path.stat().st_ino
         try:
             async with server:
                 await server.serve_forever()
         finally:
-            self.path.unlink(missing_ok=True)
+            if self.path.exists() and self.path.stat().st_ino == mine:     # only the socket this process made
+                self.path.unlink(missing_ok=True)
+
+    async def held(self) -> bool:
+        """Whether a live process answers on the socket path now (a stale file, left by a process that died, does not)."""
+        try:
+            _reader, writer = await asyncio.wait_for(asyncio.open_unix_connection(str(self.path)), 2)
+        except (OSError, TimeoutError):
+            return False
+        writer.close()
+        return True
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         if self._connections.locked():

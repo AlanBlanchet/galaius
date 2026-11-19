@@ -67,7 +67,7 @@ def pcs() -> str:
         seen = f", last seen {pc.last_seen_at:%Y-%m-%d %H:%M} UTC" if pc.last_seen_at else ", never seen"
         problem = f", stopped by: {pc.problem}" if pc.problem is not None else ""
         room = f", places free {pc.places_free}/{pc.places_total}" if pc.places_free is not None and pc.places_total is not None else ""
-        takes = ", takes runs from your other PCs" if pc.dispatchable else ""
+        takes = ", takes runs from your other PCs" if pc.dispatchable else (f", takes none: {pc.why_not}" if getattr(pc, "why_not", None) else "")
         lines.append(f"- {pc.name}{' (this PC)' if pc.this else ''}: {pc.state}{seen}{problem}{room}{takes}")
     return "\n".join(lines) or "none"
 
