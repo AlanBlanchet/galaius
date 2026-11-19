@@ -29,7 +29,20 @@ from galaius.machine.peer.link import PeerLink, PeerLinkDown, PeerLinkSlow
 
 logger = logging.getLogger(__name__)
 _CALL = TypeAdapter(PeerCallAny)
-CREDENTIALS = struct.Struct("3i")
+LINUX_CREDENTIALS = struct.Struct("3i")         # SO_PEERCRED: pid, uid, gid
+DARWIN_SOL_LOCAL, DARWIN_LOCAL_PEERCRED, DARWIN_LOCAL_PEERPID = 0, 0x001, 0x002
+DARWIN_XUCRED = struct.Struct("=II")            # the head of `struct xucred`: cr_version, cr_uid (the groups after it are not read)
+DARWIN_XUCRED_SIZE = 76
+
+
+def peer_credentials(connection: socket.socket) -> tuple[int, int]:
+    """(pid, uid) of the process on the other end of a local socket: SO_PEERCRED on Linux, LOCAL_PEERPID + LOCAL_PEERCRED on macOS."""
+    if sys.platform == "darwin":
+        (pid,) = struct.unpack("i", connection.getsockopt(DARWIN_SOL_LOCAL, DARWIN_LOCAL_PEERPID, struct.calcsize("i")))
+        _version, uid = DARWIN_XUCRED.unpack(connection.getsockopt(DARWIN_SOL_LOCAL, DARWIN_LOCAL_PEERCRED, DARWIN_XUCRED_SIZE)[:DARWIN_XUCRED.size])
+        return pid, uid
+    pid, uid, _gid = LINUX_CREDENTIALS.unpack(connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, LINUX_CREDENTIALS.size))
+    return pid, uid
 
 
 def refused(code: str, message: str) -> dict:
@@ -37,8 +50,8 @@ def refused(code: str, message: str) -> dict:
 
 
 class PeerBroker:
-    #: POSIX only: the pid and uid of the process on the other end are read with SO_PEERCRED; a Windows pipe is not built (a Windows PC is a target, not a source).
-    available = sys.platform != "win32"
+    #: Linux and macOS: the pid and uid of the process on the other end are read from the socket (`peer_credentials`); a Windows pipe is not built (a Windows PC is a target, not a source).
+    available = sys.platform in ("linux", "darwin")
 
     @staticmethod
     def socket_path(machine_file: Path) -> Path:
@@ -82,7 +95,7 @@ class PeerBroker:
                 writer.close()
 
     async def _answer(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> dict:
-        pid, uid, _gid = CREDENTIALS.unpack(writer.get_extra_info("socket").getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, CREDENTIALS.size))
+        pid, uid = peer_credentials(writer.get_extra_info("socket"))
         if uid != os.getuid():
             return refused("permission_denied", "another user's process")
         try:

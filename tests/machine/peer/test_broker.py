@@ -1,6 +1,11 @@
 """The local endpoint: one JSON line in, one out, bounded, never granting; and the link's failure budget."""
 import asyncio
 import json
+import shutil
+import socket
+import struct
+import sys
+import tempfile
 from pathlib import Path
 from uuid import uuid4
 
@@ -8,8 +13,12 @@ import pytest
 
 from galaius_core import PeerFleetCall, PeerMessage, PeerReply, PcFleet, RunRef
 from galaius.machine.peer import broker as broker_module
-from galaius.machine.peer.broker import PeerBroker
+from galaius.machine.peer.broker import PeerBroker, peer_credentials
 from galaius.machine.peer.link import PeerLink, PeerLinkDown
+
+
+POSIX_MODES = sys.platform != "win32"
+needs_broker = pytest.mark.skipif(not PeerBroker.available, reason="the local endpoint is built for Linux and macOS (a Windows PC is a target, not a source)")
 
 
 class Socket:
@@ -37,6 +46,9 @@ def run(link: PeerLink, path: Path, body: bytes) -> dict:
         broker = PeerBroker(link, path)
         serving = asyncio.create_task(broker.serve())
         while not path.exists():
+            if serving.done():
+                serving.result()
+                raise AssertionError("the broker stopped before its socket existed")
             await asyncio.sleep(0.01)
         try:
             return await ask(path, body)
@@ -46,10 +58,31 @@ def run(link: PeerLink, path: Path, body: bytes) -> dict:
 
 
 @pytest.fixture
-def path(tmp_path: Path) -> Path:
-    return tmp_path / "peer.sock"
+def path() -> Path:
+    # A unix socket path is limited to ~104 bytes (macOS): pytest's own tmp folder there is longer, so the socket lives in a short folder of its own.
+    folder = Path(tempfile.mkdtemp(prefix="gb-", dir="/tmp" if POSIX_MODES else None))
+    yield folder / "peer.sock"
+    shutil.rmtree(folder, ignore_errors=True)
 
 
+def test_the_peer_credentials_are_read_in_each_platforms_layout(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Linux:
+        def getsockopt(self, level, option, size):
+            return struct.pack("3i", 4242, 1000, 1000)
+
+    class Darwin:
+        def getsockopt(self, level, option, size):
+            assert level == 0
+            return struct.pack("i", 4242) if option == 0x002 else struct.pack("=II", 0, 501) + bytes(68)
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(socket, "SO_PEERCRED", 17, raising=False)
+    assert peer_credentials(Linux()) == (4242, 1000)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert peer_credentials(Darwin()) == (4242, 501)
+
+
+@needs_broker
 def test_a_call_reaches_the_server_with_the_claim_unverified_and_its_reply_comes_back(path: Path) -> None:
     link = PeerLink()
     socket = Socket(link, {"answer": PcFleet().model_dump(mode="json")})
@@ -62,6 +95,7 @@ def test_a_call_reaches_the_server_with_the_claim_unverified_and_its_reply_comes
     assert oct(path.stat().st_mode & 0o777) == "0o600" if path.exists() else True
 
 
+@needs_broker
 @pytest.mark.parametrize("body", [b"not json\n", b'{"call": {"kind": "peer_start"}}\n', b'{"call": {"kind": "nope"}}\n', b"\n"], ids=["text", "short-start", "unknown-kind", "empty"])
 def test_a_malformed_call_is_refused_and_the_broker_stays_up(path: Path, body: bytes) -> None:
     link = PeerLink()
@@ -69,6 +103,7 @@ def test_a_malformed_call_is_refused_and_the_broker_stays_up(path: Path, body: b
     assert run(link, path, body)["refusal"]["code"] == "invalid_request"
 
 
+@needs_broker
 def test_a_frame_over_the_cap_is_refused(path: Path) -> None:
     link = PeerLink()
     link.attach(Socket(link))
@@ -76,6 +111,7 @@ def test_a_frame_over_the_cap_is_refused(path: Path) -> None:
     assert run(link, path, big)["refusal"]["code"] == "invalid_request"
 
 
+@needs_broker
 def test_a_closed_link_answers_at_once_and_a_silent_server_after_two_tries_with_the_same_key(path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert run(PeerLink(), path, json.dumps({"call": PeerFleetCall().model_dump(mode="json")}).encode() + b"\n")["refusal"]["code"] == "pc_unreachable"
     monkeypatch.setattr("galaius.machine.peer.link.PEER_ANSWER_SECONDS", 0.05)
@@ -102,6 +138,7 @@ def test_a_process_inside_a_fenced_run_is_refused(monkeypatch: pytest.MonkeyPatc
     assert PeerBroker.resolved(1, claim) == (True, None)                                    # inside that very run: verified
 
 
+@needs_broker
 def test_the_client_asks_the_runner_through_its_socket_and_a_runner_not_running_says_so(path: Path) -> None:
     from galaius.machine.peer.client import PeerClient, PeerUnavailable
 
@@ -121,6 +158,7 @@ def test_the_client_asks_the_runner_through_its_socket_and_a_runner_not_running_
         PeerClient(path.with_name("absent.sock")).fleet()
 
 
+@needs_broker
 def test_the_mcp_tools_place_events_send_and_stop_through_the_runner_and_say_a_refusal_plainly(path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """agent_spawn / agent_events / agent_send / agent_stop with `machine`: the sentences an agent reads, from a runner answering for another PC."""
     from galaius_core import PcState, PeerProjects, PeerProject, PeerStarted, PeerSent, PeerWindow, MachineRunEvents
@@ -188,7 +226,7 @@ def test_a_retry_keeps_its_key_whatever_the_instant_and_a_different_request_or_a
     assert client.key(machine, project, "tester", "", "judge y") != first
     clock[0] += 3600
     assert client.key(machine, project, "tester", "", "judge x") != first
-    assert oct((tmp_path / "peer-keys.json").stat().st_mode & 0o777) == "0o600"
+    assert not POSIX_MODES or oct((tmp_path / "peer-keys.json").stat().st_mode & 0o777) == "0o600"
     (tmp_path / "peer-keys.json").write_text("[1, 2]")                            # a file that is not ours never raises: a new key
     assert PeerClient(tmp_path / "peer.sock").key(machine, project, "tester", "", "judge z")
 

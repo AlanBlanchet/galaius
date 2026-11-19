@@ -1,4 +1,5 @@
 """The PC a run is placed on: it builds the run's own fence, refuses when its owner switched peer runs off, and runs unfenced only on the owner's press."""
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -76,7 +77,7 @@ def test_a_placed_run_leaves_one_line_on_the_pc_that_ran_it(monkeypatch: pytest.
     PeerAudit.started(run, "tester", "workspace_write", asked, "pc-a", ask_run, False, True, None)
     line = json.loads((tmp_path / "peer-audit.log").read_text())
     assert (line["run"], line["from_pc"], line["from_run"], line["from_run_verified"], line["fenced"]) == (str(run), str(asked), str(ask_run), False, True)
-    assert oct((tmp_path / "peer-audit.log").stat().st_mode & 0o777) == "0o600"
+    assert sys.platform == "win32" or oct((tmp_path / "peer-audit.log").stat().st_mode & 0o777) == "0o600"          # a mode is POSIX
     monkeypatch.setattr(PeerAudit, "path", staticmethod(lambda: tmp_path / "absent" / "x" / "log"))
     monkeypatch.setattr("os.open", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
     PeerAudit.started(run, None, None, asked, "pc-a", None, False, False, None)          # never raises
