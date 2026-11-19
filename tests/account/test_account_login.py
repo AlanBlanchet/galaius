@@ -249,7 +249,7 @@ FRENCH = ["Installé : continuez dans votre navigateur", "Si la page demande un 
           "Le code de cette page dure 10 minutes. Une fois expiré, lancez  galaius login  dans un terminal pour en obtenir un autre."]
 
 
-@pytest.mark.parametrize("language, words", [("fr_FR.UTF-8", FRENCH), ("C", ENGLISH)])
+@pytest.mark.parametrize("language, words", [("fr", FRENCH), ("en", ENGLISH)])
 @pytest.mark.parametrize("opened", [True, False])
 def test_detach_opens_the_approval_hands_the_wait_over_and_says_one_line(joining: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], opened: bool,
                                                                          language: str, words: list[str]) -> None:
@@ -258,7 +258,7 @@ def test_detach_opens_the_approval_hands_the_wait_over_and_says_one_line(joining
     ends on « Installé : continuez dans votre navigateur » (plus the link where no browser opened)."""
     monkeypatch.setattr(AccountLogin, "begun", lambda self, http, runs, open_browser, replaces=None: (_started(), False))
     monkeypatch.setattr(AccountLogin, "opened", staticmethod(lambda url: opened))
-    monkeypatch.setenv("LC_ALL", language)
+    monkeypatch.setattr(account_login, "installer_language", lambda: language)
     handed: list[account_login.HandedOff] = []
     monkeypatch.setattr(account_login, "_detached", lambda account, value: handed.append(value))
     monkeypatch.setattr("builtins.input", lambda question: pytest.fail(f"asked: {question}"))
@@ -320,7 +320,7 @@ def test_detach_on_a_connected_computer_opens_its_page_and_restarts_it_detached(
     pages: list[str] = []
     monkeypatch.setattr(account_login, "_detached", lambda account, value: handed.append(value))
     monkeypatch.setattr(AccountLogin, "opened", staticmethod(lambda url: pages.append(url) or True))
-    monkeypatch.setenv("LC_ALL", "fr_FR.UTF-8")
+    monkeypatch.setattr(account_login, "installer_language", lambda: "fr")
     capsys.readouterr()
     account_login.login(None, allow_runs=False, open_browser=True, detach=True)
     assert [value.started for value in handed] == [None] and pages and "#data?computer=" in pages[0]
@@ -378,7 +378,7 @@ def test_the_install_line_signs_in_afresh_over_a_connection_the_server_no_longer
     pages: list[str] = []
     monkeypatch.setattr(account_login, "_detached", lambda account, value: handed.append(value))
     monkeypatch.setattr(AccountLogin, "opened", staticmethod(lambda url: pages.append(url) or True))
-    monkeypatch.setenv("LC_ALL", "fr_FR.UTF-8")
+    monkeypatch.setattr(account_login, "installer_language", lambda: "fr")
     account_login.login(PUBLIC, allow_runs=False, open_browser=True, detach=True)
     assert [value.started.user_code for value in handed] == ["BCDF-GHJK"] and pages == ["https://x/plateform/link?code=BCDF-GHJK"]
     assert [None if value is None else value.get_secret_value() for value in sent] == [proof]
@@ -430,3 +430,16 @@ def test_a_pending_page_whose_waiter_is_gone_is_never_reopened(joining: Path) ->
     claimed = account_login.Pending.read()
     account_login.PRIVATE_FILES.write_text(account_login.Pending.path(), claimed.model_copy(update={"pid": int(gone.stdout), "started": 1}).model_dump_json())
     assert account_login.Pending.read() is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows reads its display language")
+@pytest.mark.parametrize("environment, language", [
+    ({"LC_ALL": "fr_FR.UTF-8", "LANG": "C"}, "fr"), ({"LC_ALL": "C", "LANG": "fr_FR.UTF-8"}, "en"),   # the first set one decides, as the script does
+    ({"LC_ALL": "", "LC_MESSAGES": "", "LANG": "fr_CA"}, "fr"), ({"LC_ALL": "", "LC_MESSAGES": "", "LANG": ""}, "en"),
+])
+def test_the_installers_language_is_the_scripts_first_set_locale_variable(monkeypatch: pytest.MonkeyPatch, environment: dict[str, str], language: str) -> None:
+    for name in ("LC_ALL", "LC_MESSAGES", "LANG"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    assert account_login.installer_language() == language

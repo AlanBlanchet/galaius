@@ -467,11 +467,20 @@ SAID_HERE: dict[Language, SaidHere] = {
 }
 
 
-def said_in(detach: bool) -> SaidHere:
-    """The installers (`detach`) speak the language the install script speaks: the first of LC_ALL, LC_MESSAGES, LANG
-    that is set (French when it starts with `fr`), so one install says everything in one language."""
+def installer_language() -> Language:
+    """The language the install script speaks: on Windows the display language (as install.ps1 reads it), elsewhere the
+    first of LC_ALL, LC_MESSAGES, LANG that is set (French when it starts with `fr`). One install says everything in one language."""
+    if sys.platform == "win32":
+        import ctypes  # Windows only
+
+        return "fr" if ctypes.windll.kernel32.GetUserDefaultUILanguage() & 0x3FF == 0x0C else "en"  # LANG_FRENCH, every French variant
     language = next((value for name in ("LC_ALL", "LC_MESSAGES", "LANG") if (value := os.environ.get(name))), "")
-    return SAID_HERE["fr" if detach and language.startswith("fr") else "en"]
+    return "fr" if language.startswith("fr") else "en"
+
+
+def said_in(detach: bool) -> SaidHere:
+    """What the installers (`detach`) say, in the install's language; a terminal's own `galaius login` is English."""
+    return SAID_HERE[installer_language() if detach else "en"]
 
 
 def _held(account: AccountLogin, existing: MachineConfig | None, said: SaidHere) -> MachineConfig | None:

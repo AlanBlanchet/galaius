@@ -186,7 +186,7 @@ jobs:
           if ($LASTEXITCODE) { Get-Content detach.out; throw "--detach failed (exit $LASTEXITCODE)" }
           $said = Get-Content -Encoding utf8 detach.out
           $said
-          if ($said[0] -ne 'Installé : continuez dans votre navigateur') { throw 'not the one closing line' }
+          if ($said[0] -ne 'Installed: continue in your browser') { throw 'not the one closing line' }
           $code = ([regex]'[B-Z]{4}-[B-Z]{4}').Match($said -join ' ').Value
           irm -Method Post "$env:SERVER/test/approve" -ContentType application/json -Body (@{ user_code = $code } | ConvertTo-Json) | Out-Null
           foreach ($i in 1..90) { $m = (irm "$env:SERVER/test/state").machines | Where-Object { -not $_.revoked } | Select-Object -Last 1; if ($m.online) { break }; Start-Sleep 1 }
