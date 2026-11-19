@@ -264,6 +264,7 @@ def test_a_placed_run_named_by_the_shared_mcp_server_has_no_peer_tools(monkeypat
     assert PeerBroker.resolved(1, RunRef(run_id=uuid4(), conversation_id=uuid4())) == (False, None)
 
 
+@needs_broker
 def test_a_second_process_never_takes_or_deletes_the_socket_of_a_live_one_and_a_stale_file_is_replaced(path: Path) -> None:
     async def scenario() -> tuple[bool, bool, bool]:
         first = asyncio.create_task(PeerBroker(PeerLink(), path).serve())
