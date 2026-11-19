@@ -1212,7 +1212,7 @@ def test_the_live_mirror_built_from_appended_lines_equals_a_whole_rebuild():
     window answered before its first turn: a real reply), as a whole read derives it."""
     for run_id in ("lead", "inc", "full"):
         register_run(run_id=run_id, name=run_id, provider="claude", task="t")
-    window = (TESTS / "fixtures" / "agents" / "claude_context_usage.jsonl").read_text().splitlines()[0]
+    window = (TESTS / "fixtures" / "agents" / "context_usage.jsonl").read_text().splitlines()[0]
     stream = ("\n".join([window, *_CLAUDE_LINES]) + "\n").encode()
     cuts = [0, 40, stream.index("é".encode()) + 1, stream.index(b"tool_use"), stream.index(b'"type":"user"'), stream.index(b"Done"), len(stream)]
     mirror = reg.StreamMirror("inc")
@@ -2147,7 +2147,7 @@ def test_an_attempt_is_read_from_its_anchor_as_the_whole_run_reads_it_past_there
     too; nothing is written."""
     monkeypatch.setattr(reg, "_SCAN_CHUNK", 7)  # anchors fall across chunk edges
     fixtures = TESTS / "fixtures" / "agents"
-    turns = [(fixtures / name).read_text().splitlines() for name in ("claude_context_usage.jsonl", "claude_stream.jsonl", "claude_compact_stream.jsonl")]
+    turns = [(fixtures / name).read_text().splitlines() for name in ("context_usage.jsonl", "claude_stream.jsonl", "compact_stream.jsonl")]
     register_run(run_id="lead")
     register_run(run_id="r1", provider="claude")
     for number, lines in enumerate([*turns, _CLAUDE_LINES]):

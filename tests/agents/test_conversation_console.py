@@ -68,7 +68,7 @@ def console_workspace(monkeypatch):
     home = root / "home"
     for path in (workspace, binary_dir, home):
         path.mkdir(parents=True)
-    install_fake_cli(binary_dir, "codex", FIXTURES / "fake_codex_app_server.py")
+    install_fake_cli(binary_dir, "codex", FIXTURES / "fake_codex.py")
     (binary_dir / "codex.json").write_text(json.dumps({
         "mode": "success",
         "models": ["openai/example-model"],
@@ -155,7 +155,7 @@ async def _open_api_server(root: Path, *, delay: float = 0.0):
     log_file = root / "api.log"
     process = await asyncio.create_subprocess_exec(
         sys.executable,
-        str(FIXTURES / "fake_openai_server.py"),
+        str(FIXTURES / "fake_openai.py"),
         "--port-file", str(port_file),
         "--log-file", str(log_file),
         "--delay", str(delay),
@@ -184,7 +184,7 @@ async def _open_prompt_server(
     log_file = root / "prompt.log"
     process = await asyncio.create_subprocess_exec(
         sys.executable,
-        str(FIXTURES / "fake_prompt_server.py"),
+        str(FIXTURES / "fake_prompts.py"),
         "--port-file", str(port_file),
         "--log-file", str(log_file),
         "--content", content,
@@ -2671,7 +2671,7 @@ async def test_console_initializes_before_media_cost_discovery(console_workspace
     _, workspace, _ = console_workspace
     endpoint = await asyncio.create_subprocess_exec(
         sys.executable,
-        str((FIXTURES / "slow_cost_map_server.py").resolve()),
+        str((FIXTURES / "slow_costs.py").resolve()),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

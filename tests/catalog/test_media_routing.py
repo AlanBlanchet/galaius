@@ -25,7 +25,7 @@ from tests.support.paths import TESTS
 @pytest.mark.asyncio
 async def test_refreshed_published_table_changes_actual_media_dispatch(monkeypatch) -> None:
     fixture = json.loads(
-        (TESTS / "fixtures/refreshed_published_table.json").read_text()
+        (TESTS / "fixtures/refreshed_table.json").read_text()
     )
     models = [
         Model(id=model_id, provider="openai", capabilities={ModelCapability.VLM})
@@ -63,7 +63,7 @@ async def test_shared_non_authoritative_table_stops_before_media_dispatch(
     monkeypatch, state: str,
 ) -> None:
     fixture = json.loads(
-        (TESTS / "fixtures/refreshed_published_table.json").read_text()
+        (TESTS / "fixtures/refreshed_table.json").read_text()
     )
     model = Model(id="openai/visual-a", provider="openai", capabilities={ModelCapability.VLM})
     monkeypatch.setattr(Model, "catalog", lambda: [model])
@@ -140,7 +140,7 @@ async def test_source_authority_survives_cache_recommendation_and_media_dispatch
 @pytest.mark.asyncio
 async def test_expired_cached_table_reloads_stale_and_stops_before_dispatch(monkeypatch) -> None:
     fixture = json.loads(
-        (TESTS / "fixtures/refreshed_published_table.json").read_text()
+        (TESTS / "fixtures/refreshed_table.json").read_text()
     )
     model = Model(id="openai/visual-b", provider="openai", capabilities={ModelCapability.VLM})
     monkeypatch.setattr(Model, "catalog", lambda: [model])

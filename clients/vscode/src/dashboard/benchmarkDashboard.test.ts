@@ -94,7 +94,7 @@ test("benchmark cards expose sources and explain unmapped recommendations", asyn
 
 test("dashboard renders the same refreshed PublishedTable bytes used by routing", () => {
   const fixturePath = path.join(
-    REPO, "tests", "fixtures", "refreshed_published_table.json",
+    REPO, "tests", "fixtures", "refreshed_table.json",
   );
   const published = JSON.parse(fs.readFileSync(fixturePath, "utf8")).after;
   const excluded = JSON.parse(fs.readFileSync(fixturePath, "utf8")).excluded;

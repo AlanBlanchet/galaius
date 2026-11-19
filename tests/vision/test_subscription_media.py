@@ -100,7 +100,7 @@ def _fake_cli(
     mode: str = "success",
 ) -> Path:
     """A provider CLI that reports auth and echoes its isolated media invocation as JSONL."""
-    source = TESTS / "fixtures" / "agents" / "fake_media_cli.py"
+    source = TESTS / "fixtures" / "agents" / "fake_media.py"
     return install_fake_cli(path.parent, f"{path.name}--provider-{provider}--mode-{mode}", source)
 
 

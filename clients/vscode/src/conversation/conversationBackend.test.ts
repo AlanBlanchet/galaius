@@ -23,7 +23,7 @@ test("conversation backend resolution is explicit, local, version-bound, and spa
   fs.rmSync(root, { recursive: true, force: true });
   fs.mkdirSync(root, { recursive: true });
 
-  const fixture = path.resolve("test/fixtures/conversationFakeHost.ts");
+  const fixture = path.resolve("test/fixtures/fakeHost.ts");
   const stale = path.join(root, "candidate-a");
   const compatible = path.join(root, "candidate-b");
   const unverifiable = path.join(root, "unverifiable-bin");

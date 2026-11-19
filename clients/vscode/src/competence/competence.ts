@@ -8,7 +8,7 @@
 /** Everything a RESELLER or a release process appends, in no particular order — applied to a
  *  fixpoint below, so stacking them in any sequence still collapses to one name. Python twin is
  *  _SUFFIXES in galaius/catalog/models.py; both held to
- *  tests/fixtures/bare_model_names.json, since two hand-kept copies of these pairs drifted. */
+ *  tests/fixtures/bare_models.json, since two hand-kept copies of these pairs drifted. */
 const SUFFIXES: RegExp[] = [
   /@.*$/,                                 // a revision pin: @default, @20251001
   /[-@:]?20\d{6}$/,                       // a release date: -20250929

@@ -35,7 +35,7 @@ def _safe_dir_name(name: str) -> str:
 
 def _session_custom_title(session_id: str, home: str) -> str | None:
     """User-set title of a Claude Code session, from its transcript under
-    ``~/.claude/projects`` (same store ``scan_client_errors.py`` reads). Session id is unique
+    ``~/.claude/projects`` (same store ``client_errors.py`` reads). Session id is unique
     so glob finds the file regardless of slug. Only ``custom-title`` lines are parsed (cheap
     pre-filter); LAST one wins (renames)."""
     matches = glob.glob(str(Path(home) / ".claude" / "projects" / "*" / f"{session_id}.jsonl"))

@@ -7,11 +7,11 @@ own tests and the maintainer's runs never reproduce — run it BEFORE each itera
 when a bug is reported (see the "Dogfood Consumer Telemetry" coding rule).
 
 Usage:
-    python scripts/scan_client_errors.py                 # errors in the last 24h
-    python scripts/scan_client_errors.py --since 2026-06-05T12:00
-    python scripts/scan_client_errors.py --hours 72
-    python scripts/scan_client_errors.py --all           # whole history
-    python scripts/scan_client_errors.py --projects-root ~/.claude/projects
+    python scripts/client_errors.py                 # errors in the last 24h
+    python scripts/client_errors.py --since 2026-06-05T12:00
+    python scripts/client_errors.py --hours 72
+    python scripts/client_errors.py --all           # whole history
+    python scripts/client_errors.py --projects-root ~/.claude/projects
 
 Exit code is always 0 (it is a report, not a gate); a one-line "no new errors" is success.
 """

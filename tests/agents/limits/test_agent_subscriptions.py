@@ -36,7 +36,7 @@ from tests.support.paths import TESTS
 
 #: Windows keeps no POSIX mode bits (`chmod` sets only the read-only flag).
 POSIX_MODES = sys.platform != "win32"
-FAKE_CLAUDE = TESTS / "fixtures" / "agents" / "fake_claude_login.py"
+FAKE_CLAUDE = TESTS / "fixtures" / "agents" / "fake_login.py"
 #: Lines as the vendors wrote them (a Claude Code run's stream; a Codex session record), only ids shortened.
 CLAUDE_LINE = ('{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":4102448400,"rateLimitType":"five_hour","overageStatus":"rejected",'
                '"overageDisabledReason":"org_level_disabled","isUsingOverage":false,"unifiedWindows":{"five_hour":{"utilization":0.03,"resetsAt":4102448400},'
@@ -624,7 +624,7 @@ def test_each_login_here_says_its_own_usage_and_a_subscriptions_never_mixes_with
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name in ("claude", "codex"):
-        install_fake_cli(bin_dir, name, TESTS / "fixtures" / "agents" / "fake_usage_cli.py")
+        install_fake_cli(bin_dir, name, TESTS / "fixtures" / "agents" / "fake_usage.py")
     environment = {"PATH": os.pathsep.join((str(bin_dir), str(Path(sys.executable).parent))), "HOME": str(Path.home())}
     monkeypatch.setenv("PATH", environment["PATH"])
     subscription = Subscription.create(uuid4(), "claude")

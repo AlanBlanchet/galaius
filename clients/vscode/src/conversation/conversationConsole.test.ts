@@ -870,7 +870,7 @@ test("a compatible local bridge that exits before initialize survives a fresh ex
   fs.rmSync(executable, { force: true });
   // A copy, as conversationBackend.test.ts installs it: through a link, node would look for the
   // version file beside the fixture instead of beside this executable.
-  fs.copyFileSync(path.resolve("test/fixtures/conversationFakeHost.ts"), executable);
+  fs.copyFileSync(path.resolve("test/fixtures/fakeHost.ts"), executable);
   fs.chmodSync(executable, 0o700);
   // Compatible = the version this extension requires (`conversationExtensionVersion`).
   const extensionVersion = JSON.parse(fs.readFileSync(path.resolve("package.json"), "utf8")).version;

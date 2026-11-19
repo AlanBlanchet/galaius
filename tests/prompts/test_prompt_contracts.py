@@ -258,7 +258,7 @@ def test_complete_prompt_snapshot_is_atomic_and_removes_absent_channels(
     )
     port_file = tmp_path / "prompt.port"
     log_file = tmp_path / "prompt.log"
-    fixture = TESTS / "fixtures" / "agents" / "fake_prompt_server.py"
+    fixture = TESTS / "fixtures" / "agents" / "fake_prompts.py"
     command = [
         sys.executable,
         str(fixture),

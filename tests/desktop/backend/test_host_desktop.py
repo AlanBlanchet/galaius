@@ -2,7 +2,7 @@
 one region / downscaled captures, and waits on a window or on the pixels instead of a sleep.
 
 Display-free: every OS path is exercised here through its pure half (xrandr text, Quartz window
-dicts, a fake mss). The real-display run is tests/desktop/backend/test_host_desktop_live.py."""
+dicts, a fake mss). The real-display run is tests/desktop/backend/test_host_live.py."""
 
 import asyncio
 import io

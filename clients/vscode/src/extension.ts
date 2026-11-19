@@ -4,7 +4,7 @@ import { ACTIVITY_SCHEME, activityPath, formatActivity, runIdFromPath } from "./
 import { IO_INLINE, IO_SCHEME, ioFromPath } from "./conversation/format/ioDocument";
 import { ChatViewProvider } from "./conversation/chatView";
 import { galaiusCli } from "./workspace/galaiusCli";
-import { ServerWorkspaceControls } from "./workspace/serverWorkspaceControls";
+import { ServerWorkspaceControls } from "./workspace/serverControls";
 import { serverWorkspaceConfigured } from "./workspace/workspaceState.ts";
 import { refreshToolSettings, saveToolSetting, stripPortableEnvironment, toolSettingsView } from "./workspace/toolSettings.ts";
 import { REVEAL_COMMAND, REVEALED_KEY, shouldRevealOnce } from "./view/panelReveal";

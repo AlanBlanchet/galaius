@@ -15,7 +15,7 @@ const {
 } = require_("../../out/conversation/conversationClient.js");
 
 const fakeHost = path.join(
-  EXTENSION, "test", "fixtures", "conversationFakeHost.ts",
+  EXTENSION, "test", "fixtures", "fakeHost.ts",
 );
 
 function fake(mode = "healthy") {

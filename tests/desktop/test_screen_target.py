@@ -3,7 +3,7 @@
 Multi-monitor correctness is the crux: a monitor target captures only its region and its
 detected coords are region-relative, so input must add the monitor origin to land on the right
 screen. Display-free: the host desktop backend is a double; the real run is
-tests/desktop/backend/test_host_desktop_live.py.
+tests/desktop/backend/test_host_live.py.
 """
 
 import subprocess

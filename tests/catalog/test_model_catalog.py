@@ -213,7 +213,7 @@ def test_the_id_normalizer_is_held_to_the_table_its_typescript_twin_reads():
     """
     from galaius.catalog.models import bare_model_name
 
-    table = json.loads((FIXTURES / "bare_model_names.json").read_text())
+    table = json.loads((FIXTURES / "bare_models.json").read_text())
     for model_id, expected in table["pairs"].items():
         assert bare_model_name(model_id) == expected, model_id
     for left, right in table["distinct"]:

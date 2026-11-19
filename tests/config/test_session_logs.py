@@ -1,5 +1,5 @@
 """Logs consolidate under ~/.galaius (no /tmp scatter) and separate by the CALLING Claude session:
-a session's user-set custom-title (read from ~/.claude/projects — the store scan_client_errors uses)
+a session's user-set custom-title (read from ~/.claude/projects — the store client_errors uses)
 names the folder, with a dated dir inside; it falls back to the project/cwd basename, then 'default'.
 The dir basename and the session title can differ (e.g. dir 'aino' vs title 'Aino') — the title wins."""
 

@@ -2,7 +2,7 @@
 
 Generated from ServerRequest.json SHA-256
 1b8268c3d7f19f5fea362b7b9f5e964c6ba9c53acb79f86e2b69394ebd719e20.
-Refresh with ``scripts/refresh_codex_schema_capture.py``; do not add method tables here.
+Refresh with ``scripts/codex_capture.py``; do not add method tables here.
 """
 
 import json

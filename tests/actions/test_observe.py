@@ -237,7 +237,7 @@ async def test_browser_screenshot_wait_precedes_its_capture(browser_mocks, monke
     # `browser_mocks` holds `_capture` through `mock.patch`, and a monkeypatch of it saves THAT
     # mock as the original. pytest tears the builtin monkeypatch down after the fixture's patch
     # has already restored the real function, so the mock was written back and every later test
-    # in the session captured a page titled "Example" (tests/actions/test_tabs_and_refs.py).
+    # in the session captured a page titled "Example" (tests/actions/test_tabs.py).
     browser_mocks['capture'].side_effect = capture
     monkeypatch.setattr(srv.capture, "_wait", wait)
     await _run_actions_browser(

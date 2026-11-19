@@ -468,7 +468,7 @@ test("the id normalizer is held to the same table its Python twin reads", () => 
      — 74 real litellm ids kept their date and were invisible to every score lookup. One file now
      holds both, so a pair can only change for both at once. */
   const table = JSON.parse(readFileSync(
-    join(REPO, "tests", "fixtures", "bare_model_names.json"), "utf8",
+    join(REPO, "tests", "fixtures", "bare_models.json"), "utf8",
   )) as { pairs: Record<string, string>; distinct: [string, string][] };
   for (const [id, expected] of Object.entries(table.pairs)) {
     assert.equal(bareModelName(id), expected, id);

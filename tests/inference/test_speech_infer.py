@@ -23,7 +23,7 @@ def test_the_spoken_language_is_one_he_speaks(probabilities, expected):
 
 
 #: The rule's golden cases, shared with every other implementation of it (the web app's copy reads this file too).
-CASES = json.loads((FIXTURES / "speech_vocabulary_cases.json").read_text(encoding="utf-8"))
+CASES = json.loads((FIXTURES / "speech_cases.json").read_text(encoding="utf-8"))
 NAMES = CASES["names"]
 
 
