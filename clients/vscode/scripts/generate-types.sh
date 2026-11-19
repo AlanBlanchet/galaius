@@ -49,21 +49,21 @@ fi
     --module galaius_core.prompts \
     --output "$EXT_DIR/src/generated/promptContracts.ts"
 if [ -n "$CORE_SCHEMA_DIR" ]; then
-    "${UV_RUN[@]}" python "$HERE/export-prompt-schema.py" \
+    "${UV_RUN[@]}" python "$HERE/schema/prompt.py" \
         > "$CORE_SCHEMA_DIR/prompt-contracts.schema.json"
-    "${UV_RUN[@]}" python "$HERE/export-account-schema.py" \
+    "${UV_RUN[@]}" python "$HERE/schema/account.py" \
         > "$CORE_SCHEMA_DIR/account-contracts.schema.json"
-    "${UV_RUN[@]}" python "$HERE/export-workflow-schema.py" \
+    "${UV_RUN[@]}" python "$HERE/schema/workflow.py" \
         > "$CORE_SCHEMA_DIR/workflow-contracts.schema.json"
-    "${UV_RUN[@]}" python "$HERE/export-admin-schema.py" \
+    "${UV_RUN[@]}" python "$HERE/schema/admin.py" \
         > "$CORE_SCHEMA_DIR/admin-contracts.schema.json"
 else
     echo "[generate-types] installed galaius-core detected; keeping its packaged schemas unchanged." >&2
 fi
 SCHEMA_OUT="$EXT_DIR/out/generated/conversation-schemas.json"
 mkdir -p "$(dirname "$SCHEMA_OUT")"
-"${UV_RUN[@]}" python "$HERE/export-runtime-schemas.py" > "$SCHEMA_OUT"
-node "$HERE/append-runtime-decoders.js" "$SCHEMA_OUT"
+"${UV_RUN[@]}" python "$HERE/schema/runtime.py" > "$SCHEMA_OUT"
+node "$HERE/schema/decoders.js" "$SCHEMA_OUT"
 
 # Prepend header if pydantic2ts didn't add one.
 if ! head -1 "$OUT" | grep -q "generated"; then

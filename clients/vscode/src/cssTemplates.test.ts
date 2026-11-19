@@ -3,7 +3,7 @@
  *  six times in one session, and the build fails with a message about an unexpected token hundreds
  *  of lines further down, pointing at code that is fine.
  *
- *  This tests the SAME implementation the build runs (`scripts/check-css-templates.js`) rather
+ *  This tests the SAME implementation the build runs (`scripts/check-css.js`) rather
  *  than a second copy of the algorithm. The copy was the earlier design, and the two drifted:
  *  every synthetic case here passed while the real check missed `motion.ts` completely.
  *
@@ -23,7 +23,7 @@ import { dirname, join } from "node:path";
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const { sheets, backticksInCommentedTemplates } = require(
-  join(here, "..", "scripts", "check-css-templates.js"),
+  join(here, "..", "scripts", "check-css.js"),
 ) as {
   sheets: () => string[];
   backticksInCommentedTemplates: (text: string) => number[];

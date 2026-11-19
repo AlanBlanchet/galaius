@@ -15,5 +15,5 @@ Credit is not required by CC0; it is given because it is right. Support Kenney a
 https://kenney.nl/donate.
 
 `atlas.png` + `webview/workplace/atlas.ts` are generated from these sheets by
-`scripts/build-world-atlas.py` — only the tiles the view actually uses, packed and
+`scripts/world-atlas.py` — only the tiles the view actually uses, packed and
 inlined as a data URI so the webview stays self-contained.
