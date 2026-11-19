@@ -83,9 +83,9 @@ def console_workspace(monkeypatch):
     shutil.rmtree(root)
 
 
-#: Seconds a test waits on its console child, a bound against a hang and no more: a healthy child answers in milliseconds, a cold one
+#: Seconds a test waits on its console child (under the 90 s a whole test may take), a bound against a hang and no more: a healthy child answers in milliseconds, a cold one
 #: under the load of the agents running here took over 10 s (pre-push, 2026-11-19: 3 of this file's tests timed out, each passing alone).
-CONSOLE_WAIT = 90
+CONSOLE_WAIT = 60
 
 
 async def _open_console(workspace: Path):
