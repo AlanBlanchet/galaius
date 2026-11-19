@@ -272,3 +272,14 @@ def test_keep_file_never_keeps_a_credential_a_link_or_a_person_s_own_session(tmp
         with pytest.raises((ValueError, PermissionError, OSError)):
             keep(refused)
     assert keep("ok.txt").key
+
+
+def test_the_same_bytes_kept_again_answer_with_the_story_they_were_first_kept_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from galaius.media.files import keep
+    register_run(run_id="maker")
+    _as(monkeypatch, "maker")
+    first = write(FileSpec(path="a.md", content="same"), replace=False)
+    again = write(FileSpec(path="b.md", content="same"), replace=False)
+    assert again.key == first.key and again.story == first.story
+    (tmp_path / "c.md").write_text("same")
+    assert keep("c.md").story == first.story

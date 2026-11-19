@@ -47,7 +47,8 @@ class MediaMade(BaseModel):
 
 class Media:
     @staticmethod
-    def ask(spec: MediaSpec, *, max_cost_usd: float | None, folder: str, idempotency_key: str | None = None) -> MediaMade:
+    def ask(spec: MediaSpec, *, max_cost_usd: float | None, folder: str, idempotency_key: str | None = None, sources: tuple[str, ...] = (),
+            replaces: str | None = None) -> MediaMade:
         """`spec` asked of the platform: a quote when `max_cost_usd` is None, else made within it, each file it made
         saved under `folder` in the working folder (`files.save`); `idempotency_key`: the same key again answers the
         same job, paid once."""
@@ -57,10 +58,10 @@ class Media:
         # The same ask again (a retried call) is the same job, paid once: its key is what it asks.
         key = idempotency_key or hashlib.sha256(f"{Images.caller()}:{request.model_dump_json()}".encode()).hexdigest()
         answer = ServerWorkspace.configured().make_media(request, key)
-        return MediaMade(answer=answer, written=tuple(Media._saved(folder, made) for made in answer.files))
+        return MediaMade(answer=answer, written=tuple(Media._saved(folder, made, sources, replaces) for made in answer.files))
 
     @staticmethod
-    def _saved(folder: str, made: MediaFile) -> Written:
+    def _saved(folder: str, made: MediaFile, sources: tuple[str, ...] = (), replaces: str | None = None) -> Written:
         """`made` saved under `folder` (`files.save`), its name's last part only (it comes from the platform). A file of
         that name already there is never written over, unless it is the same bytes (the same job answered again)."""
         path, content = str(PurePosixPath(folder) / PurePosixPath(made.name).name), base64.b64decode(made.data_base64, validate=True)
@@ -68,7 +69,7 @@ class Media:
             same = read_working(path, len(content)) == content
         except (ValueError, OSError):  # PermissionError is an OSError
             same = False
-        return save(path, content, replace=same)
+        return save(path, content, replace=same, sources=sources, replaces=replaces)
 
     @staticmethod
     def read_input(path: str) -> bytes:

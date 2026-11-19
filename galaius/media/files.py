@@ -510,7 +510,9 @@ def save(path: str, data: bytes | Path, *, replace: bool, sources: Iterable[str]
             with suppress(FileNotFoundError):
                 folder.unlink(staged)
     kept = reg.RunFiles.keep(run.run_id, data, suffix, key, HandedFile(key=key, name=name, story=story)) if run is not None and story is not None else None
-    return Written(target, size, kept, story)
+    # The same bytes again (a retried call, a file made twice): the story it was first kept with stays, so the answer is the same.
+    held = reg.RunFiles.entry(run.run_id, key) if kept is not None and run is not None else None
+    return Written(target, size, kept, held.story if held is not None else story)
 
 
 def story_of(run: "reg.AgentRun | None", sources: Iterable[str], replaces: str | None) -> FileStory | None:
@@ -553,7 +555,8 @@ def keep(path: str, *, sources: Iterable[str] = (), replaces: str | None = None)
         reg.RunFiles.keep(run.run_id, copied, suffix, key, HandedFile(key=key, name=name, story=story))
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
-    return Written(Caller.current().cwd.resolve() / path, size, key, story)
+    held = reg.RunFiles.entry(run.run_id, key)
+    return Written(Caller.current().cwd.resolve() / path, size, key, held.story if held is not None else story)
 
 
 def open_kept(key: str, path: str, *, replace: bool) -> Written:

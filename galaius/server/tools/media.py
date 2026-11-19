@@ -18,7 +18,8 @@ _PAID = """
 It runs on the Galaius platform with your company's connection: charged to the person you work for, held to their
 ceilings and the company's, and shown in Galaius › Facturation, linked to your run. Ask first WITHOUT max_cost_usd: the
 answer is its price, nothing made, nothing charged. Then ask again with max_cost_usd (dollars, platform fee included)
-at or above that price to make it. folder: where its files go, inside your working folder (made when missing).
+at or above that price to make it. folder: where its files go, inside your working folder (made when missing). from_files, replaces: the keys of the
+kept files you made it from and the one it takes the place of (see keep_file).
 """
 
 
@@ -26,7 +27,7 @@ def _described(what: str, returns: str) -> str:
     return inspect.cleandoc(what) + "\n" + _PAID + "\n" + inspect.cleandoc(returns)
 
 
-async def _asked(build: Callable[[], MediaSpec], *, max_cost_usd: float | None, folder: str) -> str:
+async def _asked(build: Callable[[], MediaSpec], *, max_cost_usd: float | None, folder: str, from_files: list[str] | None = None, replaces: str | None = None) -> str:
     """The answer to one media tool call: `build()` makes its spec. A bad argument, a refusal: `FILE_REFUSED` and why, so
     the chat words the call as refused, never as a file made."""
     try:
@@ -34,7 +35,7 @@ async def _asked(build: Callable[[], MediaSpec], *, max_cost_usd: float | None, 
     except (ValidationError, ValueError, OSError) as error:
         return f"{FILE_REFUSED}{error}"
     try:
-        made = await asyncio.to_thread(Media.ask, spec, max_cost_usd=max_cost_usd, folder=folder)
+        made = await asyncio.to_thread(lambda: Media.ask(spec, max_cost_usd=max_cost_usd, folder=folder, sources=tuple(from_files or ()), replaces=replaces))
     except (CatalogConnectionError, ValueError, PermissionError, OSError) as error:
         return f"{FILE_REFUSED}{error}"
     return made.said()
@@ -50,9 +51,10 @@ async def _asked(build: Callable[[], MediaSpec], *, max_cost_usd: float | None, 
     made."""))
 @instrumented
 async def translate(text: str, target_language: str, source_language: str | None = None, context: str = "",
-                    max_cost_usd: float | None = None, folder: str = FOLDER) -> str:
+                    max_cost_usd: float | None = None, folder: str = FOLDER, from_files: list[str] | None = None,
+                    replaces: str | None = None) -> str:
     return await _asked(lambda: TranslationSpec(text=text, target_language=target_language, source_language=source_language, context=context),
-                        max_cost_usd=max_cost_usd, folder=folder)
+                        max_cost_usd=max_cost_usd, folder=folder, from_files=from_files, replaces=replaces)
 
 
 @mcp.tool(category="media", description=_described(
@@ -62,13 +64,14 @@ async def translate(text: str, target_language: str, source_language: str | None
     make one with generate_image first when you only have a description). pbr: physically-based materials (slower).""",
     """Returns the price, or the .glb file made (shown in the person's chat), or why nothing was made."""))
 @instrumented
-async def generate_3d(image: str, pbr: bool = False, max_cost_usd: float | None = None, folder: str = FOLDER) -> str:
+async def generate_3d(image: str, pbr: bool = False, max_cost_usd: float | None = None, folder: str = FOLDER, from_files: list[str] | None = None,
+                    replaces: str | None = None) -> str:
     def build() -> Model3DSpec:
         content = Media.read_input(image)
         if (kind := image_type(content)) is None:
             raise ValueError(f"{image} is no PNG, JPEG or WebP image")
         return Model3DSpec(image=MediaImage(media_type=kind, data_base64=base64.b64encode(content).decode()), pbr=pbr)
-    return await _asked(build, max_cost_usd=max_cost_usd, folder=folder)
+    return await _asked(build, max_cost_usd=max_cost_usd, folder=folder, from_files=from_files, replaces=replaces)
 
 
 @mcp.tool(category="media", description=_described(
@@ -78,8 +81,9 @@ async def generate_3d(image: str, pbr: bool = False, max_cost_usd: float | None 
     say it (« calm and warm », « cheerful »); empty: neutral.""",
     """Returns the price, or the audio file made (shown in the person's chat), or why nothing was made."""))
 @instrumented
-async def generate_speech(text: str, voice: str = "", style: str = "", max_cost_usd: float | None = None, folder: str = FOLDER) -> str:
-    return await _asked(lambda: SpeechSpec(text=text, voice=voice, style=style), max_cost_usd=max_cost_usd, folder=folder)
+async def generate_speech(text: str, voice: str = "", style: str = "", max_cost_usd: float | None = None, folder: str = FOLDER, from_files: list[str] | None = None,
+                    replaces: str | None = None) -> str:
+    return await _asked(lambda: SpeechSpec(text=text, voice=voice, style=style), max_cost_usd=max_cost_usd, folder=folder, from_files=from_files, replaces=replaces)
 
 
 @mcp.tool(category="media", description=_described(
@@ -89,8 +93,9 @@ async def generate_speech(text: str, voice: str = "", style: str = "", max_cost_
     structure, lyrics when it sings, and the length wanted.""",
     """Returns the price, or the music file made (shown in the person's chat), or why nothing was made."""))
 @instrumented
-async def generate_music(prompt: str, max_cost_usd: float | None = None, folder: str = FOLDER) -> str:
-    return await _asked(lambda: MusicSpec(prompt=prompt), max_cost_usd=max_cost_usd, folder=folder)
+async def generate_music(prompt: str, max_cost_usd: float | None = None, folder: str = FOLDER, from_files: list[str] | None = None,
+                    replaces: str | None = None) -> str:
+    return await _asked(lambda: MusicSpec(prompt=prompt), max_cost_usd=max_cost_usd, folder=folder, from_files=from_files, replaces=replaces)
 
 
 @mcp.tool(category="media", description=_described(
@@ -101,5 +106,6 @@ async def generate_music(prompt: str, max_cost_usd: float | None = None, folder:
     seamlessly.""",
     """Returns the price, or the sound file made (shown in the person's chat), or why nothing was made."""))
 @instrumented
-async def generate_sound(prompt: str, seconds: float | None = None, loop: bool = False, max_cost_usd: float | None = None, folder: str = FOLDER) -> str:
-    return await _asked(lambda: SoundSpec(prompt=prompt, seconds=seconds, loop=loop), max_cost_usd=max_cost_usd, folder=folder)
+async def generate_sound(prompt: str, seconds: float | None = None, loop: bool = False, max_cost_usd: float | None = None, folder: str = FOLDER, from_files: list[str] | None = None,
+                    replaces: str | None = None) -> str:
+    return await _asked(lambda: SoundSpec(prompt=prompt, seconds=seconds, loop=loop), max_cost_usd=max_cost_usd, folder=folder, from_files=from_files, replaces=replaces)
