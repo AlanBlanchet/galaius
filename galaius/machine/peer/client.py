@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 
 from pydantic import TypeAdapter
 
-from galaius_core import (PcFleet, PeerAnswer, PeerCallAny, PeerEvents, PeerMessage, PeerProjects, PeerProjectsCall, PeerRefusal, PeerSent, PeerStart, PeerStarted, PeerStop, PeerStopped,
+from galaius_core import (HandedFile, PcFleet, PeerAnswer, PeerCallAny, PeerEvents, PeerMessage, PeerProjects, PeerProjectsCall, PeerRefusal, PeerSent, PeerStart, PeerStarted, PeerStop, PeerStopped,
                           PeerFleetCall, PeerWindow, RunRef)
 from galaius_core.machine.peer.rules import PEER_START_SECONDS
 
@@ -133,8 +133,8 @@ class PeerClient:
                 self.forget(*parts)          # the next attempt with these words is a new request
             raise
 
-    def message(self, machine: UUID, run_id: UUID, text: str, key: str | None = None) -> PeerSent:
-        return self._of(PeerSent, PeerMessage(key=key or uuid4().hex, machine=machine, run_id=run_id, text=text))
+    def message(self, machine: UUID, run_id: UUID, text: str, key: str | None = None, files: tuple[HandedFile, ...] = ()) -> PeerSent:
+        return self._of(PeerSent, PeerMessage(key=key or uuid4().hex, machine=machine, run_id=run_id, text=text, files=files), seconds=PEER_START_SECONDS + 10 + (120 if files else 0))
 
     def events(self, machine: UUID, run_id: UUID, cursor: int | None = None, wait_s: float = 0.0) -> PeerWindow:
         return self._of(PeerWindow, PeerEvents(machine=machine, run_id=run_id, cursor=cursor, wait_s=wait_s), seconds=wait_s + 30)

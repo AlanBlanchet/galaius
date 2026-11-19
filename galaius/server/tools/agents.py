@@ -8,6 +8,7 @@ connected.
 """
 
 import asyncio
+import time
 from uuid import UUID
 from pathlib import Path
 from galaius.account.caller import Caller
@@ -15,7 +16,7 @@ from galaius.machine.peer.client import PeerClient, PeerError, PeerUnavailable
 from galaius.machine.peer.words import pick, place
 from galaius.host.paths import UserPaths
 from galaius.host.private_files import PRIVATE_FILES
-from galaius_core import CRITICALITIES, AgentRevisionRef, Criticality, CommunityKind, OwnerQuestion, QuestionOption
+from galaius_core import CRITICALITIES, AgentRevisionRef, Criticality, CommunityKind, FileStory, HandedFile, OwnerQuestion, QuestionOption
 from pydantic import ValidationError
 
 from galaius.agents import lending, messaging, registry as reg
@@ -87,11 +88,19 @@ def _peer_stop(machine: str, run_id: str) -> str:
     return _peer_said(stop)
 
 
-def _peer_send(machine: str, run_id: str, message: str) -> str:
+def _peer_send(machine: str, run_id: str, message: str, files: tuple[str, ...] = ()) -> str:
     def send() -> str:
+        sender = messaging.sender_id()
+        if files and reg.get_run(sender) is None:
+            raise ValueError("only an agent run hands over files by key")
+        held = []
+        for key in dict.fromkeys(files):
+            if not reg.RunFiles.holds(sender, key):
+                raise ValueError(f"{key}: not a file this run holds")
+            held.append(reg.RunFiles.entry(sender, key) or HandedFile(key=key, name=key, story=FileStory(maker=sender, at=time.time())))
         client, pc = _peer(machine)
-        sent = client.message(pc.id, UUID(run_id), message)
-        return f"Sent to {run_id[:8]} on {pc.name} (message {str(sent.message_id)[:8]})."
+        sent = client.message(pc.id, UUID(run_id), message, files=tuple(held))
+        return f"Sent to {run_id[:8]} on {pc.name} (message {str(sent.message_id)[:8]})" + (f" with {len(held)} file(s): it opens them with open_file." if held else ".")
     return _peer_said(send)
 
 
@@ -490,15 +499,14 @@ async def agent_send(run_id: str, message: str, wait: bool = False, fyi: bool = 
     fyi: a one-way note (a report, an ack, a heads-up): it reads it, and its turns never report back to you for it.
     files: the keys of kept files to hand it (up to 10; keys you made with create_file / keep_file or were handed, never paths: keep_file
         a file first). Each is kept for it as it is now — whatever you do to your copy later — with who made it and from what, and it writes one into
-        its own folder with open_file. Handing a file never lets it read yours.
+        its own folder with open_file, on this PC or (machine=...) on another of the person's PCs, where its bytes cross once and count against
+        that PC's hourly link limit. Handing a file never lets it read yours.
     machine: the run is on another of the person's PCs (one you placed there with agent_spawn(machine=...)): its PC name or id. The message reaches it
         under a header saying it comes from another agent, never as the person's word. A run placed on a PC cannot write back to the one that placed it:
         the placing agent reads its events.
     """
-    if machine is not None and files:
-        return "ERROR: files are handed to a run on this PC; a run on another PC reads the files it is asked for."
     if machine is not None:
-        return await asyncio.to_thread(_peer_send, machine, run_id, message)
+        return await asyncio.to_thread(_peer_send, machine, run_id, message, tuple(files or ()))
     sent = await asyncio.to_thread(_deliver, run_id, message, fyi, tuple(files or ()))
     if isinstance(sent, str):
         return sent

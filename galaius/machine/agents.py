@@ -1160,7 +1160,7 @@ class MachineAgents(BaseModel):
         for file, path in pulled:
             held = reg.RunFiles.entry(run_id, file.key) if reg.RunFiles.holds(run_id, file.key) else None
             if held is None:
-                held = HandedFile(key=file.key, name=file.name, story=FileStory(maker=OWNER_MAKER, at=time.time()))
+                held = HandedFile(key=file.key, name=file.name, story=file.story or FileStory(maker=OWNER_MAKER, at=time.time()))
                 reg.RunFiles.keep(run_id, path, PurePosixPath(file.key).suffix, file.key, held)
             kept.append(held.model_copy(update={"name": file.name}))
         return tuple(kept)

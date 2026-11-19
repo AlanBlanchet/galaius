@@ -41,3 +41,22 @@ def test_a_message_hands_the_files_it_names_and_only_those_the_sender_holds(pair
     assert not any(item.message_id == refused.queue_id for item in agent_queue.items(READER))
     by_person = messaging.queue_message(READER, "x", sender=reg.PERSON_SENDER, turn=agent_queue.MessageTurn(files=(made.key,)))
     assert by_person.state == "error" and "only an agent run" in by_person.text
+
+
+def test_a_file_handed_to_a_run_on_another_pc_goes_by_its_key_and_story_only_from_a_run_that_holds_it(pair, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from galaius.server.tools import agents as tools
+    seen = {}
+
+    class Client:
+        def message(self, machine, run_id, text, key=None, files=()):
+            seen.update(machine=machine, text=text, files=files)
+            return SimpleNamespace(message_id=uuid.uuid4())
+
+    pc = SimpleNamespace(id=uuid.uuid4(), name="Desk 2")
+    monkeypatch.setattr(tools, "_peer", lambda machine: (Client(), pc))
+    made = write(FileSpec(path="out/sheet.xlsx", sheets={"A": [["x", 1]]}), replace=False)
+    said = tools._peer_send("Desk 2", READER, "look", (made.key,))
+    assert "with 1 file(s)" in said and [(file.key, file.name, file.story.maker) for file in seen["files"]] == [(made.key, "sheet.xlsx", MAKER)]
+    assert tools._peer_send("Desk 2", READER, "look", (file_key(b"not mine", ".txt"),)).startswith("ERROR: ") and "not a file this run holds" in tools._peer_send("Desk 2", READER, "x", (file_key(b"not mine", ".txt"),))
