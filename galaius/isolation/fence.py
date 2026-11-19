@@ -356,6 +356,9 @@ class FenceSpec(BaseModel):
     scratch: Path | None = None
     #: Whether its run may be lent tools (a community agent's, `galaius.agents.lending`): `TOOLS_SOCKET` served.
     lends: bool = False
+    #: Whether it is a member's run on a PC lent to him: it keeps none of the PC's keys, its CLI's own included (a lent
+    #: run is paid by its member's login, never the owner's key: `RunSubscription.bound`).
+    lent: bool = False
 
     def places(self) -> PlaceMap:
         levels = self.levels
@@ -431,7 +434,7 @@ class FenceSpec(BaseModel):
                        if not any(link.is_relative_to(folder) or folder.is_relative_to(link) for folder in shown)}.items())
         return Fence(home=home, cwd=self.start.resolve(), binds=tuple(binds), emptied=tuple(emptied), blanked=tuple(blanked), links=links, egress=self.egress,
                      guards=tuple(guards), reviews=self.reviews, scratch=self.scratch, lends=self.lends,
-                     keys=tuple(sorted({name for provider in self.providers for name in FencedCli.of(provider).keys})))
+                     keys=() if self.lent else tuple(sorted({name for provider in self.providers for name in FencedCli.of(provider).keys})))
 
     @classmethod
     def for_clis(cls, clis: Iterable[FencedProgram], *, egress: Iterable[str] = (), **fields: object) -> Self:

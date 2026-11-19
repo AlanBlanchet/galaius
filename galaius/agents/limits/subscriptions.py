@@ -23,7 +23,7 @@ from galaius_core import CapReached, LoginIdentity, Refused, SubscriptionChoice,
 from pydantic import BaseModel, ConfigDict
 
 from galaius.agents.limits import held, quota
-from galaius.agents.providers import PROVIDERS, AgentProvider
+from galaius.agents.providers import MODEL_API_KEY, PROVIDERS, AgentProvider
 from galaius.host.atomic_file import replace_held_open
 from galaius.host.paths import UserPaths
 
@@ -585,10 +585,21 @@ class RunSubscription(WireRunSubscription):
     def bound(self, environment: Mapping[str, str], provider: str | None = None) -> dict[str, str]:
         """`environment` for one launch or turn on it (of `provider`'s CLI, refused when its subscription is another's
         login): its caps checked (refused at one), the owner's config adopted into its folder (`Subscription.adopt`),
-        every CLI's login variable at its folder or a closed one (`overlay`)."""
+        every CLI's login variable at its folder or a closed one (`overlay`). A lent run holds no key of this PC's owner:
+        its programs' key variables and every `<PROVIDER>_API_KEY` removed (`owner_keys`)."""
         if self.subscription_id is not None and provider is not None:
             Subscription.of(self.subscription_id).runs(provider)
         self.check()
         if self.subscription_id is not None:
             Subscription.of(self.subscription_id).adopt(environment)
-        return {**environment, **self.overlay()}
+        kept = {name: value for name, value in environment.items() if name not in self.owner_keys(environment)} if self.lent else environment
+        return {**kept, **self.overlay()}
+
+    @staticmethod
+    def owner_keys(environment: Mapping[str, str]) -> frozenset[str]:
+        """The variables of `environment` that pay a model call or hold a login for this PC's owner: each program's own key
+        variables (`FencedCli.keys`: the CLI reads them, the fence keeps them) and held-login variable, the mark beside
+        it (`held.mark`), and any `<PROVIDER>_API_KEY` (`MODEL_API_KEY`)."""
+        named = {name for provider in PROVIDERS.values() for name in (*(provider.fenced.keys if provider.fenced is not None else ()),
+                                                                      *((provider.held.variable, held.mark(provider.held.variable)) if provider.held is not None and provider.held.variable is not None else ()))}
+        return frozenset(named | {name for name in environment if MODEL_API_KEY.fullmatch(name)})

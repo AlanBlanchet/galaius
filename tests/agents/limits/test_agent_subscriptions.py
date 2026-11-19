@@ -730,6 +730,32 @@ def test_a_held_login_reaches_only_the_launches_of_its_own_folder(launch: str) -
         assert made.get("CLAUDE_CODE_OAUTH_TOKEN") == (token if launch == "held" else None)
 
 
+def _key_variables() -> list[str]:
+    """Every variable a program of this PC reads a model key or login token from, and the ones its fence would keep."""
+    names = {name for provider in PROVIDERS.values() for name in (*(provider.fenced.keys if provider.fenced is not None else ()),
+                                                                   *((provider.held.variable,) if provider.held is not None and provider.held.variable else ()))}
+    return sorted(names | {"MISTRAL_API_KEY", "GEMINI_API_KEY"})
+
+
+@pytest.mark.parametrize("lent", [True, False], ids=["lent", "own"])
+def test_a_lent_run_holds_none_of_the_pcs_provider_keys(lent: bool) -> None:
+    """Threat T3: a member's run on a lent PC is paid by his own login and never holds a key of the PC's owner: whatever
+    the service environment or local config set (every key variable of every program, the held-token variable, any
+    `<PROVIDER>_API_KEY`), `bound` removes it and no program's `child_environment` brings one back. A run on the
+    PC's own login keeps its CLI's key (the contrast: the rows would pass trivially on an empty environment)."""
+    names = _key_variables()
+    assert {"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY"} <= set(names)
+    environment = {"HOME": str(Path.home()), "PATH": os.defpath, **{name: f"owner-{name}" for name in names}}
+    pinned = RunSubscription(lent=True) if lent else RunSubscription(subscription_id=Subscription.create(uuid4(), "claude").id, limits=SubscriptionLimits())
+    bound = pinned.bound(environment)
+    for provider in PROVIDERS.values():
+        made = provider.child_environment(bound, mcp_wait_seconds=0)
+        assert not (lent and any(name in made for name in names)), provider.name
+    if not lent:
+        assert PROVIDERS["claude"].child_environment(bound, mcp_wait_seconds=0)["ANTHROPIC_API_KEY"] and PROVIDERS["codex"].child_environment(bound, mcp_wait_seconds=0)["OPENAI_API_KEY"]
+    assert (not any(name in bound for name in names)) == lent
+
+
 @pytest.mark.skipif(not POSIX_MODES, reason="a link and a mode are POSIX here")
 def test_a_held_login_file_is_private_never_a_link_and_masked_in_every_output(tmp_path: Path) -> None:
     subscription = Subscription.create(uuid4(), "claude")

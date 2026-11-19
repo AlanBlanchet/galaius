@@ -1282,6 +1282,17 @@ def test_with_the_fence_on_a_web_start_carries_the_spec_its_turns_are_fenced_by(
     assert answer.fenced is True and agents.runs.read()[-1].fenced is True
 
 
+def test_a_lent_start_carries_a_fence_that_keeps_none_of_the_pcs_keys(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Threat T3: the spec a member's start on a lent PC records is `lent` (every turn's fence keeps no key variable); the
+    PC's own start's is not."""
+    monkeypatch.setattr("galaius.machine.agents.available", lambda: (True, ""))
+    seen = _launches(monkeypatch)
+    agents = _fenced_agents(base, tmp_path, ("false",), project="write")
+    for lent in (True, False):
+        _answer(agents, _request("start", root="project", role="app-engineer", text="tidy", lent=lent))
+        assert (seen[-1]["fence"].lent, seen[-1]["fence"].build().keys == ()) == (lent, lent)
+
+
 def test_with_the_fence_on_an_agent_folder_never_opens_on_its_own(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The agent folder gets no level the owner did not set (it used to open as Write)."""
     monkeypatch.setattr("galaius.machine.agents.available", lambda: (True, ""))

@@ -93,6 +93,13 @@ def test_binds_follow_the_levels_and_nothing_else_of_home(home: Path, tmp_path: 
     assert not any(bind.target in {home / "private", home / ".ssh", home, home / ".galaius"} for bind in fence.binds)
 
 
+def test_a_lent_fence_keeps_no_key_of_the_pc(home: Path, tmp_path: Path) -> None:
+    """Threat T3: the fence of a member's run on a lent PC (`lent`) drops every secret-looking variable, its CLI's own
+    key included (`Outer.keys`); the PC's own run keeps its CLI's."""
+    own, lent = _spec(home, tmp_path).build(), _spec(home, tmp_path, lent=True).build()
+    assert "ANTHROPIC_API_KEY" in own.keys and lent.keys == ()
+
+
 def test_a_write_on_review_folder_without_its_staging_copy_is_refused(home: Path, tmp_path: Path) -> None:
     with pytest.raises(PermissionError, match="staging copy"):
         FenceSpec(working_directory=home, levels={"review": "write_on_review"}, start=home / "review", state=tmp_path / "state").build()

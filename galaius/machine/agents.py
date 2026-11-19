@@ -1043,7 +1043,7 @@ class MachineAgents(BaseModel):
         written = self._project_env(request, folder)
         # A lent run binds only closed login folders; a start's candidates each get theirs in the walk (`run_agent`).
         homes = pinned.homes() if pinned is not None else {}
-        fence, review = self._fence(request.root, folder, homes) if self.fence_agents else (None, None)
+        fence, review = self._fence(request.root, folder, homes, lent=pinned is not None and pinned.lent) if self.fence_agents else (None, None)
         return folder, written, fence, review
 
     def _project_env(self, request: AgentStartRequest, folder: Path) -> int:
@@ -1063,7 +1063,7 @@ class MachineAgents(BaseModel):
             self.logs.secrets = (*self.logs.secrets, *(value for value in values.values() if len(value) >= 8))
         return len(values)
 
-    def _fence(self, root: str, folder: Path, homes: dict[str, Path]) -> tuple[FenceSpec, UUID | None]:
+    def _fence(self, root: str, folder: Path, homes: dict[str, Path], *, lent: bool = False) -> tuple[FenceSpec, UUID | None]:
         """What the fence of an agent starting in `folder` is built from, and the review holding its
         staging copy when that folder is write-after-review. The folder needs a level its owner set
         (read or later): an agent folder never opens on its own. Built once here so a start that
@@ -1088,7 +1088,7 @@ class MachineAgents(BaseModel):
         try:
             spec = FenceSpec.for_clis(program_providers(), egress=self.egress, working_directory=places.working_directory,
                                       levels_file=self.levels_file, levels=places.levels, internal=places.internal, start=folder, project=project, staging=staging,
-                                      homes=homes, state=self.reviews.root.parent / "fence-state" / str(uuid4()), reviews=self.reviews.root)
+                                      homes=homes, lent=lent, state=self.reviews.root.parent / "fence-state" / str(uuid4()), reviews=self.reviews.root)
             spec.build()
             return spec, review
         except BaseException:
