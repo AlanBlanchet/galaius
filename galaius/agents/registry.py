@@ -3114,6 +3114,8 @@ CUT_RESUME_SENDER = "cut-resume"
 FOLDER_RESTORED_SENDER = "folder-restored"
 #: Who tells a run that one it asked has been silent too long at work (`handback.SilenceWatch`).
 SILENCE_SENDER = "silence-watch"
+#: Who tells a run that a spawn it asked will not start, its place in line lost with its holder (`spawn_line.SpawnLine.report_lost`).
+SPAWN_LOST_SENDER = "spawn-line"
 #: The conversation's own machinery as message senders (never a person, never a run), as a reader names each: only the
 #: recipient's transcript holds their lines.
 SYSTEM_SENDERS: dict[str, str] = {
@@ -3122,6 +3124,7 @@ SYSTEM_SENDERS: dict[str, str] = {
     CUT_RESUME_SENDER: "automatic resume after its process was cut",
     FOLDER_RESTORED_SENDER: "folder put back",
     SILENCE_SENDER: "the silent-run watch",
+    SPAWN_LOST_SENDER: "the spawn line",
 }
 
 

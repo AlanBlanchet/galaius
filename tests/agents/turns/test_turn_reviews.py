@@ -88,6 +88,8 @@ def test_the_open_rows_reach_the_coordinators_next_card_and_the_durable_ones_the
     _ended(MAIN)                                               # that turn ends after the reflection did
     card = relations.card(reg.get_run(MAIN))                   # the next one
     assert "R1 rerun the visual check" in card and "D1" not in card
+    # a narrow ask of his (« did you commit / push everything? ») is no order to build or send what the rows name (2026-11-19)
+    assert "(his message a narrow ask → record fixes only, the rest one `unasked:` line each, nothing built or sent; else do them now)" in card
     assert "R1 rerun" not in relations.card(reg.get_run(MAIN))  # never again
 
 

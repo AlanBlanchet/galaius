@@ -53,7 +53,7 @@ from galaius.agents.catalog import relations
 from galaius.agents.turns.critic_rounds import CriticRounds, turn_of
 from galaius.agents.limits.admission import Hold, Paused, SoftMemory, turn_hold
 from galaius.agents import registry as reg
-from galaius.agents.catalog.community import CommunityAgent
+from galaius.agents.catalog.community import CommunityAgent, quote
 from galaius.agents.policy import TOOL_PREFIX, Policy, PolicyError
 from galaius.agents.providers import provider_for
 from galaius.agents.catalog.vocabulary import TouchScope
@@ -79,6 +79,8 @@ ASIDE = f"attend {ITS_AGENTS}, place rendue"
 ASIDE_GRACE_SECONDS = 15.0
 #: How long a spawn that could not start stays readable (`agents list`, `agents events`) before it is forgotten.
 FAILED_KEPT_SECONDS = 24 * 3600.0
+#: How much of a lost spawn's task its parent's message quotes (`SpawnLine.report_lost`).
+LOST_TASK_CHARS = 200
 
 #: The tools a run may be served and still take no place (`takes_place`): none starts a process or a browser on this PC.
 #: Galaius's own by name after `TOOL_PREFIX`: its conversation reads, and its connector tools (`ext__`: calls to the server).
@@ -638,6 +640,10 @@ class Place(Held):
     said: str = ""
     #: A spawn held at launch (`admission.Paused`): every login it could run on, each paused; it waits until one lifts.
     holds: tuple[Hold, ...] = ()
+    #: `failed` because its holder went away (`SpawnLine._prune`): nobody was told, the asking run reads it from
+    #: `SpawnLine.report_lost`; `told`: it did, once.
+    lost: bool = False
+    told: bool = False
 
     def queued(self) -> bool:
         """Waiting for a place only: one held (`said`) waits on its cause, never ahead of the line."""
@@ -795,6 +801,46 @@ class SpawnLine(BaseModel):
             places[:] = self._prune(places)
             yield places
 
+    def report_lost(self) -> list[messaging.Delivery]:
+        """Tell the run that asked each spawn whose holder went away (`Place.lost`) that it will not start, once: its parent
+        when it is at work, else the conversation's coordinator (the run at the top of its tree), else the parent's record
+        alone; role, task and why. A spawn nobody asked for by a run (the person's terminal) has none to tell. Read without
+        the line's lock, like `_places_seen`, which would show the same entry again at every look: one message id per
+        place makes a message sent twice one message, and `told` (written under the lock once it went through) stops the
+        next look. A message that could not be delivered is tried again at the next look."""
+        deliveries, sent = [], []
+        for place in self._places_seen():
+            recipient = self._asker_of(place) if place.lost and not place.told and place.spawn is not None else None
+            if recipient is None:
+                continue
+            delivery = messaging.deliver_message(
+                recipient, self._lost_sentence(place), sender=reg.SPAWN_LOST_SENDER, message_id=f"spawn-lost-{place.run_id}",
+                turn=agent_queue.MessageTurn(fyi=True))
+            deliveries.append(delivery)
+            if delivery.state != "error":
+                sent.append(place.run_id)
+        if sent:
+            with self._places() as places:
+                places[:] = [place.model_copy(update={"told": True}) if place.run_id in sent else place for place in places]
+        return deliveries
+
+    @staticmethod
+    def _asker_of(place: Place) -> str | None:
+        """The run `place`'s loss is told to: its parent while at work, else the top of its tree (its coordinator), else the
+        parent when only its record is left; None when it has none."""
+        if place.parent_run_id is None:
+            return None
+        chain = reg.ancestors(place.parent_run_id)
+        runs = [run for run_id in dict.fromkeys((place.parent_run_id, chain[-1])) if (run := reg.get_run(run_id)) is not None]
+        return next((run.run_id for run in runs if run.working()), runs[-1].run_id if runs else None)
+
+    @staticmethod
+    def _lost_sentence(place: Place) -> str:
+        assert place.spawn is not None
+        return (f"A spawn you asked did not start: {place.spawn.agent or place.spawn.name or 'a run of no role'} {place.run_id[:8]}, "
+                f"task: {quote(place.spawn.task, limit=LOST_TASK_CHARS)}. {place.said}. It never ran and holds no place: spawn it "
+                "again (`agent_spawn`, `galaius agents spawn`) if its work is still wanted.")
+
     @contextmanager
     def _asides(self) -> Iterator[list[Aside]]:
         """The runs set aside, those whose holder is gone dropped, and the waits ended within `waiting_gap_seconds`. Its
@@ -829,7 +875,8 @@ class SpawnLine(BaseModel):
             elif place.spawn is not None and reg.get_run(place.run_id) is None:
                 said = reg.read_stderr(place.run_id, 300).strip()
                 gone = "the process holding its place in line went away" if place.state == "waiting" else "its start was cut off"
-                kept.append(place.model_copy(update={"state": "failed", "said": f"{gone}{': ' + said if said else ''}; spawn it again"}))
+                kept.append(place.model_copy(update={"state": "failed", "lost": True,
+                                                     "said": f"{gone}{': ' + said if said else ''}; spawn it again"}))
         return kept
 
     @staticmethod

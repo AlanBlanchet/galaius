@@ -1,13 +1,16 @@
 """The web drives agents on a machine only where, and only on what, its owner allowed there."""
 
+import ast
 import json
 import os
+import re
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
+import galaius
 import pytest
 from pydantic import ValidationError
 
@@ -1859,3 +1862,34 @@ def test_each_cli_offers_its_editor_conversations_once_in_its_program_order(base
     named = [kind.provider.name for kind in EditorConversations.every(_agents(base, tmp_path))]
     assert named == [program for program in AGENT_PROGRAMS if program in named]  # a CLI with none stays legal
     assert set(named) == {"claude", "codex"}
+
+
+#: The web controls a refusal may send its reader to: each exists in the web app today, the file that builds it beside it. A page
+#: or switch nobody built is never named (2026-11-19: « allow runs without isolation on its page », a control that does not exist).
+BUILT_WEB_CONTROLS = {
+    "on its page on the web": "its computer page: the agent switch and its folders (computers/agentSettings.tsx)",
+    "Agents page": "the role's model rule (agents/ModelWhy.tsx)",
+}
+_NAMES_A_CONTROL = re.compile(r"\b(?:page|screen|tab|button|press(?:ed)?|click|toggle|switch(?:es|ed)?|allow(?:s|ed|ance)?|turns? [^.]*? on)\b", re.I)
+
+
+def _refusal_sentences() -> list[tuple[str, int, str]]:
+    """Every sentence a `galaius` module hands a person as a refusal (`AgentRefused`, `PeerRefusal`): its text constants, its file and line."""
+    found = []
+    for path in sorted(Path(galaius.__file__).parent.rglob("*.py")):
+        for call in ast.walk(ast.parse(path.read_text())):
+            if isinstance(call, ast.Call) and getattr(call.func, "id", getattr(call.func, "attr", "")) in {"AgentRefused", "PeerRefusal"}:
+                words = "".join(part.value for argument in call.args[1:] for part in ast.walk(argument) if isinstance(part, ast.Constant) and isinstance(part.value, str))
+                found.append((path.name, call.lineno, words))
+    return found
+
+
+def test_a_refusal_names_only_an_act_that_exists():
+    """A sentence naming a page, a switch or an allowance gives the command that does it, names a web control built today
+    (`BUILT_WEB_CONTROLS`), or says it is not built in the web app."""
+    sentences = _refusal_sentences()
+    assert len(sentences) > 20
+    unbuilt = [f"{name}:{line}: {words}" for name, line, words in sentences
+               if _NAMES_A_CONTROL.search(words) and not re.search(r"`galaius [^`]+`|not built (?:into|in) the web app", words)
+               and not any(built in words for built in BUILT_WEB_CONTROLS)]
+    assert not unbuilt

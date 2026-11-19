@@ -288,6 +288,42 @@ def test_a_start_cut_off_or_an_unreadable_entry_reads_failed_and_never_refuses(a
     assert [path.name.startswith("#spawn-line.state.unreadable-") for path in reg.agents_dir().iterdir()].count(True) == 1
 
 
+@pytest.mark.parametrize("parent_works, lead_works, told_run, kind", [
+    (True, True, "mid", "its waiter went away, the run that asked it at work"),
+    (False, True, "lead", "the run that asked it ended its turn first: its conversation's coordinator is told"),
+    (False, False, "lead", "the PC went down: nobody at work, the coordinator is told and read it on resuming"),
+    (None, True, None, "asked from the person's terminal: no run to tell"),
+])
+def test_a_spawn_whose_holder_went_away_is_told_once_to_the_run_that_asked_it(at_work, started, monkeypatch, parent_works, lead_works, told_run, kind):
+    """The place a spawn waits in is lost with its holder (`_prune`): its parent, else the coordinator, hears which role and which
+    task, once, from any look (2026-11-19: a tester and a generalizer read « the process holding its place went away » two hours later)."""
+    sent: list[dict] = []
+
+    def deliver(run_id, message, *, sender, message_id, turn):
+        sent.append({"run_id": run_id, "message": message, "sender": sender, "message_id": message_id})
+        return spawn_line.messaging.Delivery(state="queued", text="Queued.", run_id=run_id)
+
+    monkeypatch.setattr(spawn_line.messaging, "deliver_message", deliver)
+    line = SpawnLine(limit=1, waiting_flag_minutes=5, waiting_gap_seconds=60)
+    at_work("busy")
+    (at_work if lead_works else lambda run_id, **rest: register_run(run_id=run_id, pid=None, **rest))("lead")
+    (at_work if parent_works else lambda run_id, **rest: register_run(run_id=run_id, pid=None, **rest))("mid", parent_run_id="lead")
+    asked = line.enter(_spawn(None if parent_works is None else "mid"))
+    assert asked.ahead == 0, "it waits for a place"
+    assert line.report_lost() == [] and sent == [], "its holder is there: nothing lost"
+    with line._places() as places:
+        places[0] = places[0].model_copy(update={"holder_started": -1})  # its holder is gone
+    assert line.describe(asked.run_id).startswith("not started: the process holding its place in line went away")
+    for _ in range(2):  # one look, then the next
+        line.report_lost()
+    assert [(call["run_id"], call["sender"]) for call in sent] == ([(told_run, reg.SPAWN_LOST_SENDER)] if told_run else []), kind
+    if told_run:
+        assert "code-reviewer" in sent[0]["message"] and "review it" in sent[0]["message"] and asked.run_id[:8] in sent[0]["message"]
+        assert sent[0]["message_id"] == f"spawn-lost-{asked.run_id}"
+        with line._places() as places:
+            assert places[0].state == "failed" and places[0].told
+
+
 def test_a_new_run_started_for_a_run_lists_it_among_its_askers():
     """A job queue's wake starting a new worker (`spawn --for` the run that queued the job): that run is its first asker."""
     maker, started = str(uuid.uuid4()), str(uuid.uuid4())

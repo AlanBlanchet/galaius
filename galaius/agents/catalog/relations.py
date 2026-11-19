@@ -735,7 +735,7 @@ def _left_open(run: reg.AgentRun, conversation: Sequence[reg.AgentRun]) -> str:
     if not ended:
         return ""
     turn_review_marks.update(lambda stored: stored.with_(turn_review_marks.Marks(shown={other.run_id: other.finished_at or 0.0 for other in ended})))
-    said = [f"Open rows {_tag(other)} left on your answer to the person (do them now):\n{rows}"
+    said = [f"Open rows {_tag(other)} left on your answer to the person (his message a narrow ask → record fixes only, the rest one `unasked:` line each, nothing built or sent; else do them now):\n{rows}"
             for other in ended if (rows := report_section(report_of(other.run_id), "REDO"))]
     return "\n".join(said)
 

@@ -314,6 +314,10 @@ class EndWatch(BaseModel):
                 log.exception("handing back the reports of run %s failed", run_id[:8])
                 failed.add(run_id)
         self.failed = frozenset(failed)
+        try:   # a spawn whose place in line was lost with its holder (`SpawnLine.report_lost`): told to the run that asked it
+            deliveries.extend(SpawnLine.here().report_lost())
+        except Exception:  # never stops the look's own hand-backs; tried again at the next look
+            log.exception("telling the spawns lost from the line failed")
         if not failed:
             with reg.shared_state(_LOOKED) as (_raw, write, _keep):
                 write(repr(self.looked).encode())

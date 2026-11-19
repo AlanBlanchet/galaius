@@ -1064,7 +1064,8 @@ class MachineAgents(BaseModel):
             raise AgentRefused("agents_off", "its owner switched off the runs other of his PCs place here (`galaius machine peer off`)")
         ready, reason = available()
         if not ready and not (placed is not None and placed.unfenced_ok):
-            raise AgentRefused("fence_broken", f"this PC cannot isolate the run ({reason}) and its owner did not allow runs placed here without isolation")
+            raise AgentRefused("fence_broken", f"this PC cannot isolate the run ({reason}) and its owner has not allowed runs placed here without isolation; "
+                                           "that allowance is not built into the web app yet (no page or button sets it): make the isolation work here, or place the run on another PC")
         return ready
 
     def _project_env(self, request: AgentStartRequest, folder: Path) -> int:
