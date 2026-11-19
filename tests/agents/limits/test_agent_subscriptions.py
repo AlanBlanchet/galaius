@@ -36,7 +36,7 @@ from tests.support.paths import TESTS
 
 #: Windows keeps no POSIX mode bits (`chmod` sets only the read-only flag).
 POSIX_MODES = sys.platform != "win32"
-FAKE_CLAUDE = TESTS / "fixtures" / "agents" / "fake_login.py"
+FAKE_CLAUDE = TESTS / "fixtures" / "agents" / "fake_claude.py"
 #: Lines as the vendors wrote them (a Claude Code run's stream; a Codex session record), only ids shortened.
 CLAUDE_LINE = ('{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":4102448400,"rateLimitType":"five_hour","overageStatus":"rejected",'
                '"overageDisabledReason":"org_level_disabled","isUsingOverage":false,"unifiedWindows":{"five_hour":{"utilization":0.03,"resetsAt":4102448400},'

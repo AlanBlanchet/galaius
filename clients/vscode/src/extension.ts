@@ -4,7 +4,7 @@ import { ACTIVITY_SCHEME, activityPath, formatActivity, runIdFromPath } from "./
 import { IO_INLINE, IO_SCHEME, ioFromPath } from "./conversation/format/ioDocument";
 import { ChatViewProvider } from "./conversation/chatView";
 import { galaiusCli } from "./workspace/galaiusCli";
-import { ServerWorkspaceControls } from "./workspace/serverControls";
+import { ServerControls } from "./workspace/serverControls";
 import { serverWorkspaceConfigured } from "./workspace/workspaceState.ts";
 import { refreshToolSettings, saveToolSetting, stripPortableEnvironment, toolSettingsView } from "./workspace/toolSettings.ts";
 import { REVEAL_COMMAND, REVEALED_KEY, shouldRevealOnce } from "./view/panelReveal";
@@ -460,7 +460,7 @@ export async function activate(
   // The chat surface, under the agent list in the same side-bar container: the list says what is
   // running, this is where you talk to it.
   const chatProvider = new ChatViewProvider(log);
-  const workspaceControls = new ServerWorkspaceControls(() => { agentsProvider.refresh(); refreshWorkplace(); });
+  const workspaceControls = new ServerControls(() => { agentsProvider.refresh(); refreshWorkplace(); });
   context.subscriptions.push(workspaceControls, vscode.commands.registerCommand("galaius.workspace", () => workspaceControls.open()));
   void workspaceControls.refresh().catch(() => {});
   // Clicking somebody in the rail aims the chat at them, exactly as clicking a tree row does —

@@ -11,7 +11,7 @@ interface AgentDraft {
   edit: { criteria?: string | null; criteria_weights?: string; reasoning?: string; reports_to?: string | null; model?: WorkspaceModel | null };
 }
 
-export class ServerWorkspaceControls implements vscode.Disposable {
+export class ServerControls implements vscode.Disposable {
   private drafts = new Map<string, AgentDraft>();
   private executions = new Map<string, WorkflowExecution>();
   private status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 15);

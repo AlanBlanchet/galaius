@@ -577,7 +577,7 @@ def test_the_context_gauge_and_a_manual_compaction_read_off_a_real_compacted_ses
     paths removed). The gauge is the newest main-thread call's whole prompt, the window the result's
     own `contextWindow`, and the compaction one `compacted` event carrying both sizes."""
     provider, ledger = ClaudeCodeProvider(), UsageLedger()
-    lines = (TESTS / "fixtures" / "agents" / "compact_stream.jsonl").read_text().splitlines()
+    lines = (TESTS / "fixtures" / "agents" / "claude_compact.jsonl").read_text().splitlines()
     events = [event for line in lines if (event := provider.parse(line, ledger)) is not None]
     assert {e.context_tokens for e in events if e.kind in ("text", "thinking")} == {10 + 13803 + 8587}
     assert [e.context_window for e in events if e.kind == "done"] == [200_000, 200_000]
@@ -597,16 +597,16 @@ def test_a_claude_run_knows_its_window_before_its_first_turn_ends():
     provider = ClaudeCodeProvider()
     request, task = (json.loads(line) for line in provider.task_message("- list the files").decode().splitlines())
     assert (request["request"]["subtype"], request["request_id"], task["message"]["content"]) == ("get_context_usage", provider.CONTEXT_REQUEST, "- list the files")
-    lines = (TESTS / "fixtures" / "agents" / "context_usage.jsonl").read_text().splitlines()
+    lines = (TESTS / "fixtures" / "agents" / "claude_context.jsonl").read_text().splitlines()
     assert [provider.parse(line).context_window for line in lines] == [200_000, 1_000_000]
     assert not any(provider.took_message(line) for line in lines)
-    stream = [lines[0], *(TESTS / "fixtures" / "agents" / "compact_stream.jsonl").read_text().splitlines()[:3]]
+    stream = [lines[0], *(TESTS / "fixtures" / "agents" / "claude_compact.jsonl").read_text().splitlines()[:3]]
     assert StreamDigest.of("", [e for line in stream if (e := provider.parse(line)) is not None], viewer="").context == ContextGauge(
         context_tokens=10 + 13803 + 8587, context_window=200_000)
     # Under `autoCompactWindow` the request says the compaction window, the turn's result still the model's own: the gauge keeps the first.
     sized, ledger = json.loads(lines[1]), UsageLedger()
     sized["response"]["response"]["maxTokens"] = 200_000
-    compacted = (TESTS / "fixtures" / "agents" / "compact_stream.jsonl").read_text().splitlines()
+    compacted = (TESTS / "fixtures" / "agents" / "claude_compact.jsonl").read_text().splitlines()
     result = json.loads(compacted[3].replace('"contextWindow":200000', '"contextWindow":1000000'))
     assert [provider.parse(json.dumps(line), ledger).context_window for line in (sized, json.loads(stream[1]), result)] == [200_000, None, 200_000]
     # A run recorded while galaius set a compaction window (its line ahead of each turn's, until 2026-11-03) replays it:

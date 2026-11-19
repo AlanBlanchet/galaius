@@ -3,7 +3,7 @@ const path = require("node:path");
 
 const root = path.resolve(__dirname, "..", "..");
 const schemas = fs.readFileSync(process.argv[2], "utf8").trim();
-const runtime = fs.readFileSync(path.join(__dirname, "decoders.ts"), "utf8")
+const runtime = fs.readFileSync(path.join(__dirname, "runtime.ts"), "utf8")
   .replace("__CONVERSATION_SCHEMAS__", schemas);
 fs.appendFileSync(
   path.join(root, "src", "generated", "types.ts"),
