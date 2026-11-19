@@ -734,14 +734,14 @@ def _key_variables() -> list[str]:
     """Every variable a program of this PC reads a model key or login token from, and the ones its fence would keep."""
     names = {name for provider in PROVIDERS.values() for name in (*(provider.fenced.keys if provider.fenced is not None else ()),
                                                                    *((provider.held.variable,) if provider.held is not None and provider.held.variable else ()))}
-    return sorted(names | {"MISTRAL_API_KEY", "GEMINI_API_KEY"})
+    return sorted(names | {"MISTRAL_API_KEY", "GEMINI_API_KEY", "anthropic_api_key", "GROQ_TOKEN", "HF_TOKEN", "GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY"})
 
 
 @pytest.mark.parametrize("lent", [True, False], ids=["lent", "own"])
 def test_a_lent_run_holds_none_of_the_pcs_provider_keys(lent: bool) -> None:
     """Threat T3: a member's run on a lent PC is paid by his own login and never holds a key of the PC's owner: whatever
     the service environment or local config set (every key variable of every program, the held-token variable, any
-    `<PROVIDER>_API_KEY`), `bound` removes it and no program's `child_environment` brings one back. A run on the
+    `<PROVIDER>_API_KEY` in any case, any `*_TOKEN` / `*_KEY`), `bound` removes it and no program's `child_environment` brings one back. A run on the
     PC's own login keeps its CLI's key (the contrast: the rows would pass trivially on an empty environment)."""
     names = _key_variables()
     assert {"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY"} <= set(names)

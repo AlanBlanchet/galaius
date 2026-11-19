@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict
 from galaius.agents.limits import held, quota
 from galaius.agents.providers import MODEL_API_KEY, PROVIDERS, AgentProvider
 from galaius.host.atomic_file import replace_held_open
+from galaius.isolation.fence import SECRET_SUFFIXES
 from galaius.host.paths import UserPaths
 
 logger = logging.getLogger(__name__)
@@ -586,7 +587,7 @@ class RunSubscription(WireRunSubscription):
         """`environment` for one launch or turn on it (of `provider`'s CLI, refused when its subscription is another's
         login): its caps checked (refused at one), the owner's config adopted into its folder (`Subscription.adopt`),
         every CLI's login variable at its folder or a closed one (`overlay`). A lent run holds no key of this PC's owner:
-        its programs' key variables and every `<PROVIDER>_API_KEY` removed (`owner_keys`)."""
+        its programs' key variables and every secret-named variable removed (`owner_keys`)."""
         if self.subscription_id is not None and provider is not None:
             Subscription.of(self.subscription_id).runs(provider)
         self.check()
@@ -602,4 +603,4 @@ class RunSubscription(WireRunSubscription):
         it (`held.mark`), and any `<PROVIDER>_API_KEY` (`MODEL_API_KEY`)."""
         named = {name for provider in PROVIDERS.values() for name in (*(provider.fenced.keys if provider.fenced is not None else ()),
                                                                       *((provider.held.variable, held.mark(provider.held.variable)) if provider.held is not None and provider.held.variable is not None else ()))}
-        return frozenset(named | {name for name in environment if MODEL_API_KEY.fullmatch(name)})
+        return frozenset(named | {name for name in environment if MODEL_API_KEY.fullmatch(name.upper()) or name.upper().endswith(SECRET_SUFFIXES)})
