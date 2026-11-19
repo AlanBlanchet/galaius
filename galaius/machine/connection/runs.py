@@ -101,9 +101,9 @@ class Runs:
         last = next((event for event in reversed(events) if event.kind == "text" and event.text.strip()), None)
         return "" if last is None else last.text
 
-    @staticmethod
-    def _safe_environment() -> dict[str, str]:
-        return {**{key: value for key, value in os.environ.items() if key in ALLOWED_ENV}, **Runs._system_environment()}
+    @classmethod
+    def _safe_environment(cls) -> dict[str, str]:
+        return {**{key: value for key, value in os.environ.items() if key in ALLOWED_ENV}, **cls._system_environment()}
 
     @staticmethod
     def _system_environment() -> dict[str, str]:
@@ -143,8 +143,8 @@ class Runs:
             disk_free_gb = 0
         return {"cpu_count": os.cpu_count() or 1, "ram_mb": ram_mb, "disk_free_gb": disk_free_gb}
 
-    @staticmethod
-    def _accelerators() -> list[dict[str, object]]:
+    @classmethod
+    def _accelerators(cls) -> list[dict[str, object]]:
         """GPUs on this machine, so a `model` step (detection, segmentation) defaults here.
 
         Torch-free: `nvidia-smi` is queried directly and Apple's unified GPU is inferred from the
@@ -152,7 +152,7 @@ class Runs:
         wheel onto a machine that runs no vision node. `none` is reported explicitly (not an empty
         list) so a runner that checked and found nothing is distinguishable from an older runner
         that never reported accelerators at all."""
-        found = Runs._cuda_accelerators() or Runs._mps_accelerator()
+        found = cls._cuda_accelerators() or cls._mps_accelerator()
         accelerators = found or (MachineAccelerator(kind="none", name="none", memory_mb=0),)
         return [item.model_dump(mode="json") for item in accelerators]
 

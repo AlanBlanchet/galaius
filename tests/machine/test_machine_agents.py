@@ -1759,7 +1759,7 @@ def test_a_pasted_code_reaches_its_sign_in_through_the_web_request(base: Path, t
 # 2026-10-23 16:29: his new conversation was sent to this PC and the server recorded
 # `held_code=start_unanswered` — « n'a pas confirmé le lancement ». The PC had answered nothing
 # because `run_agent` raised `admission.Paused` (« en pause : limite d'usage claude jusqu'à 17:21 »)
-# and that class derived from bare `Exception`, outside the refusals `machine/connection.py` turns into an
+# and that class derived from bare `Exception`, outside the refusals `machine/connection/faults.py` turns into an
 # answer. An unanswered start is the worst of the two: the server cannot tell a refusal from a
 # frozen PC, and he is told to look at the list instead of being told why.
 
@@ -1774,7 +1774,7 @@ def test_a_pasted_code_reaches_its_sign_in_through_the_web_request(base: Path, t
     AgentRefused,                # web_full, under_way, a project folder's failure (WorkspaceRefused)
 ])
 def test_every_refusal_a_launch_raises_is_one_the_machine_channel_answers(refusal):
-    """`machines.py` answers an agent request it could not perform by catching this one tuple; a
+    """`machine/connection/` answers an agent request it could not perform by catching this one tuple; a
     refusal outside it leaves the asker with no answer at all."""
     assert issubclass(refusal, machines.ANSWERED_REFUSALS)
 
