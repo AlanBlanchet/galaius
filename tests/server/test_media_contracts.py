@@ -3,6 +3,7 @@
 import base64
 import shutil
 import subprocess
+from types import SimpleNamespace
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -13,6 +14,7 @@ from galaius.agents.providers import ClaudeCodeProvider, CodexProvider
 from galaius.server import vlm
 from galaius.server.tools import desktop as tools_desktop
 from galaius.server.core import mcp
+from galaius.vision import workspace as media_workspace
 from galaius.vision.types import MediaAnalysis, RecordingCapture, RecordingResult, VLMResult
 from galaius.vision.usage_records import UsageEntry
 
@@ -160,6 +162,11 @@ async def test_real_ffmpeg_record_mcp_separates_sample_cadence_from_encoded_fps(
     win = MagicMock()
     win.stop_video.return_value = clip.read_bytes()
     win.name, win.w, win.h = "isolated", 32, 32
+    # The media workspace refuses a root under the global temporary folder, and the shared `config` keeps the `debug_dir` it was
+    # built with: under a test's temporary HOME (the first test of a batch to build it) every sampling failed, swallowed into a
+    # capture with no frame, and this test passed or failed on that order alone. Its own root, the global temporary folder elsewhere.
+    monkeypatch.setattr(tools_desktop.config, "debug_dir", tmp_path / "out")
+    monkeypatch.setattr(media_workspace, "tempfile", SimpleNamespace(gettempdir=lambda: "/no-such-global-temp"))
     monkeypatch.setattr(tools_desktop.config, "video_max_frames", cap)
     monkeypatch.setattr(tools_desktop.config, "video_fps", 5)
     monkeypatch.setattr(
@@ -175,7 +182,7 @@ async def test_real_ffmpeg_record_mcp_separates_sample_cadence_from_encoded_fps(
     assert capture["measured_fps"] == 10
     assert capture["duration"] == pytest.approx(1)
     assert capture["frames_truncated"] is truncated
-    assert len(images) == len(capture["frame_timestamps"])
+    assert images and len(images) == len(capture["frame_timestamps"])  # frames were really sampled, never a swallowed failure
     assert len(images) <= cap
 
 
