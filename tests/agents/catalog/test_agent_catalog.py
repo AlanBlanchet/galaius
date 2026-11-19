@@ -83,6 +83,12 @@ def catalog_home(monkeypatch, tmp_path):
     monkeypatch.setattr(AgentProvider, "authenticated", AsyncMock(return_value=True))
     monkeypatch.setattr(UserConfig, "PATH", tmp_path / "config.env")
     monkeypatch.delenv("GALAIUS_PARENT_RUN_ID", raising=False)
+    # A spawn here starts at once, whatever else this computer is running: the spawn line counts the agents really at work on it and
+    # holds a start while its memory is short (`SpawnLine.here`), which queued the CLI spawn below behind them and never called its launcher.
+    for name, value in (("AGENT_RUNS_MAX", "1000"), ("AGENT_MEMORY_SOFT_PERCENT", "100"), ("AGENT_MEMORY_RELEASE_PERCENT", "100"),
+                        ("AGENT_PC_AVAILABLE_MIN_PERCENT", "0"), ("AGENT_PC_AVAILABLE_RELEASE_PERCENT", "0"),
+                        ("AGENT_PC_MEMORY_STALL_PERCENT", "100"), ("AGENT_PC_MEMORY_STALL_RELEASE_PERCENT", "100")):
+        monkeypatch.setenv(f"GALAIUS_{name}", value)
     # Each retry of a failed request still happens, and waits nothing: a mock transport answers at once, so the real
     # pauses would only add their seconds to every outage test here (`CatalogConnection.RETRY_BACKOFF`).
     monkeypatch.setattr(CatalogConnection, "RETRY_BACKOFF", (0.0,) * len(CatalogConnection.RETRY_BACKOFF))
