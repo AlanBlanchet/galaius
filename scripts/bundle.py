@@ -101,6 +101,8 @@ class Target(BaseModel):
         return root / self.layout.scripts
 
 
+#: The allocation unit installers count disk in: file systems round every file (and folder) up to it.
+BLOCK = 4096
 INTERPRETER = Interpreter()
 TARGETS: tuple[Target, ...] = (
     Target(name="linux-x86_64", triple="x86_64-unknown-linux-gnu", wheels="x86_64-manylinux_2_28", native="linux-x86_64",
@@ -255,9 +257,9 @@ class Bundler(BaseModel):
     @staticmethod
     def packed(root: Path, path: Path) -> tuple[Path, int]:
         """The folder's content at the archive's top, in one order, owned by nobody and timeless: the same
-        release builds the same bytes. With the bytes its files take once unpacked (what an installer says
-        is needed on disk)."""
-        unpacked = 0
+        release builds the same bytes. With the disk it takes once unpacked (what an installer says is needed):
+        each file in whole `BLOCK`-byte blocks and each folder one block, as `du` counts them on a default filesystem."""
+        unpacked = BLOCK  # the folder itself
         with path.open("wb") as file, gzip.GzipFile(fileobj=file, mode="wb", compresslevel=6, mtime=0) as packed, \
                 tarfile.open(fileobj=packed, mode="w", format=tarfile.PAX_FORMAT) as archive:
             for member in sorted(root.rglob("*")):
@@ -266,10 +268,11 @@ class Bundler(BaseModel):
                 info.uname = info.gname = ""
                 info.mtime = 0
                 if info.isreg():
-                    unpacked += info.size
+                    unpacked += -(-info.size // BLOCK) * BLOCK
                     with member.open("rb") as content:
                         archive.addfile(info, content)
                 else:
+                    unpacked += BLOCK if info.isdir() else 0
                     archive.addfile(info)
         return path, unpacked
 
