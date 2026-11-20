@@ -394,7 +394,7 @@ class FenceSpec(BaseModel):
             staged = level == "write_on_review" and path in self.staging
             # A project's reviews are held at the place `PlaceMap.review_folder` resolves from the projects folder, never from
             # the working directory: a path relative to it can name a runner folder (`~/dev/.galaius`).
-            held_at = f"{PROJECTS_ROOT}/{folder.name}" if folder == self.project else path
+            held_at = f"{PROJECTS_ROOT}/{folder.name}" if folder == self.project and folder.parent == UserPaths.projects() else path
             source = self.staging[path] if staged else folder
             writable = level in {"sandbox", "write"} or staged
             scan = Scan.of(source)

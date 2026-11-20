@@ -141,3 +141,91 @@ def test_a_moved_run_keeps_its_conversation_with_the_folder_as_its_project(tmp_p
     moved = reg.get_run("r-notes").fence
     assert moved.project == new / "notes" and moved.start == new / "notes" / "sub" and moved.levels == {"galaius/other": "read"}
     assert moved.places().reach(("galaius", "other")) == "read" and not any(part.startswith(".") for part in moved.levels)
+
+
+def _session_setup(home: Path) -> tuple[Path, Path, Path, Path]:
+    """One earlier project `notes`, its session folder, and the owner's file a planted link would reach."""
+    earlier, new = home / "galaius" / "projects", home / ".galaius" / "projects"
+    (earlier / "notes").mkdir(parents=True)
+    claude = home / ".claude"
+    source = ClaudeCodeProvider.project_folder(claude, earlier / "notes")
+    source.mkdir(parents=True)
+    (source / "s.jsonl").write_text("{}")
+    owner = home / ".ssh"
+    owner.mkdir()
+    (owner / "id_ed25519").write_text("KEY")
+    return earlier, new, source, ClaudeCodeProvider.project_folder(claude, new / "notes")
+
+
+@pytest.mark.parametrize("planted", ["source_link", "target_link", "target_dangling", "link_inside_source", "dir_link_inside_target"])
+def test_a_link_planted_in_a_session_folder_is_never_followed_nor_moved_through(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, planted: str) -> None:
+    """Threat review 2026-11-20 N1 / N2: a fenced run writes its own session folder. Planted links reached `~/.ssh` (moved into the
+    agent's folder) and `~/.config/autostart` (a file written where it runs at login); a dangling one aborted the whole connect step."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    earlier, new, source, target = _session_setup(tmp_path)
+    autostart = tmp_path / ".config" / "autostart"
+    autostart.mkdir(parents=True)
+    if planted == "source_link":
+        source.rename(tmp_path / "linked-source")
+        source.symlink_to(tmp_path / ".ssh")
+    elif planted == "target_link":
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.symlink_to(autostart)
+    elif planted == "target_dangling":
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.symlink_to(tmp_path / "nowhere")
+    elif planted == "link_inside_source":
+        (source / "key").symlink_to(tmp_path / ".ssh" / "id_ed25519")
+        target.mkdir(parents=True)
+    else:
+        target.mkdir(parents=True)
+        (target / "sub").symlink_to(autostart)
+        (source / "sub").mkdir()
+        (source / "sub" / "evil.desktop").write_text("[Desktop Entry]")
+    plan = relocate.plan(tmp_path, ())
+    rehomed = []
+    failed = relocate.apply(plan, lambda root, names: rehomed.append(root), lambda _: None)
+    assert (new / "notes").is_dir()   # the folder itself moved whatever the sessions did
+    assert (tmp_path / ".ssh" / "id_ed25519").read_text() == "KEY" and list(autostart.iterdir()) == []
+    assert bool(failed) == (planted != "source_link")   # a link met is named as left, never raised; a link as the source itself is kept by the plan
+    assert rehomed == [] and plan.moves   # (the token root needs no rehome)
+
+
+def test_a_session_folder_that_cannot_be_renamed_is_named_and_the_rest_still_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tester 2026-11-20 F1: a rename failing on a session folder (name too long once `.galaius` adds a dash, EXDEV) raised out of `apply`,
+    which never reached the records, the rehome nor the drop."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    earlier, new, source, target = _session_setup(tmp_path)
+    real = os.rename
+
+    def failing(src, dst):
+        if str(src) == str(source):
+            raise OSError(18, "Invalid cross-device link")
+        return real(src, dst)
+    monkeypatch.setattr(os, "rename", failing)
+    reg.save_run(reg.AgentRun(run_id="r-notes", provider="claude", name="a", cwd=str(earlier / "notes"), started_at=1.0, exit_code=0))
+    plan = relocate.plan(tmp_path, ())
+    failed = relocate.apply(plan, lambda *_: None, lambda _: None)
+    assert len(failed) == 1 and "cross-device" in failed[0] and source.is_dir()
+    assert reg.get_run("r-notes").cwd == str(new / "notes")   # the records followed the folder
+
+
+def test_two_earlier_homes_holding_one_name_plan_one_move_and_name_the_other(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    for folder in (tmp_path / "galaius" / "projects" / "aino", tmp_path / "dev" / "galaius" / "projets" / "aino"):
+        folder.mkdir(parents=True)
+    plan = relocate.plan(tmp_path / "dev", ("dev", relocate.EARLIER_AGENT_ROOT))
+    assert [move.source for move in plan.moves] == [tmp_path / "galaius" / "projects" / "aino"]
+    assert any(kept.folder == tmp_path / "dev" / "galaius" / "projets" / "aino" and "first" in kept.why for kept in plan.kept)
+    assert relocate.apply(plan, lambda *_: None, lambda _: None) == []   # the dry run promised nothing that then fails
+
+
+def test_a_source_swapped_for_a_link_after_the_plan_is_never_moved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    earlier = tmp_path / "galaius" / "projects"
+    (earlier / "aino").mkdir(parents=True)
+    plan = relocate.plan(tmp_path, ())
+    (earlier / "aino").rmdir()
+    (earlier / "aino").symlink_to(tmp_path)
+    failed = relocate.apply(plan, lambda *_: None, lambda _: None)
+    assert len(failed) == 1 and not (tmp_path / ".galaius" / "projects" / "aino").exists()

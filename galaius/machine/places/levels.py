@@ -13,12 +13,14 @@ import time
 from pathlib import Path
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
-from galaius_core import CREDENTIAL_STORES, PLACE_LEVELS, PROJECTS_ROOT, CredentialStores, MachinePlace, MachinePlaceEntry, PlaceLevel
+from galaius_core import CREDENTIAL_STORES, PLACE_LEVELS, PROJECTS_ROOT, CredentialStores, MachinePlace, MachinePlaceEntry, PlaceLevel, WorkspaceName
 
 from galaius.host.pinned_directory import PinnedDirectory
 
+#: One project folder's name, as the web names them (`WorkspaceName`).
+PROJECT_NAME: TypeAdapter[str] = TypeAdapter(WorkspaceName)
 LEVEL_RANK: dict[PlaceLevel, int] = {level: rank for rank, level in enumerate(PLACE_LEVELS)}
 #: Levels whose folder a workflow step or an agent writes in place.
 IN_PLACE_WRITES: frozenset[PlaceLevel] = frozenset({"sandbox", "write"})
@@ -153,7 +155,11 @@ class PlaceMap(BaseModel):
         an earlier working directory never lands in `~/dev/.galaius`)."""
         if self.project_place(place):
             name = place[len(PROJECTS_ROOT) + 1:]
-            if self.projects is None or not name or "/" in name or name in {".", ".."}:
+            try:
+                PROJECT_NAME.validate_python(name)   # one project folder's name, as the web names them
+            except ValueError:
+                raise PermissionError(f"{place}: no project folder of this PC") from None
+            if self.projects is None:
                 raise PermissionError(f"{place}: no project folder of this PC")
             folder = self.projects / name
         else:

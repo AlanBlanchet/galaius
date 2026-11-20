@@ -165,7 +165,13 @@ def test_a_steering_file_made_in_a_project_is_held_at_the_projects_folder_never_
     assert PlaceMap(working_directory=home / working, internal=internal).project_place(review.place)
     with pytest.raises(PermissionError):
         PlaceMap(working_directory=home / working, internal=internal).review_folder(review.place)   # no projects folder known: nothing resolves
-    for refused in (f"{PROJECTS_ROOT}/../out", f"{PROJECTS_ROOT}/a/b", PROJECTS_ROOT + "/", ".galaius/out/agents"):
+    # N3: a project still in an earlier folder is not named by the token (it would be accepted into a same-named project of the projects folder)
+    earlier = home / "galaius" / "projects" / "aino"
+    earlier.mkdir(parents=True)
+    kept = _spec(home, tmp_path, start="galaius/projects/aino", levels={}, project=earlier, working_directory=home / working).build()
+    assert not any(place.startswith(PROJECTS_ROOT) for _, place, _ in kept.guards)
+    for refused in (f"{PROJECTS_ROOT}/../out", f"{PROJECTS_ROOT}/a/b", PROJECTS_ROOT + "/", ".galaius/out/agents", f"{PROJECTS_ROOT}/a\\b",
+                    f"{PROJECTS_ROOT}/.hidden", f"{PROJECTS_ROOT}/a:b"):   # N5: one project's name, as the web names them
         with pytest.raises(PermissionError):
             places.review_folder(refused)
 

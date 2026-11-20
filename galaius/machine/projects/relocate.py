@@ -157,6 +157,8 @@ def plan(working_directory: Path, agent_roots: tuple[str, ...], busy: bool = Fal
                     kept.append(Kept(folder=folder, why="in use now" + (f" by {', '.join(live[:4])}" if live else "")))
                 elif (new / folder.name).exists() or (new / folder.name).is_symlink():
                     kept.append(Kept(folder=folder, why=f"{new / folder.name} exists"))
+                elif any(move.target == new / folder.name for move in moves):
+                    kept.append(Kept(folder=folder, why=f"another earlier folder of that name moves to {new / folder.name} first"))
                 else:
                     moves.append(Move(source=folder, target=new / folder.name, root=root))
     moved = {run.run_id for run in runs if run.cwd and any(inside(run.cwd, move.source) for move in moves)}
@@ -167,6 +169,9 @@ def plan(working_directory: Path, agent_roots: tuple[str, ...], busy: bool = Fal
         # longest key among EVERY earlier folder (moving or kept) decides whose session folder it is.
         keys = [(folder, ClaudeCodeProvider.project_folder(home, folder).name) for folder in every]
         for entry in sorted((home / "projects").iterdir()):
+            if not _real_folder(entry):   # planted by a run that writes its own session folder: never followed
+                kept.append(Kept(folder=entry, why="a link or a file among the sessions: left as it is"))
+                continue
             match = max(((folder, key) for folder, key in keys if entry.name == key or entry.name.startswith(key + "-")), key=lambda pair: len(pair[1]), default=None)
             if match is not None and match[0] in by_source:
                 move, key = by_source[match[0]], match[1]
@@ -198,18 +203,51 @@ def _fence(run: reg.AgentRun, moves: tuple[Move, ...]):
     return fence.model_copy(update={"start": start, "levels": levels, "project": project})
 
 
+def _real_folder(path: Path) -> bool:
+    """Whether `path` is a plain folder itself: a link (dangling too) or a file is not."""
+    try:
+        return stat.S_ISDIR(path.lstat().st_mode)
+    except OSError:
+        return False
+
+
 def _merge(source: Path, target: Path) -> list[str]:
-    """`source`'s files into the existing `target`, none replaced: each one left behind is named."""
+    """`source`'s files into the existing `target`, none replaced: each one left behind is named. Session folders are written
+    by agents (the fence lets a run write its own): nothing is followed, a link in either tree is left where it is, never
+    moved or written through (threat review 2026-11-20 N1: a planted link moved `~/.ssh/id_ed25519` into an agent's folder,
+    another put a file in `~/.config/autostart`)."""
     left = []
-    for item in sorted(source.rglob("*"), key=lambda path: len(path.parts)):
-        destination = target / item.relative_to(source)
-        if item.is_dir():
-            destination.mkdir(exist_ok=True)
-        elif destination.exists():
-            left.append(f"{item}: {destination} exists, left in place")
-        else:
-            os.rename(item, destination)
+    if not _real_folder(source) or not _real_folder(target):
+        return [f"{source}: it or {target} is a link or a file, left in place"]
+    for folder, names, files in os.walk(source, followlinks=False):
+        here = Path(folder)
+        destination = target / here.relative_to(source)
+        for name in list(names):
+            if (here / name).is_symlink() or not (_real_folder(destination / name) or not os.path.lexists(destination / name)):
+                left.append(f"{here / name}: a link, or {destination / name} is not a plain folder: left in place")
+                names.remove(name)
+            elif not os.path.lexists(destination / name):
+                (destination / name).mkdir()
+        for name in files:
+            item = here / name
+            if item.is_symlink() or os.path.lexists(destination / name):
+                left.append(f"{item}: a link, or {destination / name} exists, left in place")
+            else:
+                os.rename(item, destination / name)
     return left
+
+
+def _session(item: SessionMove) -> list[str]:
+    """One session folder to its new key, never through a link; each error named, none raised (the rest of `apply` still runs)."""
+    try:
+        if not _real_folder(item.source):
+            return [f"{item.source}: a link or a file, left in place"]
+        if os.path.lexists(item.target):
+            return _merge(item.source, item.target)
+        os.rename(item.source, item.target)
+        return []
+    except OSError as error:
+        return [f"{item.source}: {error}"]
 
 
 def apply(done: MovePlan, rehome: Callable[[str, frozenset[str]], None], drop: Callable[[tuple[str, ...]], None]) -> list[str]:
@@ -223,8 +261,8 @@ def apply(done: MovePlan, rehome: Callable[[str, frozenset[str]], None], drop: C
         UserPaths.projects().mkdir(parents=True, exist_ok=True)
     for move in done.moves:
         try:
-            if move.target.exists() or move.target.is_symlink() or unplain(move.source.parent) is not None:   # a POSIX rename swaps an empty folder for the source
-                raise FileExistsError(f"{move.target} exists or a link is on the way")
+            if move.target.exists() or move.target.is_symlink() or move.source.is_symlink() or unplain(move.source.parent) is not None:   # a POSIX rename swaps an empty folder for the source
+                raise FileExistsError(f"{move.target} exists, or a link is on the way or is the folder itself")
             os.rename(move.source, move.target)
             moves.append(move)
         except OSError as error:
@@ -241,10 +279,7 @@ def apply(done: MovePlan, rehome: Callable[[str, frozenset[str]], None], drop: C
     for session in done.sessions:
         if not any(session.source.name.startswith(ClaudeCodeProvider.project_folder(session.source.parent.parent, Path(source)).name) for source in sources):
             continue
-        if session.target.exists():
-            failed += _merge(session.source, session.target)
-        else:
-            os.rename(session.source, session.target)
+        failed += _session(session)
     for root in sorted({move.root for move in landed} - {PROJECTS_ROOT}):
         rehome(root, frozenset(move.source.name for move in landed if move.root == root))
     if done.drops and not failed:
