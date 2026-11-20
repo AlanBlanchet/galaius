@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from galaius.cli import prompts as prompt_commands
+from galaius.cli.commands import prompts as prompt_commands
 from galaius.config.user import UserConfig
 from tests.support import child_environment, commit_all, init_repo, run_git
 

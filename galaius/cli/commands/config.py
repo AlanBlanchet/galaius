@@ -11,7 +11,7 @@ from galaius.catalog.criteria import Criteria, CriteriaError
 from galaius.models.registry import Model
 from galaius.runtime import config
 from galaius.account.tool_settings import PORTABLE_ENV, MachineNotice, ServerToolSettings, ToolSettingsConflict
-from galaius.cli.workspace import WorkspaceCLI
+from galaius.cli.commands.workspace import WorkspaceCLI
 
 
 config_app = App(name="config", help="Personal portable settings on the server; credentials and machine settings stay local.")

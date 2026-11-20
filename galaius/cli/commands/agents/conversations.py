@@ -17,7 +17,7 @@ from galaius.agents.spawn_line import SpawnLine
 from galaius.cli.commands.agents.app import agents_app
 
 
-def said_refused(sentence: str, refusal: MachineRefusal | None, *, file: TextIO | None = None) -> None:
+def _said_refused(sentence: str, refusal: MachineRefusal | None, *, file: TextIO | None = None) -> None:
     """A refusal said to whoever runs the command: its `ERROR:` line, then, typed, its reason as one `RefusedLine`."""
     print(f"ERROR: {sentence}" if not sentence.startswith("ERROR: ") else sentence, file=file)
     if refusal is not None:
@@ -103,7 +103,7 @@ def agents_send(run_id: str, message: str, *, fyi: Annotated[bool, Parameter(nam
         raise SystemExit(1)
     waiting = SpawnLine.here().waits(delivery.run_id) if delivery.state == "queued" else None
     if delivery.state == "error":
-        said_refused(delivery.text, delivery.refusal)
+        _said_refused(delivery.text, delivery.refusal)
         raise SystemExit(1)
     print(f"{delivery.text} Its turn: {waiting}" if waiting else delivery.text)
 
@@ -150,18 +150,18 @@ def agents_resume(
         return
     refused = False
     for identity in targets:
-        # A run at one of his subscription caps is refused before anything is queued, typed (`said_refused`) for the
+        # A run at one of his subscription caps is refused before anything is queued, typed (`_said_refused`) for the
         # caller to word with its reset time.
         if (run := reg.get_run(reg.resolve_run_id(identity) or identity)) is not None:
             try:
                 run.prepare_continue()
             except Coded as refusal:
-                said_refused(f"{identity[:8]}: {refusal}", refusal_of(refusal), file=sys.stderr)
+                _said_refused(f"{identity[:8]}: {refusal}", refusal_of(refusal), file=sys.stderr)
                 refused = True
                 continue
         delivery = messaging.deliver_message(identity, reg.RESUME_BRIEF)
         if delivery.state == "error":
-            said_refused(f"{identity[:8]}: {delivery.text.removeprefix('ERROR: ')}", delivery.refusal, file=sys.stderr)
+            _said_refused(f"{identity[:8]}: {delivery.text.removeprefix('ERROR: ')}", delivery.refusal, file=sys.stderr)
         else:
             print(f"{identity[:8]}: {delivery.text}")
         refused = refused or delivery.state == "error"

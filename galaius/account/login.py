@@ -38,7 +38,7 @@ from galaius import USER_AGENT, __version__
 from galaius.agents.catalog.entries import AgentCatalog
 from galaius.agents.catalog.connection import CatalogConnection
 from galaius.agents.turns.session_stops import SETTINGS_OK, SessionStops
-from galaius.cli.prompts import PromptMode
+from galaius.cli.commands.prompts import PromptMode
 from galaius.prompts.heads import ServerPrompts
 from galaius.machine.service import MACHINE_SERVICE, ServiceUnavailable
 from galaius.machine.connection import problems, transport

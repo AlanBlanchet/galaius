@@ -13,7 +13,7 @@ from galaius_core.identity.accounts import Account, Bootstrap, Workspace
 from galaius_core.prompts import PromptCreateRequest, PromptKey, PromptRevision
 
 from galaius.agents.catalog.connection import CatalogConnection
-from galaius.cli import prompts
+from galaius.cli.commands import prompts
 from galaius.config.user import UserConfig
 from galaius.prompts.heads import MAX_EDITOR_BYTES, ServerPrompts
 

@@ -1,9 +1,8 @@
-"""`galaius status`, `providers`, `dashboard` and `refresh`: how galaius is set up here and what it can use."""
+"""`galaius status`, `providers` and `dashboard`: how galaius is set up here and what it can use."""
 
 from pathlib import Path
 from typing import Annotated
 from cyclopts import Parameter
-from galaius.catalog import live_sources
 from galaius.cli.clients import ClientTarget
 from galaius.cli.command_bootstrap import Config
 from galaius.cli.render import CliRenderer
@@ -13,7 +12,9 @@ from galaius.desktop import backend as desktop_backend
 from galaius.models.registry import Model
 from galaius.models.capability import ModelCapability
 from galaius.runtime import config
-from galaius.cli.commands.sections import print_media_transport, print_resolved_models, print_stale_servers
+from galaius.cli.health.media import print_media_transport
+from galaius.cli.health.models import print_resolved_models
+from galaius.cli.health.servers import print_stale_servers
 
 
 def status(
@@ -66,11 +67,11 @@ def status(
         print(f"  desktop    {target_line}")
 
     Model.load_registry()
-    providers = Model.available_providers()
+    api_providers = Model.available_providers()
     grounding = Model.available_by_capability(ModelCapability.GUI_GROUNDING)
     print(
         f"\nAPI keys (optional for visual subscriptions; required by configured audio/API paths): "
-        f"{', '.join(providers) or 'none'}"
+        f"{', '.join(api_providers) or 'none'}"
     )
     print(f"Grounding models ready: {len(grounding)}")
 
@@ -115,23 +116,3 @@ def dashboard() -> None:
     """
 
     CliRenderer.render(View.dashboard(config))
-
-
-def refresh_live_data() -> None:
-    """Re-fetch the live model catalog and benchmark scores the dashboard reads.
-
-    Python is the SOLE writer of those cache files — the extension used to fetch and write the
-    catalog itself with a narrower schema, so whichever side wrote last decided whether prices
-    existed. Now the extension asks for this instead. A source that did not refresh is printed
-    with its reason and the age of the copy still served, and the command exits 1.
-    """
-
-    outcomes = live_sources.refresh_all()
-    done = [name for name, why in outcomes.items() if why is None]
-    if done:
-        print("Refreshed: " + ", ".join(done))
-    for name, why in outcomes.items():
-        if why is not None:
-            print(f"{name} NOT refreshed: {why}")
-    if len(done) < len(outcomes):
-        raise SystemExit(1)

@@ -9,7 +9,8 @@ import json
 import pytest
 
 from galaius.cli.commands.agents import spawn as cli_spawn
-from galaius.cli.commands import sections, status as cli_status
+from galaius.cli.health import models as health_models
+from galaius.cli.commands import status as cli_status
 from galaius.agents.providers import ClaudeCodeProvider, CodexProvider, MEDIA_PROVIDERS
 from galaius.config.settings import Config
 from galaius.config.user import UserConfig
@@ -26,7 +27,7 @@ def _only_zai(monkeypatch):
 
 
 def test_resolved_models_helper_names_every_task_with_its_role_knob(_only_zai, capsys):
-    sections.print_resolved_models()
+    health_models.print_resolved_models()
     out = capsys.readouterr().out
     # the view is TASK-centric — each thing a user does is named...
     for task in ("screenshot", "get_interactive_elements", "transcribe", "review_ui", "measure_ui"):
@@ -40,7 +41,7 @@ def test_resolved_models_helper_names_every_task_with_its_role_knob(_only_zai, c
 
 def test_resolved_models_helper_flags_a_missing_key(monkeypatch, capsys):
     monkeypatch.setattr("galaius.models.registry.Model.is_available", lambda self: False)  # nothing reachable
-    sections.print_resolved_models()
+    health_models.print_resolved_models()
     out = capsys.readouterr().out
     assert "⚠" in out and "no model available" in out  # nothing resolving is called out, never silent
     assert "fall back to frontier" in out   # low/medium honestly report the absence of a sovereign key
@@ -53,7 +54,7 @@ def test_providers_includes_the_resolved_selection(_only_zai, capsys):
 
 
 def test_media_transport_status_is_registry_derived_and_actionable(monkeypatch, capsys):
-    app_module = importlib.import_module("galaius.cli.commands.sections")
+    app_module = importlib.import_module("galaius.cli.health.media")
     monkeypatch.setattr(ClaudeCodeProvider, "available", lambda self: True)
     monkeypatch.setattr(CodexProvider, "available", lambda self: False)
     config = Config(
@@ -312,7 +313,7 @@ def test_the_doctor_reports_the_criterion_when_one_governs_the_role(monkeypatch,
     """
     monkeypatch.setattr("galaius.models.registry.Model.is_available", lambda self: self.id == "zai/glm-4.5v")
     monkeypatch.setattr(runtime_config, "image_criteria", "cap.vlm and aa.intelligence >= 1")
-    sections.print_resolved_models()
+    health_models.print_resolved_models()
     out = capsys.readouterr().out
     assert "criterion" in out.lower(), "the line says a criterion is what decides"
     assert "cap.vlm and aa.intelligence >= 1" in out, "and names the rule, not just its answer"

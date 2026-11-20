@@ -9,7 +9,12 @@ from galaius.desktop import backend as desktop_backend
 from galaius.models.registry import Model
 from galaius.models.capability import ModelCapability
 from galaius.runtime import config
-from galaius.cli.commands.sections import print_extension_status, print_media_transport, print_ollama, print_resolved_models, print_sandboxes, print_stale_servers
+from galaius.cli.health.extension import print_extension_status
+from galaius.cli.health.media import print_media_transport
+from galaius.cli.health.models import print_resolved_models
+from galaius.cli.health.ollama import print_ollama
+from galaius.cli.health.sandboxes import print_sandboxes
+from galaius.cli.health.servers import print_stale_servers
 
 
 def doctor(*, fix: bool = False) -> None:

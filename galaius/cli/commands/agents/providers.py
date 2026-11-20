@@ -2,6 +2,8 @@
 
 import json
 import sys
+from typing import Annotated
+from cyclopts import Parameter
 from galaius_core import DEFAULT_PROGRAM
 from galaius.machine.presence import PresenceFiles
 from galaius.agents import providers as agent_providers
@@ -154,3 +156,9 @@ def modes_by_provider(values: list[str] | None) -> dict[str, str]:
             raise ValueError(f"Conflicting workspace modes for {name!r}")
         modes[name] = mode
     return modes
+
+
+@agents_app.command(name="turn-end", show=False)
+def agents_turn_end(*argv: str, export_option: Annotated[str, Parameter(name="--export-option")]) -> None:
+    """Run one CLI turn whose stream marks no end and write its end as one line (`providers.turn_end`)."""
+    raise SystemExit(agent_providers.turn_end(list(argv), export_option))

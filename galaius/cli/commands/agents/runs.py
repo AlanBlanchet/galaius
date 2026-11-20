@@ -3,15 +3,12 @@
 import os
 import sys
 from pathlib import Path
-from typing import Annotated
 from uuid import UUID
-from cyclopts import Parameter
 from galaius.machine.peer.client import PeerClient, PeerError, PeerUnavailable
 from galaius.machine.peer.words import pick
 from galaius_core import ASKED_BY_MAX
 from galaius.agents import messaging
 from galaius.agents.turns import handback
-from galaius.agents import providers as agent_providers
 from galaius.agents import registry as reg
 from galaius.agents.catalog import community as community_agents
 from galaius.agents.host import run_console
@@ -21,11 +18,6 @@ from galaius.agents.providers import (
 from galaius.agents.spawn_line import SpawnLine
 from galaius.cli.commands.agents.app import agents_app
 
-
-@agents_app.command(name="turn-end", show=False)
-def agents_turn_end(*argv: str, export_option: Annotated[str, Parameter(name="--export-option")]) -> None:
-    """Run one CLI turn whose stream marks no end and write its end as one line (`providers.turn_end`)."""
-    raise SystemExit(agent_providers.turn_end(list(argv), export_option))
 
 
 @agents_app.command(name="console")

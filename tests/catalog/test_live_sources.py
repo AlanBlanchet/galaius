@@ -37,7 +37,7 @@ def test_a_failing_source_is_reported_with_its_reason_and_never_stops_the_others
 
 
 def test_galaius_refresh_prints_why_a_source_did_not_refresh(monkeypatch, capsys):
-    from galaius.cli.commands.status import refresh_live_data
+    from galaius.cli.commands.refresh import refresh_live_data
 
     monkeypatch.setattr(live, "SOURCES", (_source("benchmark scores", _rate_limited), _source("model catalog")))
     with pytest.raises(SystemExit) as exited:

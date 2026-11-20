@@ -11,7 +11,7 @@ from galaius import USER_AGENT, __version__
 from galaius.prompts import mirror as prompt_mirror
 from galaius.prompts import projection as prompt_projection
 from galaius.agents.catalog.connection import CatalogConnection
-from galaius.cli.prompts import PromptMode
+from galaius.cli.commands.prompts import PromptMode
 from galaius.account.tls import server_tls
 from galaius.machine.tray.launch import TrayLauncher
 from galaius.agents.run import load_policy

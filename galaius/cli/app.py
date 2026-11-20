@@ -72,7 +72,7 @@ app.command(
     help="Diagnose the environment and optionally deliver fixes.",
 )
 app.command(
-    "galaius.cli.commands.status:refresh_live_data", name="refresh",
+    "galaius.cli.commands.refresh:refresh_live_data", name="refresh",
     help="Refresh the live model catalog and benchmark scores.",
 )
 app.command(
@@ -108,7 +108,7 @@ app.command(
     help="Draw images on the Galaius platform, charged to you.",
 )
 app.command(
-    "galaius.cli.prompts:prompts_app", name="prompts",
+    "galaius.cli.commands.prompts:prompts_app", name="prompts",
     help="Author and synchronize prompts through a local Git worktree.",
 )
 app.command(
@@ -116,7 +116,7 @@ app.command(
     help="Let this computer's screen be watched from the web, or stop it.",
 )
 app.command(
-    "galaius.cli.workspace:workspace_app", name="workspace",
+    "galaius.cli.commands.workspace:workspace_app", name="workspace",
     help="Inspect and edit the connected server workspace.",
 )
 app.command(

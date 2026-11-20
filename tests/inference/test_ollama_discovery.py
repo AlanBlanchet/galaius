@@ -435,7 +435,7 @@ def test_a_dead_daemon_leaves_the_baked_catalog_untouched(monkeypatch):
 def test_doctor_names_what_the_daemon_has_pulled(monkeypatch, capsys):
     """`galaius doctor` is where he goes to ask "what will actually run?" — a model he pulled
     and paid for must be named there."""
-    from galaius.cli.commands.sections import print_ollama
+    from galaius.cli.health.ollama import print_ollama
 
     monkeypatch.setattr(ollama, "discover_cached", lambda: ollama.discover(client=client()))
     print_ollama()
@@ -448,7 +448,7 @@ def test_doctor_names_what_the_daemon_has_pulled(monkeypatch, capsys):
 
 def test_doctor_says_nothing_when_there_is_no_daemon(monkeypatch, capsys):
     """No Ollama must mean no noise — not a warning line about a feature the user never asked for."""
-    from galaius.cli.commands.sections import print_ollama
+    from galaius.cli.health.ollama import print_ollama
 
     monkeypatch.setattr(ollama, "discover_cached", list)
     print_ollama()
