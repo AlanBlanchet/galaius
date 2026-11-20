@@ -17,6 +17,7 @@ from galaius.agents import agent_queue
 from galaius.agents.providers import ClaudeTurnSettings
 from galaius.agents.turns import handback, reviews, running_claim
 from galaius.agents.catalog import relations
+from galaius.agents.catalog.community import CommunityAgent
 from galaius.agents import registry as reg
 from galaius.agents.transport.events import Relation
 from galaius.agents.spawn_line import Spawn, SpawnLine
@@ -583,6 +584,23 @@ def test_runs_silent_too_long_are_named_once_to_the_run_at_work_that_asked_them(
     _silent(first, 650)  # it wrote again, then went silent again
     handback.SilenceWatch().tick(LIMITS)
     assert len(told) == 2 and first in told[1]["message"] and second not in told[1]["message"]
+
+
+def test_a_silent_run_with_no_role_is_named_in_plain_words(told, at_work):
+    """The watch's line named a community entry's run, or one of no role, « (no role) » (2026-11-20, owner's notices)."""
+    lead, plain, community = (str(uuid.UUID(int=n)) for n in (1, 2, 3))
+    at_work(lead, agent="main")
+    at_work(plain, agent=None, name="", parent_run_id=lead)
+    at_work(community, agent=None, parent_run_id=lead, community=CommunityAgent(
+        entry=uuid.uuid4(), kind="agent", title="Electron pro", author="someone/agents", instructions="Review.", digest="0" * 64, nonce="n0nce"))
+    for run_id in (plain, community):
+        _silent(run_id, 700)
+
+    handback.SilenceWatch().tick(LIMITS)
+
+    lines = told[0]["message"].splitlines()[1:]
+    assert "no role" not in told[0]["message"] and f"- {plain} (agent): nothing written" in "\n".join(lines)
+    assert f"- {community} (community agent « Electron pro »): nothing written" in "\n".join(lines)
 
 
 @pytest.mark.parametrize("case", ["asker ended", "running one command", "running one command, sent a message since", "nobody asked"])

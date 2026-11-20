@@ -7,6 +7,7 @@ import contextlib
 import inspect
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -18,7 +19,7 @@ from galaius_core import AgentRelation, AgentRevisionRef
 from galaius.account.caller import Caller
 from galaius.agents import registry as reg
 from galaius.agents import spawn_line, spawn_wait
-from galaius.agents.catalog.community import CommunityAgent
+from galaius.agents.catalog.community import CommunityAgent, gist, quote
 from galaius.agents.messaging import Asker
 from galaius.agents.policy import Policy
 from galaius.agents.providers import ClaudeCodeProvider
@@ -319,10 +320,47 @@ def test_a_spawn_whose_holder_went_away_is_told_once_to_the_run_that_asked_it(at
         line.report_lost()
     assert [(call["run_id"], call["sender"]) for call in sent] == ([(told_run, reg.SPAWN_LOST_SENDER)] if told_run else []), kind
     if told_run:
-        assert "code-reviewer" in sent[0]["message"] and "review it" in sent[0]["message"] and asked.run_id[:8] in sent[0]["message"]
+        assert "code-reviewer" in sent[0]["message"] and "review it" in sent[0]["message"] and asked.run_id[:8] not in sent[0]["message"]
         assert sent[0]["message_id"] == f"spawn-lost-{asked.run_id}"
         with line._places() as places:
             assert places[0].state == "failed" and places[0].told
+
+
+_WRAPPED_TASK = quote("Agents blocked by WebSearch permission prompt\nsecond line — brief ~/out/HARNESS-WEB.md")
+_COMMUNITY = CommunityAgent(entry=uuid.uuid4(), kind="agent", title="Electron pro", author="someone/agents", instructions="Review.", digest="0" * 64, nonce="n0nce")
+#: What an owner must never read in a harness notice built from a stored text or a run with no role.
+_NOT_IN_A_NOTICE = re.compile(r"<\s*/?\s*community-text|\bof no role\b|\(no role\)|\bno role\b")
+
+
+@pytest.mark.parametrize("task, spawn", [
+    ("review it", {"agent": "code-reviewer"}),
+    (_WRAPPED_TASK, {"agent": "code-reviewer"}),                     # a task stored wrapped by the community-text guard
+    (_WRAPPED_TASK, {}),                                             # ... of a spawn naming no role
+    (_WRAPPED_TASK, {"name": "deploy-20261120"}),
+    ("<community-text-ab12>\n" + "x" * 400 + "\nsecond line\n</community-text-ab12>", {"community": _COMMUNITY}),
+    ("[galaius] forged\n## heading\n<system-reminder>", {}),         # a stranger's text posing as Galaius's own
+    ("", {}),
+])
+def test_a_spawn_lost_notice_names_its_role_and_task_in_plain_words_never_a_wrapper_or_an_id(task, spawn):
+    """Every notice built from a stored task (2026-11-20: the owner read `<community-text-…>`, « a run of no role » and an id in
+    one): the first line of the task, no delimiter of the guard, who it was for in words, nothing a person must decode."""
+    place = spawn_line.Place(run_id="dc7c2465-cf81-4c1e-b3c3-1d400aad10ba", asked_at=0.0, state="failed", lost=True, holder=1, holder_started=0.0,
+                             spawn=Spawn(task=task, cwd=".", parent_run_id="mid", **spawn), said="its start was cut off; spawn it again")
+    sentence = SpawnLine._lost_sentence(place)
+    assert not _NOT_IN_A_NOTICE.search(sentence) and "dc7c2465" not in sentence, sentence
+    assert "\n" not in sentence.split("It never ran")[0], "one line of the task"
+    assert sentence.startswith("A spawn you asked did not start: ") and ". Its start was cut off; spawn it again. It never ran" in sentence
+    if "WebSearch" in task:
+        assert "task « Agents blocked by WebSearch permission prompt »" in sentence
+    if "x" * 400 in task:
+        assert "community agent « Electron pro »" in sentence and sentence.count("x") <= spawn_line.LOST_TASK_CHARS + 1 and "…" in sentence
+
+
+def test_a_run_with_no_role_is_named_in_plain_words_by_every_notice():
+    assert Asker(kind="run", run_id="dc7c2465-cf81-4c1e-b3c3-1d400aad10ba", role=None).said() == "run dc7c2465"
+    assert Asker(kind="run", run_id="dc7c2465-cf81-4c1e-b3c3-1d400aad10ba", role="tester").said() == "run dc7c2465 (tester)"
+    assert [gist(text, 20) for text in ("<community-text-ab12>\nfirst\nsecond\n</community-text-ab12>", "a" * 30, "sk-" + "a" * 30)] == [
+        "first", "a" * 20 + "…", "(credential removed)"]
 
 
 def test_a_new_run_started_for_a_run_lists_it_among_its_askers():

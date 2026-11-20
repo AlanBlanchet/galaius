@@ -24,7 +24,7 @@ from galaius.agents import agent_queue
 from galaius.agents.catalog import relations
 from galaius.agents.transport.events import AgentEvent
 from galaius.agents import registry as reg
-from galaius.agents.catalog.community import CommunityAgent, quote
+from galaius.agents.catalog.community import CommunityAgent, named, quote
 from galaius.agents.catalog.relations import live, one_read, owed
 from galaius.agents.spawn_line import SpawnLine
 from galaius.config.settings import Config
@@ -353,7 +353,7 @@ class SilenceWatch(BaseModel):
             last = next((event for event in reversed(reg.events_from(run.run_id, max(0, reg.raw_line_count(run.run_id) - 50))) if event.kind != "message"), None)
             if last is not None and last.kind == "tool" and now - said < config.silent_command_seconds:
                 continue  # it runs one command it started: a long build is not silence
-            silent.setdefault(asker, []).append((silence, f"- {run.run_id} ({run.agent or 'no role'}): nothing written for {int((now - said) // 60)} min "
+            silent.setdefault(asker, []).append((silence, f"- {run.run_id} ({named(run.agent, run.community, run.name)}): nothing written for {int((now - said) // 60)} min "
                                                          f"while at work; last event {last.kind if last else 'none'} at {datetime.fromtimestamp(said, UTC):%H:%M} UTC. "
                                                          f"Look: galaius agents events {run.run_id}"))
         deliveries = []

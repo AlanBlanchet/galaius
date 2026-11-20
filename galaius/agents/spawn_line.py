@@ -55,7 +55,7 @@ from galaius.agents.catalog import relations
 from galaius.agents.turns.critic_rounds import CriticRounds, turn_of
 from galaius.agents.limits.admission import Hold, Paused, SoftMemory, turn_hold
 from galaius.agents import registry as reg
-from galaius.agents.catalog.community import CommunityAgent, quote
+from galaius.agents.catalog.community import CommunityAgent, gist, named
 from galaius.agents.policy import TOOL_PREFIX, Policy, PolicyError
 from galaius.agents.providers import provider_for
 from galaius.agents.catalog.vocabulary import TouchScope
@@ -844,8 +844,8 @@ class SpawnLine(BaseModel):
     @staticmethod
     def _lost_sentence(place: Place) -> str:
         assert place.spawn is not None
-        return (f"A spawn you asked did not start: {place.spawn.agent or place.spawn.name or 'a run of no role'} {place.run_id[:8]}, "
-                f"task: {quote(place.spawn.task, limit=LOST_TASK_CHARS)}. {place.said}. It never ran and holds no place: spawn it "
+        return (f"A spawn you asked did not start: {named(place.spawn.agent, place.spawn.community, place.spawn.name)}, "
+                f"task « {gist(place.spawn.task, LOST_TASK_CHARS)} ». {place.said[:1].upper()}{place.said[1:]}. It never ran and holds no place: spawn it "
                 "again (`agent_spawn`, `galaius agents spawn`) if its work is still wanted.")
 
     @contextmanager

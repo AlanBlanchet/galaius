@@ -482,6 +482,30 @@ def quote(text: str, limit: int | None = REPORT_MAX) -> str:
     return f"<{tag}>\n{neutral}\n</{tag}>"
 
 
+_WRAPPER = re.compile(r"</?\s*community-text-[0-9a-f]+\s*>", re.IGNORECASE)
+
+
+def gist(text: object, limit: int) -> str:
+    """Stored text (a task, a prompt, a title) as a harness notice names it, to the owner as well as to the run it tells: its first
+    line, one plain line cut to `limit` (`…` when cut), no credential in it, whatever could pass for what Galaius writes defanged
+    as in `quote`, and no delimiter of its own: a `quote` wrapper a stored text carries is dropped, its inner text kept. A notice is
+    a sentence of ours naming a text, never a stranger's text between delimiters (2026-11-20: the owner read `<community-text-…>`
+    and « a run of no role » in a spawn-lost notice)."""
+    bare = _WRAPPER.sub("", _SECRET.sub("(credential removed)", visible(str(text or ""))))
+    first = next((line for line in bare.splitlines() if line.strip()), "")
+    line = plain_line(_FORGED.sub(lambda found: "> " if not found.group() else "‹", first), limit + 1)
+    return f"{line[:limit].rstrip()}…" if len(line) > limit else line
+
+
+def named(role: str | None, community: "CommunityAgent | None" = None, label: str | None = None) -> str:
+    """Who a harness notice names, in plain words: its role, else its community entry's title, else its spawn name, else « agent »."""
+    if role:
+        return role
+    if community is not None:
+        return f"community agent « {gist(community.title, TITLE_MAX)} »"
+    return gist(label, 60) or "agent"
+
+
 def shown(run: "AgentRun | None", text: str) -> str:
     """`text` of run `run` (an `AgentRun`, None when unknown) as a reader of that run gets it: `quote`d when the run is a
     community agent's."""

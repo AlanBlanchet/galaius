@@ -545,7 +545,7 @@ class Asker(BaseModel):
     def said(self) -> str:
         """Who it is, in a sentence."""
         if self.run_id is not None:
-            return f"run {reg.short_id(self.run_id)} ({self.role or 'no role'})"
+            return f"run {reg.short_id(self.run_id)}" + (f" ({self.role})" if self.role else "")
         return "the person" if self.person else "an agent outside galaius's runs"
 
 
