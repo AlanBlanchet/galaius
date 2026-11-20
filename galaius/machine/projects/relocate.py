@@ -219,7 +219,7 @@ def _merge(source: Path, target: Path) -> list[str]:
     left = []
     if not _real_folder(source) or not _real_folder(target):
         return [f"{source}: it or {target} is a link or a file, left in place"]
-    for folder, names, files in os.walk(source, followlinks=False):
+    for folder, names, files in os.walk(source, followlinks=False, onerror=lambda error: left.append(f"{error.filename}: {error.strerror}, left in place")):
         here = Path(folder)
         destination = target / here.relative_to(source)
         for name in list(names):
@@ -254,6 +254,7 @@ def apply(done: MovePlan, rehome: Callable[[str, frozenset[str]], None], drop: C
     """`done` carried out: folders, then the records naming them, then their sessions; `rehome(root, names)` re-roots this
     PC's web runs and jobs, `drop(roots)` removes the emptied earlier agent roots. Returns what was left undone, each named."""
     failed, moves = [], []
+    unmoved = 0   # project folders left behind: while one is, its earlier agent folder stays in the settings (a session leftover does not hold it)
     if done.moves:
         # Made folder by folder: `mkdir(parents=True)` would follow a link planted on the way (checked again here, `plan` ran before).
         if (way := unplain(UserPaths.projects())) is not None:
@@ -267,6 +268,7 @@ def apply(done: MovePlan, rehome: Callable[[str, frozenset[str]], None], drop: C
             moves.append(move)
         except OSError as error:
             failed.append(f"{move.source}: {error}")
+            unmoved += 1
     landed = tuple(moves)
     for emptied in {move.source.parent for move in landed}:   # the folder an earlier Galaius made, left empty: never anything in it removed
         with contextlib.suppress(OSError):
@@ -282,6 +284,6 @@ def apply(done: MovePlan, rehome: Callable[[str, frozenset[str]], None], drop: C
         failed += _session(session)
     for root in sorted({move.root for move in landed} - {PROJECTS_ROOT}):
         rehome(root, frozenset(move.source.name for move in landed if move.root == root))
-    if done.drops and not failed:
+    if done.drops and not unmoved:
         drop(done.drops)
     return failed

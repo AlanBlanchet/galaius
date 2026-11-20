@@ -229,3 +229,18 @@ def test_a_source_swapped_for_a_link_after_the_plan_is_never_moved(tmp_path: Pat
     (earlier / "aino").symlink_to(tmp_path)
     failed = relocate.apply(plan, lambda *_: None, lambda _: None)
     assert len(failed) == 1 and not (tmp_path / ".galaius" / "projects" / "aino").exists()
+
+
+def test_a_session_leftover_does_not_keep_the_emptied_agent_folder_in_the_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Threat review round 3 I2: only a project folder left behind holds its earlier agent folder in the settings."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    earlier = tmp_path / "dev" / "galaius" / "projets"
+    (earlier / "notes").mkdir(parents=True)
+    source = ClaudeCodeProvider.project_folder(tmp_path / ".claude", earlier / "notes")
+    target = ClaudeCodeProvider.project_folder(tmp_path / ".claude", tmp_path / ".galaius" / "projects" / "notes")
+    for folder in (source, target):
+        folder.mkdir(parents=True)
+    (source / "key").symlink_to(tmp_path)
+    dropped = []
+    failed = relocate.apply(relocate.plan(tmp_path / "dev", ("dev", relocate.EARLIER_AGENT_ROOT)), lambda *_: None, dropped.append)
+    assert failed and dropped == [(relocate.EARLIER_AGENT_ROOT,)]
