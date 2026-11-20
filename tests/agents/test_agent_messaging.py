@@ -874,7 +874,7 @@ def test_his_message_to_a_cut_run_asks_the_vendor_again(monkeypatch):
     """A person's message to a run that is no longer running is his « Continuer »: the vendor answers
     the turn itself, instead of this PC's memory of an earlier refusal answering for it."""
     from galaius.agents import agent_queue
-    from galaius.agents.limits import quota
+    from galaius.agents.limits import fallback, quota
 
     provider = _FixtureCatalogProvider()
     provider.calls = []
@@ -883,6 +883,8 @@ def test_his_message_to_a_cut_run_asks_the_vendor_again(monkeypatch):
     install_provider(monkeypatch, provider)
     _cut_run_on(monkeypatch, provider, "opus")
     monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
+    # Whether another CLI of this computer could take the conversation (`fallback.moves`) is its own row's question: here none.
+    monkeypatch.setattr(fallback, "moves", lambda run: False)
 
     with _ranked_catalog():
         quota.record_refusal("resume-fake", "opus", said="You've hit your session limit · resets 9pm (Europe/Paris)")
