@@ -33,7 +33,7 @@ def test_each_workspace_gets_one_folder_and_shared_or_legacy_names_get_the_id():
     assert places[first.workspace_id] == (f"acme-{str(first.workspace_id)[:8]}",)
     assert len({places[first.workspace_id], places[second.workspace_id]}) == 2
     assert places[legacy.workspace_id] == (f"personal-{str(legacy.workspace_id)[:8]}",)
-    assert places[named.workspace_id] == (f"projects-{str(named.workspace_id)[:8]}",)   # `~/galaius/projects` holds his projects
+    assert places[named.workspace_id] == (f"projects-{str(named.workspace_id)[:8]}",)   # an earlier Galaius kept projects in `~/galaius/projects`
 
 
 def test_earlier_layout_is_kept_read_only_never_removed(tmp_path):

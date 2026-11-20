@@ -69,7 +69,7 @@ class MachineConfig(MachineAgentSettings):
 
     def place_map(self) -> PlaceMap:
         """The owner's levels as every reader here applies them (the runner's own folders never open)."""
-        return PlaceMap(working_directory=self.working_directory, levels=self.places, internal=self._internal())
+        return PlaceMap(working_directory=self.working_directory, levels=self.places, internal=self._internal(), projects=self.projects_root())
 
     def writable_folders(self) -> tuple[Path, ...]:
         """The folders a workflow step or an agent writes in (any level from `write_on_review` on)."""

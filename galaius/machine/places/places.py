@@ -102,10 +102,10 @@ class PlaceDesk:
     def accept(self, review_id: UUID, digest: str) -> MachinePlaceReview:
         """The owner, on this PC, applies one review whose digest he read (its folder must still be write-after-review)."""
         config = self.runner.load()
-        place = self.runner.reviews.place(review_id)
-        if config.place_map().reach(split(place)) != "write_on_review":
+        place, places = self.runner.reviews.place(review_id), config.place_map()
+        if not places.project_place(place) and places.reach(split(place)) != "write_on_review":   # a project takes no level
             raise PermissionError(f"{place} is no longer write-after-review here: discard this review")
-        review = self.runner.reviews.accept(review_id, digest, config.place_map().base.joinpath(*split(place)))
+        review = self.runner.reviews.accept(review_id, digest, places.review_folder(place))
         self._log("review", review_id=review_id, place=place, outcome="accepted", method="pc-confirm", files=len(review.files), digest=review.digest)
         return review
 
@@ -130,7 +130,7 @@ class PlaceDesk:
                 return MachineAgentAnswer(request_id=request.id, reviews=reviews.list()[-100:])
             case PlaceReviewRequest():
                 place = reviews.place(request.review_id)
-                review, lines = reviews.read(request.review_id, config.place_map().base.joinpath(*split(place)))
+                review, lines = reviews.read(request.review_id, config.place_map().review_folder(place))
                 return MachineAgentAnswer(request_id=request.id, reviews=(review,), lines=lines)
             case PlaceDiscardRequest():
                 review = reviews.discard(request.review_id)

@@ -130,15 +130,16 @@ def test_start_folder_stays_beneath_a_root(base: Path, tmp_path: Path, path: str
 
 @pytest.mark.parametrize("layout", ["below_home", "home_itself", "apart"])
 @pytest.mark.parametrize(("taken", "landed"), [((), "aino"), (("aino",), "aino-2"), ((), "Elise-Cafe")])
-def test_a_project_put_here_from_the_web_lands_in_the_galaius_folder_of_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout: str, taken: tuple[str, ...], landed: str) -> None:
-    """Owner 11-11: « ~/galaius/projects » « A normal user wouldn't have the dev project, please make the distinction »:
-    the projects folder is never derived from the working directory: below home (`~/dev`), home itself, or apart (`/srv/work`)."""
+def test_a_project_put_here_from_the_web_lands_in_the_hidden_galaius_folder_of_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout: str, taken: tuple[str, ...], landed: str) -> None:
+    """Owner 11-17: « We should natively be able to do things from the ~/.galaius official install folder ! ... Projects should be
+    created in there !!!! » (11-11: « not inside the dev project »): the projects folder is never derived from the working directory:
+    below home (`~/dev`), home itself, or apart (`/srv/work`)."""
     home = tmp_path / "home" / "ada"
     base = {"below_home": home / "dev", "home_itself": home, "apart": tmp_path / "srv" / "work"}[layout]
     (base / "project").mkdir(parents=True)
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HOME", str(home)), monkeypatch.setenv("USERPROFILE", str(home))
-    projects = home.resolve() / "galaius" / "projects"
+    projects = home.resolve() / ".galaius" / "projects"
     for name in taken:
         (projects / name).mkdir(parents=True)
     agents = _agents(base, tmp_path)
@@ -153,8 +154,8 @@ def test_a_project_put_here_from_the_web_lands_in_the_galaius_folder_of_home(tmp
 @pytest.mark.parametrize("plant", ["root_link", "root_file", "root_swapped", "child_link", "climb", "hidden_child", "web_named"])
 def test_the_projects_folder_never_reaches_the_runners_own(base: Path, tmp_path: Path, plant: str) -> None:
     """Credentials, subscriptions and run logs (`~/.galaius`) stay out of reach however the projects folder is planted or named."""
-    own, projects = tmp_path / ".galaius" / "subscriptions", tmp_path / "galaius" / "projects"
-    own.mkdir(parents=True), projects.parent.mkdir()
+    own, projects = tmp_path / ".galaius" / "subscriptions", tmp_path / ".galaius" / "projects"
+    own.mkdir(parents=True)
     if plant == "root_link":
         projects.symlink_to(own)
     elif plant == "root_file":
@@ -177,9 +178,9 @@ def test_the_projects_folder_never_reaches_the_runners_own(base: Path, tmp_path:
 
 @pytest.mark.parametrize("plant", ["link", "file", "link_after_start"])
 def test_a_galaius_folder_moved_away_refuses_projects_typed(base: Path, tmp_path: Path, plant: str) -> None:
-    """`~/galaius` replaced by a link (moved to another disk) or a file: the projects folder is never reached through it,
+    """`~/.galaius` replaced by a link (moved to another disk) or a file: the projects folder is never reached through it,
     and a project asked there is refused typed (`folder_closed`), never an untyped crash."""
-    galaius, elsewhere = tmp_path / "galaius", tmp_path / "elsewhere"
+    galaius, elsewhere = tmp_path / ".galaius", tmp_path / "elsewhere"
     (elsewhere / "projects").mkdir(parents=True)
     plant_it = lambda: galaius.symlink_to(elsewhere) if plant.startswith("link") else galaius.write_text("")
     if plant != "link_after_start":
@@ -211,13 +212,13 @@ def test_with_the_fence_on_an_agent_writes_its_own_project_folder_only(base: Pat
     seen = _launches(monkeypatch)
     home = tmp_path.resolve()
     for name in ("aino", "other"):
-        (home / "galaius" / "projects" / name).mkdir(parents=True)
+        (home / ".galaius" / "projects" / name).mkdir(parents=True)
     agents = _fenced_agents(base, tmp_path, ("false",))
     _answer(agents, _request("start", root=PROJECTS_ROOT, path="aino", role="app-engineer", text="tidy"))
     spec = seen[-1]["fence"]
     binds = {(bind.target.relative_to(home).as_posix(), bind.writable) for bind in spec.build().binds if bind.target.is_relative_to(home)}
-    assert spec.start == home / "galaius" / "projects" / "aino" and ("galaius/projects/aino", True) in binds
-    assert not any(target.startswith(("galaius/projects/other", ".galaius/subscriptions", ".galaius/config")) for target, _ in binds)
+    assert spec.start == home / ".galaius" / "projects" / "aino" and (".galaius/projects/aino", True) in binds
+    assert not any(target.startswith((".galaius/projects/other", ".galaius/subscriptions", ".galaius/config")) for target, _ in binds)
     with pytest.raises(PermissionError, match="inside one project folder"):
         _answer(agents, _request("start", root=PROJECTS_ROOT, role="app-engineer", text="tidy"))
 

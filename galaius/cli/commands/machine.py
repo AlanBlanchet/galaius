@@ -15,7 +15,6 @@ from galaius.workflows.functions import PermissionLevel
 from galaius.machine.service import MACHINE_SERVICE, ServiceUnavailable
 from galaius.machine.tray.launch import TrayLauncher
 from galaius.machine.places.places import PlaceDesk
-from galaius.machine.places.levels import split
 from galaius.machine.software import Inventory
 from galaius.machine.connection.files import MachineFiles
 from galaius.machine.connection.runner import MachineRunner, connect_command
@@ -161,7 +160,7 @@ def machine_review(review: str, *, accept: str | None = None, discard: bool = Fa
         print(json.dumps({"discarded": str(found.id)}))
         return
     manifest = runner.reviews.manifest(found.id)
-    _, lines = runner.reviews.read(found.id, config.place_map().base.joinpath(*split(found.place)), limit=None)
+    _, lines = runner.reviews.read(found.id, config.place_map().review_folder(found.place), limit=None)
     print("Files (what an editor, git or an agent runs later comes first):")
     print("\n".join(f"  {change:8} {key}" for key, change, _, _ in manifest.entries))
     print("\n".join(lines))
@@ -245,8 +244,8 @@ def machine_agent_roots(*roots: str) -> None:
 
 @machine_app.command(name="projects-move")
 def machine_projects_move(*, apply: bool = False) -> None:
-    """Owner-only, on this machine: the projects an earlier Galaius put here (~/.galaius/projects, the agent folder
-    galaius/projets of the working directory) moved to ~/galaius/projects with their conversations; a folder in use stays
+    """Owner-only, on this machine: the projects an earlier Galaius put here (~/galaius/projects, the agent folder
+    galaius/projets of the working directory) moved to ~/.galaius/projects with their conversations; a folder in use stays
     for a later run. Without --apply it only prints what it would do."""
     runner = MachineRunner()
     done, left = runner.move_projects(runner.load(), apply)

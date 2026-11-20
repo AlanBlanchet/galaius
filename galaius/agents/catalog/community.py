@@ -367,7 +367,7 @@ class CommunityAgent(CommunityEntryRef):
             given.chmod(0o555)
         caller = Path(cwd).resolve()
         place = caller.relative_to(home).as_posix() if caller.is_relative_to(home) and caller != home else None
-        unread = PlaceMap(working_directory=home).refusal(split(place)) if place is not None else f"{caller} is not a folder of your home"
+        unread = PlaceMap(working_directory=home, projects=UserPaths.projects()).refusal(split(place)) if place is not None else f"{caller} is not a folder of your home"
         place = None if unread is not None else place
         spec = FenceSpec.for_clis((cli,), working_directory=home, levels={place: "read"} if place else {}, start=work, project=work,
                                   homes=subscription.homes() if subscription is not None and subscription.subscription_id else {},
@@ -441,7 +441,7 @@ def _handable(named: Path) -> tuple[Path, bytes]:
     if path.is_relative_to(outputs):
         if any(part.startswith(".") for part in path.relative_to(outputs).parts) or path.suffix.casefold() not in OUTPUT_SUFFIXES:
             raise ValueError(f"{said}: in galaius's outputs only a document or a picture is handed ({', '.join(sorted(OUTPUT_SUFFIXES))})")
-    elif (refused := PlaceMap(working_directory=home).refusal(parts)) is not None:
+    elif (refused := PlaceMap(working_directory=home, projects=UserPaths.projects()).refusal(parts)) is not None:
         raise ValueError(f"{said}: never handed ({refused})")
     if path.suffix.casefold() != ".md" and _CREDENTIAL_NAME.search(path.name):
         raise ValueError(f"{said}: named like a credential, never handed")

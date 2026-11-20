@@ -73,9 +73,9 @@ def folder_name(text: str) -> str:
 
 def folders(workspaces: tuple[PromptWorkspace, ...]) -> dict[UUID, tuple[str]]:
     """The folder of each workspace under the root; a name shared with another workspace, a `LEGACY` folder
-    or the projects folder beside them (`UserPaths.projects`, `~/galaius/projects`) gets the id's first 8 characters."""
+    or the folder an earlier Galaius kept projects in beside them (`UserPaths.earlier_projects`) gets the id's first 8 characters."""
     names = {value.workspace_id: folder_name(value.label) for value in workspaces}
-    taken = [*names.values(), *LEGACY, UserPaths.projects().name]
+    taken = [*names.values(), *LEGACY, UserPaths.earlier_projects().name]
     return {workspace: (name if taken.count(name) == 1 else f"{name}-{str(workspace)[:8]}",) for workspace, name in names.items()}
 
 
@@ -200,9 +200,8 @@ _NOTE = ("These folders are read-only copies of your prompts, refreshed by `gala
 
 
 def _note(root: Path) -> None:
-    beside = "`projects` holds your projects: yours to edit.\n" if UserPaths.projects().parent == root.resolve() else ""
     with PinnedDirectory.at(root, create=True) as folder:
-        _write(folder, "README.txt", (_NOTE + beside).encode(), 0o600)
+        _write(folder, "README.txt", _NOTE.encode(), 0o600)
 
 
 def mirror(root: Path, connection: CatalogConnection, workspace: PromptWorkspace, place: tuple[str, ...]) -> int:

@@ -48,7 +48,7 @@ from typing import ClassVar, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from galaius_core import PlaceLevel
+from galaius_core import PROJECTS_ROOT, PlaceLevel
 
 from galaius.host.atomic_file import replace_held_open
 from galaius.host.paths import UserPaths
@@ -364,7 +364,7 @@ class FenceSpec(BaseModel):
         levels = self.levels
         if self.levels_file is not None:
             levels = json.loads(self.levels_file.read_text(encoding="utf-8")).get("places", {})
-        return PlaceMap(working_directory=self.working_directory, levels=levels, internal=self.internal)
+        return PlaceMap(working_directory=self.working_directory, levels=levels, internal=self.internal, projects=UserPaths.projects())
 
     def build(self, programs: Iterable[Path] = ()) -> Fence:
         """The fence as the levels are now, `programs` (and the interpreters of their `#!` lines) seen inside, read-only."""
@@ -392,13 +392,16 @@ class FenceSpec(BaseModel):
             if level == "write_on_review" and path not in self.staging and start_parts[:len(parts)] == parts:
                 raise PermissionError(f"{path} is write-after-review: an agent works there only in its staging copy")
             staged = level == "write_on_review" and path in self.staging
+            # A project's reviews are held at the place `PlaceMap.review_folder` resolves from the projects folder, never from
+            # the working directory: a path relative to it can name a runner folder (`~/dev/.galaius`).
+            held_at = f"{PROJECTS_ROOT}/{folder.name}" if folder == self.project else path
             source = self.staging[path] if staged else folder
             writable = level in {"sandbox", "write"} or staged
             scan = Scan.of(source)
             binds.append(FenceBind(source=source, target=folder, writable=writable))
             if writable and not staged:
                 for top in (folder, *scan.repositories):
-                    guards.append((top, path, folder))
+                    guards.append((top, held_at, folder))
                     binds += [FenceBind(source=top / child.name, target=top / child.name, writable=False) for child in os.scandir(top)
                               if child.name.casefold() in STEERING and not child.is_symlink()]
                     # Its own git folder and each submodule's under `.git/modules` (threat review 2026-11-17 F1): hooks, config, info.

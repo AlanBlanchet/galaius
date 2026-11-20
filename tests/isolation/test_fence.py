@@ -22,7 +22,7 @@ import pytest
 from galaius.agents import providers
 from galaius.agents.providers import CodexProvider
 from galaius.agents.run import _fenced, _galaius_command
-from galaius_core import MachineFence
+from galaius_core import PROJECTS_ROOT, MachineFence
 from galaius_core.wire import fitted
 from mcp.server.fastmcp.exceptions import ToolError
 
@@ -111,21 +111,63 @@ def test_the_start_folder_must_have_a_level_the_owner_set(home: Path, tmp_path: 
 
 
 @pytest.mark.parametrize("working", ["", "work"])   # the working directory: home itself, or a folder below it
-@pytest.mark.parametrize("planted", [False, True])
-def test_a_project_folder_opens_alone_and_never_through_a_link(home: Path, tmp_path: Path, planted: bool, working: str) -> None:
-    projects = home / "galaius" / "projects"
+@pytest.mark.parametrize("planted", [None, "project", "projects", "galaius"])
+def test_a_project_folder_opens_alone_and_never_through_a_link(home: Path, tmp_path: Path, planted: str | None, working: str) -> None:
+    """The project folder in galaius's hidden folder (`~/.galaius/projects/aino`) is the only thing of `~/.galaius` bound, writable;
+    a link on its way (the project, the projects folder, `~/.galaius`) refuses the build."""
+    galaius, projects = home / ".galaius", home / ".galaius" / "projects"
+    (galaius / "subscriptions" / "one").mkdir(parents=True)
+    (galaius / "config.env").write_text("KEY=1")
     (projects / "other").mkdir(parents=True)
-    if planted:
-        (projects / "aino").symlink_to(home / ".galaius")
+    (home / "private").mkdir(exist_ok=True)
+    if planted == "project":
+        (projects / "aino").symlink_to(home / "private")
+    elif planted == "projects":
+        (galaius / "linked" / "aino").mkdir(parents=True)
+        (galaius / "projects-link").symlink_to(galaius / "linked")
+        projects = galaius / "projects-link"
+    elif planted == "galaius":
+        (home / "real").mkdir()
+        (home / "real" / "projects" / "aino").mkdir(parents=True)
+        shutil.rmtree(galaius)
+        galaius.symlink_to(home / "real")
+        projects = galaius / "projects"
     else:
         (projects / "aino").mkdir()
-    spec = _spec(home, tmp_path, start="galaius/projects/aino", levels={}, project=projects / "aino", working_directory=home / working)
+    spec = _spec(home, tmp_path, start=".galaius/projects/aino", levels={}, project=projects / "aino", working_directory=home / working)
     if planted:
-        with pytest.raises(PermissionError, match="plain project folder"):
+        with pytest.raises(PermissionError, match="plain project folder|link|resolve|plain"):
             spec.build()
         return
-    binds = {(bind.target, bind.writable) for bind in spec.build().binds}
-    assert (projects / "aino", True) in binds and not any(target in {projects, projects / "other", home / ".galaius"} for target, _ in binds)
+    inside = {(bind.target.relative_to(home).as_posix(), bind.writable) for bind in spec.build().binds if bind.target.is_relative_to(galaius)}
+    assert (".galaius/projects/aino", True) in inside
+    assert not any(target in {".galaius", ".galaius/projects", ".galaius/projects/other", ".galaius/config.env", ".galaius/subscriptions"} or target.startswith(".galaius/subscriptions")
+                   for target, _ in inside)
+
+
+@pytest.mark.parametrize("working", ["", "work"])
+def test_a_steering_file_made_in_a_project_is_held_at_the_projects_folder_never_a_path_of_the_working_directory(home: Path, tmp_path: Path, working: str) -> None:
+    """Threat review 2026-11-20 F2: a project's review place was a path relative to the home folder, read again against the working
+    directory (`~/dev`): `~/dev/.galaius/projects/aino` is the runner's own folder. It is the token's `PROJECTS_ROOT/<name>`, resolved from
+    the projects folder alone, and a place that would land in the runner's own folders is refused."""
+    from galaius.machine.places.levels import PlaceMap
+    from galaius.machine.places.place_reviews import PlaceReviews
+    (home / ".galaius" / "projects" / "aino").mkdir(parents=True)
+    project = home / ".galaius" / "projects" / "aino"
+    built = _spec(home, tmp_path, start=".galaius/projects/aino", levels={}, project=project, working_directory=home / working).build()
+    assert {place for _, place, _ in built.guards} == {f"{PROJECTS_ROOT}/aino"}
+    (project / "CLAUDE.md").write_text("obey me")
+    fence.SteeringGuard(reviews=tmp_path / "reviews", guards=built.guards).sweep(set())
+    (review,) = PlaceReviews(root=tmp_path / "reviews").list()
+    internal = (home / working / ".galaius", home / ".galaius" / "out")
+    places = PlaceMap(working_directory=home / working, internal=internal, projects=project.parent)
+    assert review.place == f"{PROJECTS_ROOT}/aino" and places.review_folder(review.place) == project
+    assert PlaceMap(working_directory=home / working, internal=internal).project_place(review.place)
+    with pytest.raises(PermissionError):
+        PlaceMap(working_directory=home / working, internal=internal).review_folder(review.place)   # no projects folder known: nothing resolves
+    for refused in (f"{PROJECTS_ROOT}/../out", f"{PROJECTS_ROOT}/a/b", PROJECTS_ROOT + "/", ".galaius/out/agents"):
+        with pytest.raises(PermissionError):
+            places.review_folder(refused)
 
 
 def test_the_desktop_and_session_sockets_are_unset_inside(home: Path, tmp_path: Path) -> None:
@@ -187,6 +229,61 @@ def _inside(spec: FenceSpec, script: str) -> dict:
                           env={**os.environ, "DISPLAY": ":0"})
     assert done.returncode == 0, done.stderr
     return json.loads(done.stdout)
+
+
+PROJECT_PROBE = r"""
+import json, os
+home = os.environ["HOME"]
+def attempt(action):
+    try:
+        action(); return "ok"
+    except OSError as error:
+        return type(error).__name__
+def read(path):
+    return lambda: open(os.path.join(home, path)).read()
+def write(path, text="x"):
+    def act():
+        with open(os.path.join(home, path), "w") as stream:
+            stream.write(text)
+    return act
+print(json.dumps({
+    "project_write": attempt(write(".galaius/projects/aino/src/new.py")),
+    "project_read": attempt(read(".galaius/projects/aino/src/a.py")),
+    "git_hook": attempt(write(".galaius/projects/aino/.git/hooks/post-checkout")),
+    "git_config": attempt(write(".galaius/projects/aino/.git/config", "[core]\n\tfsmonitor = sh -c evil\n")),
+    "sibling_read": attempt(read(".galaius/projects/other/secret.txt")),
+    "sibling_write": attempt(write(".galaius/projects/other/new.txt")),
+    "config_env": attempt(read(".galaius/config.env")),
+    "climb_config_env": attempt(lambda: open(os.path.join(os.getcwd(), "..", "..", "config.env")).read()),
+    "subscription": attempt(read(".galaius/subscriptions/one/auth.json")),
+    "run_record": attempt(read(".galaius/out/agents/run-1.json")),
+    "machine_json": attempt(read(".config/galaius/machine.json")),
+    "tool_files": attempt(read(".galaius/mcp-gateway-tools.json")),
+    "projects": sorted(os.listdir(os.path.join(home, ".galaius/projects"))),
+    "galaius": sorted(os.listdir(os.path.join(home, ".galaius"))),
+}))
+"""
+
+
+@live
+@bubblewrap
+@pytest.mark.parametrize("working", ["", "work"])   # the working directory: home itself, or a folder below it
+def test_in_the_view_one_project_of_the_hidden_galaius_folder_is_written_and_nothing_else_of_it_is_reached(home: Path, tmp_path: Path, working: str) -> None:
+    """Real bubblewrap: threat review 2026-11-20 (projects in `~/.galaius`): every other secret path of the folder stays out of the
+    view, a sibling project too; the project is writable, its git hooks and config read-only."""
+    files = {".galaius/projects/aino/src/a.py": "x", ".galaius/projects/aino/.git/hooks/pre-commit.sample": "#!/bin/sh\n", ".galaius/projects/aino/.git/config": "[core]\n",
+             ".galaius/projects/other/secret.txt": "not yours", ".galaius/subscriptions/one/auth.json": "{}", ".config/galaius/machine.json": "{}",
+             ".galaius/mcp-gateway-tools.json": "{}"}
+    for name, content in files.items():
+        (home / name).parent.mkdir(parents=True, exist_ok=True)
+        (home / name).write_text(content)
+    project = home / ".galaius" / "projects" / "aino"
+    seen = _inside(_spec(home, tmp_path, start=".galaius/projects/aino", levels={}, project=project, working_directory=home / working), PROJECT_PROBE)
+    assert (seen["project_write"], seen["project_read"]) == ("ok", "ok")
+    assert seen["git_hook"] != "ok" and seen["git_config"] != "ok"
+    for secret in ("sibling_read", "sibling_write", "config_env", "climb_config_env", "subscription", "run_record", "machine_json", "tool_files"):
+        assert seen[secret] != "ok", secret
+    assert seen["projects"] == ["aino"] and "config.env" not in seen["galaius"] and "subscriptions" not in seen["galaius"]
 
 
 PROBE = r"""

@@ -15,7 +15,7 @@ from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from galaius_core import CREDENTIAL_STORES, PLACE_LEVELS, CredentialStores, MachinePlace, MachinePlaceEntry, PlaceLevel
+from galaius_core import CREDENTIAL_STORES, PLACE_LEVELS, PROJECTS_ROOT, CredentialStores, MachinePlace, MachinePlaceEntry, PlaceLevel
 
 from galaius.host.pinned_directory import PinnedDirectory
 
@@ -94,6 +94,11 @@ class PlaceMap(BaseModel):
     levels: dict[str, PlaceLevel] = Field(default_factory=dict)
     #: The runner's own folders (settings, installed runtimes, data): never opened.
     internal: tuple[Path, ...] = ()
+    #: The projects folder (`UserPaths.projects`, `~/.galaius/projects`; `ConnectionConfig.projects_root`: a plain folder,
+    #: resolved). The ONE place inside galaius's hidden folder whose projects stay reachable when the working directory is the
+    #: home folder: a project and what is beneath it is exempt from the hidden-name and runner-folder rules, every other
+    #: `.galaius` child (`config.env`, `out`, `subscriptions`, tool files, browser profiles) stays closed.
+    projects: Path | None = None
     #: Names one browse page carries.
     PAGE: ClassVar[int] = 200
     #: Deepest folder a browse reaches (parts below the working directory).
@@ -122,6 +127,45 @@ class PlaceMap(BaseModel):
         """The level `parts` would have with nothing set on it."""
         return self.level(parts[:-1]) if parts else "hidden"
 
+    def below_projects(self, target: Path) -> tuple[str, ...] | None:
+        """`target`'s names beneath one project folder of `projects` (the project's own name first), None when it is not
+        there: spelled below it with no `..` and reached there for real (every link followed), never the folder itself."""
+        if self.projects is None or not target.is_relative_to(self.projects) or target == self.projects:
+            return None
+        names = target.relative_to(self.projects).parts
+        return names if ".." not in names and target.resolve().is_relative_to(self.projects.resolve()) else None
+
+    def _in_internal(self, target: Path, *, encloses: bool) -> bool:
+        """Whether `target` is in one of the runner's own folders (`encloses`: or holds one). Galaius's hidden folder, for a
+        project beneath `projects`, is not one: the folders inside it that are stay closed."""
+        exempt = self.below_projects(target) is not None
+        return any((target == folder or target.is_relative_to(folder) or (encloses and folder.is_relative_to(target)))
+                   for folder in self.internal if not (exempt and self.projects is not None and folder in self.projects.parents))
+
+    @staticmethod
+    def project_place(place: str) -> bool:
+        """Whether `place` (a review's) names a project folder (`PROJECTS_ROOT/<name>`), never a path of the working directory."""
+        return place.startswith(PROJECTS_ROOT + "/")
+
+    def review_folder(self, place: str) -> Path:
+        """The folder a review held at `place` reads and writes: a project's below `projects`, any other place below the
+        working directory. PermissionError when it is a link or a file, or in the runner's own folders (a path kept from
+        an earlier working directory never lands in `~/dev/.galaius`)."""
+        if self.project_place(place):
+            name = place[len(PROJECTS_ROOT) + 1:]
+            if self.projects is None or not name or "/" in name or name in {".", ".."}:
+                raise PermissionError(f"{place}: no project folder of this PC")
+            folder = self.projects / name
+        else:
+            folder = self.base.joinpath(*split(place))
+        try:
+            facts = folder.lstat()
+        except FileNotFoundError:
+            facts = None   # a place not made yet (a review of a new folder): its parents are pinned at the write
+        if (facts is not None and (not stat.S_ISDIR(facts.st_mode) or PinnedDirectory.link_like(facts))) or self._in_internal(folder.resolve(), encloses=True):
+            raise PermissionError(f"{place}: a link, a file or one of this runner's own folders: nothing is read or written there")
+        return folder
+
     def refusal(self, parts: tuple[str, ...]) -> str | None:
         """Why no level opens `parts`: a never-grantable part, a link on the way, a runner
         folder, the working directory itself. None: it may be opened."""
@@ -129,8 +173,9 @@ class PlaceMap(BaseModel):
             return "the whole working directory never takes a level; set one on a folder inside it"
         home = Path.home().resolve()
         target = self.base.joinpath(*parts)
-        below_home = target.relative_to(home).parts if target.is_relative_to(home) else None
-        if (said := NEVER_GRANTABLE.refusal(parts, below_home)) is not None:
+        beneath = self.below_projects(target)   # a project's own names are checked, not the `.galaius/projects` on the way to it
+        below_home = None if beneath is not None else target.relative_to(home).parts if target.is_relative_to(home) else None
+        if (said := NEVER_GRANTABLE.refusal(beneath if beneath is not None else parts, below_home)) is not None:
             return said
         current = self.base
         for part in parts:
@@ -144,7 +189,7 @@ class PlaceMap(BaseModel):
             if PinnedDirectory.link_like(facts):
                 return f"{current.relative_to(self.base).as_posix()} is a link: links are never followed"
         resolved = target.resolve()
-        if resolved != target or any(resolved == folder or folder in resolved.parents or resolved in folder.parents for folder in self.internal):
+        if resolved != target or self._in_internal(resolved, encloses=True):
             return "this runner's own folders (settings, runtimes, data) are never opened"
         return None
 
@@ -155,7 +200,7 @@ class PlaceMap(BaseModel):
         parts = target.relative_to(self.base).parts if target.is_relative_to(self.base) else None
         if parts and (place := self.place_of(parts)[0]) and self.levels[place] == "hidden":
             return True
-        if any(target == folder or target.is_relative_to(folder) for folder in self.internal):
+        if self._in_internal(target, encloses=False):
             return True
         home = Path.home().resolve()
         return target.is_relative_to(home) and NEVER_GRANTABLE.refusal((), target.relative_to(home).parts) is not None

@@ -132,3 +132,65 @@ def test_browsing_the_home_folder_leaves_out_this_systems_credential_stores(home
 @pytest.mark.parametrize("name", ["server.key", "release.jks", "app.keystore", "terraform.tfstate", "kubeconfig", "service-account-prod.json"])
 def test_more_credential_files_are_never_grantable(name: str) -> None:
     assert NEVER_GRANTABLE.refusal((name,), None) is not None
+
+
+@pytest.fixture
+def galaius_home(home: Path) -> Path:
+    """The home folder with galaius's hidden folder: two projects, and every runner file a project's reader must never reach."""
+    for name in ("projects/p/src", "projects/other", "subscriptions/one", "out/agents", "browser-profiles/x"):
+        (home / ".galaius" / name).mkdir(parents=True)
+    for name in ("projects/p/src/a.py", "projects/other/secret.txt", "config.env", "mcp-gateway-tools.json", "agent-tools-1.json", "subscriptions/one/auth.json",
+                 "browser-profiles/x/Cookies", "out/x.png"):
+        (home / ".galaius" / name).write_text("x")
+    (home / ".galaius" / "projects" / "p" / "to-config").symlink_to(home / ".galaius" / "config.env")
+    (home / ".galaius" / "projects" / "to-galaius").symlink_to(home / ".galaius")
+    return home
+
+
+def _held(home: Path, working: str, projects: bool = True) -> PlaceMap:
+    """What the runner builds for the working directory `working`: its own folders, and the projects folder when it is a plain one."""
+    base = home / working
+    return PlaceMap(working_directory=base, internal=(base / ".galaius", home / ".galaius" / "subscriptions", home / ".galaius" / "out" / "agents"),
+                    projects=home.resolve() / ".galaius" / "projects" if projects else None)
+
+
+@pytest.mark.parametrize("working", ["", "work"])
+def test_a_project_beneath_the_hidden_galaius_folder_stays_open_and_every_other_child_of_it_closed(galaius_home: Path, working: str) -> None:
+    """Threat review 2026-11-20 F1: with the home folder as working directory the runner's own folder `~/.galaius` held the
+    projects, closing every project file. One exemption (the projects folder, resolved, no `..`, no link), nothing else of it."""
+    (galaius_home / "work").mkdir(exist_ok=True)
+    places, galaius = _held(galaius_home, working), galaius_home / ".galaius"
+    assert not places.closed(galaius / "projects" / "p" / "src" / "a.py") and not places.closed(galaius / "projects" / "p")
+    assert places.closed(galaius / "subscriptions" / "one" / "auth.json") and places.closed(galaius / "out" / "agents" / "run.json")
+    if working == "":
+        assert places.closed(galaius / "projects" / ".." / "subscriptions" / "one") and places.closed(galaius / "projects" / "p" / ".." / ".." / "out" / "x.png")
+        assert places.closed(galaius / "projects" / "to-galaius")   # a project folder that is a link to the folder is not a project
+        for runner_file in ("config.env", "mcp-gateway-tools.json", "agent-tools-1.json", "browser-profiles/x/Cookies", "out/x.png", "projects"):
+            assert places.closed(galaius / runner_file), runner_file
+        assert places.closed(galaius / "projects" / "p" / "to-config")   # a link out of the project into the runner's folder
+    assert _held(galaius_home, working, projects=False).closed(galaius / "projects" / "p" / "src" / "a.py") is (working == "")   # no plain projects folder: closed again
+
+
+@pytest.mark.parametrize("working", ["", "work"])
+def test_no_level_opens_a_runner_file_but_a_project_beneath_the_hidden_galaius_folder_reads(galaius_home: Path, working: str) -> None:
+    (galaius_home / "work").mkdir(exist_ok=True)
+    places = _held(galaius_home, working)
+    if working == "":
+        assert places.refusal((".galaius", "projects", "p", "src", "a.py")) is None and places.refusal((".galaius", "projects", "p")) is None
+        for refused in ((".galaius", "projects"), (".galaius", "config.env"), (".galaius", "mcp-gateway-tools.json"), (".galaius", "browser-profiles", "x", "Cookies"),
+                        (".galaius", "projects", "to-galaius", "config.env"), (".galaius", "projects", "p", "to-config"), (".galaius", "projects", "..", "out"),
+                        (".galaius", "subscriptions", "one", "auth.json")):
+            assert places.refusal(refused) is not None, refused
+        assert _held(galaius_home, working, projects=False).refusal((".galaius", "projects", "p")) is not None
+    else:
+        assert places.refusal((".galaius", "projects", "p")) is not None   # beneath `work` that path is `work/.galaius`: the runner's folder
+
+
+def test_a_project_file_is_handed_to_a_community_agent_and_a_runner_file_never(galaius_home: Path) -> None:
+    from galaius.agents.catalog.community import _handable
+    galaius = galaius_home / ".galaius"
+    assert _handable(galaius / "projects" / "p" / "src" / "a.py")[1] == b"x"
+    for refused in ("config.env", "mcp-gateway-tools.json", "agent-tools-1.json", "browser-profiles/x/Cookies", "subscriptions/one/auth.json", "projects/p/to-config",
+                    "projects/to-galaius/config.env"):
+        with pytest.raises(ValueError):
+            _handable(galaius / refused)

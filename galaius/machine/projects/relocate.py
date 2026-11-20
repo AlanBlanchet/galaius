@@ -1,9 +1,14 @@
-"""Projects an earlier Galaius put on this PC, moved to its projects folder (`UserPaths.projects`, `~/galaius/projects`)
-with every record of this PC naming them (owner 2026-11-11 « A normal user wouldn't have the dev project »).
+"""Projects an earlier Galaius put on this PC, moved to its projects folder (`UserPaths.projects`, `~/.galaius/projects`,
+inside galaius's hidden folder on every OS; owner 2026-11-17 « Projects should be created in there ») with every record of
+this PC naming them.
 
-Earlier homes: the hidden `~/.galaius/projects` (wire root `PROJECTS_ROOT`, the token naming the new folder too) and the
-agent folder `EARLIER_AGENT_ROOT` an earlier server opened in the runner's working directory. Each project folder there
-moves whole (`os.rename`) unless a process works in it: that one stays, named, and moves at a later run. Each moved
+Earlier homes: the visible `~/galaius/projects` (`UserPaths.earlier_projects`, wire root `PROJECTS_ROOT`, the token naming
+the new folder too) and the agent folder `EARLIER_AGENT_ROOT` an earlier server opened in the runner's working directory.
+Each project folder there moves whole (`os.rename`, one entry at a time: never the folder holding them, which a POSIX
+rename would swap for an empty target and which would carry a link, a file or a project in use along) unless a process
+works in it: that one stays, named, and moves at a later run. Never moved: a hidden name (the `.<id>.partial` of a clone in
+progress), anything while a project is being put in place, a link, a name already taken in the target, a folder whose way
+(home to it, on either side) holds a link or a file. Each moved
 folder takes along: the agent registry's runs started in it (`cwd`, fence start / project / levels), each Claude Code
 login's session folder keyed by its path (`ClaudeCodeProvider.project_folder`, so a resume finds the conversation), and
 this PC's web runs and workspace jobs (`rehome`). The earlier agent folder leaves the agent roots once emptied (`drop`).
@@ -11,7 +16,9 @@ this PC's web runs and workspace jobs (`rehome`). The earlier agent folder leave
 `plan` writes nothing (`galaius machine projects-move` prints it); `apply` carries it out. The runner applies it at
 connect: both homes are folders Galaius made, and a folder in use waits for a later connect."""
 
+import contextlib
 import os
+import stat
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -23,6 +30,7 @@ from galaius.agents import registry as reg
 from galaius.agents.limits.subscriptions import Subscription
 from galaius.agents.providers import PROVIDERS, ClaudeCodeProvider
 from galaius.host.paths import UserPaths
+from galaius.host.pinned_directory import PinnedDirectory
 
 #: The agent folder an earlier server opened in every PC's working directory for its projects.
 EARLIER_AGENT_ROOT = "galaius/projets"
@@ -75,10 +83,29 @@ def inside(path: str | Path, folder: Path) -> bool:
 
 
 def _homes(working_directory: Path, agent_roots: tuple[str, ...]) -> tuple[tuple[Path, str], ...]:
-    hidden = (Path.home() / ".galaius" / "projects", PROJECTS_ROOT)
-    if EARLIER_AGENT_ROOT not in agent_roots:
-        return (hidden,)
-    return (hidden, (working_directory.resolve().joinpath(*EARLIER_AGENT_ROOT.split("/")), EARLIER_AGENT_ROOT))
+    """The earlier folders holding projects, each with the wire root its runs and jobs named it by: never the projects
+    folder itself (a source equal to the target is no source)."""
+    earlier = [(UserPaths.earlier_projects(), PROJECTS_ROOT)]
+    if EARLIER_AGENT_ROOT in agent_roots:
+        earlier.append((working_directory.resolve().joinpath(*EARLIER_AGENT_ROOT.split("/")), EARLIER_AGENT_ROOT))
+    target = UserPaths.projects()
+    return tuple((home, root) for home, root in earlier if home != target and not (home.exists() and target.exists() and home.samefile(target)))
+
+
+def unplain(folder: Path) -> str | None:
+    """Why `folder` cannot be moved from or into: a link, a junction or a file sits on the way from the home folder to it
+    (an absent folder and the parents above the home folder are not judged), else None."""
+    home = Path.home().resolve()
+    for part in (*reversed(folder.parents), folder):
+        if part != home and home not in part.parents:
+            continue
+        try:
+            facts = part.lstat()
+        except FileNotFoundError:
+            return None   # not made yet: nothing below it exists
+        if not stat.S_ISDIR(facts.st_mode) or PinnedDirectory.link_like(facts):
+            return f"{part} is a link or a file"
+    return None
 
 
 def _worked_in() -> tuple[str, ...]:
@@ -102,27 +129,36 @@ def _claude_homes(runs: list[reg.AgentRun], moved: set[str]) -> tuple[Path, ...]
     return tuple(home for home in dict.fromkeys((*logins, *fenced)) if (home / "projects").is_dir())
 
 
-def plan(working_directory: Path, agent_roots: tuple[str, ...]) -> MovePlan:
+def plan(working_directory: Path, agent_roots: tuple[str, ...], busy: bool = False) -> MovePlan:
+    """`busy`: a project is being put in place or sent now (`MachineWorkspaces.busy`): nothing moves."""
     runs, cwds, new = reg.list_runs(include_foreign=True), _worked_in(), UserPaths.projects()
     moves, kept, every = [], [], []
     homes = _homes(working_directory, agent_roots)
+    blocked = unplain(new)
     for home, root in homes:
+        if (way := unplain(home) or blocked) is not None:
+            kept.append(Kept(folder=home, why=f"not moved: {way}"))
+            continue
         try:
             entries = sorted(home.iterdir())
         except (FileNotFoundError, NotADirectoryError):
             continue
         every += entries
         for folder in entries:
-            if folder.is_symlink() or not folder.is_dir():
+            if folder.name.startswith("."):
+                kept.append(Kept(folder=folder, why="hidden: a clone in progress, or none of galaius's"))
+            elif busy:
+                kept.append(Kept(folder=folder, why="a project is being put in place or sent now"))
+            elif folder.is_symlink() or not folder.is_dir():
                 kept.append(Kept(folder=folder, why="a link or a file: left as it is"))
-                continue
-            live = [run.run_id[:8] for run in runs if run.cwd and inside(run.cwd, folder) and run.process_running()]
-            if live or any(inside(cwd, folder) for cwd in cwds):
-                kept.append(Kept(folder=folder, why="in use now" + (f" by {', '.join(live[:4])}" if live else "")))
-            elif (new / folder.name).exists() or (new / folder.name).is_symlink():
-                kept.append(Kept(folder=folder, why=f"{new / folder.name} exists"))
             else:
-                moves.append(Move(source=folder, target=new / folder.name, root=root))
+                live = [run.run_id[:8] for run in runs if run.cwd and inside(run.cwd, folder) and run.process_running()]
+                if live or any(inside(cwd, folder) for cwd in cwds):
+                    kept.append(Kept(folder=folder, why="in use now" + (f" by {', '.join(live[:4])}" if live else "")))
+                elif (new / folder.name).exists() or (new / folder.name).is_symlink():
+                    kept.append(Kept(folder=folder, why=f"{new / folder.name} exists"))
+                else:
+                    moves.append(Move(source=folder, target=new / folder.name, root=root))
     moved = {run.run_id for run in runs if run.cwd and any(inside(run.cwd, move.source) for move in moves)}
     sessions = []
     by_source = {move.source: move for move in moves}
@@ -135,7 +171,7 @@ def plan(working_directory: Path, agent_roots: tuple[str, ...]) -> MovePlan:
             if match is not None and match[0] in by_source:
                 move, key = by_source[match[0]], match[1]
                 sessions.append(SessionMove(source=entry, target=entry.with_name(ClaudeCodeProvider.project_folder(home, move.target).name + entry.name[len(key):])))
-    drops = tuple(root for home, root in homes if root != PROJECTS_ROOT and not any(item.folder.parent == home for item in kept))   # emptied by `apply`
+    drops = tuple(root for home, root in homes if root != PROJECTS_ROOT and not any(item.folder == home or item.folder.parent == home for item in kept))   # emptied by `apply`
     return MovePlan(moves=tuple(moves), kept=tuple(kept), runs=tuple(sorted(moved)), sessions=tuple(sessions), drops=drops)
 
 
@@ -145,15 +181,21 @@ def _moved(path: Path, moves: tuple[Move, ...]) -> Path:
 
 
 def _fence(run: reg.AgentRun, moves: tuple[Move, ...]):
+    """The run's fence for its folder's new place. A folder now in the projects folder is the run's PROJECT (written, no
+    level; `FenceSpec.build` checks it again each turn): a run from an earlier agent folder kept a level on it, which a
+    hidden path (`.galaius/projects/x`) never takes, so the conversation could not resume."""
     fence = run.fence
     if fence is None:
         return None
-    base = fence.working_directory
+    base, start = fence.working_directory, _moved(fence.start, moves)
     levels = {}
     for name, level in fence.levels.items():
         after = _moved(base.joinpath(*name.split("/")), moves)
-        levels[after.relative_to(base).as_posix() if after.is_relative_to(base) else name] = level
-    return fence.model_copy(update={"start": _moved(fence.start, moves), "levels": levels, "project": None if fence.project is None else _moved(fence.project, moves)})
+        if not any(inside(after, move.target) for move in moves):
+            levels[after.relative_to(base).as_posix() if after.is_relative_to(base) else name] = level
+    moved = next((move for move in moves if inside(start, move.target)), None)
+    project = _moved(fence.project, moves) if fence.project is not None else None if moved is None else moved.target
+    return fence.model_copy(update={"start": start, "levels": levels, "project": project})
 
 
 def _merge(source: Path, target: Path) -> list[str]:
@@ -174,14 +216,23 @@ def apply(done: MovePlan, rehome: Callable[[str, frozenset[str]], None], drop: C
     """`done` carried out: folders, then the records naming them, then their sessions; `rehome(root, names)` re-roots this
     PC's web runs and jobs, `drop(roots)` removes the emptied earlier agent roots. Returns what was left undone, each named."""
     failed, moves = [], []
-    UserPaths.projects().mkdir(parents=True, exist_ok=True)
+    if done.moves:
+        # Made folder by folder: `mkdir(parents=True)` would follow a link planted on the way (checked again here, `plan` ran before).
+        if (way := unplain(UserPaths.projects())) is not None:
+            return [f"{UserPaths.projects()}: {way}"]
+        UserPaths.projects().mkdir(parents=True, exist_ok=True)
     for move in done.moves:
         try:
+            if move.target.exists() or move.target.is_symlink() or unplain(move.source.parent) is not None:   # a POSIX rename swaps an empty folder for the source
+                raise FileExistsError(f"{move.target} exists or a link is on the way")
             os.rename(move.source, move.target)
             moves.append(move)
         except OSError as error:
             failed.append(f"{move.source}: {error}")
     landed = tuple(moves)
+    for emptied in {move.source.parent for move in landed}:   # the folder an earlier Galaius made, left empty: never anything in it removed
+        with contextlib.suppress(OSError):
+            emptied.rmdir()
     for run_id in done.runs:
         run = reg.get_run(run_id)
         if run is not None and run.cwd and any(inside(run.cwd, move.source) for move in landed):

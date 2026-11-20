@@ -49,9 +49,15 @@ class UserPaths:
     @staticmethod
     def projects() -> Path:
         """The folder holding the projects put on this PC from the web (`PROJECTS_ROOT` on the wire):
-        `PROJECTS_DIR` of the home folder (`~/galaius/projects`, `%USERPROFILE%\\galaius\\projects` on Windows),
-        never derived from the runner's working directory."""
+        `PROJECTS_DIR` of the home folder, inside galaius's hidden folder (`~/.galaius/projects`,
+        `%USERPROFILE%\\.galaius\\projects` on Windows), never derived from the runner's working directory."""
         return Path.home().resolve().joinpath(*PROJECTS_DIR.split("/"))
+
+    @staticmethod
+    def earlier_projects() -> Path:
+        """Where an earlier Galaius kept the projects (`~/galaius/projects`, beside the prompt mirror): moved to `projects`
+        at connect (`galaius.machine.projects.relocate`), its name never a prompt folder's (`galaius.prompts.mirror.folders`)."""
+        return Path.home().resolve() / "galaius" / "projects"
 
     @staticmethod
     def launcher() -> Path | None:
