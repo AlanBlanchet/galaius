@@ -40,7 +40,9 @@ quiet() {
 }
 
 pytest_batch() {  # files...: one pytest process, as GitHub runs it
-  local test=(uv run --frozen -q pytest -m "not integration" -q -rfE -p no:cacheprovider "$@")
+  # A per-test bound of 300 s here (GitHub keeps pyproject's 90 s): its thread timeout ends the whole batch process, and a computer
+  # loaded by the agents on it makes a healthy 11 s test take over 90 s (2026-11-20: 4 pushes lost to it).
+  local test=(uv run --frozen -q pytest -m "not integration" -q -rfE -p no:cacheprovider -o timeout="${PREPUSH_TEST_TIMEOUT:-300}" "$@")
   if command -v systemd-run >/dev/null && systemctl --user show-environment >/dev/null 2>&1; then
     systemd-run --user --quiet --wait --pipe --collect --slice=galaius-agents.slice -p MemoryMax="$MEMORY" \
       -p WorkingDirectory="$PWD" -E PATH="$PATH" -E HOME="$HOME" -E LANG=C.UTF-8 -E LC_ALL=C.UTF-8 -E LANGUAGE=en "${test[@]}" </dev/null
