@@ -1082,7 +1082,7 @@ class RunFiles:
         holds none."""
         if not cls.holds(sender_id, key):
             raise ValueError(f"{key}: not a file this run holds")
-        held = cls.entry(sender_id, key) or HandedFile(key=key, name=key, story=FileStory(maker=sender_id, at=time.time()))
+        held = cls.entry(sender_id, key) or HandedFile(key=key, name=key, story=FileStory(maker=sender_id, at=time.time(), size=cls.path(sender_id, key).stat().st_size))
         cls.keep(recipient_id, cls.path(sender_id, key), PurePosixPath(key).suffix, key, held)
         return held
 

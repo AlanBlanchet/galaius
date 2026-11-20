@@ -489,7 +489,7 @@ def save(path: str, data: bytes | Path, *, replace: bool, sources: Iterable[str]
     suffix, size = key_suffix(path), len(data) if isinstance(data, bytes) else data.stat().st_size
     if run is not None:
         reg.RunFiles.fits(size)
-    story = story_of(run, sources, replaces)
+    story = story_of(run, sources, replaces, size)
     with PinnedDirectory.open(caller.cwd.resolve(), *folders, create=True) as folder:
         staged = f".{name}.{os.urandom(6).hex()}.new"
         with os.fdopen(folder.file(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644), "wb") as handle:
@@ -515,7 +515,7 @@ def save(path: str, data: bytes | Path, *, replace: bool, sources: Iterable[str]
     return Written(target, size, kept, held.story if held is not None else story)
 
 
-def story_of(run: "reg.AgentRun | None", sources: Iterable[str], replaces: str | None) -> FileStory | None:
+def story_of(run: "reg.AgentRun | None", sources: Iterable[str], replaces: str | None, size: int | None = None) -> FileStory | None:
     """The story a file `run` makes now carries: its maker, the kept files the agent says it made it from and in place of (each
     one `run` holds: made or handed), the time. None for a person's own session, which keeps nothing. ValueError: a key
     it does not hold, or more sources than a story names."""
@@ -528,7 +528,7 @@ def story_of(run: "reg.AgentRun | None", sources: Iterable[str], replaces: str |
         if not reg.RunFiles.holds(run.run_id, key):
             raise ValueError(f"{key}: not a file this run holds (made here, or handed to it by key)")
     try:
-        return FileStory(maker=run.run_id, sources=named, replaces=replaces, at=time.time())
+        return FileStory(maker=run.run_id, sources=named, replaces=replaces, at=time.time(), size=size)
     except ValueError as error:
         raise ValueError(str(error).splitlines()[0]) from error
 
@@ -543,12 +543,12 @@ def keep(path: str, *, sources: Iterable[str] = (), replaces: str | None = None)
         raise PermissionError("keep_file keeps a file for an agent run; this session is none")
     if any(project_hidden(part) for part in PurePosixPath(path).parts):
         raise ValueError(f"{path}: a hidden file or a credential store is never kept")
-    story = story_of(run, sources, replaces)
-    assert story is not None
+    story_of(run, sources, replaces)  # refused before anything is copied when it names a file this run does not hold
     scratch = Path(tempfile.mkdtemp(prefix="keep-", dir=reg.agents_dir()))
     try:
         copied = scratch / "copy"
         size = copy_working(path, copied, KEPT_FILE_MAX)
+        story = story_of(run, sources, replaces, size)
         name = PurePosixPath(path).name
         suffix = key_suffix(name)
         key = file_key(reg.file_parts(copied), suffix)

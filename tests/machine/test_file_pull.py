@@ -47,4 +47,4 @@ def test_a_file_pulled_by_key_is_checked_against_it_and_kept_for_the_run_as_the_
     kept = MachineAgents._keep_attached("agent", ((AttachedFile(key=key, name="take 1.mkv"), target),))
     (handed,) = kept
     assert (handed.name, handed.story.maker) == ("take 1.mkv", OWNER_MAKER) and reg.RunFiles.path("agent", key).read_bytes() == HELD[key]
-    assert reg.RunFiles.entry("agent", key).story.maker == OWNER_MAKER
+    assert reg.RunFiles.entry("agent", key).story.maker == OWNER_MAKER and handed.story.size == len(HELD[key])

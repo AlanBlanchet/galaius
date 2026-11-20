@@ -237,7 +237,7 @@ def test_a_file_of_any_format_is_kept_under_one_key_with_its_story_and_handed_by
     (tmp_path / name).write_bytes(b"made by a shell " + name.encode())
     assert not reg.RunFiles.holds("maker", file_key(b"made by a shell " + name.encode(), key_suffix(name)))
     kept = keep(name, sources=[source.key])
-    assert kept.key == file_key(b"made by a shell " + name.encode(), key_suffix(name)) and kept.story.maker == "maker" and kept.story.sources == (source.key,)
+    assert kept.key == file_key(b"made by a shell " + name.encode(), key_suffix(name)) and kept.story.maker == "maker" and kept.story.sources == (source.key,) and kept.story.size == len(b"made by a shell " + name.encode()) == kept.size
     (tmp_path / name).write_bytes(b"overwritten afterwards")
     turn = MessageTurn(files=(kept.key,)).hand("maker", "reader")
     (handed,) = turn.handed
