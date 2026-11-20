@@ -2,6 +2,7 @@
 
 import asyncio
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -26,10 +27,11 @@ def test_a_run_writes_its_ledger_file_whole_each_time_and_nothing_else(out: Path
     file = out / "ledgers" / "1e917136.md"
     assert file.read_text() == "# second\n" and str(file) in said
     assert sorted(path.name for path in (out / "ledgers").iterdir()) == ["1e917136.md"]
-    assert stat.S_IMODE(file.stat().st_mode) == 0o600
+    if sys.platform != "win32":  # a protected DACL there, no POSIX mode
+        assert stat.S_IMODE(file.stat().st_mode) == 0o600
 
 
-@pytest.mark.parametrize("text", ["", "  \n", "x" * (agents.REPORT_MAX + 1)])
+@pytest.mark.parametrize("text", ["", "  \n", "x" * (agents.REPORT_MAX + 1)], ids=["empty", "blank", "oversized"])  # a 200,001-character id made the test folder's name too long on Windows
 def test_an_empty_or_oversized_report_is_refused_and_leaves_the_file_alone(out: Path, text: str) -> None:
     asyncio.run(agents.report_write("kept"))
     with pytest.raises(ValueError):
