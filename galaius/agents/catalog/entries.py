@@ -125,7 +125,10 @@ class CatalogSnapshot(AgentCatalogSnapshot):
         pins = {capability.agent for agent in self.agents for capability in agent.capabilities
                 if capability.kind == "delegate" and capability.name == name}
         if not pins:
-            raise CatalogConnectionError(f"the active server catalog declares no delegate capability {name!r}")
+            declared = sorted({capability.name for agent in self.agents for capability in agent.capabilities if capability.kind == "delegate"})
+            near = f"ask_{name}"
+            hint = f"; did you mean {near!r}?" if near in declared else f"; declared: {', '.join(declared) or 'none'}"
+            raise CatalogConnectionError(f"the active server catalog declares no delegate capability {name!r}{hint}")
         if len(pins) == 1:
             return next(iter(pins))
         held = [pin for pin in pins if any(agent.id == pin.id and agent.revision == pin.revision for agent in self.agents)]

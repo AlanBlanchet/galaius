@@ -1459,9 +1459,10 @@ def resolve_role(policy: Policy, agent: str | None, *, reference: AgentRevisionR
         if parent_run is None:
             raise ModelUnavailable(
                 sentence=f"Parent run {parent} is not among this computer's run records ({reg.agents_dir()}); "
-                "name the delegate capability to launch, or start the parent again")
+                "launch with `--delegate ask_<role>` (agent_spawn: `delegate=ask_<role>`), which needs no parent record")
         if parent_run.agent_ref is None:
-            raise ModelUnavailable(sentence=f"Parent run {parent} ran without a server revision; start the parent again")
+            raise ModelUnavailable(sentence=f"Parent run {parent} ran without a server revision, so a role cannot resolve from it; "
+                "launch with `--delegate ask_<role>` (agent_spawn: `delegate=ask_<role>`), which needs none")
     policy, role = policy.for_launch(agent, reference=reference, parent=parent_run.agent_ref if parent_run is not None else None,
                                      capability=delegate)
     if not role:
@@ -1604,7 +1605,7 @@ async def run_agent(
             provider = (held.runs(provider.name) if provider is not None else held).program
     if community is not None:
         if parent_run is None or not parent_run.agent:
-            raise ModelUnavailable(sentence="A community agent works for the agent run that starts it: start it from an agent run playing a role")
+            raise ModelUnavailable(sentence="A community agent works for the agent run that starts it: start it from an agent run playing a role (one launched with `--delegate ask_<role>` is)")
         if provider is not None and not provider.confines_tools:
             raise ModelUnavailable(sentence=f"A community agent runs only on a CLI that switches off its tools one by one: {provider.name} cannot switch off its shell, web search and MCP servers")
         provider = provider or next((cli for cli in program_providers() if cli.confines_tools), None)

@@ -166,7 +166,8 @@ def handle(event: dict) -> dict:
     parent_id = os.environ.get("GALAIUS_PARENT_RUN_ID")
     parent_run = reg.get_run(parent_id) if parent_id else None
     if policy.catalog is not None and parent_id and (parent_run is None or parent_run.agent_ref is None):
-        raise PolicyError("Parent run has no recorded server revision; start the parent again")
+        raise PolicyError("Parent run has no recorded server revision, so a native agent cannot resolve a role from it; "
+                          "launch with `galaius agents spawn --delegate ask_<role>` instead")
     policy, role = policy.for_launch(role, parent=parent_run.agent_ref if parent_run is not None else None)
     if not policy.provider_active("codex"):
         raise PolicyError(policy.off_sentence("codex"))

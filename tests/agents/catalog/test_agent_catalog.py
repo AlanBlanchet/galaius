@@ -875,8 +875,8 @@ def test_head_instruction_validation_precedes_lazy_file_exports(catalog_home):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("recorded, said", [
-    (False, "is not among this computer's run records"),
-    (True, "ran without a server revision"),
+    (False, r"is not among this computer's run records.*--delegate ask_<role>"),
+    (True, r"ran without a server revision.*--delegate ask_<role>"),
 ])
 async def test_missing_parent_revision_cannot_silently_use_latest_policy(advanced_catalogs, catalog_home, monkeypatch, recorded, said):
     """A role launch still needs the parent's pin — and says WHICH of the two facts is missing:
@@ -920,6 +920,9 @@ async def test_a_child_delegates_through_the_capability_its_catalog_declares(adv
     assert (saved.agent, saved.agent_ref, saved.parent_run_id) == ("fixture-worker", pinned, parent_id)
     with pytest.raises((ModelUnavailable, ValueError), match="no delegate capability 'ask_nobody'"):
         await run_agent(ClaudeCodeProvider(), "Judge the pixels", delegate="ask_nobody",
+                        parent_run_id=parent_id, cwd=str(catalog_home), mesh=False)
+    with pytest.raises((ModelUnavailable, ValueError), match="did you mean 'ask_worker'"):   # the bare role name, as `--delegate tester` gave it
+        await run_agent(ClaudeCodeProvider(), "Judge the pixels", delegate="worker",
                         parent_run_id=parent_id, cwd=str(catalog_home), mesh=False)
 
 
