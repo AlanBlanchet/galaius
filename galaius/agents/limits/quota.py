@@ -543,6 +543,16 @@ def blocked_until(provider: str, model: str | None, *, subscription: UUID | None
     return max(untils, default=None)
 
 
+def pool_blocked_until(provider: str, model: str | None, *, subscription: UUID | None = None, now: float | None = None) -> float | None:
+    """When this model's FAMILY pool (`POOLS`) is open again on this login (refused, or past his stop), None when it is not
+    shut: the vendor said « Switch to another model » for exactly this family, unlike a model blocked by an account-level limit."""
+    moment = time.time() if now is None else now
+    entries = _read(moment)
+    untils = [block.until for token in sorted(POOL_TOKENS) if token in (model or "").lower()
+              and (block := entries.get(_pool_key(provider, token, subscription))) is not None and block.until > moment]
+    return max(untils, default=None)
+
+
 def hold_pool(provider: str, pool: str, *, until: float, subscription: UUID | None = None, now: float | None = None) -> None:
     """Pass this family's models over on this login until `until` (a pool at his stop, `ModelPool`): every other model and
     every other login of his still runs. Never shortens a block already standing; clearing one early is `release_pool`'s job."""

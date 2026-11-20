@@ -1018,8 +1018,8 @@ async def test_a_model_one_login_refuses_runs_on_his_next_login_else_the_next_ra
 @pytest.mark.parametrize(("refused", "goes_to"), [(True, "claude-opus-5-5"), (False, None)])
 def test_a_conversation_on_a_model_its_login_refuses_goes_on_with_the_next_one_else_it_is_never_moved_down(monkeypatch: pytest.MonkeyPatch, refused: bool, goes_to: str | None) -> None:
     """Owner 2026-11-20: his Fable conversation was refused « every model … passed over as smaller than the model this conversation runs on »
-    while only Fable's own pool was shut. Floor held while its model answers (a size cut is no model's quota); dropped when that model is
-    itself refused on this login."""
+    while only Fable's own pool was shut. Floor held while its model answers or is refused by an account-level limit (a size cut earns
+    none); dropped when its family's own pool is shut on this login (the vendor says « Switch to another model »)."""
     login = uuid4()
     scores = {"claude-fable-5-2": 90.0, "claude-opus-5-5": 70.0}
     monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None, among=None: tuple(
@@ -1029,9 +1029,10 @@ def test_a_conversation_on_a_model_its_login_refuses_goes_on_with_the_next_one_e
     if refused:
         quota.record_refusal("claude", "claude-fable-5-2", said="You've reached your Fable limit. Switch to another model.", subscription=login)
     else:
-        quota.record_refusal("claude", "claude-opus-5-5", said="rate limit exceeded", subscription=login)   # a lower model's note never frees nor holds the floor
+        quota.record_refusal("claude", "claude-fable-5-2", said="You've hit your weekly limit · resets 9pm (Europe/Paris)", subscription=login)   # an account limit keeps the floor
     resolve = lambda: run_module.resolve_continuable_model("crit", {}, provider=PROVIDERS["claude"], subscription=login, floor="claude-fable-5-2")[1]  # noqa: E731
     if goes_to is None:
-        assert resolve() == "claude-fable-5-2"
+        with pytest.raises(run_module.ModelUnavailable, match="never moved down"):
+            resolve()
     else:
         assert resolve() == goes_to

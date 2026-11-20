@@ -399,10 +399,10 @@ def resolve_continuable_model(
     """
     candidates = rank_candidates(model, env, providers=[provider], weights=weights, role=role)
     least = _capability_of(floor, candidates) if floor else None
-    # The model the conversation is ON is itself refused on this login (its own pool, `quota.POOLS`, or its quota block): the floor
-    # cannot hold, or the conversation can never go on while that block stands. Only an account-level refusal of a SIZE (a
-    # context too long) is no model's quota and earns no block (`quota.remember`), so a block on the floor model is always a quota fact.
-    if floor and quota.blocked_until(provider.name, floor, subscription=subscription) is not None:
+    # The model the conversation is ON has its family's own pool shut on this login (« Switch to another model », `quota.POOLS`): the
+    # vendor itself sends it to another model, and the floor would leave it stuck until the pool reopens days later. A block by an
+    # account-level limit keeps the floor: what cut the conversation there is as often its size (2026-10-23, below).
+    if floor and quota.pool_blocked_until(provider.name, floor, subscription=subscription) is not None:
         least = None
     cooled: dict[str, float] = {}
     smaller: dict[str, float] = {}
