@@ -460,8 +460,8 @@ class Block(BaseModel):
 
 class ModelPool(BaseModel):
     """One model family's weekly pool as its vendor last reported it for one login (`POOLS`): the family's token ("fable"),
-    the share used (vendor scale 0-100) and when it reopens. Kept beside a subscription's windows, never among them: the wire
-    names only the account's own periods."""
+    the share used (vendor scale 0-100) and when it reopens. Kept beside a subscription's windows (`Subscription.pools`), and
+    reported with them as windows of their own (`window`)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -469,6 +469,11 @@ class ModelPool(BaseModel):
     used_percent: float = Field(ge=0)
     resets_at: datetime | None = None
     observed_at: datetime
+
+    @property
+    def window(self) -> UsageWindow:
+        """It as the wire's window (`galaius_core.POOL_WINDOWS`): `weekly_fable`."""
+        return UsageWindow(window=f"weekly_{self.pool}", used_percent=self.used_percent, resets_at=self.resets_at, observed_at=self.observed_at)
 
     def open(self, now: datetime) -> bool:
         """Its reading still stands: the pool has not reopened since (a reading past its reset is no evidence)."""

@@ -29,6 +29,8 @@ class LoginReading(BaseModel):
     reported of them (None: nothing since this runner started, so the server's, maybe older, is replaced by the first)."""
 
     usage: tuple[UsageWindow, ...] = ()
+    #: The model-family pools its runs streamed (`quota.POOLS`), reported beside `usage` as windows of their own.
+    pools: tuple[quota.ModelPool, ...] = ()
     identity: LoginIdentity = LoginIdentity()
     reported: tuple[UsageWindow, ...] | None = None
     reported_identity: LoginIdentity = LoginIdentity()
@@ -37,14 +39,16 @@ class LoginReading(BaseModel):
     def due(self, now: datetime) -> bool:
         """The server should hear it now: never yet, its usage moved (`SubscriptionUsageReport.due`), or its CLI names
         another login than the one last reported."""
-        return (self.reported is None or SubscriptionUsageReport.due(self.usage, self.reported, self.reported_at, now)
+        return (self.reported is None or SubscriptionUsageReport.due(self.windows(), self.reported, self.reported_at, now)
                 or bool(self.identity.login) and self.identity != self.reported_identity)
 
-    def report(self, provider: AgentProvider) -> LoginUsage:
-        """Its readings of windows not reopened since (a reading past its `resets_at` is the old window's)."""
+    def windows(self) -> tuple[UsageWindow, ...]:
+        """Its readings of windows not reopened since (a reading past its `resets_at` is the old window's), the family pools beside them."""
         now = datetime.now(UTC)
-        return LoginUsage(provider=provider, windows=tuple(window for window in self.usage if window.resets_at is None or window.resets_at > now),
-                          **self.identity.model_dump())
+        return tuple(window for window in (*self.usage, *(pool.window for pool in self.pools)) if window.resets_at is None or window.resets_at > now)
+
+    def report(self, provider: AgentProvider) -> LoginUsage:
+        return LoginUsage(provider=provider, windows=self.windows(), **self.identity.model_dump())
 
 
 class SubscriptionWatch(BaseModel):
@@ -130,6 +134,7 @@ class SubscriptionWatch(BaseModel):
                 self.login_heard(run.provider, windows)
             if pools := self._pools_in(provider, lines):
                 Subscription.stop_pools(pools, provider=run.provider, subscription=None)
+                self.login_pools(run.provider, pools)
         watched = {reg.raw_events_path(run.run_id) for run in (*running, *own)} | {self._records[run.run_id] for run in running if run.run_id in self._records}
         self._offsets = {path: offset for path, offset in self._offsets.items() if path in watched}
         self._records = {run.run_id: self._records[run.run_id] for run in running if run.run_id in self._records}
@@ -140,6 +145,13 @@ class SubscriptionWatch(BaseModel):
             reading = self._logins.get(provider, LoginReading())
             latest = {window.window: window for window in (*reading.usage, *windows)}
             self._logins[provider] = reading.model_copy(update={"usage": tuple(latest.values())})
+
+    def login_pools(self, provider: AgentProvider, pools: tuple[quota.ModelPool, ...]) -> None:
+        """`pools` a run on `provider`'s own login streamed (oldest first) replace that login's readings of the same families."""
+        with self._lock:
+            reading = self._logins.get(provider, LoginReading())
+            latest = {pool.pool: pool for pool in (*reading.pools, *pools)}
+            self._logins[provider] = reading.model_copy(update={"pools": tuple(latest.values())})
 
     @staticmethod
     def _pools_in(provider: Program, lines: list[str]) -> tuple[quota.ModelPool, ...]:

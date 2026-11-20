@@ -939,7 +939,8 @@ def test_a_runs_streamed_readings_become_its_logins_usage_pool_and_stop_whicheve
         assert [(window.window, window.used_percent) for window in readings] == [("five_hour", 91.0), ("weekly", 68.0)]
         report = watch.report(datetime.now(UTC))
         reported = {usage.subscription_id: usage.windows for usage in report.usage} if login == "subscription" else {None: next(item.windows for item in report.logins if item.provider == "claude")}
-        assert [window.used_percent for window in reported[subscription.id if login == "subscription" else None]] == [91.0, 68.0]
+        # The pool goes to the server as a window of its own beside the account's two (his picker shows « Fable 96 % » beside the week).
+        assert [(window.window, window.used_percent) for window in reported[subscription.id if login == "subscription" else None]] == [("five_hour", 91.0), ("weekly", 68.0), ("weekly_fable", 96.0)]
     finally:
         worker.kill()
         worker.wait()

@@ -370,9 +370,10 @@ class Subscription(BaseModel):
         """Its usage and login when the server should hear them now: its usage moved (`SubscriptionUsageReport.due`), or
         its CLI names another login than the one last reported."""
         state = self.state()
-        due = state.usage and SubscriptionUsageReport.due(state.usage, state.reported, state.reported_at, now)
+        windows = (*self.usage(), *(pool.window for pool in self.pools()))   # not reopened since; the family pools beside the account's windows
+        due = windows and SubscriptionUsageReport.due(windows, state.reported, state.reported_at, now)
         named = state.identity.login and state.identity != state.reported_identity
-        return SubscriptionUsage(subscription_id=self.id, windows=state.usage, **state.identity.model_dump()) if due or named else None
+        return SubscriptionUsage(subscription_id=self.id, windows=windows, **state.identity.model_dump()) if due or named else None
 
     def reported(self, usage: SubscriptionUsage, now: datetime) -> None:
         with self.WRITING:
