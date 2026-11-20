@@ -49,3 +49,11 @@ def test_every_role_with_a_tool_list_is_granted_it_and_a_role_with_none_stays_wi
     listing = AgentToolList()
     assert "mcp__galaius__report_write" in listing.granted("any", tools, "mcp__galaius__")
     assert listing.granted("any", [], "mcp__galaius__") == [] and listing.granted("any", None, "mcp__galaius__") is None
+
+
+@pytest.mark.parametrize("run_id", ["../../../etc/pwn", "1e917136/../x", "", "not-a-run"])
+def test_an_id_that_is_no_run_id_names_no_file(out: Path, monkeypatch: pytest.MonkeyPatch, run_id: str) -> None:
+    monkeypatch.setattr(messaging, "asking_run", lambda: run_id)
+    with pytest.raises(ValueError):
+        asyncio.run(agents.report_write("report"))
+    assert not list(out.rglob("*.md"))

@@ -563,8 +563,10 @@ REPORT_MAX = 200_000
 
 
 def report_path(run_id: str) -> Path:
-    """The ledger file of a run: `ledgers/<its first 8 characters>.md` beside the agent registry's folder (`~/.galaius/out`)."""
-    return UserPaths.agents().parent / "ledgers" / f"{reg.short_id(run_id)}.md"
+    """The ledger file of a run: `ledgers/<its first 8 characters>.md` beside the agent registry's folder (`~/.galaius/out`).
+    ValueError for an id that is no run id (a uuid): the name is never taken from anything else (tester dce51342: a made-up
+    id `../../x` named a file two folders above)."""
+    return UserPaths.agents().parent / "ledgers" / f"{reg.short_id(str(UUID(run_id)))}.md"
 
 
 @mcp.tool(category="agents")

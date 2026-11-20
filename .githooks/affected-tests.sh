@@ -25,13 +25,14 @@ mapfile -t files < <(printf '%s\n' "$picked" | grep -v '^$' | sort -u | while re
 [ "${#files[@]}" -gt 0 ] || exit 0
 echo "pre-push: ${#files[@]} test file(s) touched by this push, run here first (Linux, batches of ${BATCH}):" >&2
 
-# A batch starts when this computer is quiet: its tests have per-test time bounds (90 s, a cold console child, an ffmpeg clip) a
+# The batches start when this computer is quiet: its tests have per-test time bounds (90 s, a cold console child, an ffmpeg clip) a
 # computer loaded by the agents running on it breaks (2026-11-19: load average 13 to 107 on 12 cores, a different test red on
 # every push, each passing alone). Waits while the 1-minute load average is over PREPUSH_QUIET_LOAD (default: the core count)
-# for at most PREPUSH_QUIET_SECONDS (default 1200), then runs anyway; no /proc/loadavg (not Linux): no wait.
+# for at most PREPUSH_QUIET_SECONDS (default 1200) once per push, then runs anyway; no /proc/loadavg (not Linux): no wait.
 quiet() {
   [ -r /proc/loadavg ] || return 0
   local limit="${PREPUSH_QUIET_LOAD:-$(nproc 2>/dev/null || echo 4)}" until=$((SECONDS + ${PREPUSH_QUIET_SECONDS:-1200})) load told=0
+  case "$limit" in ''|*[!0-9.]*) echo "pre-push: PREPUSH_QUIET_LOAD=$limit is no number: not waiting" >&2; return 0;; esac
   while read -r load _ < /proc/loadavg && awk -v current="$load" -v wanted="$limit" 'BEGIN { exit !(current > wanted) }' && [ "$SECONDS" -lt "$until" ]; do
     [ "$told" = 0 ] && echo "pre-push: waiting for this computer to be quiet (load average $load, wanted under $limit; at most ${PREPUSH_QUIET_SECONDS:-1200} s)" >&2
     told=1; sleep $(( until - SECONDS < 15 ? until - SECONDS : 15 ))
@@ -39,7 +40,6 @@ quiet() {
 }
 
 pytest_batch() {  # files...: one pytest process, as GitHub runs it
-  quiet
   local test=(uv run --frozen -q pytest -m "not integration" -q -rfE -p no:cacheprovider "$@")
   if command -v systemd-run >/dev/null && systemctl --user show-environment >/dev/null 2>&1; then
     systemd-run --user --quiet --wait --pipe --collect --slice=galaius-agents.slice -p MemoryMax="$MEMORY" \
@@ -57,6 +57,7 @@ uv run --frozen -q uv build --wheel --quiet --out-dir out/tests/prepush-wheel >/
   || echo "pre-push: could not build the wheel (offline?); a wheel test may fail" >&2
 rm -rf out/tests/prepush-wheel
 failed=0
+quiet  # once for the whole push: a wait per batch would add up to nine times its bound
 for ((start = 0; start < ${#files[@]}; start += BATCH)); do
   pytest_batch "${files[@]:start:BATCH}" >&2 || failed=1
 done
