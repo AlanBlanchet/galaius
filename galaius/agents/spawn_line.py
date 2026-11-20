@@ -49,6 +49,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from galaius.agents import messaging
 from galaius.agents import agent_queue
+from galaius.agents.spawn_wait import POLL_SECONDS, YIELDED, published, verdict
 from galaius.agents.catalog import relations
 from galaius.agents.turns.critic_rounds import CriticRounds, turn_of
 from galaius.agents.limits.admission import Hold, Paused, SoftMemory, turn_hold
@@ -65,8 +66,6 @@ from galaius.host.paths import UserPaths
 from galaius.host.processes import process_exited, process_started, share_malloc_arenas
 from galaius.upgrade.store import Runtime, RuntimeStore
 
-#: How often a waiter, or a resume, looks whether its turn came.
-POLL_SECONDS = 3.0
 #: Said of a run waiting when every place is held by a team with a run waiting in line (`SpawnLine._stuck`).
 STUCK = "chaque place est tenue par une équipe dont une run attend ici ; si elles s'attendent, arrêtez-en une"
 #: Said of a run set aside (`SpawnLine.aside`) whose place is free, where its activity line would be (`agents list`).
@@ -87,6 +86,11 @@ LOST_TASK_CHARS = 200
 LIGHT_TOOLS = frozenset({"Read", "Grep", "Glob", "LS", "NotebookRead", "WebFetch", "WebSearch", "TodoWrite", "SendMessage", "ListAgents",
                          f"{TOOL_PREFIX}conversation_search", f"{TOOL_PREFIX}conversation_read"})
 LIGHT_PREFIXES = (f"{TOOL_PREFIX}ext__",)
+
+#: The head's publication for the lean waiters (`SpawnLine._publish`, `spawn_wait.verdict`), shared state beside the line's.
+READY_STATE = "spawn-ready"
+#: How long an unchanged publication stands before the head writes it again (under `spawn_wait.READY_TTL`).
+READY_REFRESH_SECONDS = 5.0
 
 logger = logging.getLogger(__name__)
 
@@ -924,8 +928,22 @@ class SpawnLine(BaseModel):
         or its parent is set aside, its place given back (`AtWork.giving`): the child takes it ahead of the line."""
         if self._memory_hold() is not None:   # past the soft memory limit: no turn starts, a shared place's neither
             return False
-        at_work = self._at_work(places)
+        return self._fits(self._at_work(places), parent, first=first)
+
+    def _fits(self, at_work: AtWork, parent: str | None, *, first: bool) -> bool:
         return at_work.shares(parent) or ((first or parent in at_work.giving()) and not at_work.load(self.limit).full)
+
+    def _publish(self, places: list[Place]) -> None:
+        """The head's look, for the lean waiters (`spawn_wait`) of the runs behind it: which of them start ahead of the line
+        (`_admits` with `first` False). Written when it changes, and every few seconds while it does not (their `READY_TTL`)."""
+        at_work = self._at_work(places)
+        ids = [] if self._memory_hold() is not None else [
+            place.run_id for place in places if place.queued() and self._fits(at_work, place.parent_run_id, first=False)]
+        now = time.time()
+        with reg.shared_state(READY_STATE) as (raw, replace, _):
+            at, before = published(raw)
+            if frozenset(ids) != before or now - at > READY_REFRESH_SECONDS:
+                replace(json.dumps({"at": now, "ids": ids}).encode())
 
     @contextmanager
     def aside(self, run_id: str | None, waits_on: Sequence[str] = ()) -> Iterator[None]:
@@ -1020,7 +1038,8 @@ class SpawnLine(BaseModel):
         """Start the waiter holding `run_id`'s place, writing to the run's own stderr file (`_prune` quotes it)."""
         try:
             with reg.open_stderr(run_id, append=True) as stderr:
-                process = reg.start_participant("galaius.agents.spawn_line", run_id, cwd=spawn.cwd, contain=True, stderr=stderr)
+                process = reg.start_participant("galaius.agents.spawn_wait", run_id, str(reg.shared_state_path("spawn-line")),
+                                                str(reg.shared_state_path(READY_STATE)), cwd=spawn.cwd, contain=True, stderr=stderr)
         except OSError as error:
             self._settle(run_id, f"its waiter could not start: {error}")
             raise
@@ -1200,6 +1219,8 @@ class SpawnLine(BaseModel):
                 places[index] = place = place.model_copy(update={"holds": (), "said": ""})
             head = next(other for other in places if other.queued())
             if not self._admits(places, place.parent_run_id, first=head.run_id == run_id):
+                if head.run_id == run_id:
+                    self._publish(places)
                 return "wait"
             # Its relation asked again as it starts: a run of a role keeping one may have started meanwhile.
             if (refused := place.spawn.relation_refusal([other for other in places if other.run_id != run_id], gone)) is not None:
@@ -1208,13 +1229,19 @@ class SpawnLine(BaseModel):
             places[index] = place = place.model_copy(update={"state": "starting"})
             return place
 
-    def wait(self, run_id: str) -> None:
-        """The waiter: once `run_id` may start, start it, then free its place; ends when the place is gone."""
+    def wait(self, run_id: str, *, yields: bool = False) -> bool:
+        """The waiter: once `run_id` may start, start it, then free its place; ends when the place is gone. `yields` (the child
+        of its lean waiter, `spawn_wait`): True, the place handed back to it, when the run may not start yet and `spawn_wait.verdict`
+        says it need not be looked at every `POLL_SECONDS`."""
         while True:
             while (turn := self._turn(run_id)) == "wait":
+                if yields and verdict(reg.shared_state_seen("spawn-line"), reg.shared_state_seen(READY_STATE), run_id, now=time.time(),
+                                      since=time.time()) == "sleep":
+                    self._hand_back(run_id)
+                    return True
                 time.sleep(POLL_SECONDS)
             if turn == "gone":
-                return
+                return False
             assert turn.spawn is not None
             try:
                 asyncio.run(turn.spawn.start(run_id))
@@ -1223,17 +1250,27 @@ class SpawnLine(BaseModel):
                 continue
             except Exception as error:  # every way a start fails: the place says why, the run id resolves to it
                 self._settle(run_id, str(error) or type(error).__name__)
-                return
+                return False
             self.leave(run_id)
-            return
+            return False
+
+    def _hand_back(self, run_id: str) -> None:
+        """`run_id`'s place held by the lean waiter (this process's parent) again, this process ending."""
+        parent = os.getppid()
+        with self._places() as places:
+            for index, place in enumerate(places):
+                if place.run_id == run_id and place.state == "waiting":
+                    places[index] = place.model_copy(update={"holder": parent, "holder_started": process_started(parent)})
 
 
 def main() -> None:
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: python -m galaius.agents.spawn_line RUN_ID")
+    arguments = sys.argv[1:]
+    yields = arguments[1:] == ["--yields"]
+    if len(arguments) != 1 and not yields:
+        raise SystemExit("usage: python -m galaius.agents.spawn_line RUN_ID [--yields]")
     share_malloc_arenas()  # one waiter per spawn in line, 12 threads each: ~120 of its 252 MB sat in their arenas (2026-11-09)
     RuntimeStore.default().register(Runtime.own(), os.getpid())  # its runtime stays until it ends
-    SpawnLine.here().wait(sys.argv[1])
+    raise SystemExit(YIELDED if SpawnLine.here().wait(arguments[0], yields=yields) else 0)
 
 
 if __name__ == "__main__":

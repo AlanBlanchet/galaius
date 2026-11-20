@@ -1235,7 +1235,7 @@ def shared_state(name: str) -> Iterator[tuple[bytes | None, Callable[[bytes], No
     """A registry-wide state file `#<name>.state`: its bytes (None: none yet), how to replace them whole, and how to
     keep a copy of them aside (`#<name>.state.unreadable-<epoch>`, evidence of a state its reader could not read), all
     under its own lock `#<name>.lock` (no run id contains `#`, so none meets a run's own files)."""
-    path = agents_dir() / f"#{name}.state"
+    path = shared_state_path(name)
     with exclusive(_open_private(agents_dir() / f"#{name}.lock", os.O_RDWR)):
         raw = _read_private(path)
         yield (raw, lambda payload: _replace_private(path, payload),
@@ -1245,7 +1245,12 @@ def shared_state(name: str) -> Iterator[tuple[bytes | None, Callable[[bytes], No
 def shared_state_seen(name: str) -> bytes | None:
     """Shared state `name` (`shared_state`) as last written, read without its lock: each write replaces it whole, so a
     reader showing it never waits behind a writer holding the lock."""
-    return _read_private(agents_dir() / f"#{name}.state")
+    return _read_private(shared_state_path(name))
+
+
+def shared_state_path(name: str) -> Path:
+    """The file of shared state `name` (`shared_state`), for a reader outside this module's imports (`spawn_wait`)."""
+    return agents_dir() / f"#{name}.state"
 
 
 def sole_holder(job: str) -> SoleHolder:

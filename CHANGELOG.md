@@ -6,6 +6,8 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+- A spawn waiting for a place is held by a lean process (`galaius.agents.spawn_wait`, ~20 MB) instead of a full galaius
+  one (~100-300 MB each); only the next in line starts the full waiter. Measured with 6 queued spawns: 600 MB → 183-222 MB.
 - The `galaius` package sits at the repository root (`galaius/`), no `src/` folder; the wheel and
   every module path are unchanged.
 - Relayed agent messages open with `[Galaius agent provenance]`; readers accept any

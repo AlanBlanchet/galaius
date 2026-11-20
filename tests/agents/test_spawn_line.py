@@ -17,15 +17,15 @@ from galaius_core import AgentRelation, AgentRevisionRef
 
 from galaius.account.caller import Caller
 from galaius.agents import registry as reg
-from galaius.agents import spawn_line
+from galaius.agents import spawn_line, spawn_wait
 from galaius.agents.catalog.community import CommunityAgent
 from galaius.agents.messaging import Asker
 from galaius.agents.policy import Policy
 from galaius.agents.providers import ClaudeCodeProvider
 from galaius.agents.run import ChildLaunch, TaskNotHanded, run_agent
-from galaius.agents.spawn_line import ASIDE, STUCK, Admission, Load, Spawn, SpawnLine
+from galaius.agents.spawn_line import ASIDE, READY_STATE, STUCK, Admission, Load, Spawn, SpawnLine
 from galaius.cli.app_commands import agents_require_role, agents_spawn
-from galaius.host.processes import process_started
+from galaius.host.processes import process_parent, process_started
 from galaius.machine.web_runs import WebRun, WebRuns
 from galaius.host.paths import UserPaths
 from tests.support import register_run
@@ -265,7 +265,7 @@ def test_the_waiter_is_its_own_process_and_ends_when_taken_out_of_the_line(at_wo
     queued = line.enter(_spawn())
     with line._places() as places:
         holder = places[0].holder
-    assert holder != os.getpid() and "galaius.agents.spawn_line" in " ".join(open(f"/proc/{holder}/cmdline").read().split("\0"))
+    assert holder != os.getpid() and "galaius.agents.spawn_wait" in " ".join(open(f"/proc/{holder}/cmdline").read().split("\0"))
     assert line.cancel(queued.run_id[:8]) == queued.run_id
     deadline = time.monotonic() + 3 * spawn_line.POLL_SECONDS
     while reg._alive(holder) and not spawn_line.process_exited(holder):
@@ -736,3 +736,90 @@ def test_an_act_reserved_to_a_role_passes_its_runs_and_the_person_only(monkeypat
     with pytest.raises(SystemExit) as refused:
         agents_require_role("deployer")
     assert refused.value.code == 3 and capsys.readouterr().err.startswith("REFUSED: only the deployer does this")
+
+
+def _place(run_id: str, **fields) -> dict:
+    return {"run_id": run_id, "state": "waiting", "said": "", "holds": [], "spawn": {"task": "t"}, **fields}
+
+
+def _ready(at: float, *ids: str) -> bytes:
+    return json.dumps({"at": at, "ids": list(ids)}).encode()
+
+
+HELD = _place("h", said="en pause", holds=[{"cause": {"reason": "usage_limit", "until": 5000.0}}])
+NO_UNTIL = _place("h", said="en pause", holds=[{"cause": {"reason": "login_lost"}}])
+
+
+@pytest.mark.parametrize("run_id, places, ready, expected, since", [
+    ("a", [_place("a"), _place("b")], None, "wake", 999.0),                                  # the head wakes
+    ("b", [_place("a"), _place("b")], None, "sleep", 999.0),                                 # the others sleep
+    ("b", [_place("a"), _place("b")], _ready(999.0, "b"), "wake", 999.0),                    # published startable ahead of the line
+    ("b", [_place("a"), _place("b")], _ready(980.0, "b"), "sleep", 999.0),                   # a publication past its TTL names nobody
+    ("b", [_place("a"), _place("b")], _ready(940.0), "wake", 900.0),                         # no head published for STALE_SECONDS: former behaviour
+    ("b", [_place("a"), _place("b")], _ready(100.0), "sleep", 990.0),                        # ... counted from the waiter's own start
+    ("b", [_place("a", state="starting"), _place("b")], None, "wake", 999.0),                # a starting place is no head: "b" is
+    ("b", [HELD, _place("b")], None, "wake", 999.0),                                         # a held run is no head
+    ("h", [HELD, _place("b")], None, "sleep", 999.0),                                        # held until its named reopening
+    ("h", [NO_UNTIL, _place("b")], None, "wake", 999.0),                                     # a hold naming none: the full waiter asks
+    ("zzz", [_place("a")], None, "gone", 999.0),
+    ("a", [_place("a", state="failed")], None, "gone", 999.0),
+    ("a", [_place("a", spawn=None)], None, "gone", 999.0),                                   # a resumed turn's place is the dispatcher's
+])
+def test_a_lean_waiter_wakes_only_for_the_head_a_published_run_or_a_stale_line(run_id, places, ready, expected, since):
+    assert spawn_wait.verdict(json.dumps(places).encode(), ready, run_id, now=1000.0, since=since) == expected
+    assert spawn_wait.verdict(b"{not json", ready, run_id, now=1000.0, since=since) == "wake"  # unreadable: the full waiter judges
+
+
+def test_the_head_publishes_who_starts_ahead_of_the_line_and_a_yielding_waiter_hands_its_place_back(at_work, started):
+    """A child queued before its parent worked takes the parent's place once it does (`AtWork.shares`): the head says so."""
+    line = SpawnLine(limit=1, waiting_flag_minutes=5, waiting_gap_seconds=60)
+    at_work("a")
+    head, child = line.enter(_spawn()), line.enter(_spawn(parent="lead"))
+    assert line._turn(head.run_id) == "wait" and spawn_wait.published(reg.shared_state_seen(READY_STATE))[1] == frozenset()
+    at_work("lead")
+    assert line._turn(head.run_id) == "wait"
+    assert spawn_wait.published(reg.shared_state_seen(READY_STATE))[1] == frozenset({child.run_id})
+    assert line.wait(child.run_id, yields=True) is False  # it starts: no hand back
+    assert started == [child.run_id]
+
+
+def test_a_full_waiter_not_next_in_line_hands_its_place_to_its_lean_parent(at_work, started):
+    line = SpawnLine(limit=1, waiting_flag_minutes=5, waiting_gap_seconds=60)
+    at_work("a")
+    line.enter(_spawn())
+    behind = line.enter(_spawn())
+    assert line.wait(behind.run_id, yields=True) is True and started == []
+    with line._places() as places:
+        place = next(place for place in places if place.run_id == behind.run_id)
+        assert place.state == "waiting" and place.holder == os.getppid()
+
+
+def _descendants(pid: int) -> list[int]:
+    return [int(name) for name in os.listdir("/proc") if name.isdigit() and process_parent(int(name)) == pid]
+
+
+def _cmdline(pid: int) -> str:
+    return " ".join(open(f"/proc/{pid}/cmdline").read().split("\0"))
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="reads the waiters' command lines and memory from /proc")
+def test_n_waiting_runs_hold_n_lean_processes_and_only_the_head_a_full_one(at_work):
+    """2026-11-20: 6 queued spawns held 6 full processes, 258-290 MB each."""
+    line = SpawnLine(limit=1, waiting_flag_minutes=5, waiting_gap_seconds=60)
+    at_work("a")
+    queued = [line.enter(_spawn()) for _ in range(3)]
+    with line._places() as places:
+        holders = {place.run_id: place.holder for place in places}
+    assert all("galaius.agents.spawn_wait" in _cmdline(pid) for pid in holders.values())
+    head, others = holders[queued[0].run_id], [holders[spawn.run_id] for spawn in queued[1:]]
+    deadline = time.monotonic() + 60
+    while not any("galaius.agents.spawn_line" in _cmdline(pid) for pid in _descendants(head)):
+        assert time.monotonic() < deadline, "the head's lean waiter never woke its full waiter"
+        time.sleep(0.3)
+    time.sleep(3 * spawn_wait.POLL_SECONDS)  # a full waiter behind it would have started by now
+    assert all(not _descendants(pid) for pid in others)
+    for pid in others:
+        rss_kb = next(int(line.split()[1]) for line in open(f"/proc/{pid}/status") if line.startswith("VmRSS"))
+        assert rss_kb < 60 * 1024, f"a lean waiter holds {rss_kb // 1024} MB"
+    for spawn in queued:
+        line.cancel(spawn.run_id[:8])
