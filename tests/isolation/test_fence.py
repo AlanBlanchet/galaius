@@ -146,12 +146,13 @@ def test_a_project_folder_opens_alone_and_never_through_a_link(home: Path, tmp_p
 
 
 @pytest.mark.parametrize("working", ["", "work"])
-def test_a_steering_file_made_in_a_project_is_held_at_the_projects_folder_never_a_path_of_the_working_directory(home: Path, tmp_path: Path, working: str) -> None:
+def test_a_steering_file_made_in_a_project_is_held_at_the_projects_folder_never_a_path_of_the_working_directory(home: Path, tmp_path: Path, working: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Threat review 2026-11-20 F2: a project's review place was a path relative to the home folder, read again against the working
     directory (`~/dev`): `~/dev/.galaius/projects/aino` is the runner's own folder. It is the token's `PROJECTS_ROOT/<name>`, resolved from
     the projects folder alone, and a place that would land in the runner's own folders is refused."""
     from galaius.machine.places.levels import PlaceMap
     from galaius.machine.places.place_reviews import PlaceReviews
+    monkeypatch.setenv("USERPROFILE", str(home))   # the home folder on Windows (`Path.home`); the fixture sets HOME alone
     (home / ".galaius" / "projects" / "aino").mkdir(parents=True)
     project = home / ".galaius" / "projects" / "aino"
     built = _spec(home, tmp_path, start=".galaius/projects/aino", levels={}, project=project, working_directory=home / working).build()
