@@ -3231,6 +3231,10 @@ def limit_resume_at(run: AgentRun, *, now: float | None = None) -> float | None:
         # A model family's own pool (`quota.POOLS`): the account answers, so the next ranked model takes the turn at once (one
         # automatic try; a launch's relaunch, `relaunch_owed`, comes first).
         return run.finished_at if run.relaunched_at is None and (run.resumed_at is None or run.resumed_at < run.finished_at) else None
+    if refusal is not None and open_logins(run) and (run.resumed_at is None or run.resumed_at < run.finished_at):
+        # Another login of his takes the turn (`swap_login`): at once, never a wait for this one's reopening. One automatic try
+        # per refusal; refused there too, its login is shut as well and the named reset alone resumes it.
+        return run.finished_at
     if refusal is None or refusal.reopens_at is None or refusal.reopens_at - run.finished_at > quota.MAX_COOLDOWN:
         return None
     reset = refusal.reopens_at + quota.RESET_SLACK

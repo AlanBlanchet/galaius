@@ -15,6 +15,8 @@ from galaius.agents import agent_queue, messaging, registry as reg, run as run_m
 from galaius.agents.limits import quota
 from galaius.agents.limits.subscriptions import RunSubscription, Subscription
 from galaius.agents.providers import PROVIDERS
+from galaius.agents.transport.events import RunCut
+from galaius.usage_dialects import CountedTokens
 from tests.support.agents import QueueProvider, setup_queue
 
 FABLE_POOL = "You've reached your Fable limit. Switch to another model."
@@ -125,3 +127,19 @@ def test_every_part_of_a_logins_usage_is_one_record_in_one_file() -> None:
     assert record.blocks["~fable"].window == "seven_day_overage_included"
     assert record.pauses["usage_limit"].until is not None
     assert sorted(path.name for path in quota._path().parent.glob("quota-*.json")) == ["quota-usage.json"]
+
+
+@pytest.mark.parametrize(("other_open", "at_once"), [(True, True), (False, False)])
+def test_a_turn_cut_by_one_logins_window_resumes_at_once_on_his_other_login_else_at_the_reopening(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+                                                                                                 other_open: bool, at_once: bool) -> None:
+    """The account's own window (not a model pool) shut the run's login: with another login open its automatic resume is due now, never
+    at the reset the refusal named (owner 2026-11-20: never stop the request, use the fallback)."""
+    _, logins, _ = _stopped_run(monkeypatch, tmp_path)
+    line = _week_line()
+    for name in ("a", *(() if other_open else ("b",))):
+        quota.record_refusal("claude", "fable-fixture", said=line, subscription=logins[name].id)
+    run = reg.get_run("r1")
+    digest = reg.StreamDigest(source="x", ending="error", ending_text=line, cut=RunCut.usage_limit, usage=CountedTokens())
+    failed = run.model_copy(update={"status": "failed", "finished_at": time.time(), "stream_digest": digest})
+    due = reg.limit_resume_at(failed)
+    assert due is not None and (due == failed.finished_at) is at_once
