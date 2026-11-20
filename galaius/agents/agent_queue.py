@@ -1132,6 +1132,7 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
 
                     # His message is this PC's from now: the run reads at work through its wait for a place or for the
                     # service and every try, until its turn starts or its last try fails.
+                    run = reg.swap_login(run)   # a login that cannot take it, another of his that can: before the turn is begun
                     run = reg.begin_resume_locked(run_id) or run
                     # A resumed turn is a run at work like a spawn: it waits for a place on this computer.
                     with SpawnLine.here().resuming(run) as admitted:

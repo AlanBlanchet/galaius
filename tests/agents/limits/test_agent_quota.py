@@ -233,10 +233,10 @@ def test_forgotten_notes_do_not_accumulate():
     """The file is rewritten from what is still worth remembering, so it cannot grow without bound."""
     quota.record_refusal("claude", "stale", now=time.time() - 10 * HOUR)
     quota.record_refusal("claude", "fresh")
-    assert set(quota._read(time.time())) == {"claude/fresh"}
+    assert set(quota._read(time.time())["claude"].blocks) == {"fresh"}
 
 
-@pytest.mark.parametrize("stored", ["{not json", '{"claude/m": 1891237660.0}', '{"claude/m": {"until": "soon"}}'])
+@pytest.mark.parametrize("stored", ["{not json", '{"claude": 1891237660.0}', '{"claude": {"blocks": {"m": 1891237660.0}}}', '{"claude": {"blocks": {"m": {"until": "soon"}}}}'])
 def test_anything_but_a_block_in_the_store_reads_as_nothing(stored):
     """A corrupt file, or an older galaius's bare deadline — the 39 h kind — is no evidence."""
     quota._path().parent.mkdir(parents=True, exist_ok=True)
@@ -341,25 +341,27 @@ def test_a_probe_refused_for_quota_never_blocks_the_owners_own_runs(tmp_path, mo
 
     monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(owner))
     assert quota.blocked_until("claude", "claude-opus-5-5") is None
-    assert (probe / "quota-cooldowns.json").exists() and not (owner / "quota-cooldowns.json").exists()
+    assert (probe / "quota-usage.json").exists() and not (owner / "quota-usage.json").exists()
 
 
-@pytest.mark.parametrize("key, ended", [
-    ("claude/claude-opus-5-5", True),  # the PC's default login
-    ("claude/", True),  # a run naming no model
-    ("claude/claude-opus-5-5#7f9c4f0e-0000-4000-8000-000000000001", False),  # a subscription's own login
-    ("claude/claude-opus-5-5@0123abcd", False),  # a model the vendor refuses to a login, not a quota block
-    ("codex/gpt-6-sol", False),  # another provider
+@pytest.mark.parametrize("login, key, ended", [
+    ("claude", "claude-opus-5-5", True),  # the PC's default login
+    ("claude", "", True),  # a run naming no model
+    ("claude", "~fable", True),  # a model family's pool
+    ("claude#7f9c4f0e-0000-4000-8000-000000000001", "claude-opus-5-5", False),  # a subscription's own login
+    ("claude", "claude-opus-5-5@0123abcd", False),  # a model the vendor refuses to a login, not a quota block
+    ("codex", "gpt-6-sol", False),  # another provider
 ])
-def test_his_continue_ends_the_blocks_of_one_login_only(key, ended):
+def test_his_continue_ends_the_blocks_of_one_login_only(login, key, ended):
     """« Continuer » asks the vendor again on the run's own login (2026-10-13: refused on « resumes at 13:40 » while the
     login answered from 13:10): every other block stands."""
     now = 1_791_890_000.0
-    quota._write({key: quota.Block(until=now + 3600, count=1, at=now - 60)})
+    with quota._usage(now) as entries:
+        entries[login] = quota.LoginUsage(blocks={key: quota.Block(until=now + 3600, count=1, at=now - 60)})
 
     quota.forget_login("claude", now=now)
 
-    assert (quota._read(now)[key].until == now) is ended
+    assert (quota._read(now)[login].blocks[key].until == now) is ended
 
 
 # ── A conversation too long to compact is no model's quota ─────────────────────────────────────

@@ -18,6 +18,10 @@ blocked twice as long, and so on — never past what the vendor named, never pas
 model coming off a block is tried with a longer startup look (`PROBATION_WINDOW`), so a late
 refusal falls through to the next candidate instead of killing the run; and any sign the model
 serves again (a turn it wrote, a run that finishes) clears the memory at once.
+
+All of it is kept in ONE typed record per provider login (`LoginUsage`, file `quota-usage.json`): what the vendor refused for
+that login's models and model families, whether the login as a whole takes turns, and when it last answered — so a resume asks
+one place which of his logins can take a turn (`registry.open_logins`).
 """
 
 from __future__ import annotations
@@ -428,14 +432,19 @@ class Refusal(BaseModel):
 
 
 class Block(BaseModel):
-    """One model's remembered refusals: until when it is passed over, how many refusals in a row
-    earned that, and when the last one was heard."""
+    """One model's (or one model family's) remembered refusals on one login: until when it is passed over, how many
+    refusals in a row earned that, when the last one was heard, and what the vendor said of the period it refused for."""
 
     model_config = ConfigDict(extra="forbid")
 
     until: float
     count: int = Field(ge=1)
     at: float
+    #: The vendor's LITERAL token for the exhausted period (`WINDOWS`); "" when none was named (a pool read at his stop).
+    window: str = ""
+    #: The instant the vendor named that period reopening at; None when it named none. `until` is what this PC passes over
+    #: for, never past it (`Refusal.latest`): a rolling window reopens before the instant it names.
+    reopens_at: float | None = None
 
     @staticmethod
     def length(count: int) -> float:
@@ -475,7 +484,7 @@ def pool_stop_percent() -> float:
 
 
 def _path() -> Path:
-    return UserPaths.agents() / "quota-cooldowns.json"
+    return UserPaths.agents() / "quota-usage.json"
 
 
 def _cooldown() -> float:
@@ -489,28 +498,42 @@ def _cooldown() -> float:
         return DEFAULT_COOLDOWN
 
 
-def _key(provider: str, model: str | None, subscription: UUID | None = None) -> str:
-    """One model's block under one login: a subscription's own (`#<id>`), else the PC's default
-    login: subscription A exhausted never passes over subscription B or the default login."""
-    return f"{provider}/{model or ''}" + (f"#{subscription}" if subscription is not None else "")
+def _login(provider: str, subscription: UUID | None) -> str:
+    """One provider login: a subscription's own (`#<id>`), else the PC's default login: subscription A exhausted never
+    passes over subscription B or the default login."""
+    return provider + (f"#{subscription}" if subscription is not None else "")
 
 
-def _read(now: float) -> dict[str, Block]:
-    """Every block still remembered at `now`. An entry that is not a `Block` — a corrupt file, or
-    one written by an older galaius as a bare deadline — is no evidence and reads as nothing."""
-    entries: dict[str, Block] = {}
+def _family(pool: str) -> str:
+    """One model family's block under a login (`POOLS`): beside the models' own, `~` keeping it from any model id."""
+    return f"~{pool}"
+
+
+def _read(now: float) -> dict[str, LoginUsage]:
+    """Every login's record, with what is still remembered at `now`: a block that ended too long ago to mean anything, a
+    usage pause past its reopening, a lift older than any block, each gone. An entry that is not what its place holds — a
+    corrupt file, a bare deadline — is no evidence and reads as nothing."""
+    found: dict[str, LoginUsage] = {}
     with suppress(Exception):
         raw = json.loads(_path().read_text(encoding="utf-8"))
-        for key, value in (raw if isinstance(raw, dict) else {}).items():
-            with suppress(ValueError):
-                block = Block.model_validate(value)
-                if block.remembered(now):
-                    entries[str(key)] = block
-    return entries
-
-
-def _write(entries: dict[str, Block]) -> None:
-    _write_json(_path(), {key: block.model_dump() for key, block in entries.items()})
+        for login, record in (raw if isinstance(raw, dict) else {}).items():
+            if not isinstance(record, dict):
+                continue
+            usage = LoginUsage()
+            for key, value in (record.get("blocks") if isinstance(record.get("blocks"), dict) else {}).items():
+                with suppress(ValueError):
+                    if (block := Block.model_validate(value)).remembered(now):
+                        usage.blocks[str(key)] = block
+            for value in (record.get("pauses") if isinstance(record.get("pauses"), dict) else {}).values():
+                with suppress(ValueError):
+                    if (pause := Pause.model_validate(value)).until is None or pause.until > now:
+                        usage.pauses[pause.reason] = pause
+            lifted = record.get("lifted_at")
+            if isinstance(lifted, (int, float)) and not isinstance(lifted, bool) and lifted >= now - MAX_COOLDOWN:
+                usage.lifted_at = float(lifted)
+            if not usage.empty:
+                found[str(login)] = usage
+    return found
 
 
 def _write_json(path: Path, data: dict) -> None:
@@ -522,24 +545,35 @@ def _write_json(path: Path, data: dict) -> None:
         replace_held_open(tmp, path)
 
 
-def _until(key: str, now: float | None) -> float | None:
-    moment = time.time() if now is None else now
-    block = _read(moment).get(key)
-    return block.until if block is not None and block.until > moment else None
+@contextmanager
+def _usage(now: float) -> Iterator[dict[str, LoginUsage]]:
+    """The records at `now` (`_read`) for the block to change in place, written back after it, all under one lock: every
+    process here (a dispatcher, the runner, a spawn) records refusals, pauses and lifts logins, and a lift lost to a concurrent
+    write would hold that login's turns for good. Reads take no lock (a write is one rename)."""
+    path = _path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with exclusive(os.open(path.with_name("#quota-usage.lock"), os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)):
+        entries = _read(now)
+        before = {login: usage.model_copy(deep=True) for login, usage in entries.items()}
+        yield entries
+        for login in [login for login, usage in entries.items() if usage.empty]:
+            del entries[login]
+        if entries != before:
+            _write_json(path, {login: usage.model_dump(mode="json", exclude_defaults=True) for login, usage in entries.items()})
 
 
-def _pool_key(provider: str, pool: str, subscription: UUID | None = None) -> str:
-    """One model family's block under one login (`POOLS`): beside the models' own, `~` keeping it from any model id."""
-    return f"{provider}/~{pool}" + (f"#{subscription}" if subscription is not None else "")
+def _blocks(provider: str, subscription: UUID | None, now: float) -> dict[str, Block]:
+    usage = _read(now).get(_login(provider, subscription))
+    return {} if usage is None else usage.blocks
 
 
 def blocked_until(provider: str, model: str | None, *, subscription: UUID | None = None, now: float | None = None) -> float | None:
     """When this model may be tried again on this login, or None when nothing is remembered against it there: the model's own
     block, or its family's pool (`POOLS`) refused or past its stop (`hold_pool`) on this login."""
     moment = time.time() if now is None else now
-    entries = _read(moment)
-    keys = [_key(provider, model, subscription), *(_pool_key(provider, token, subscription) for token in sorted(POOL_TOKENS) if token in (model or "").lower())]
-    untils = [block.until for key in keys if (block := entries.get(key)) is not None and block.until > moment]
+    blocks = _blocks(provider, subscription, moment)
+    keys = [model or "", *(_family(token) for token in sorted(POOL_TOKENS) if token in (model or "").lower())]
+    untils = [block.until for key in keys if (block := blocks.get(key)) is not None and block.until > moment]
     return max(untils, default=None)
 
 
@@ -547,9 +581,9 @@ def pool_blocked_until(provider: str, model: str | None, *, subscription: UUID |
     """When this model's FAMILY pool (`POOLS`) is open again on this login (refused, or past his stop), None when it is not
     shut: the vendor said « Switch to another model » for exactly this family, unlike a model blocked by an account-level limit."""
     moment = time.time() if now is None else now
-    entries = _read(moment)
+    blocks = _blocks(provider, subscription, moment)
     untils = [block.until for token in sorted(POOL_TOKENS) if token in (model or "").lower()
-              and (block := entries.get(_pool_key(provider, token, subscription))) is not None and block.until > moment]
+              and (block := blocks.get(_family(token))) is not None and block.until > moment]
     return max(untils, default=None)
 
 
@@ -557,28 +591,29 @@ def hold_pool(provider: str, pool: str, *, until: float, subscription: UUID | No
     """Pass this family's models over on this login until `until` (a pool at his stop, `ModelPool`): every other model and
     every other login of his still runs. Never shortens a block already standing; clearing one early is `release_pool`'s job."""
     moment = time.time() if now is None else now
-    entries = _read(moment)
-    key = _pool_key(provider, pool, subscription)
-    previous = entries.get(key)
-    until = max(until, previous.until) if previous is not None else until
-    entries[key] = Block(until=until, count=previous.count if previous is not None else 1, at=moment)
-    _write(entries)
+    with _usage(moment) as entries:
+        blocks = entries.setdefault(_login(provider, subscription), LoginUsage()).blocks
+        previous = blocks.get(_family(pool))
+        blocks[_family(pool)] = Block(until=max(until, previous.until) if previous is not None else until,
+                                      count=previous.count if previous is not None else 1, at=moment)
 
 
 def release_pool(provider: str, pool: str, *, subscription: UUID | None = None, now: float | None = None) -> None:
     """The vendor reads this family's pool under his stop on this login again: the block it put (`hold_pool`) ends now."""
     moment = time.time() if now is None else now
-    entries = _read(moment)
-    key = _pool_key(provider, pool, subscription)
-    if (block := entries.get(key)) is not None and block.until > moment:
-        _write({**entries, key: block.model_copy(update={"until": moment})})
+    if (block := _blocks(provider, subscription, moment).get(_family(pool))) is None or block.until <= moment:
+        return
+    with _usage(moment) as entries:
+        blocks = entries[_login(provider, subscription)].blocks if _login(provider, subscription) in entries else {}
+        if (block := blocks.get(_family(pool))) is not None and block.until > moment:
+            blocks[_family(pool)] = block.model_copy(update={"until": moment})
 
 
 def on_probation(provider: str, model: str | None, *, subscription: UUID | None = None, now: float | None = None) -> bool:
     """Whether a launch of this model now is the re-check after a block: it gets
     `PROBATION_WINDOW` to refuse at startup."""
     moment = time.time() if now is None else now
-    block = _read(moment).get(_key(provider, model, subscription))
+    block = _blocks(provider, subscription, moment).get(model or "")
     return block is not None and block.until <= moment
 
 
@@ -590,31 +625,31 @@ def record_refusal(provider: str, model: str | None, *, said: str = "", subscrip
     minutes); the length itself is earned by refusals in a row (`Block.length`).
     """
     moment = time.time() if now is None else now
-    entries = _read(moment)
-    key = _key(provider, model, subscription)
-    previous = entries.get(key)
-    if previous is None:
-        count = 1
-    elif moment < previous.until:
-        # Heard while still blocked — the error line that follows a rate-limit line, a run that
-        # started before the block: the same evidence again, never an escalation.
-        count = previous.count
-    else:
-        count = previous.count + 1
-    until = moment + Block.length(count)
     refusal = Refusal.read(said, now=moment)
-    if refusal is not None and (latest := refusal.latest(now=moment)) is not None:
-        until = min(until, latest)
-    if previous is not None and moment < previous.until:
-        # A weaker signal never shortens a live block; clearing one early is `served`'s job.
-        until = max(until, previous.until)
-    entries[key] = Block(until=until, count=count, at=max(moment, previous.at) if previous else moment)
-    if refusal is not None and refusal.pool:
-        # The vendor refused a FAMILY's pool, not this one model: its sibling models are as shut on this login, while the
-        # login's other models and its other logins are not.
-        pool_key = _pool_key(provider, refusal.pool, subscription)
-        entries[pool_key] = Block(until=max(until, entries[pool_key].until if pool_key in entries else 0.0), count=count, at=moment)
-    _write(entries)
+    named = {"window": refusal.window, "reopens_at": refusal.reopens_at} if refusal is not None else {}
+    with _usage(moment) as entries:
+        blocks = entries.setdefault(_login(provider, subscription), LoginUsage()).blocks
+        previous = blocks.get(model or "")
+        if previous is None:
+            count = 1
+        elif moment < previous.until:
+            # Heard while still blocked — the error line that follows a rate-limit line, a run that
+            # started before the block: the same evidence again, never an escalation.
+            count = previous.count
+        else:
+            count = previous.count + 1
+        until = moment + Block.length(count)
+        if refusal is not None and (latest := refusal.latest(now=moment)) is not None:
+            until = min(until, latest)
+        if previous is not None and moment < previous.until:
+            # A weaker signal never shortens a live block; clearing one early is `served`'s job.
+            until = max(until, previous.until)
+        blocks[model or ""] = Block(until=until, count=count, at=max(moment, previous.at) if previous else moment, **named)
+        if refusal is not None and refusal.pool:
+            # The vendor refused a FAMILY's pool, not this one model: its sibling models are as shut on this login, while the
+            # login's other models and its other logins are not.
+            family = _family(refusal.pool)
+            blocks[family] = Block(until=max(until, blocks[family].until if family in blocks else 0.0), count=count, at=moment, **named)
     hold_named_window(provider, said, subscription=subscription, now=moment)
     return until
 
@@ -637,24 +672,19 @@ def hold_named_window(provider: str, said: str, *, subscription: UUID | None = N
     return until
 
 
-def _login_key(provider: str, model: str | None, login: str) -> str:
-    """A refusal of the model to one login sits beside the model's quota block, never on it: a reader
-    that knows no login (a resume, a session's model list) sees only the quota."""
-    return f"{_key(provider, model)}@{login}"
-
-
 def record_unsupported(provider: str, model: str | None, *, login: str, now: float | None = None) -> float:
     """Remember that the vendor refuses this model to `login` (`UNSUPPORTED`; "" for a CLI with no
-    login to tell apart); returns when one launch under that login asks again (`UNSUPPORTED_RECHECK`)."""
+    login to tell apart); returns when one launch under that login asks again (`UNSUPPORTED_RECHECK`). Beside the model's
+    quota block, never on it: a reader that knows no login (a resume, a session's model list) sees only the quota."""
     moment = time.time() if now is None else now
-    entries = _read(moment)
-    key = _login_key(provider, model, login)
-    previous = entries.get(key)
-    # A later reader hearing the same refusal with an EARLIER instant (`_derive` times it when the
-    # vendor wrote it) never shortens what is already remembered, as a quota block is never lowered.
-    until = max(moment + UNSUPPORTED_RECHECK, previous.until if previous is not None else 0.0)
-    entries[key] = Block(until=until, count=1, at=max(moment, previous.at) if previous is not None else moment)
-    _write(entries)
+    key = f"{model or ''}@{login}"
+    with _usage(moment) as entries:
+        blocks = entries.setdefault(_login(provider, None), LoginUsage()).blocks
+        previous = blocks.get(key)
+        # A later reader hearing the same refusal with an EARLIER instant (`_derive` times it when the
+        # vendor wrote it) never shortens what is already remembered, as a quota block is never lowered.
+        until = max(moment + UNSUPPORTED_RECHECK, previous.until if previous is not None else 0.0)
+        blocks[key] = Block(until=until, count=1, at=max(moment, previous.at) if previous is not None else moment)
     return until
 
 
@@ -697,61 +727,39 @@ def remember(kind: RefusalKind, provider: str, model: str | None, *, login: str,
 
 def unsupported_until(provider: str, model: str | None, *, login: str, now: float | None = None) -> float | None:
     """When a launch under `login` asks this model again, or None when it was never refused to it."""
-    return _until(_login_key(provider, model, login), now)
+    moment = time.time() if now is None else now
+    block = _blocks(provider, None, moment).get(f"{model or ''}@{login}")
+    return block.until if block is not None and block.until > moment else None
 
 
 def served(provider: str, model: str | None, *, subscription: UUID | None = None, at: float | None = None) -> None:
-    """This model answered (a turn it wrote, a run that finished) at `at` (default now): whatever
+    """This model answered (a turn it wrote, a run that finishes) at `at` (default now): whatever
     was remembered against it BEFORE that is over, and its login answered past every refusal
     remembered under it then (`lifted_after`). Writes only when there was something to forget or a
     lift to note; a refusal heard after the answer stands."""
     moment = time.time() if at is None else at
     login_back(provider, subscription=subscription, at=moment)
-    entries = _read(time.time())
-    key = _key(provider, model, subscription)
-    found = entries.get(key)
-    if found is not None and found.at <= moment:
-        del entries[key]
-        _write(entries)
-    refused = max((block.at for name, block in ((key, found), *entries.items())
-                   if block is not None and block.at <= moment and _of_login(name, provider, subscription)), default=None)
-    if refused is not None:
-        _note_lift(_login(provider, subscription), moment, past=refused)
-
-
-def _login(provider: str, subscription: UUID | None) -> str:
-    """One provider login: a subscription's own, else the PC's default login (`_key`'s suffix)."""
-    return provider + (f"#{subscription}" if subscription is not None else "")
-
-
-def _of_login(key: str, provider: str, subscription: UUID | None) -> bool:
-    """`key` is a quota block of one of `provider`'s models under that login (`_key`), never a model the vendor refuses
-    to a login (`_login_key`). A model id holding `#` or `@` reads as no model (none of these vendors names one so)."""
-    head, tail = f"{provider}/", f"#{subscription}" if subscription is not None else ""
-    if not key.startswith(head) or not key.endswith(tail):
-        return False
-    model = key[len(head):len(key) - len(tail)]
-    return "#" not in model and "@" not in model
-
-
-def _lifted_path() -> Path:
-    return UserPaths.agents() / "quota-lifted.json"
-
-
-def _read_lifted() -> dict[str, float]:
-    """Per login (`_login`), when it last answered past a refusal remembered under it (`served`), kept `MAX_COOLDOWN`."""
-    floor = time.time() - MAX_COOLDOWN
-    with suppress(Exception):
-        raw = json.loads(_lifted_path().read_text(encoding="utf-8"))
-        return {str(login): float(at) for login, at in raw.items() if isinstance(at, (int, float)) and at >= floor}
-    return {}
+    login = _login(provider, subscription)
+    if login not in _read(time.time()):   # every answer asks: the lock only when there is something remembered
+        return
+    with _usage(time.time()) as entries:
+        usage = entries.get(login)
+        if usage is None:
+            return
+        found = usage.blocks.get(model or "")
+        refused = max((block.at for block in usage.quota_blocks().values() if block.at <= moment), default=None)
+        if found is not None and found.at <= moment:
+            del usage.blocks[model or ""]
+        if refused is not None and (usage.lifted_at or 0.0) < refused:
+            usage.lifted_at = moment
 
 
 def lifted_after(provider: str, since: float, *, subscription: UUID | None = None) -> float | None:
     """When this provider login answered again after `since` (a refusal it gave then), whichever model answered: the
     limit is over from that moment, whatever reset the vendor named (2026-10-13: « session limit · resets 1:40pm » heard
     13:06, the same login answering from 13:10). The server's `_lifted_at` counts the same answers. None when it has not."""
-    at = _read_lifted().get(_login(provider, subscription))
+    usage = _read(time.time()).get(_login(provider, subscription))
+    at = None if usage is None else usage.lifted_at
     return at if at is not None and at > since else None
 
 
@@ -765,20 +773,18 @@ def usage_heard(provider: str, usage: tuple[UsageWindow, ...], *, asked: float, 
     if not usage or any(window.used_percent >= 100 for window in usage):
         return
     login = _login(provider, subscription)
-    pause = _read_paused(asked).get(login, {}).get("usage_limit")
+    record = _read(asked).get(login)
+    pause = None if record is None else record.pauses.get("usage_limit")
     if pause is not None and pause.at < asked:
         _note_lift(login, asked, past=pause.at)
 
 
 def _note_lift(login: str, at: float, *, past: float) -> None:
-    """`login` answered (or read open) at `at`, past a refusal remembered at `past` (`lifted_after`); noted under the
-    store's own lock, as `_paused` writes its own: a lift lost to a concurrent write would hold that login's turns."""
-    path = _lifted_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with exclusive(os.open(path.with_name("#quota-lifted.lock"), os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)):
-        lifted = _read_lifted()
-        if lifted.get(login, 0.0) < past:
-            _write_json(path, {**lifted, login: at})
+    """`login` answered (or read open) at `at`, past a refusal remembered at `past` (`lifted_after`), under the store's lock."""
+    with _usage(time.time()) as entries:
+        record = entries.setdefault(login, LoginUsage())
+        if (record.lifted_at or 0.0) < past:
+            record.lifted_at = at
 
 
 def forget_login(provider: str, *, subscription: UUID | None = None, now: float | None = None, keep_pools: bool = False) -> None:
@@ -794,17 +800,17 @@ def forget_login(provider: str, *, subscription: UUID | None = None, now: float 
     Blocks are ended, never dropped: the answer that follows still notes the login's lift (`served`) for its
     other paused runs."""
     moment = time.time() if now is None else now
-    entries = _read(moment)
-    ended = {key: block.model_copy(update={"until": moment}) for key, block in entries.items()
-             if _of_login(key, provider, subscription) and block.until > moment
-             and not (keep_pools and "/~" in key)}
-    if ended:
-        _write({**entries, **ended})
     login = _login(provider, subscription)
-    if "usage_limit" not in _read_paused(moment).get(login, {}):   # the lock only when there is a hold to lift
+    if login not in _read(moment):
         return
-    with _paused(moment) as paused:
-        paused.get(login, {}).pop("usage_limit", None)
+    with _usage(moment) as entries:
+        usage = entries.get(login)
+        if usage is None:
+            return
+        for key, block in usage.quota_blocks().items():
+            if block.until > moment and not (keep_pools and key.startswith("~")):
+                usage.blocks[key] = block.model_copy(update={"until": moment})
+        usage.pauses.pop("usage_limit", None)
 
 
 def _logins_path() -> Path:
@@ -861,38 +867,30 @@ class Pause(BaseModel):
         return self.until is not None and now < self.until and lifted_after(provider, self.at, subscription=subscription) is None
 
 
-def _paused_path() -> Path:
-    return UserPaths.agents() / "quota-paused.json"
+class LoginUsage(BaseModel):
+    """EVERYTHING this PC remembers of one provider login's usage (`_login`), in one record: what its vendor refused and
+    until when, at the scope it refused it, and whether the login as a whole takes turns.
 
+    `blocks` by scope: a MODEL id (« You've hit your weekly limit »: the account's window, read against that model), a model
+    FAMILY (`~fable`: the vendor's own pool, `POOLS`, shut for every model of it while the login's other models answer), a model the
+    vendor refuses to an account kind (`<model>@<login>`, `record_unsupported`: no quota, never lifted by an answer). `pauses`:
+    the whole login (`Pause`): its usage window shut, or its sign-in lost. `lifted_at`: the login answered again at that
+    instant past a refusal remembered under it (`served`). A quota/pool reading in percent lives in the subscription's own
+    folder (`SubscriptionState`), and only the block it earns is written here (`hold_pool`)."""
 
-def _read_paused(now: float) -> dict[str, dict[str, Pause]]:
-    """Per login (`_login`), its pauses by reason, a usage pause gone once its reopening passed. Unreadable: none."""
-    found: dict[str, dict[str, Pause]] = {}
-    with suppress(Exception):
-        raw = json.loads(_paused_path().read_text(encoding="utf-8"))
-        for login, reasons in (raw if isinstance(raw, dict) else {}).items():
-            for value in (reasons.values() if isinstance(reasons, dict) else ()):
-                with suppress(ValueError):
-                    pause = Pause.model_validate(value)
-                    if pause.until is None or pause.until > now:
-                        found.setdefault(str(login), {})[pause.reason] = pause
-    return found
+    model_config = ConfigDict(extra="forbid")
 
+    blocks: dict[str, Block] = Field(default_factory=dict)
+    pauses: dict[PauseReason, Pause] = Field(default_factory=dict)
+    lifted_at: float | None = None
 
-@contextmanager
-def _paused(now: float) -> Iterator[dict[str, dict[str, Pause]]]:
-    """The login pauses at `now` (`_read_paused`) for the block to change in place, written back after it, all under
-    their own lock: every process here (a dispatcher, the runner, a spawn) pauses and lifts logins, and a lift lost to
-    a concurrent write would hold that login's turns for good."""
-    path = _paused_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with exclusive(os.open(path.with_name("#quota-paused.lock"), os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)):
-        entries = _read_paused(now)
-        before = {login: dict(reasons) for login, reasons in entries.items()}
-        yield entries
-        if entries != before:
-            _write_json(path, {login: {reason: pause.model_dump() for reason, pause in reasons.items()}
-                               for login, reasons in entries.items() if reasons})
+    @property
+    def empty(self) -> bool:
+        return not self.blocks and not self.pauses and self.lifted_at is None
+
+    def quota_blocks(self) -> dict[str, Block]:
+        """The blocks a quota put on this login's models or families, never a model the vendor refuses to the account kind."""
+        return {key: block for key, block in self.blocks.items() if "@" not in key}
 
 
 def pause_login(provider: str, reason: PauseReason, *, subscription: UUID | None = None, said: str = "",
@@ -903,21 +901,22 @@ def pause_login(provider: str, reason: PauseReason, *, subscription: UUID | None
     moment = time.time() if now is None else now
     if reason == "usage_limit" and (until is None or until <= moment):
         return
-    login = _login(provider, subscription)
-    with _paused(moment) as entries:
-        previous = entries.get(login, {}).get(reason)
+    with _usage(moment) as entries:
+        pauses = entries.setdefault(_login(provider, subscription), LoginUsage()).pauses
+        previous = pauses.get(reason)
         if previous is not None and previous.at >= moment:
             return
         if reason == "usage_limit" and previous is not None and until is not None and previous.until is not None:
             until = max(until, previous.until) if previous.live(provider, subscription, moment) else until
         line = next((part.strip() for part in said.splitlines() if part.strip()), "")[:200]
-        entries.setdefault(login, {})[reason] = Pause(reason=reason, at=moment, until=until, said=line)
+        pauses[reason] = Pause(reason=reason, at=moment, until=until, said=line)
 
 
 def login_pause(provider: str, *, subscription: UUID | None = None, now: float | None = None) -> Pause | None:
     """Why this login takes no new turn now (a lost login first: no reset brings it back), else None."""
     moment = time.time() if now is None else now
-    reasons = _read_paused(moment).get(_login(provider, subscription), {})
+    usage = _read(moment).get(_login(provider, subscription))
+    reasons = {} if usage is None else usage.pauses
     return next((pause for reason in ("login_lost", "usage_limit")
                  if (pause := reasons.get(reason)) is not None and pause.live(provider, subscription, moment)), None)
 
@@ -925,8 +924,8 @@ def login_pause(provider: str, *, subscription: UUID | None = None, now: float |
 def lost_logins(now: float | None = None) -> list[tuple[str, UUID | None]]:
     """Each login paused as lost (provider, subscription): the runner asks whether it is signed in again."""
     found = []
-    for login, reasons in _read_paused(time.time() if now is None else now).items():
-        if "login_lost" in reasons:
+    for login, usage in _read(time.time() if now is None else now).items():
+        if "login_lost" in usage.pauses:
             provider, _, subscription = login.partition("#")
             with suppress(ValueError):
                 found.append((provider, UUID(subscription) if subscription else None))
@@ -937,17 +936,20 @@ def login_back(provider: str, *, subscription: UUID | None = None, at: float | N
     """This login answered, or is signed in again, at `at`: a lost login heard before then is over."""
     moment = time.time() if at is None else at
     login = _login(provider, subscription)
-    if "login_lost" not in _read_paused(time.time()).get(login, {}):   # every answer asks: the lock only when there is one to lift
+    record = _read(time.time()).get(login)
+    if record is None or "login_lost" not in record.pauses:   # every answer asks: the lock only when there is one to lift
         return
-    with _paused(time.time()) as entries:
-        lost = entries.get(login, {}).get("login_lost")
+    with _usage(time.time()) as entries:
+        lost = entries[login].pauses.get("login_lost") if login in entries else None
         if lost is not None and lost.at <= moment:
-            del entries[login]["login_lost"]
+            del entries[login].pauses["login_lost"]
 
 
 def forget(provider: str | None = None, model: str | None = None) -> None:
-    """Drop one remembered refusal, or all of them when called bare."""
+    """Drop one remembered refusal, or every block of every login when called bare (pauses stay)."""
     if provider is None:
-        _write({})
+        with _usage(time.time()) as entries:
+            for usage in entries.values():
+                usage.blocks.clear()
         return
     served(provider, model)

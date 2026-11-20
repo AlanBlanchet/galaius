@@ -40,7 +40,7 @@ from uuid import UUID
 from pydantic import ConfigDict, BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
 from galaius.agents.limits import quota
 from galaius.usage_dialects import CountedTokens, OlderTokens
-from galaius_core import OPEN_MAX, OwnerQuestion, ASKED_BY_MAX, LaunchSkipReason, ReasoningLevel, RecordedReasoning, FILE_KEY, KEPT_FILE_MAX, MACHINE_AGENT_MEDIA, MEDIA_KEY, file_key, MODEL_ID_MAX, FileStory, HandedFile, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor, TokenCounts
+from galaius_core import SubscriptionLimits, OPEN_MAX, OwnerQuestion, ASKED_BY_MAX, LaunchSkipReason, ReasoningLevel, RecordedReasoning, FILE_KEY, KEPT_FILE_MAX, MACHINE_AGENT_MEDIA, MEDIA_KEY, file_key, MODEL_ID_MAX, FileStory, HandedFile, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor, TokenCounts
 
 from galaius.agents.transport.events import (
     CONTEXT_FIELDS, PERSON_SENDER, AgentEvent, MessageFields, RunCut, UsageLedger, WakeReply, answered_line, its_work, model_spoke,
@@ -508,12 +508,13 @@ class AgentRun(OlderTokens, ContextGauge):
         resume`): refused, typed, only while its subscription is at one of HIS caps (`SubscriptionCapped`). A vendor's
         usage limit never refuses it: the reset it named is a forecast (2026-10-13 « session limit · resets 1:40pm » heard
         13:06, the same login answering from 13:10), so what this PC remembers against its login is dropped and the
-        vendor answers the turn itself; a refusal then is the run's ending again, its automatic resume rescheduled."""
+        vendor answers the turn itself, unless another of his logins takes it (`open_logins`); a refusal then is the run's ending again, its automatic resume rescheduled."""
         if self.status in {"running", "waiting"}:
             return
         if self.subscription is not None:
             self.subscription.check()
-        quota.forget_login(self.provider, subscription=self.subscription_id, keep_pools=True)
+        if not open_logins(self):   # another login of his that takes the turn gets it (`swap_login`): this one's notes are true
+            quota.forget_login(self.provider, subscription=self.subscription_id, keep_pools=True)
 
     @property
     def subscription_id(self) -> UUID | None:
@@ -1842,6 +1843,52 @@ def carry_held(run_id: str) -> AgentRun | None:
         except (SubscriptionRefused, PermissionError, OSError) as error:
             log.warning("held move of %s to %s refused: %s", run_id[:8], run.pending_move, error)
             return hold_move(run_id, None) or run
+
+
+def _shut(provider: str, login: UUID | None, model: str | None) -> bool:
+    """Whether a turn of `model` (None: any) cannot start on `login` now: the login's usage window is shut or its sign-in lost
+    (`quota.login_pause`), or the model is passed over on it (its own block, or its family's pool, `quota.blocked_until`)."""
+    return quota.login_pause(provider, subscription=login) is not None or (model is not None and quota.blocked_until(provider, model, subscription=login) is not None)
+
+
+def open_logins(run: AgentRun) -> tuple[RunSubscription, ...]:
+    """The subscription logins of this PC, each as the pin `carry` takes, that can take the next turn of stopped `run` while its own
+    login cannot (`_shut`: its usage window shut, its sign-in lost, or its model refused there, a family's pool included) and
+    that are under their caps. None: its login takes the turn, no other does, it is a member's lent run, a run of no process or of a
+    CLI no login runs, or the owner already holds a move for it (`pending_move`)."""
+    if run.pending_move is not None or run.kind != "process" or run.foreign or (run.subscription is not None and run.subscription.lent):
+        return ()
+    if (program := PROVIDERS.get(run.provider)) is None or not program.auth_home_env or not _shut(run.provider, run.subscription_id, run.model):
+        return ()
+    options = []
+    for other in Subscription.all():
+        if other.provider != run.provider or other.id == run.subscription_id or _shut(run.provider, other.id, run.model):
+            continue
+        option = RunSubscription(subscription_id=other.id, limits=other.limits() or SubscriptionLimits())
+        try:
+            option.check()
+        except SubscriptionRefused:
+            continue
+        options.append(option)
+    return tuple(options)
+
+
+def swap_login(run: AgentRun) -> AgentRun:
+    """`run`, stopped and about to resume, moved to another of this PC's subscription logins when the one it is pinned to cannot
+    take its turn and another one can (`open_logins`): the session carried and the run pinned there (`carry`), the same model asked
+    again, so a conversation never waits on one login while another of his still has usage (owner 2026-11-20 « swap subscriptions
+    and take another one which has the limits »). Unchanged when none can (the next model on its own login, or the wait for the
+    earliest reopening, are the caller's). One that cannot be carried (a copy that fails) is passed over for the next login."""
+    for option in open_logins(run):
+        try:
+            moved = carry(run, option)
+        except (SubscriptionRefused, PermissionError, OSError) as error:
+            log.warning("run %s could not move to subscription %s: %s", run.run_id[:8], str(option.subscription_id)[:8], error)
+            continue
+        log.warning("run %s moved from %s to subscription %s: its login cannot take %s now", run.run_id[:8], run.subscription_id or "the PC's own login",
+                    option.subscription_id, run.model or "a turn")
+        return moved
+    return run
 
 
 #: What a run carried from another PC keeps of that PC's record: what its conversation shows, never how it ran there

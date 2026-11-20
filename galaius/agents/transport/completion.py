@@ -187,7 +187,7 @@ class _CompletionTransport(_ConversationTransport):
         except Exception as exc:  # noqa: BLE001 -- clients expose provider-specific failures.
             # This is the ONE place a real vendor call answers for this transport — the same
             # shared cooldown memory a CLI-subprocess spawn writes to (`agents/run.py`,
-            # `~/.galaius/out/agents/quota-cooldowns.json`) is written here too, so a quota
+            # `~/.galaius/out/agents/quota-usage.json`) is written here too, so a quota
             # refusal heard on THIS route is honoured by every other launch, not just this one.
             # The exception's raw text is used ONLY for that match — the displayed event stays
             # the existing generic message; dumping a raw vendor exception body into the chat

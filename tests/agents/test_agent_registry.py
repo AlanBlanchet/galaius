@@ -1810,7 +1810,7 @@ def test_backfill_does_not_touch_a_plain_run(definition_link_home, monkeypatch, 
 # REPARSE path (`mirror_while_alive` polls it repeatedly). `append_event`'s built-in quota catch
 # never fires there — nothing calls `append_event` for an ordinary process-kind run, live or
 # resumed; it is reachable only from the interactive local_session `_ConversationProjector`. Three
-# real runs died on the same refusal in one machine-restart-adjacent morning and `quota-cooldowns.json`
+# real runs died on the same refusal in one machine-restart-adjacent morning and `quota-usage.json`
 # never got a fresh entry — the next dispatch picked the same cooled model and died again.
 
 

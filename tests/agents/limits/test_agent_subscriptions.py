@@ -453,10 +453,18 @@ def test_continuing_on_another_subscription_carries_the_session_never_a_credenti
     assert (stopped.value.code, said["refusal"]["kind"], said["refusal"]["reason"]) == (1, "subscription", "capped")
     # A vendor's usage limit never refuses it (2026-10-13: « resumes at 13:40 » refused while the login answered from 13:10):
     # what this PC remembers against that login is dropped, the vendor answers the turn.
+    # With another login of his open, its turn goes there instead (`registry.swap_login`) and this one's notes stand.
     unpinned = moved.model_copy(update={"subscription": None})
-    quota.record_refusal(unpinned.provider, unpinned.model, said="You've hit your session limit · resets 1:40pm (Europe/Paris)")
+    refused = "You've hit your session limit · resets 1:40pm (Europe/Paris)"
+    for login in (None, a.id, b.id):
+        quota.record_refusal(unpinned.provider, unpinned.model, said=refused, subscription=login)
     unpinned.prepare_continue()
     assert quota.blocked_until(unpinned.provider, unpinned.model) is None
+    assert quota.blocked_until(unpinned.provider, unpinned.model, subscription=a.id) is not None
+    quota.forget_login(unpinned.provider, subscription=a.id)
+    quota.record_refusal(unpinned.provider, unpinned.model, said=refused)
+    unpinned.prepare_continue()
+    assert quota.blocked_until(unpinned.provider, unpinned.model) is not None, "login a is open: the turn goes there, no note of the PC's own login is dropped"
 
 
 @pytest.mark.parametrize("case", ["held by the pc login", "newest of two logins", "signed out and in again", "unpinned, sent from a pinned run",

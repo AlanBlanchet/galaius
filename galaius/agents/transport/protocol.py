@@ -35,7 +35,7 @@ def _cooldown_refusal(provider: str, cooled: dict[str, float]) -> str:
     """Same shape as the CLI-subprocess spawn's refusal (`agents/run.py::resolve_continuable_model`)
     — name every cooled model and when it clears, and what the operator can do instead. This
     subsystem shares the SAME quota memory a vendor-CLI agent run writes to
-    (`~/.galaius/out/agents/quota-cooldowns.json`) but never writes its own refusals into it;
+    (`~/.galaius/out/agents/quota-usage.json`) but never writes its own refusals into it;
     `resolve` only READS it, so a refusal recorded by an agent run is honoured here too."""
     detail = "; ".join(
         f"{model_id} until {time.strftime('%H:%M:%S', time.localtime(until))}"

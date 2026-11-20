@@ -6,6 +6,10 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+- A stopped conversation whose subscription login cannot take its next turn (usage window shut, sign-in lost, or its model refused
+  there, a model family's weekly pool included) resumes on another subscription login that can, session carried, same model;
+  with none, the next ranked model on its own login. What the vendor refused is kept in one typed record per login
+  (`quota-usage.json`, replacing `quota-cooldowns.json` and `quota-paused.json`; remembered refusals do not carry over).
 - A spawn waiting for a place is held by a lean process (`galaius.agents.spawn_wait`, ~20 MB) instead of a full galaius
   one (~100-300 MB each); only the next in line starts the full waiter. Measured with 6 queued spawns: 600 MB → 183-222 MB.
 - The `galaius` package sits at the repository root (`galaius/`), no `src/` folder; the wheel and
