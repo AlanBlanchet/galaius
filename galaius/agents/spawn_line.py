@@ -35,6 +35,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import sys
 import time
 import uuid
@@ -64,7 +65,7 @@ from galaius.isolation.fence import FenceSpec
 from galaius.machine.web_runs import WebRuns
 from galaius.host.paths import UserPaths
 from galaius.host.processes import process_exited, process_started, share_malloc_arenas
-from galaius.upgrade.store import Runtime, RuntimeStore
+from galaius.upgrade.store import Runtime, RuntimeStore, active_interpreter
 
 #: Said of a run waiting when every place is held by a team with a run waiting in line (`SpawnLine._stuck`).
 STUCK = "chaque place est tenue par une équipe dont une run attend ici ; si elles s'attendent, arrêtez-en une"
@@ -91,6 +92,8 @@ LIGHT_PREFIXES = (f"{TOOL_PREFIX}ext__",)
 READY_STATE = "spawn-ready"
 #: How long an unchanged publication stands before the head writes it again (under `spawn_wait.READY_TTL`).
 READY_REFRESH_SECONDS = 5.0
+#: How long the probe for the lean waiter in the active runtime may take (`SpawnLine._waiter`).
+PROBE_SECONDS = 10.0
 
 logger = logging.getLogger(__name__)
 
@@ -1038,8 +1041,7 @@ class SpawnLine(BaseModel):
         """Start the waiter holding `run_id`'s place, writing to the run's own stderr file (`_prune` quotes it)."""
         try:
             with reg.open_stderr(run_id, append=True) as stderr:
-                process = reg.start_participant("galaius.agents.spawn_wait", run_id, str(reg.shared_state_path("spawn-line")),
-                                                str(reg.shared_state_path(READY_STATE)), cwd=spawn.cwd, contain=True, stderr=stderr)
+                process = reg.start_participant(*self._waiter(run_id), cwd=spawn.cwd, contain=True, stderr=stderr)
         except OSError as error:
             self._settle(run_id, f"its waiter could not start: {error}")
             raise
@@ -1047,6 +1049,21 @@ class SpawnLine(BaseModel):
             for index, place in enumerate(places):
                 if place.run_id == run_id and place.state == "waiting" and place.holder == asker:
                     places[index] = place.model_copy(update={"holder": process.pid, "holder_started": process_started(process.pid)})
+
+    @staticmethod
+    def _waiter(run_id: str) -> tuple[str, ...]:
+        """The module and arguments of `run_id`'s waiter: the lean one, or the full one alone when the active runtime (the
+        waiter's, `participant_argv`) is another build than this one and holds no `spawn_wait` (a rollback, a checkout)."""
+        lean = ("galaius.agents.spawn_wait", run_id, str(reg.shared_state_path("spawn-line")), str(reg.shared_state_path(READY_STATE)))
+        interpreter = active_interpreter()
+        if interpreter == sys.executable:
+            return lean
+        try:
+            probe = subprocess.run([interpreter, "-P", "-c", "import importlib.util as u, sys; sys.exit(0 if u.find_spec('galaius.agents.spawn_wait') else 1)"],
+                                   capture_output=True, timeout=PROBE_SECONDS, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return ("galaius.agents.spawn_line", run_id)
+        return lean if probe.returncode == 0 else ("galaius.agents.spawn_line", run_id)
 
     def leave(self, run_id: str) -> None:
         """Its run is on record (counted from there) or never started: the place is free."""
@@ -1229,15 +1246,15 @@ class SpawnLine(BaseModel):
             places[index] = place = place.model_copy(update={"state": "starting"})
             return place
 
-    def wait(self, run_id: str, *, yields: bool = False) -> bool:
-        """The waiter: once `run_id` may start, start it, then free its place; ends when the place is gone. `yields` (the child
-        of its lean waiter, `spawn_wait`): True, the place handed back to it, when the run may not start yet and `spawn_wait.verdict`
+    def wait(self, run_id: str, *, lean: int | None = None) -> bool:
+        """The waiter: once `run_id` may start, start it, then free its place; ends when the place is gone. `lean` (the pid of
+        the lean waiter this is the child of, `spawn_wait`): True, the place handed back to it, when the run may not start yet and `spawn_wait.verdict`
         says it need not be looked at every `POLL_SECONDS`."""
         while True:
             while (turn := self._turn(run_id)) == "wait":
-                if yields and verdict(reg.shared_state_seen("spawn-line"), reg.shared_state_seen(READY_STATE), run_id, now=time.time(),
+                if lean is not None and os.getppid() == lean and verdict(reg.shared_state_seen("spawn-line"), reg.shared_state_seen(READY_STATE), run_id, now=time.time(),
                                       since=time.time()) == "sleep":
-                    self._hand_back(run_id)
+                    self._hand_back(run_id, lean)
                     return True
                 time.sleep(POLL_SECONDS)
             if turn == "gone":
@@ -1254,9 +1271,9 @@ class SpawnLine(BaseModel):
             self.leave(run_id)
             return False
 
-    def _hand_back(self, run_id: str) -> None:
-        """`run_id`'s place held by the lean waiter (this process's parent) again, this process ending."""
-        parent = os.getppid()
+    def _hand_back(self, run_id: str, parent: int) -> None:
+        """`run_id`'s place held by its lean waiter `parent` again, this process ending. A parent gone is never handed it
+        (`wait`): the place would stay held by nobody's pid 1."""
         with self._places() as places:
             for index, place in enumerate(places):
                 if place.run_id == run_id and place.state == "waiting":
@@ -1265,12 +1282,12 @@ class SpawnLine(BaseModel):
 
 def main() -> None:
     arguments = sys.argv[1:]
-    yields = arguments[1:] == ["--yields"]
-    if len(arguments) != 1 and not yields:
-        raise SystemExit("usage: python -m galaius.agents.spawn_line RUN_ID [--yields]")
+    lean = int(arguments[2]) if len(arguments) == 3 and arguments[1] == "--yields" and arguments[2].isdigit() else None
+    if len(arguments) != 1 and lean is None:
+        raise SystemExit("usage: python -m galaius.agents.spawn_line RUN_ID [--yields LEAN_PID]")
     share_malloc_arenas()  # one waiter per spawn in line, 12 threads each: ~120 of its 252 MB sat in their arenas (2026-11-09)
     RuntimeStore.default().register(Runtime.own(), os.getpid())  # its runtime stays until it ends
-    raise SystemExit(YIELDED if SpawnLine.here().wait(arguments[0], yields=yields) else 0)
+    raise SystemExit(YIELDED if SpawnLine.here().wait(arguments[0], lean=lean) else 0)
 
 
 if __name__ == "__main__":

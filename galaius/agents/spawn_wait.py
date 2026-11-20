@@ -15,7 +15,7 @@ run when no head has published for `STALE_SECONDS` (an older galaius's head neve
 former behaviour, one full waiter each.
 
 Held at launch, a usage-limit hold is read here at its named reopening only: a login that reopened earlier (`quota.lifted_after`)
-starts the run when that time comes. Windows and macOS: not exercised.
+starts the run when that time comes. A hold naming none (the memory, a lost login) is looked at by a full waiter every `HOLD_RECHECK_SECONDS`. Windows and macOS: not exercised.
 """
 
 from __future__ import annotations
@@ -33,6 +33,8 @@ POLL_SECONDS = 3.0
 READY_TTL = 15.0
 #: With no head publishing for this long since the lean waiter began, or since its last publication, every run wakes.
 STALE_SECONDS = 30.0
+#: A run held by a cause naming no reopening (the memory, a lost login) is looked at by a full waiter this often.
+HOLD_RECHECK_SECONDS = 30.0
 #: What the full waiter exits with when its run may not start yet and is not the head: its lean parent takes the place back.
 YIELDED = 75
 
@@ -67,9 +69,11 @@ def verdict(places_raw: bytes | None, ready_raw: bytes | None, run_id: str, *, n
     mine = next((place for place in places if place.get("run_id") == run_id), None)
     if mine is None or mine.get("state") != "waiting" or not isinstance(mine.get("spawn"), dict):
         return "gone"
-    if mine.get("said"):  # held at launch: until its holds lift
+    if mine.get("said"):  # held at launch: until its holds lift, or every few seconds when a cause names no reopening
         untils = [(hold.get("cause") or {}).get("until") if isinstance(hold, dict) else None for hold in mine.get("holds") or []]
-        return "sleep" if untils and all(isinstance(until, (int, float)) and now < until for until in untils) else "wake"
+        if untils and all(isinstance(until, (int, float)) for until in untils):
+            return "sleep" if now < max(untils) else "wake"
+        return "wake" if now - since > HOLD_RECHECK_SECONDS else "sleep"
     head = next((place for place in places if place.get("state") == "waiting" and not place.get("said")), None)
     if head is not None and head.get("run_id") == run_id:
         return "wake"
@@ -97,7 +101,7 @@ def wait(run_id: str, places_path: str, ready_path: str) -> int:
         if said == "sleep":
             time.sleep(POLL_SECONDS)
             continue
-        child = subprocess.run([sys.executable, "-P", "-m", "galaius.agents.spawn_line", run_id, "--yields"], check=False)
+        child = subprocess.run([sys.executable, "-P", "-m", "galaius.agents.spawn_line", run_id, "--yields", str(os.getpid())], check=False)
         if child.returncode != YIELDED:
             return child.returncode  # started, gone, or failed: its place says which
         since = time.time()

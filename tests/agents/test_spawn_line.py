@@ -760,7 +760,8 @@ NO_UNTIL = _place("h", said="en pause", holds=[{"cause": {"reason": "login_lost"
     ("b", [_place("a", state="starting"), _place("b")], None, "wake", 999.0),                # a starting place is no head: "b" is
     ("b", [HELD, _place("b")], None, "wake", 999.0),                                         # a held run is no head
     ("h", [HELD, _place("b")], None, "sleep", 999.0),                                        # held until its named reopening
-    ("h", [NO_UNTIL, _place("b")], None, "wake", 999.0),                                     # a hold naming none: the full waiter asks
+    ("h", [NO_UNTIL, _place("b")], None, "sleep", 999.0),                                    # a hold naming none: a full waiter looks ...
+    ("h", [NO_UNTIL, _place("b")], None, "wake", 960.0),                                     # ... every HOLD_RECHECK_SECONDS
     ("zzz", [_place("a")], None, "gone", 999.0),
     ("a", [_place("a", state="failed")], None, "gone", 999.0),
     ("a", [_place("a", spawn=None)], None, "gone", 999.0),                                   # a resumed turn's place is the dispatcher's
@@ -779,16 +780,26 @@ def test_the_head_publishes_who_starts_ahead_of_the_line_and_a_yielding_waiter_h
     at_work("lead")
     assert line._turn(head.run_id) == "wait"
     assert spawn_wait.published(reg.shared_state_seen(READY_STATE))[1] == frozenset({child.run_id})
-    assert line.wait(child.run_id, yields=True) is False  # it starts: no hand back
+    assert line.wait(child.run_id, lean=os.getppid()) is False  # it starts: no hand back
     assert started == [child.run_id]
 
 
-def test_a_full_waiter_not_next_in_line_hands_its_place_to_its_lean_parent(at_work, started):
+def test_a_full_waiter_not_next_in_line_hands_its_place_to_its_lean_parent(at_work, started, monkeypatch):
     line = SpawnLine(limit=1, waiting_flag_minutes=5, waiting_gap_seconds=60)
     at_work("a")
     line.enter(_spawn())
     behind = line.enter(_spawn())
-    assert line.wait(behind.run_id, yields=True) is True and started == []
+
+    class Slept(Exception):
+        pass
+
+    def sleep(seconds):
+        raise Slept
+
+    with monkeypatch.context() as patched, pytest.raises(Slept):  # its lean parent gone (not this process's): it keeps the place
+        patched.setattr(spawn_line.time, "sleep", sleep)
+        line.wait(behind.run_id, lean=os.getppid() + 1)
+    assert line.wait(behind.run_id, lean=os.getppid()) is True and started == []
     with line._places() as places:
         place = next(place for place in places if place.run_id == behind.run_id)
         assert place.state == "waiting" and place.holder == os.getppid()
@@ -803,8 +814,9 @@ def _cmdline(pid: int) -> str:
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="reads the waiters' command lines and memory from /proc")
-def test_n_waiting_runs_hold_n_lean_processes_and_only_the_head_a_full_one(at_work):
+def test_n_waiting_runs_hold_n_lean_processes_and_only_the_head_a_full_one(at_work, monkeypatch):
     """2026-11-20: 6 queued spawns held 6 full processes, 258-290 MB each."""
+    monkeypatch.setenv("GALAIUS_AGENT_RUNS_MAX", "1")  # the waiters read their limit from the environment, not from `line`
     line = SpawnLine(limit=1, waiting_flag_minutes=5, waiting_gap_seconds=60)
     at_work("a")
     queued = [line.enter(_spawn()) for _ in range(3)]
@@ -823,3 +835,11 @@ def test_n_waiting_runs_hold_n_lean_processes_and_only_the_head_a_full_one(at_wo
         assert rss_kb < 60 * 1024, f"a lean waiter holds {rss_kb // 1024} MB"
     for spawn in queued:
         line.cancel(spawn.run_id[:8])
+
+
+@pytest.mark.skipif(not os.path.exists("/usr/bin/python3"), reason="needs a Python without galaius")
+def test_the_waiter_is_the_full_one_alone_when_the_active_runtime_holds_no_lean_one(monkeypatch):
+    monkeypatch.setattr(spawn_line, "active_interpreter", lambda: sys.executable)
+    assert SpawnLine._waiter("r")[0] == "galaius.agents.spawn_wait"
+    monkeypatch.setattr(spawn_line, "active_interpreter", lambda: "/usr/bin/python3")  # another build, one with no `spawn_wait`
+    assert SpawnLine._waiter("r") == ("galaius.agents.spawn_line", "r")
