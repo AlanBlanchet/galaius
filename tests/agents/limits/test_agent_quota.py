@@ -527,27 +527,46 @@ FABLE_TEXT = ("You've reached your Fable limit. Switch to another model, or mana
               "https://claude.ai/settings/usage?from=cc_cli_limit_message, to continue.")
 
 
-@pytest.mark.parametrize("said", [pytest.param(f"{FABLE_REFUSAL}\n{FABLE_TEXT}", id="the vendor's lines"), pytest.param(FABLE_TEXT, id="its notice alone")])
-def test_a_model_family_pool_refused_shuts_that_family_on_that_login_only_and_holds_no_login(said):
+def _pool_refusal(window: str, family: str, base: float) -> str:
+    """A pool refusal on the REAL clock (a login pause reads it): the vendor's lines naming `window`, then its notice naming `family`."""
+    reset = base + 2 * 86400
+    return json.dumps({"type": "rate_limit_event", "rate_limit_info": {
+        "status": "rejected", "resetsAt": int(reset), "rateLimitType": window, "unifiedWindows": {
+            "seven_day": {"utilization": 0.66, "resetsAt": int(reset), "status": "allowed"}, window: {"utilization": 1, "resetsAt": int(reset), "status": "rejected"}}}}) \
+        + f"\nYou've reached your {family} limit. Switch to another model."
+
+
+@pytest.mark.parametrize(("window", "family", "refused", "sibling", "free"), [
+    pytest.param("seven_day_overage_included", "Fable", "claude-fable-5-2", "claude-fable-5-1", "claude-opus-5-5", id="fable"),
+    pytest.param("seven_day_opus", "Opus", "claude-opus-5-5", "claude-opus-5", "claude-fable-5-2", id="opus"),
+    pytest.param("seven_day_sonnet", "Sonnet", "claude-sonnet-5-5", "claude-sonnet-5", "claude-opus-5-5", id="sonnet"),
+])
+@pytest.mark.parametrize("lines", ["both", "event", "notice"], ids=["the event and the notice", "the event alone", "the notice alone"])
+def test_a_model_family_pool_refused_shuts_that_family_on_that_login_only_and_holds_no_login(window, family, refused, sibling, free, lines):
     """Owner 2026-11-20: the subscription « reached the limit » at 68 % of his week. The vendor refused FABLE only (class: a
-    pool beside the account's week, `quota.POOLS`): Fable's sibling models on that login wait, while that login's other models,
-    its other logins and this PC's own login still run, and no login is paused for the pool's days-away reset."""
+    pool beside the account's week, `quota.POOLS`, one per model family): that family's models on that login wait, while that
+    login's other models, its other logins and this PC's own login still run, and no login is paused for the pool's days-away
+    reset. On the real clock: a login pause that did not exist could not otherwise be told from one already over."""
+    now = time.time()
+    event, notice = _pool_refusal(window, family, now).splitlines()
+    said = {"both": f"{event}\n{notice}", "event": event, "notice": notice}[lines]
     mine, other = uuid4(), uuid4()
-    until = quota.record_refusal("claude", "claude-fable-5-2", said=said, subscription=mine, now=NOW)
-    assert quota.blocked_until("claude", "claude-fable-5-2", subscription=mine, now=NOW) == pytest.approx(until)
-    assert quota.blocked_until("claude", "claude-fable-5-1", subscription=mine, now=NOW) == pytest.approx(until)   # its sibling
-    for free in (("claude-fable-5-2", other), ("claude-fable-5-2", None), ("claude-opus-5-5", mine), ("claude-sonnet-5-5", mine)):
-        assert quota.blocked_until("claude", free[0], subscription=free[1], now=NOW) is None, free
-    assert quota.login_pause("claude", subscription=mine, now=NOW) is None
+    until = quota.record_refusal("claude", refused, said=said, subscription=mine, now=now)
+    assert quota.blocked_until("claude", refused, subscription=mine) == pytest.approx(until)
+    assert quota.blocked_until("claude", sibling, subscription=mine) == pytest.approx(until)   # its sibling
+    for open_ in ((refused, other), (refused, None), (free, mine)):
+        assert quota.blocked_until("claude", open_[0], subscription=open_[1]) is None, open_
+    assert quota.login_pause("claude", subscription=mine) is None
 
 
 def test_the_accounts_whole_week_refused_still_pauses_the_whole_login():
     """The other side of the pool: `seven_day` is every model of the login."""
     mine = uuid4()
-    quota.record_refusal("claude", "m", said=SEVEN_DAY_REFUSAL, subscription=mine, now=NOW)
-    pause = quota.login_pause("claude", subscription=mine, now=NOW)
+    now = time.time()
+    quota.record_refusal("claude", "m", said=_pool_refusal("seven_day", "weekly", now).replace("You've reached your weekly limit. Switch to another model.", ""), subscription=mine, now=now)
+    pause = quota.login_pause("claude", subscription=mine)
     assert pause is not None and pause.reason == "usage_limit"
-    assert quota.blocked_until("claude", "another-model", subscription=mine, now=NOW) is None   # the model walk reads the pause (`admission`), not a note per model
+    assert quota.blocked_until("claude", "another-model", subscription=mine) is None   # the model walk reads the pause (`admission`), not a note per model
 
 
 @pytest.mark.parametrize(("percent", "held"), [(94.9, False), (95, True), (100, True)])

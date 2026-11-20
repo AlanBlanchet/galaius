@@ -336,6 +336,7 @@ def test_codex_usage_is_read_from_its_session_record_and_reported_once_sent(tmp_
         watch = SubscriptionWatch()
         watch.heard()
         assert [(window.window, window.used_percent) for window in subscription.usage()] == [("weekly", 16.0)]
+        assert subscription.pools() == ()   # another vendor's line is never read as a model family's pool
         now = datetime.now(UTC)
         report = watch.report(now)
         assert watch.report(now) == report  # a report not sent yet is due again
@@ -967,13 +968,25 @@ def test_a_reading_past_the_reset_of_its_window_is_no_reading(tmp_path: Path) ->
     subscription.check(SubscriptionLimits(five_hour_percent=90))   # not refused
 
 
+def test_a_pool_reading_past_its_reset_is_no_reading_and_holds_nothing(tmp_path: Path) -> None:
+    """A Fable pool read at 100 % that reopened since is the old week's: neither shown nor held."""
+    subscription = Subscription.create(uuid4(), "claude")
+    gone = datetime.now(UTC) - timedelta(minutes=1)
+    subscription.observe_pools((quota.ModelPool(pool="fable", used_percent=100, resets_at=gone, observed_at=gone - timedelta(days=7)),
+                                quota.ModelPool(pool="opus", used_percent=50, resets_at=gone + timedelta(days=2), observed_at=gone)))
+    assert [pool.pool for pool in subscription.pools()] == ["opus"]
+    assert quota.blocked_until("claude", "claude-fable-5-2", subscription=subscription.id) is None
+
+
 @pytest.mark.asyncio
+@pytest.mark.parametrize("held_by", ["refusal", "stop"])
 @pytest.mark.parametrize(("refused_on", "runs_on", "model"), [
     (("first",), "second", "fable-fixture"),             # sample 1: Fable refused on his first login, a second free: the same model on his second
     (("first", "second"), "first", "lower-model"),       # refused on both: the next ranked model, never a wait for the pool's reset
 ])
 async def test_a_model_one_login_refuses_runs_on_his_next_login_else_the_next_ranked_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-                                                                                         refused_on: tuple[str, ...], runs_on: str, model: str) -> None:
+                                                                                         refused_on: tuple[str, ...], runs_on: str, model: str, held_by: str) -> None:
+    """`held_by`: the vendor refused the pool, or the pool read at his stop before any refusal (his 95 % on every login)."""
     use_policy(monkeypatch, agents={"tester": "fable-fixture"}, reasoning={"tester": "medium"})
     definition = tmp_path / "tester.md"
     definition.write_text("---\nname: tester\n---\nTest.\n", encoding="utf-8")
@@ -983,7 +996,11 @@ async def test_a_model_one_login_refuses_runs_on_his_next_login_else_the_next_ra
         reg.LaunchCandidate(provider="claude", model="fable-fixture", rank=0), reg.LaunchCandidate(provider="claude", model="lower-model", rank=1)))
     logins = {"first": Subscription.create(uuid4(), "claude"), "second": Subscription.create(uuid4(), "claude")}
     for name in refused_on:
-        quota.record_refusal("claude", "fable-fixture", said="You've reached your Fable limit. Switch to another model.", subscription=logins[name].id)
+        if held_by == "refusal":
+            quota.record_refusal("claude", "fable-fixture", said="You've reached your Fable limit. Switch to another model.", subscription=logins[name].id)
+        else:
+            reopens = datetime.now(UTC) + timedelta(days=2)
+            logins[name].observe_pools((quota.ModelPool(pool="fable", used_percent=96, resets_at=reopens, observed_at=datetime.now(UTC)),))
     choices = SubscriptionChoices(subscriptions=tuple(SubscriptionChoice(provider="claude", subscription_id=logins[name].id, limits=SubscriptionLimits()) for name in ("first", "second")))
     handle = await run_agent(None, "go", agent="tester", cwd=str(tmp_path), environment={"PATH": "/usr/bin:/bin"}, choices=choices)
     await asyncio.wait_for(handle.wait(), timeout=30)
