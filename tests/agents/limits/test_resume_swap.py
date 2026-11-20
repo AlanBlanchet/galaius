@@ -12,7 +12,7 @@ import pytest
 from galaius_core import SubscriptionLimits
 
 from galaius.agents import agent_queue, messaging, registry as reg, run as run_module
-from galaius.agents.limits import quota
+from galaius.agents.limits import fallback, quota
 from galaius.agents.limits.subscriptions import RunSubscription, Subscription
 from galaius.agents.providers import PROVIDERS
 from galaius.agents.transport.events import RunCut
@@ -134,7 +134,8 @@ def test_a_turn_cut_by_one_logins_window_resumes_at_once_on_his_other_login_else
                                                                                                  other_open: bool, at_once: bool) -> None:
     """The account's own window (not a model pool) shut the run's login: with another login open its automatic resume is due now, never
     at the reset the refusal named (owner 2026-11-20: never stop the request, use the fallback)."""
-    _, logins, _ = _stopped_run(monkeypatch, tmp_path)
+    provider, logins, _ = _stopped_run(monkeypatch, tmp_path)
+    monkeypatch.setattr(fallback, "PROVIDERS", {"claude": provider})   # no other provider installed here: only the login rung
     line = _week_line()
     for name in ("a", *(() if other_open else ("b",))):
         quota.record_refusal("claude", "fable-fixture", said=line, subscription=logins[name].id)
@@ -143,3 +144,48 @@ def test_a_turn_cut_by_one_logins_window_resumes_at_once_on_his_other_login_else
     failed = run.model_copy(update={"status": "failed", "finished_at": time.time(), "stream_digest": digest})
     due = reg.limit_resume_at(failed)
     assert due is not None and (due == failed.finished_at) is at_once
+
+
+class _Other(QueueProvider):
+    """Another installed CLI, one that can resume: the provider a conversation moves to."""
+
+    name = "other"
+
+
+@pytest.mark.parametrize(("shut_models", "open_login", "other_provider", "exhausted"), [
+    (("fable-fixture", "lower-model"), False, True, True),        # every model shut on every login, another provider installed
+    (("fable-fixture", "lower-model"), True, True, False),        # his other login can take it (`swap_login`'s rung)
+    (("fable-fixture",), False, True, False),                      # one model still answers on its own login (`resolve_continuable_model`'s rung)
+    (("fable-fixture", "lower-model"), False, False, False),       # no other provider to go to
+])
+def test_a_conversation_moves_to_another_provider_only_when_nothing_of_its_own_can_answer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, shut_models: tuple[str, ...],
+                                                                                         open_login: bool, other_provider: bool, exhausted: bool) -> None:
+    provider, logins, _ = _stopped_run(monkeypatch, tmp_path)
+    monkeypatch.setattr(fallback, "PROVIDERS", {"claude": provider, **({"other": _Other()} if other_provider else {})})
+    for name, login in logins.items():
+        if open_login and name == "b":
+            continue
+        for model in shut_models:
+            quota.record_refusal("claude", model, said="You've hit your weekly limit", subscription=login.id)
+    run = reg.get_run("r1")
+    assert fallback.exhausted(run, ("fable-fixture", "lower-model")) is exhausted
+
+
+@pytest.mark.parametrize("spawn_answers", [True, False])
+def test_an_exhausted_providers_waiting_message_goes_to_a_successor_on_another_provider_else_to_its_own_provider(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, spawn_answers: bool) -> None:
+    provider, logins, _ = _stopped_run(monkeypatch, tmp_path)
+    monkeypatch.setattr(fallback, "PROVIDERS", {"claude": provider, "other": _Other()})
+    monkeypatch.setattr(agent_queue, "_HANDOFF_REFUSED", set())
+    for login in logins.values():
+        for model in ("fable-fixture", "lower-model"):
+            quota.record_refusal("claude", model, said="You've hit your weekly limit", subscription=login.id)
+    monkeypatch.setattr(fallback, "candidates", lambda run: ("fable-fixture", "lower-model"))
+    made: list[list[str]] = []
+    monkeypatch.setattr(fallback.HandOff, "make", lambda self: (made.append(self.argv()), "successor1" if spawn_answers else None)[1])
+    messaging.deliver_message("r1", "go on", sender="operator")
+    agent_queue.dispatch("r1")
+    [argv] = made
+    assert argv[argv.index("--continues") + 1] == "r1" and any(part.startswith("--task=") and "go on" in part for part in argv)
+    item = agent_queue.items("r1")[0]
+    assert item.state == "replied"
+    assert (provider.messages == []) is spawn_answers, "a refused hand-off asks the run's own provider after all, a made one spends no turn on it"

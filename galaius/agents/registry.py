@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, BinaryIO, ClassVar, Literal, NamedTuple, Self,
 from uuid import UUID
 
 from pydantic import ConfigDict, BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
-from galaius.agents.limits import quota
+from galaius.agents.limits import fallback, quota
 from galaius.usage_dialects import CountedTokens, OlderTokens
 from galaius_core import SubscriptionLimits, OPEN_MAX, OwnerQuestion, ASKED_BY_MAX, LaunchSkipReason, ReasoningLevel, RecordedReasoning, FILE_KEY, KEPT_FILE_MAX, MACHINE_AGENT_MEDIA, MEDIA_KEY, file_key, MODEL_ID_MAX, FileStory, HandedFile, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor, TokenCounts
 
@@ -513,7 +513,7 @@ class AgentRun(OlderTokens, ContextGauge):
             return
         if self.subscription is not None:
             self.subscription.check()
-        if not open_logins(self):   # another login of his that takes the turn gets it (`swap_login`): this one's notes are true
+        if not open_logins(self) and not fallback.moves(self):   # another login, or another provider, takes the turn (`swap_login`, `fallback`): this one's notes are true
             quota.forget_login(self.provider, subscription=self.subscription_id, keep_pools=True)
 
     @property
@@ -3231,8 +3231,8 @@ def limit_resume_at(run: AgentRun, *, now: float | None = None) -> float | None:
         # A model family's own pool (`quota.POOLS`): the account answers, so the next ranked model takes the turn at once (one
         # automatic try; a launch's relaunch, `relaunch_owed`, comes first).
         return run.finished_at if run.relaunched_at is None and (run.resumed_at is None or run.resumed_at < run.finished_at) else None
-    if refusal is not None and open_logins(run) and (run.resumed_at is None or run.resumed_at < run.finished_at):
-        # Another login of his takes the turn (`swap_login`): at once, never a wait for this one's reopening. One automatic try
+    if refusal is not None and (open_logins(run) or fallback.moves(run)) and (run.resumed_at is None or run.resumed_at < run.finished_at):
+        # Another login of his, or another provider, takes the turn (`swap_login`, `fallback`): at once, never a wait for this one's reopening. One automatic try
         # per refusal; refused there too, its login is shut as well and the named reset alone resumes it.
         return run.finished_at
     if refusal is None or refusal.reopens_at is None or refusal.reopens_at - run.finished_at > quota.MAX_COOLDOWN:

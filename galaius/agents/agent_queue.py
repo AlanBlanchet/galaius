@@ -29,7 +29,7 @@ from galaius_core import AGENT_IMAGES_MAX, MEDIA_KEY, OWNER_MAKER, AgentRevision
 from galaius_core.wire import readable
 from pydantic import BaseModel, ConfigDict, Field
 
-from galaius.agents.limits import quota
+from galaius.agents.limits import fallback, quota
 from galaius.agents.catalog.connection import CatalogAuthenticationError, CatalogConnectionError, CatalogOffline
 from galaius.agents import registry as reg
 from galaius.account.caller import RUN_VARIABLES, Caller
@@ -50,6 +50,8 @@ MAX_PENDING = 128
 #: simply work ». A refusal waiting cannot change (`_permanent`) is not tried again.
 RESUME_BACKOFF: tuple[float, ...] = (5.0, 20.0)
 _POLL_SECONDS = 0.1
+#: Runs whose hand-off to another provider was refused (`fallback.HandOff.make`) in this dispatcher: their turn goes to their own provider.
+_HANDOFF_REFUSED: set[str] = set()
 _DISPATCHER_RECOVERY_TIMEOUT = 30.0
 
 log = logging.getLogger(__name__)
@@ -1096,6 +1098,7 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
     try:
         while True:
             recover: tuple[QueueItem, reg.AgentRun] | None = None
+            handoff: tuple[QueueItem, fallback.HandOff] | None = None   # made after the lock (`fallback.HandOff.make`: the spawn takes it)
             pause = _POLL_SECONDS
             with reg.record_lock(run_id):
                 state = _state(run_id)
@@ -1149,6 +1152,9 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                                 )
                                 reg.end_resume_locked(run_id)
                                 item = None
+                            elif isinstance(item.turn, MessageTurn) and run_id not in _HANDOFF_REFUSED and fallback.exhausted(run, fallback.candidates(run)):
+                                # Its provider answers nothing on any login of his: another provider takes the conversation on (`fallback`).
+                                handoff, item = (item, fallback.HandOff.of(run, prompt)), None
                             else:
                                 try:
                                     run = item.turn.begin_locked(run)
@@ -1186,6 +1192,17 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                                         )
                                         reg.fail_turn_locked(run_id, f"resume refused: {detail}")
                                     item = None
+            if handoff is not None:
+                handed, move = handoff
+                successor = move.make()
+                with reg.record_lock(run_id):
+                    if successor is not None:
+                        _replace_item_locked(run_id, handed.id, state="replied", finished_at=time.time(), error=f"continued by run {successor[:8]} on another provider")
+                    else:
+                        _HANDOFF_REFUSED.add(run_id)   # its turn is asked of its own provider after all: the vendor is the one that knows
+                        _replace_item_locked(run_id, handed.id, state="pending", started_at=None, raw_index=None, attempt_token=None, error="")
+                    reg.end_resume_locked(run_id)
+                continue
             if recover is not None:
                 recovered_item, _ = recover
                 attempt_state, attempt_error = _classify_attempt(recovered_item, _attempt_events(run_id, recovered_item))

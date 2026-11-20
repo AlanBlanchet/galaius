@@ -2206,8 +2206,14 @@ _SPOKE = json.dumps({"type": "assistant", "session_id": "SID", "message": {"mode
 
 
 @pytest.fixture
-def resuming() -> None:
-    """A runner here resumes cut runs (`registry.cut_resume_since`) since long before these tests' runs ended."""
+def resuming(monkeypatch) -> None:
+    """A runner here resumes cut runs (`registry.cut_resume_since`) since long before these tests' runs ended. Claude is the only CLI
+    installed: a cut run's wait for its reopening is the one rung, not a move to another provider (`fallback.moves`, which reads what
+    this computer has installed)."""
+    from galaius.agents.limits import fallback
+    from galaius.agents.providers import PROVIDERS
+
+    monkeypatch.setattr(fallback, "PROVIDERS", {"claude": PROVIDERS["claude"]})
     reg.cut_resume_since(now=0.0)
 
 

@@ -10,6 +10,9 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
   there, a model family's weekly pool included) resumes on another subscription login that can, session carried, same model;
   with none, the next ranked model on its own login. What the vendor refused is kept in one typed record per login
   (`quota-usage.json`, replacing `quota-cooldowns.json` and `quota-paused.json`; remembered refusals do not carry over).
+  A turn cut by one login's window resumes at once on his other login. When every model of its provider is shut on every login,
+  its waiting message goes to a successor run on another installed provider (`galaius agents spawn --continues`), the session
+  itself never crossing providers.
 - Projects put on a computer from the web live in galaius's own folder: `~/.galaius/projects` (Windows `%USERPROFILE%\.galaius\projects`),
   no longer the visible `~/galaius/projects`. At connect each project there moves, one folder at a time, with its conversations; a
   folder in use, a link, a hidden name or a name already taken stays where it is and moves at a later connect (`galaius machine projects-move`
