@@ -329,10 +329,13 @@ def community_search(need: str, kind: CommunityKind | None = None) -> str:
     from public repositories under their licence, or found by searching GitHub, npm and the MCP registry — for one made
     for `need` (a few words naming the domain: « reverse engineer a binary », « write release notes »). Search before
     starting work in a domain, and again for each sub-domain a plan adds. Lists the best matches (id, kind, title, what it
-    is for, author, stars or downloads, last update, licence, source); a listed one is shown by link only. Start one with
-    agent_spawn(community=<id>, task=...): it runs as your child, under your control.
+    is for, author, stars or downloads, last update, licence, source); a listed one is shown by link only. An MCP server also
+    shows what it starts from (package, version), the hosts it would reach, what it asks of its user, whether its registry vouches
+    for its publisher, and whether Galaius could start it; MCP servers are found and shown, never started by this tool. Start an
+    agent or skill with agent_spawn(community=<id>, task=...): it runs as your child, under your control.
 
-    need: what you want done, in a few words; entries holding more of them rank first.
+    need: what you want done, in a few words; entries holding more of them rank first. A link to a public GitHub repository
+    (alone) reads its `.mcp.json`, `package.json` and README for the MCP servers they describe, as data.
     kind: "agent", "skill", "prompt", "mcp" or "pipeline" only; every kind when omitted.
     """
     try:

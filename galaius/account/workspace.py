@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 import httpx
 from galaius_core import CommunityPage, CommunityPrompt, CommunityQuery, CommunitySources, AgentGraph, AgentGraphUpdate, ImageAnswer, ImageRequest, MediaAnswer, MediaRequest, AgentRevision, AgentRevisionRef, AgentStartSpec, AgentTouchScope, ArtifactRef, CompanyProfile, ConfiguredModelRef, MachineRunEvents, MachineSummary, ReasoningLevel, ReleaseInfo, TriggerInvocation, WorkflowEvent, WorkflowRevision, WorkflowRevisionRef, WorkflowRun
 from galaius_core.identity.accounts import Bootstrap
+from galaius_core.tools.mcp_found import McpLinkRead
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from galaius.agents.catalog.entries import CatalogSnapshot
@@ -108,6 +109,10 @@ class ServerWorkspace(ServerPrompts):
         (`galaius_core.community`): a PC's own token is enough."""
         return self._read(f"{self.workspace_endpoint}/community/prompts?{urlencode(query.model_dump(mode='json', exclude_defaults=True))}", CommunityPage,
                           "community", transport=transport)
+
+    def mcp_link(self, url: str, *, transport=None) -> McpLinkRead:
+        """The MCP servers the files of a public GitHub repository describe (`McpLinkRead`), read by the server as data."""
+        return self._read(f"{self.workspace_endpoint}/community/mcp-link?{urlencode({'url': url})}", McpLinkRead, "mcp link", transport=transport)
 
     def community_entry(self, entry: UUID, *, transport=None) -> CommunityPrompt:
         return self._read(f"{self.workspace_endpoint}/community/prompts/{entry}", CommunityPrompt, "community entry", transport=transport)
