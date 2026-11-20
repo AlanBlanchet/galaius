@@ -839,6 +839,7 @@ def test_n_waiting_runs_hold_n_lean_processes_and_only_the_head_a_full_one(at_wo
 
 @pytest.mark.skipif(not os.path.exists("/usr/bin/python3"), reason="needs a Python without galaius")
 def test_the_waiter_is_the_full_one_alone_when_the_active_runtime_holds_no_lean_one(monkeypatch):
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(sys.path))  # the probe must not find this build through it
     monkeypatch.setattr(spawn_line, "active_interpreter", lambda: sys.executable)
     assert SpawnLine._waiter("r")[0] == "galaius.agents.spawn_wait"
     monkeypatch.setattr(spawn_line, "active_interpreter", lambda: "/usr/bin/python3")  # another build, one with no `spawn_wait`

@@ -1060,7 +1060,8 @@ class SpawnLine(BaseModel):
             return lean
         try:
             probe = subprocess.run([interpreter, "-P", "-c", "import importlib.util as u, sys; sys.exit(0 if u.find_spec('galaius.agents.spawn_wait') else 1)"],
-                                   capture_output=True, timeout=PROBE_SECONDS, check=False)
+                                   capture_output=True, timeout=PROBE_SECONDS, check=False,
+                                   env={name: value for name, value in os.environ.items() if name != "PYTHONPATH"})
         except (OSError, subprocess.SubprocessError):
             return ("galaius.agents.spawn_line", run_id)
         return lean if probe.returncode == 0 else ("galaius.agents.spawn_line", run_id)
@@ -1254,8 +1255,8 @@ class SpawnLine(BaseModel):
             while (turn := self._turn(run_id)) == "wait":
                 if lean is not None and os.getppid() == lean and verdict(reg.shared_state_seen("spawn-line"), reg.shared_state_seen(READY_STATE), run_id, now=time.time(),
                                       since=time.time()) == "sleep":
-                    self._hand_back(run_id, lean)
-                    return True
+                    if self._hand_back(run_id, lean):
+                        return True
                 time.sleep(POLL_SECONDS)
             if turn == "gone":
                 return False
@@ -1271,13 +1272,16 @@ class SpawnLine(BaseModel):
             self.leave(run_id)
             return False
 
-    def _hand_back(self, run_id: str, parent: int) -> None:
-        """`run_id`'s place held by its lean waiter `parent` again, this process ending. A parent gone is never handed it
-        (`wait`): the place would stay held by nobody's pid 1."""
+    def _hand_back(self, run_id: str, parent: int) -> bool:
+        """`run_id`'s place held by its lean waiter `parent` again, this process ending: False when `parent` is gone, the
+        place staying this process's (handed to a dead pid it would be pruned, its run failed)."""
+        if (started := process_started(parent)) is None or process_exited(parent):
+            return False
         with self._places() as places:
             for index, place in enumerate(places):
                 if place.run_id == run_id and place.state == "waiting":
-                    places[index] = place.model_copy(update={"holder": parent, "holder_started": process_started(parent)})
+                    places[index] = place.model_copy(update={"holder": parent, "holder_started": started})
+        return True
 
 
 def main() -> None:
