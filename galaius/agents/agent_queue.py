@@ -53,7 +53,7 @@ RESUME_BACKOFF: tuple[float, ...] = (5.0, 20.0)
 #: (the next model, then the next login: `registry.swap_login`): every model of the run's provider is benched by the fifth.
 LIMIT_FALLBACKS = 6
 _POLL_SECONDS = 0.1
-#: Runs whose hand-off to another provider was refused (`fallback.HandOff.make`) in this dispatcher: their turn goes to their own provider.
+#: Runs whose hand-off to another provider was refused (`fallback.hand_on`) in this dispatcher: their turn goes to their own provider.
 _HANDOFF_REFUSED: set[str] = set()
 _DISPATCHER_RECOVERY_TIMEOUT = 30.0
 
@@ -1127,7 +1127,7 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
     try:
         while True:
             recover: tuple[QueueItem, reg.AgentRun] | None = None
-            handoff: tuple[QueueItem, fallback.HandOff] | None = None   # made after the lock (`fallback.HandOff.make`: the spawn takes it)
+            handoff: tuple[QueueItem, reg.AgentRun, str] | None = None   # made after the lock (`fallback.hand_on`: the spawn takes it)
             pause = _POLL_SECONDS
             with reg.record_lock(run_id):
                 state = _state(run_id)
@@ -1183,7 +1183,7 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                                 item = None
                             elif isinstance(item.turn, MessageTurn) and run_id not in _HANDOFF_REFUSED and fallback.exhausted(run, fallback.candidates(run)):
                                 # Its provider answers nothing on any login of his: another provider takes the conversation on (`fallback`).
-                                handoff, item = (item, fallback.HandOff.of(run, prompt)), None
+                                handoff, item = (item, run, prompt), None
                             else:
                                 try:
                                     run = item.turn.begin_locked(run)
@@ -1222,8 +1222,8 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                                         reg.fail_turn_locked(run_id, f"resume refused: {detail}")
                                     item = None
             if handoff is not None:
-                handed, move = handoff
-                successor = move.make()
+                handed, stopped, waiting_message = handoff
+                successor = fallback.hand_on(stopped, waiting_message)
                 with reg.record_lock(run_id):
                     if successor is not None:
                         _replace_item_locked(run_id, handed.id, state="replied", finished_at=time.time(), error=f"continued by run {successor[:8]} on another provider")

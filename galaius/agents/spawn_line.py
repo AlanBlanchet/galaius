@@ -1019,6 +1019,17 @@ class SpawnLine(BaseModel):
             relations.succeed(run.run_id, launched.run_id)
         return launched.run_id
 
+    async def hand_on(self, run: reg.AgentRun, task: str, runner: Callable[..., Awaitable[RunHandle]] | None = None) -> str:
+        """`run`'s conversation continued as a new run of its role with `task`, on the provider the ranked walk picks (its own
+        passed over, `limits.fallback`): in line like any spawn, taking over `run`'s asks (`relations.succeed`) once it is in
+        line, so what is sent or handed back to `run` reaches it. Asked as `run`'s own parent would ask (`Spawn.relaunching`). Its run id."""
+        spawn = Spawn.relaunching(run).model_copy(update={"task": task, "relaunches": None})
+        admission = self.enter(spawn)
+        launched = admission if admission.ahead is not None else await self.launch(admission, spawn, runner)
+        if isinstance(launched, Admission):
+            relations.succeed(run.run_id, launched.run_id)
+        return launched.run_id
+
     def _defer(self, run_id: str, spawn: Spawn, holds: tuple[Hold, ...], *, asker: int | None) -> Admission:
         """`run_id`'s place back to `waiting`, behind every spawn waiting, until one of `holds` lifts (`_turn`); its
         waiter started when `asker` (the process that tried it) holds it, else the waiter itself does."""

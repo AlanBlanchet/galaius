@@ -180,12 +180,33 @@ def test_an_exhausted_providers_waiting_message_goes_to_a_successor_on_another_p
         for model in ("fable-fixture", "lower-model"):
             quota.record_refusal("claude", model, said="You've hit your weekly limit", subscription=login.id)
     monkeypatch.setattr(fallback, "candidates", lambda run: ("fable-fixture", "lower-model"))
-    made: list[list[str]] = []
-    monkeypatch.setattr(fallback.HandOff, "make", lambda self: (made.append(self.argv()), "successor1" if spawn_answers else None)[1])
+    made: list[tuple[str, str]] = []
+    monkeypatch.setattr(fallback, "hand_on", lambda run, message: (made.append((run.run_id, message)), "successor1" if spawn_answers else None)[1])
     messaging.deliver_message("r1", "go on", sender="operator")
     agent_queue.dispatch("r1")
-    [argv] = made
-    assert argv[argv.index("--continues") + 1] == "r1" and any(part.startswith("--task=") and "go on" in part for part in argv)
+    [(stopped, task)] = made
+    assert stopped == "r1" and "go on" in task
     item = agent_queue.items("r1")[0]
     assert item.state == "replied"
     assert (provider.messages == []) is spawn_answers, "a refused hand-off asks the run's own provider after all, a made one spends no turn on it"
+
+
+def test_a_hand_on_starts_a_successor_through_the_ranked_walk_and_takes_over_the_runs_asks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The real `SpawnLine.hand_on` (no stub but the CLI start): its provider and model unpinned so the walk chooses, its task the waiting message
+    with where to read the conversation, the stopped run's successor recorded (`relations.succeed`)."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from galaius.agents.spawn_line import SpawnLine
+
+    _stopped_run(monkeypatch, tmp_path)
+    started: dict = {}
+
+    async def runner(provider, task, **kwargs):
+        started.update(provider=provider, task=task, **kwargs)
+        reg.register(run_id=kwargs["run_id"], pid=999998, provider="other", name="w", task=task, agent="tester")
+        return SimpleNamespace(run_id=kwargs["run_id"])
+
+    successor = asyncio.run(SpawnLine.here().hand_on(reg.get_run("r1"), "go on please", runner))
+    assert started["provider"] is None and started.get("model") is None and "go on please" in started["task"]
+    assert reg.get_run("r1").successor == successor

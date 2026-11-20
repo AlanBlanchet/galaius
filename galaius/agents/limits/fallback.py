@@ -1,6 +1,6 @@
 """The last rung of « never stop his request while any login of any provider has usage » (owner 2026-11-20): a conversation whose
 provider has nothing left to answer it — every model of it shut on every login of his (`quota.blocked_until`), or the login
-paused — continues as a SUCCESSOR run on another provider (`galaius agents spawn --continues`: the ranked walk across providers,
+paused — continues as a SUCCESSOR run on another provider (`SpawnLine.hand_on`: the ranked walk across providers,
 `relations.succeed`), carrying the message that was waiting and where the conversation can be read. The rungs before it
 are the model (`run.resolve_continuable_model`) and his other login of the same provider (`registry.swap_login`); this one
 is taken only when neither exists, and never moves a session across providers (a session is its CLI's own format).
@@ -8,14 +8,13 @@ is taken only when neither exists, and never moves a session across providers (a
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 import os
-import subprocess
 from collections.abc import Iterable
 
-from pydantic import BaseModel, ConfigDict
-
-from galaius.account.caller import RUN_VARIABLES
+from galaius.account.caller import RUN_VARIABLES, Caller
 from galaius.agents import registry as reg
 from galaius.agents.limits import quota
 from galaius.agents.limits.subscriptions import Subscription
@@ -76,38 +75,21 @@ def moves(run: reg.AgentRun) -> bool:
     return exhausted(run, candidates(run))
 
 
-class HandOff(BaseModel):
-    """One `galaius agents spawn --continues` of stopped run `run`'s role, started on the provider the ranked walk picks, with `task`."""
+def hand_on(run: reg.AgentRun, message: str) -> str | None:
+    """Stopped `run`'s conversation continued by a successor on another provider (`SpawnLine.hand_on`: the ranked walk across
+    providers, its own passed over by its notes), `message` its task with where the conversation can be read. The successor's run
+    id, None when it could not be started (logged). Never called under `run`'s record lock: `relations.succeed` takes it."""
+    from galaius.agents.spawn_line import SpawnLine   # noqa: PLC0415 — circular: spawn_line imports run, which imports this package
 
-    model_config = ConfigDict(frozen=True)
+    task = (f"{message}\n\n[Galaius: you continue run {run.run_id[:8]} ({run.name}), which ran on {run.provider} and could not take this "
+            f"message: every model of its provider is at its usage limit on every login. Its conversation: `galaius agents events {run.run_id}`.]")
+    from galaius.agents.run import run_agent   # noqa: PLC0415 — circular, as above
 
-    run: str
-    role: str
-    name: str
-    parent: str | None
-    cwd: str
-    task: str
-
-    def argv(self) -> list[str]:
-        parent = ("--parent-run-id", self.parent) if self.parent else ()
-        return reg.participant_argv("galaius", "agents", "spawn", "--agent", self.role, "--name", self.name, *parent, "--cwd", self.cwd,
-                                    "--continues", self.run, f"--task={self.task}")   # one argument: a task beginning with a dash stays a task
-
-    def make(self) -> str | None:
-        """The run that took it over (the spawn's last line), None when the spawn refused (logged). Never run under the predecessor's
-        record lock: the spawn takes it itself (`relations.succeed`)."""
-        environment = {**os.environ, **dict.fromkeys(RUN_VARIABLES, self.parent or self.run)}
-        done = subprocess.run(self.argv(), cwd=self.cwd if os.path.isdir(self.cwd) else ".", capture_output=True, text=True, timeout=SPAWN_SECONDS,
-                              env=reg.participant_environment(environment), check=False)
-        said = (done.stdout or "").strip().splitlines()
-        if done.returncode != 0 or not said or reg.get_run(said[-1]) is None:
-            log.warning("could not hand run %s on to another provider: %s", self.run[:8], (done.stderr or done.stdout).strip()[-400:])
-            return None
-        return said[-1]
-
-    @classmethod
-    def of(cls, run: reg.AgentRun, message: str) -> "HandOff":
-        """What carries run `run`'s conversation to its successor: the message waiting for it, and where its record is read."""
-        task = (f"{message}\n\n[Galaius: you continue run {run.run_id[:8]} ({run.name}), which ran on {run.provider} and could not take this "
-                f"message: every model of its provider is at its usage limit on every login. Its conversation: `galaius agents events {run.run_id}`.]")
-        return cls(run=run.run_id, role=run.agent or "", name=run.name, parent=run.parent_run_id, cwd=run.cwd or ".", task=task)
+    # The run it asks as is the stopped run's, never whichever run's environment this dispatcher was started from.
+    environment = {name: value for name, value in os.environ.items() if name not in RUN_VARIABLES}
+    try:
+        with Caller.current().model_copy(update={"environment": environment}).bound():
+            return asyncio.run(SpawnLine.here().hand_on(run, task, functools.partial(run_agent, environment=environment)))
+    except Exception as error:   # noqa: BLE001 — a hand-off that cannot start leaves the turn to the run's own provider (`agent_queue`)
+        log.warning("could not hand run %s on to another provider: %s", run.run_id[:8], error)
+        return None
