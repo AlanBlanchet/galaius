@@ -1015,7 +1015,7 @@ async def test_a_model_one_login_refuses_runs_on_his_next_login_else_the_next_ra
     assert (record.subscription_id, record.model) == (logins[runs_on].id, model)
 
 
-@pytest.mark.parametrize(("refused", "goes_to"), [(True, "claude-opus-5-5"), (False, None)])
+@pytest.mark.parametrize(("refused", "goes_to"), [(True, "claude-opus-5-5"), (False, "claude-fable-5-2")])
 def test_a_conversation_on_a_model_its_login_refuses_goes_on_with_the_next_one_else_it_is_never_moved_down(monkeypatch: pytest.MonkeyPatch, refused: bool, goes_to: str | None) -> None:
     """Owner 2026-11-20: his Fable conversation was refused « every model … passed over as smaller than the model this conversation runs on »
     while only Fable's own pool was shut. Floor held while its model answers or is refused by an account-level limit (a size cut earns
@@ -1031,8 +1031,4 @@ def test_a_conversation_on_a_model_its_login_refuses_goes_on_with_the_next_one_e
     else:
         quota.record_refusal("claude", "claude-fable-5-2", said="You've hit your weekly limit · resets 9pm (Europe/Paris)", subscription=login)   # an account limit keeps the floor
     resolve = lambda: run_module.resolve_continuable_model("crit", {}, provider=PROVIDERS["claude"], subscription=login, floor="claude-fable-5-2")[1]  # noqa: E731
-    if goes_to is None:
-        with pytest.raises(run_module.ModelUnavailable, match="never moved down"):
-            resolve()
-    else:
-        assert resolve() == goes_to
+    assert resolve() == goes_to   # an account limit keeps the floor: the vendor is asked about its own model again, never a smaller one, never a refusal here

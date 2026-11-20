@@ -384,11 +384,8 @@ def resolve_continuable_model(
 
     Scoped to ONE provider, unlike a fresh spawn's cross-provider walk: a vendor session cannot
     switch CLI mid-conversation (the history lives in `provider`'s own store), only the model it
-    is asked for. When every one of THIS provider's candidates for `model` is currently cooled,
-    this REFUSES — never silently spawns on a model already known dead, and never silently
-    ignores the cooldown the way a fresh spawn's own escape valve does (that valve exists so a
-    first-time launch is never blocked by a stale note; a resume already failed once for this
-    exact reason, so retrying the same dead model a second time is not the safer default here).
+    is asked for. When every one of THIS provider's candidates for `model` is currently cooled, it
+    asks the one whose note ends first (a note is a forecast, the vendor decides) rather than refuse the turn.
 
     `floor` is the model the conversation is ON (its record's own): the walk never hands it to a
     candidate the catalog scores BELOW that one. A resume may move UP — the criterion's own order
@@ -404,29 +401,32 @@ def resolve_continuable_model(
     # account-level limit keeps the floor: what cut the conversation there is as often its size (2026-10-23, below).
     if floor and quota.pool_blocked_until(provider.name, floor, subscription=subscription) is not None:
         least = None
-    cooled: dict[str, float] = {}
-    smaller: dict[str, float] = {}
+        # No ladder to walk down then: a bare criterion lists the cheapest first (2026-11-20: haiku-5.5 took the owner's
+        # conversation before opus-5.5), so the most capable model still open takes it.
+        candidates = sorted(candidates, key=lambda entry: -(_capability_of(entry.model, candidates) or float("-inf")))
+    cooled: dict[str, tuple[float, reg.LaunchCandidate]] = {}
+    smaller: list[reg.LaunchCandidate] = []
     for candidate in candidates:
         score = _capability_of(candidate.model, candidates)
         if least is not None and score is not None and score < least:
-            smaller[candidate.model] = score
+            smaller.append(candidate)
             continue
         until = quota.blocked_until(candidate.provider, candidate.model, subscription=subscription)
         if until is None:
             return resolve_model(candidate.model, env, provider=provider, weights=weights)
-        cooled[candidate.model] = until
-    detail = "; ".join(
-        f"{model_id} until {time.strftime('%H:%M:%S', time.localtime(until))}"
-        for model_id, until in cooled.items()
-    )
-    held = f"every model {provider.name!r} can run for {model!r} is in quota cooldown ({detail})" if cooled else ""
-    passed = (f"{', '.join(smaller)} passed over as smaller than the model this conversation runs on "
-              f"({floor}): a conversation is never moved down") if smaller else ""
-    raise ModelUnavailable(
-        sentence=f"{' — and '.join(part for part in (held, passed) if part)} — "
-        "wait for one to clear and resend, or start a fresh run with agent_spawn, which can pick "
-        "a different provider"
-    )
+        cooled[candidate.model] = (until, candidate)
+    # Nothing is open by this PC's notes. A note is a forecast (a rolling window reopens before the reset it names), and
+    # the vendor is the one that knows: the turn is never refused here while a model could still answer it (owner
+    # 2026-11-20: « The harness should never dissalow if i have any form of usage »). It asks the model whose note ends
+    # first, never one smaller than the conversation's own; a refusal then is that turn's, recorded (`finish`).
+    if cooled:
+        _, candidate = min(cooled.values(), key=lambda held: held[0])
+        return resolve_model(candidate.model, env, provider=provider, weights=weights)
+    if smaller:
+        # Only models the conversation outgrew remain: the most capable of them is asked.
+        best = max(smaller, key=lambda candidate: _capability_of(candidate.model, candidates) or float("-inf"))
+        return resolve_model(best.model, env, provider=provider, weights=weights)
+    raise ModelUnavailable(sentence=f"no model {provider.name!r} can run for {model!r}")
 
 
 async def _unavailable(

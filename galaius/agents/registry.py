@@ -513,7 +513,7 @@ class AgentRun(OlderTokens, ContextGauge):
             return
         if self.subscription is not None:
             self.subscription.check()
-        quota.forget_login(self.provider, subscription=self.subscription_id)
+        quota.forget_login(self.provider, subscription=self.subscription_id, keep_pools=True)
 
     @property
     def subscription_id(self) -> UUID | None:
@@ -3180,6 +3180,10 @@ def limit_resume_at(run: AgentRun, *, now: float | None = None) -> float | None:
             or digest is None or digest.ending != "error" or digest.cut is not RunCut.usage_limit):
         return None
     refusal = quota.Refusal.read(digest.ending_text, now=run.finished_at)
+    if refusal is not None and refusal.pool:
+        # A model family's own pool (`quota.POOLS`): the account answers, so the next ranked model takes the turn at once (one
+        # automatic try; a launch's relaunch, `relaunch_owed`, comes first).
+        return run.finished_at if run.relaunched_at is None and (run.resumed_at is None or run.resumed_at < run.finished_at) else None
     if refusal is None or refusal.reopens_at is None or refusal.reopens_at - run.finished_at > quota.MAX_COOLDOWN:
         return None
     reset = refusal.reopens_at + quota.RESET_SLACK

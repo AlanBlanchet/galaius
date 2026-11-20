@@ -830,8 +830,8 @@ def test_a_resumed_turn_may_still_move_its_conversation_to_a_bigger_model(monkey
 
 
 @pytest.mark.parametrize("said", [
-    "You've reached your Fable limit. Switch to another model to continue.",
-    "Prompt is too long · automatic compaction failed: You've reached your Fable limit. Switch to another model to continue.",
+    "You've reached your Opus limit. Switch to another model to continue.",
+    "Prompt is too long · automatic compaction failed: You've reached your Opus limit. Switch to another model to continue.",
 ])
 def test_a_resumed_turn_leaves_a_model_whose_own_pool_is_shut_for_the_next_ranked(monkeypatch, said):
     """2026-11-20: the floor answers a conversation's SIZE. The model it runs on refusing for its own pool (the account

@@ -583,3 +583,57 @@ def test_a_pool_read_at_his_stop_passes_its_family_over_on_that_login_until_it_r
     if held:
         Subscription.stop_pools((pool.model_copy(update={"used_percent": 10}),), provider="claude", subscription=login)
         assert quota.blocked_until("claude", "claude-fable-5-2", subscription=login) is None
+
+
+# ── A model family's OWN pool refusing costs that family, never the login or the conversation ───
+# 2026-11-20, the owner's main conversation: « Prompt is too long · automatic compaction failed: You've reached your
+# Fable limit » read as a size (nothing benched), and the resume floor then kept the conversation on Fable.
+
+FABLE_POOL_EVENT = ('{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1795471200,'
+                    '"rateLimitType":"seven_day_overage_included","unifiedWindows":{"seven_day":{"utilization":0.77,'
+                    '"resetsAt":1795471200,"status":"allowed_warning"},"seven_day_overage_included":{"utilization":1,'
+                    '"resetsAt":1795471200,"status":"rejected"}}}}')
+UNRECOGNIZED = '[claude-code:unrecognized_model] {"model":"claude-fable-5-2","query_source":"sdk"}'
+POOL_LINES = {
+    "a-words": "You've reached your Fable limit. Switch to another model to continue.",
+    "b-compaction": "Prompt is too long · automatic compaction failed: You've reached your Fable limit. Switch to another model to continue.",
+    "c-stream-event": FABLE_POOL_EVENT,
+    "d-after-the-model-warning": UNRECOGNIZED + "\n" + FABLE_POOL_EVENT,
+}
+
+
+@pytest.mark.parametrize("said", POOL_LINES.values(), ids=POOL_LINES.keys())
+def test_a_model_familys_own_pool_benches_that_family_alone_whatever_else_the_line_says(said):
+    now = 1795200861.0
+
+    quota.remember(quota.classify(said), "claude", "claude-fable-5-2", said=said, login="", now=now)
+
+    assert quota.blocked_until("claude", "claude-fable-5-2", now=now) is not None
+    assert quota.pool_blocked_until("claude", "claude-fable-5-1", now=now) is not None
+    assert quota.blocked_until("claude", "claude-opus-5-5", now=now) is None
+    assert quota.login_pause("claude", now=now) is None
+
+
+@pytest.mark.parametrize("said, kind", [
+    (UNRECOGNIZED, None),
+    ("You've hit your weekly limit · resets Oct 6, 12am (Europe/Paris)", "quota_exceeded"),
+    (CONTEXT_FULL_LINE, "context_exhausted"),
+])
+def test_a_model_name_warning_is_no_refusal_and_the_accounts_own_limits_keep_their_kind(said, kind):
+    """`unrecognized_model` is the CLI warning about a model name; the account's own windows and a conversation's size are
+    read as before."""
+    assert quota.classify(said) == kind
+
+
+def test_his_continue_keeps_a_model_familys_pool_until_its_reset_but_another_account_voids_it():
+    now = 1795200861.0
+    quota.remember("quota_exceeded", "claude", "claude-fable-5-2", said=FABLE_POOL_EVENT, login="", now=now)
+    quota.remember("quota_exceeded", "claude", "claude-opus-5-5", said="Error: usage limit reached", login="", now=now)
+
+    quota.forget_login("claude", keep_pools=True, now=now + 1)
+
+    assert quota.blocked_until("claude", "claude-fable-5-2", now=now + 2) is not None
+    assert quota.blocked_until("claude", "claude-opus-5-5", now=now + 2) is None
+
+    quota.forget_login("claude", now=now + 3)
+    assert quota.blocked_until("claude", "claude-fable-5-2", now=now + 4) is None

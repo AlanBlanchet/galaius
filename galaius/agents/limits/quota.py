@@ -661,11 +661,16 @@ def record_unsupported(provider: str, model: str | None, *, login: str, now: flo
 def classify(said: str) -> RefusalKind | None:
     """What a vendor's words refuse, if anything, read in one place: this CONVERSATION'S SIZE
     (`CONTEXT_FULL`, read first — its line also names the pool the refused call spent, and reading
-    that pool instead benches a model that never refused), then this model for this LOGIN
+    that pool instead benches a model that never refused; but a MODEL FAMILY's own pool, `POOLS`, is that family's refusal,
+    read before it), then this model for this LOGIN
     (`UNSUPPORTED` — the narrower fact, and no cooldown length answers it), else this account's quota
     or rate limit (`REFUSAL`). Every caller — the launch probe, the three late sites a run's own
     stream reaches (`registry`) — asks here, so one vendor line can never be a different refusal
     depending on who heard it."""
+    if (refusal := Refusal.read(said, now=time.time())) is not None and refusal.pool:
+        # Before the size: « Prompt is too long · automatic compaction failed: You've reached your Fable limit » is that family's
+        # pool refusing the compaction: the family is benched (`record_refusal`) and the conversation moves on, the size is no cause.
+        return "quota_exceeded"
     if CONTEXT_FULL.search(said):
         return "context_exhausted"
     if UNSUPPORTED.search(said):
@@ -776,19 +781,23 @@ def _note_lift(login: str, at: float, *, past: float) -> None:
             _write_json(path, {**lifted, login: at})
 
 
-def forget_login(provider: str, *, subscription: UUID | None = None, now: float | None = None) -> None:
+def forget_login(provider: str, *, subscription: UUID | None = None, now: float | None = None, keep_pools: bool = False) -> None:
     """End now every block remembered against `provider`'s models under one login, and the usage hold the same
     refusals put on the login itself (`pause_login`): his « Continuer » asks the vendor again, and a hold left
     standing refuses that question before it is asked (2026-10-23 16:29, « en pause : limite d'usage claude
     jusqu'à 17:21 » — his blocks were ended by hand and the hold still stopped his next conversation). A login
     its program said was LOST is not lifted here: only signing in again, or an answer, brings that one back.
 
+    `keep_pools`: a model family's pool the vendor refused (`POOLS`) stays: asking again cannot reopen it before its reset,
+    only another account does (`note_login`).
+
     Blocks are ended, never dropped: the answer that follows still notes the login's lift (`served`) for its
     other paused runs."""
     moment = time.time() if now is None else now
     entries = _read(moment)
     ended = {key: block.model_copy(update={"until": moment}) for key, block in entries.items()
-             if _of_login(key, provider, subscription) and block.until > moment}
+             if _of_login(key, provider, subscription) and block.until > moment
+             and not (keep_pools and "/~" in key)}
     if ended:
         _write({**entries, **ended})
     login = _login(provider, subscription)
