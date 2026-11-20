@@ -8,9 +8,10 @@ only, and the incremental stream mirror runs in the MCP server's loop, not in th
 writes its usage only into its session record inside the subscription folder, never on the stream."""
 
 import asyncio
+import json
 import threading
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from galaius_core import AgentProvider, LoginIdentity, LoginUsage, SubscriptionUsageReport, UsageWindow
@@ -20,7 +21,7 @@ from galaius.agents import registry as reg
 from galaius.agents.limits import quota
 from galaius.agents.transport.events import stream_lines
 from galaius.agents.providers import PROVIDERS, AgentProvider as Program, held_environment
-from galaius.agents.limits.subscriptions import Subscription
+from galaius.agents.limits.subscriptions import Subscription, SubscriptionRefused
 
 
 class LoginReading(BaseModel):
@@ -40,7 +41,10 @@ class LoginReading(BaseModel):
                 or bool(self.identity.login) and self.identity != self.reported_identity)
 
     def report(self, provider: AgentProvider) -> LoginUsage:
-        return LoginUsage(provider=provider, windows=self.usage, **self.identity.model_dump())
+        """Its readings of windows not reopened since (a reading past its `resets_at` is the old window's)."""
+        now = datetime.now(UTC)
+        return LoginUsage(provider=provider, windows=tuple(window for window in self.usage if window.resets_at is None or window.resets_at > now),
+                          **self.identity.model_dump())
 
 
 class SubscriptionWatch(BaseModel):
@@ -68,16 +72,26 @@ class SubscriptionWatch(BaseModel):
                 await asyncio.to_thread(quota.usage_heard, name, usage, asked=asked)
             with self._lock:
                 reading = self._logins.get(name, LoginReading())
-                self._logins[name] = reading.model_copy(update={"usage": reading.usage if usage is None else usage,
+                self._logins[name] = reading.model_copy(update={"usage": reading.usage if self.keeps(usage, identity) else usage,
                                                                 "identity": reading.identity if identity is None else identity})
         for subscription in await asyncio.to_thread(Subscription.all):
             overlaid = held_environment({**environment, **subscription.overlay()})
             asked = time.time()
-            if (usage := await subscription.program.current_usage(overlaid)) is not None:
+            usage = await subscription.program.current_usage(overlaid)
+            identity = await self.identity(subscription.program, overlaid)
+            if usage is not None and not self.keeps(usage, identity):
                 await asyncio.to_thread(subscription.observe, usage, whole=True)
                 await asyncio.to_thread(quota.usage_heard, subscription.program.name, usage, asked=asked, subscription=subscription.id)
-            if (identity := await self.identity(subscription.program, overlaid)) is not None:
+            if identity is not None:
                 await asyncio.to_thread(subscription.identify, identity)
+
+    @staticmethod
+    def keeps(usage: tuple[UsageWindow, ...] | None, identity: LoginIdentity | None) -> bool:
+        """Its CLI's answer leaves the last reading: it could not be asked (None), or it names no window for a login that IS
+        signed in (a held token, an API key: `rate_limits_available` false). That login's readings are the vendor's own
+        lines its runs stream (`heard`); an empty answer wiping them every `usage_ask_seconds` left every held login at
+        « no reading » (2026-11-20). Only a signed-out login (no login named) is read as none."""
+        return usage is None or (not usage and identity is not None and bool(identity.login))
 
     @staticmethod
     async def identity(provider: Program, environment: dict[str, str]) -> LoginIdentity | None:
@@ -93,16 +107,53 @@ class SubscriptionWatch(BaseModel):
         return () if reading is None else reading.usage
 
     def heard(self) -> None:
-        """Every running run pinned to a subscription: the usage lines appended since the last call."""
+        """Every running run's usage lines appended since the last call: a run pinned to a subscription feeds that subscription's
+        windows and pools, one on this PC's own login that login's (`login_heard`); a pool at his stop holds its family there."""
         running = [run for run in reg.running_runs() if run.subscription_id is not None]
         for run in running:
             provider = PROVIDERS[run.provider]
             files = (reg.raw_events_path(run.run_id), *filter(None, (self._session_record(run),)))
-            events = [event for path in files for line in self._appended(path, run.usage_from.get(str(path), 0)) if (event := provider.parse(line)) is not None]
-            reg.subscription_heard(run, events)
-        watched = {reg.raw_events_path(run.run_id) for run in running} | {self._records[run.run_id] for run in running if run.run_id in self._records}
+            lines = [line for path in files for line in self._appended(path, run.usage_from.get(str(path), 0))]
+            reg.subscription_heard(run, [event for line in lines if (event := provider.parse(line)) is not None])
+            if (pools := self._pools_in(provider, lines)):
+                try:
+                    Subscription.of(run.subscription_id).observe_pools(pools)
+                except SubscriptionRefused:
+                    pass  # signed out while it ran: nothing to keep
+        own = [run for run in reg.running_runs() if run.subscription_id is None and run.provider in PROVIDERS]
+        for run in own:  # a run on this PC's own login: the same lines say that login's windows, with no subscription to keep them in
+            provider = PROVIDERS[run.provider]
+            path = reg.raw_events_path(run.run_id)
+            lines = [line for line in self._appended(path, 0) if "rate_limit" in line]
+            events = [event for line in lines if (event := provider.parse(line)) is not None]
+            if windows := tuple(window for event in events for window in event.windows):
+                self.login_heard(run.provider, windows)
+            if pools := self._pools_in(provider, lines):
+                Subscription.stop_pools(pools, provider=run.provider, subscription=None)
+        watched = {reg.raw_events_path(run.run_id) for run in (*running, *own)} | {self._records[run.run_id] for run in running if run.run_id in self._records}
         self._offsets = {path: offset for path, offset in self._offsets.items() if path in watched}
         self._records = {run.run_id: self._records[run.run_id] for run in running if run.run_id in self._records}
+
+    def login_heard(self, provider: AgentProvider, windows: tuple[UsageWindow, ...]) -> None:
+        """`windows` a run on `provider`'s own login streamed (oldest first) replace that login's readings of the same windows."""
+        with self._lock:
+            reading = self._logins.get(provider, LoginReading())
+            latest = {window.window: window for window in (*reading.usage, *windows)}
+            self._logins[provider] = reading.model_copy(update={"usage": tuple(latest.values())})
+
+    @staticmethod
+    def _pools_in(provider: Program, lines: list[str]) -> tuple[quota.ModelPool, ...]:
+        """The model-family pools (`quota.POOLS`) `lines` say, oldest first: those lines that mention one only."""
+        found = []
+        for line in lines:
+            if "unifiedWindows" not in line:
+                continue
+            try:
+                parsed = json.loads(line)
+            except ValueError:
+                continue
+            found.extend(provider.pools(parsed) if isinstance(parsed, dict) else ())
+        return tuple(found)
 
     def report(self, now: datetime) -> SubscriptionUsageReport | None:
         """What the server should hear now (`Subscription.report_due`); None: nothing. Marked reported

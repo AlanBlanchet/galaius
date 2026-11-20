@@ -3,18 +3,20 @@
 2026-10-13): Claude's `get_usage` control request, Codex's `account/rateLimits/read` on its app-server. A login folder
 named by CLAUDE_CONFIG_DIR is a subscription's (80 % of its week); Codex is signed out; a file `silent` in HOME makes
 it end without answering, a file `failing` makes Claude answer its request's error (the vendor unreachable), a file
-`signed_out` makes it answer as signed out (no plan windows). Claude's `auth status` names one account in every folder."""
+`signed_out` makes it answer as signed out (no plan windows, `auth status` not logged in), a file `held` makes it answer as a held
+token does (`rate_limits_available` false, no windows, `auth status` still logged in). Claude's `auth status` names one account in every folder."""
 
 import json
 import os
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 if (Path(os.environ["HOME"]) / "silent").exists():
     sys.exit(0)
 if sys.argv[1:3] == ["auth", "status"]:  # one account in every folder: only where it is kept differs (2.1.288's shape)
     folder = os.environ.get("CLAUDE_CONFIG_DIR") or str(Path(os.environ["HOME"]) / ".claude")
-    print(json.dumps({"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty", "analyticsDisabled": False,
+    print(json.dumps({"loggedIn": not (Path(os.environ["HOME"]) / "signed_out").exists(), "authMethod": "claude.ai", "apiProvider": "firstParty", "analyticsDisabled": False,
                       "projectsDirectory": f"{folder}/projects", "configDirectory": folder, "email": "owner@example.com",
                       "orgId": "00000000-0000-4000-8000-000000000001", "orgName": "owner@example.com's Organization", "subscriptionType": "max"}, indent=2))
     sys.exit(0)
@@ -26,7 +28,7 @@ if "app-server" in sys.argv:
         elif line.get("id") == 2:
             print(json.dumps({"id": 2, "error": {"code": -32600, "message": "codex account authentication required to read rate limits"}}), flush=True)
             sys.exit(0)
-if (Path(os.environ["HOME"]) / "signed_out").exists():
+if (Path(os.environ["HOME"]) / "signed_out").exists() or (Path(os.environ["HOME"]) / "held").exists():
     request = json.loads(sys.stdin.readline())
     print(json.dumps({"type": "control_response", "response": {"subtype": "success", "request_id": request["request_id"], "response": {
         "subscription_type": None, "rate_limits_available": False, "rate_limits": None, "behaviors": None}}}), flush=True)
@@ -38,6 +40,6 @@ if (Path(os.environ["HOME"]) / "failing").exists():
     sys.exit(0)
 print(json.dumps({"type": "control_response", "response": {"subtype": "success", "request_id": request["request_id"], "response": {
     "subscription_type": "max", "rate_limits_available": True, "rate_limits": {
-        "five_hour": {"utilization": 13, "resets_at": "2026-10-13T11:40:00.942517+00:00", "limit_dollars": None},
-        "seven_day": {"utilization": week, "resets_at": "2026-10-18T19:00:00.942540+00:00", "limit_dollars": None},
+        "five_hour": {"utilization": 13, "resets_at": (datetime.now(UTC) + timedelta(hours=2)).isoformat(), "limit_dollars": None},
+        "seven_day": {"utilization": week, "resets_at": (datetime.now(UTC) + timedelta(days=3)).isoformat(), "limit_dollars": None},
         "seven_day_opus": None, "limits": [{"kind": "session", "group": "session", "percent": 13}]}}}}), flush=True)

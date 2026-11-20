@@ -45,7 +45,7 @@ from galaius.agents.catalog.entries import AgentCatalog
 from galaius.agents.transport.events import AgentEvent, CompactionTrigger, RunCut, UsageLedger, instant, stream_lines
 from galaius.usage_dialects import UsageDialect
 from galaius.agents.limits import held
-from galaius.agents.limits.quota import REFUSAL
+from galaius.agents.limits.quota import POOLS, REFUSAL, ModelPool
 from galaius.agents.catalog.profiles import overlay_for
 from galaius.agents.catalog.vocabulary import CLAUDE_VOCABULARY, CODEX_VOCABULARY, VIBE_VOCABULARY, ApprovalIntent, HarnessVocabulary, TouchScope, ThinkingLevel
 from galaius.brief_hook import NOTE as BRIEF_NOTE
@@ -518,6 +518,10 @@ class AgentProvider(ABC):
 
     def usage(self, line: dict) -> tuple[UsageWindow, ...]:
         """The usage windows one stream line reports (`AgentEvent.windows`); none for a CLI that reports none."""
+        return ()
+
+    def pools(self, line: dict) -> tuple[ModelPool, ...]:
+        """The model-family pools one stream line reports (`quota.POOLS`); none for a CLI that meters none."""
         return ()
 
     def usage_command(self) -> tuple[list[str], tuple[dict, ...]] | None:
@@ -1190,7 +1194,8 @@ class ClaudeCodeProvider(AgentProvider):
     token_said = re.compile(r"\b(sk-ant-oat01-[A-Za-z0-9_-]{20,})")
     code_refused = re.compile(r"OAuth error:")
     #: `rate_limit_info.unifiedWindows` keys and the window each is (utilization: a share, 0-1).
-    #: `seven_day_overage_included` is the same week with the overage pool counted: not the plan's own.
+    #: The per-model-family pools beside them (`quota.POOLS`: `seven_day_overage_included` is the « Fable limit », a pool of its
+    #: own, never the account's week).
     WINDOWS: ClassVar[dict[str, UsageWindowName]] = {"five_hour": "five_hour", "seven_day": "weekly"}
 
     def usage(self, line: dict) -> tuple[UsageWindow, ...]:
@@ -1205,6 +1210,19 @@ class ClaudeCodeProvider(AgentProvider):
             for key, value in windows.items()
             if key in self.WINDOWS and isinstance(value, dict) and isinstance(value.get("utilization"), (int, float))
         )
+
+    def pools(self, line: dict) -> tuple[ModelPool, ...]:
+        """The model-family pools one `rate_limit_event` reports (`quota.POOLS`), each as the vendor's share used."""
+        info = line.get("rate_limit_info") if line.get("type") == "rate_limit_event" else None
+        windows = info.get("unifiedWindows") if isinstance(info, dict) else None
+        if not isinstance(windows, dict):
+            return ()
+        now = datetime.now(UTC)
+        return tuple(
+            ModelPool(pool=POOLS[key], used_percent=round(float(value["utilization"]) * 100, 2), observed_at=now,
+                      resets_at=datetime.fromtimestamp(value["resetsAt"], UTC) if isinstance(value.get("resetsAt"), (int, float)) else None)
+            for key, value in windows.items()
+            if key in POOLS and isinstance(value, dict) and isinstance(value.get("utilization"), (int, float)) and not isinstance(value.get("utilization"), bool))
 
     #: The id its usage request answers under (`usage_command`).
     USAGE_REQUEST: ClassVar[str] = "galaius-usage"

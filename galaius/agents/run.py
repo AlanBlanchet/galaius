@@ -362,6 +362,16 @@ def _capability_of(model: str, candidates: Sequence[reg.LaunchCandidate]) -> flo
     return None if row is None else row.intelligence_score
 
 
+def _noted_until(provider: str, model: str, logins: Sequence[UUID | None]) -> float | None:
+    """When a model the walk may put on one of `logins` is free to try again: its quota block READ AGAINST EACH login whose usage
+    window is open (`admission.Hold.usage`), the earliest one, None when any of them holds none (a model refused on one login
+    runs on his next, 2026-11-20: Fable noted on his first login ranked it after Sonnet while his second one served it). Every
+    login held: the first's note stands, as it did."""
+    open_logins = [login for login in logins if admission.Hold.usage(provider, login) is None] or list(logins[:1])
+    untils = [quota.blocked_until(provider, model, subscription=login) for login in open_logins]
+    return None if not untils or any(until is None for until in untils) else min(until for until in untils if until is not None)
+
+
 def resolve_continuable_model(
     model: str, env: dict[str, str], *, provider: AgentProvider, weights: str = "", role: str | None = None,
     subscription: UUID | None = None, floor: str | None = None,
@@ -1722,9 +1732,7 @@ async def run_agent(
     logins = {provider: [option.subscription_id for option in options] for provider, options in offered.items()}
     # A quota note is read against the login a candidate would first run on: the first one whose window is open.
     noted = {index: until for index, candidate in enumerate(candidates)
-             if (until := quota.blocked_until(candidate.provider, candidate.model, subscription=next(
-                 (login for login in logins.get(candidate.provider, [pinned_id]) if admission.Hold.usage(candidate.provider, login) is None),
-                 logins.get(candidate.provider, [pinned_id])[0]))) is not None}
+             if (until := _noted_until(candidate.provider, candidate.model, logins.get(candidate.provider, [pinned_id]))) is not None}
     # A login whose usage window refused a turn and named its reopening is out of the walk until then (`admission`),
     # asked afresh before each candidate: a refusal heard from one model pauses its login's others, and a provider
     # offered several runs on the next of them (`first_under_cap`). Every login of every candidate held: the spawn waits
@@ -1757,7 +1765,7 @@ async def run_agent(
             if _keyed(candidate_provider):  # each key runs only an id its own vendor list names
                 options = [option for option in options if option.subscription_id is None or (known := Subscription.of(option.subscription_id).vendor_models()) is None
                            or candidate_provider.model_name(candidate.model) in known]
-            candidate_pin, candidate_env, passed = RunSubscription.first_under_cap(options, environment, candidate.provider)
+            candidate_pin, candidate_env, passed = RunSubscription.first_under_cap(options, environment, candidate.provider, candidate.model)
             if (hold := _reopening(candidate.provider, passed.held)) is not None:
                 waits[index] = hold  # waited on should this candidate not start on another of his logins
             if candidate_pin is None:

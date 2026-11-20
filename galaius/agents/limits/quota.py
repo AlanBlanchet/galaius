@@ -115,7 +115,26 @@ WINDOWS: dict[str, float] = {
     "five_hour": 5 * 3600.0,
     "seven_day": 7 * 86400.0,
     "seven_day_overage_included": 7 * 86400.0,
+    "seven_day_opus": 7 * 86400.0,
+    "seven_day_sonnet": 7 * 86400.0,
 }
+
+#: The weekly pools Claude Code meters per MODEL FAMILY beside the account's whole week (`seven_day`), keyed on the vendor's
+#: literal `rateLimitType` / `unifiedWindows` key, valued with the token every model id of that family carries. Primary source:
+#: the installed Claude Code 2.1.319 names them `{seven_day_opus: "Opus limit", seven_day_sonnet: "Sonnet limit",
+#: seven_day_overage_included: "Fable limit"}` and words the refusal « You've reached your Fable limit. Switch to another model »
+#: (2026-11-20: 14 refusals on record pair that sentence with `seven_day_overage_included` at 100 % while `seven_day` read 66 %).
+#: A pool refused shuts that family on that login only: the login's other models, and every other login, still run. Never
+#: read as the account's week (`WINDOWS` only gives its length).
+POOLS: dict[str, str] = {"seven_day_opus": "opus", "seven_day_sonnet": "sonnet", "seven_day_overage_included": "fable"}
+POOL_TOKENS = frozenset(POOLS.values())
+_POOL_IN_TEXT = re.compile(rf"reached your ({'|'.join(sorted(POOL_TOKENS))}) limit", re.IGNORECASE)
+
+#: Where a pool's reading stops new runs on its login, in percent: his weekly default (owner 2026-10-27 « 95% of weekly »). The
+#: wire carries no pool window, so the account's own thresholds (`SubscriptionPolicy`) cannot hold it; this PC does, for this
+#: one, overridable per machine through `POOL_STOP_ENV`.
+POOL_STOP_PERCENT = 95.0
+POOL_STOP_ENV = "GALAIUS_POOL_STOP_PERCENT"
 
 #: The longest block ONE refusal earns; each refusal heard right after the previous block ended
 #: doubles it. Overridable for one machine through `COOLDOWN_ENV`.
@@ -267,6 +286,11 @@ class Refusal(BaseModel):
             return None
         return max(refusals, key=lambda found: found.latest(now=now) or 0.0)
 
+    @property
+    def pool(self) -> str:
+        """The model family's pool token (`POOLS`) this refusal names; "" when it names the account's own window (or none)."""
+        return POOLS.get(self.window, "")
+
     def latest(self, *, now: float) -> float | None:
         """The LAST moment this refusal can still hold: the instant the vendor named, else one
         full period of the window it named or measured. None when it named neither.
@@ -385,6 +409,8 @@ class Refusal(BaseModel):
 
     @staticmethod
     def _window_in(line: str) -> str:
+        if (pool := _POOL_IN_TEXT.search(line)) is not None:
+            return next(window for window, token in POOLS.items() if token == pool.group(1).lower())
         found = _WINDOW_IN_TEXT.search(line)
         return found.group(0).lower() if found else ""
 
@@ -421,6 +447,31 @@ class Block(BaseModel):
         """Still worth keeping: blocking, or ended so recently that a refusal now means the window
         really is still shut (and earns a longer block), and a launch now is a re-check."""
         return now <= self.until + self.length(self.count)
+
+
+class ModelPool(BaseModel):
+    """One model family's weekly pool as its vendor last reported it for one login (`POOLS`): the family's token ("fable"),
+    the share used (vendor scale 0-100) and when it reopens. Kept beside a subscription's windows, never among them: the wire
+    names only the account's own periods."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    pool: str
+    used_percent: float = Field(ge=0)
+    resets_at: datetime | None = None
+    observed_at: datetime
+
+    def open(self, now: datetime) -> bool:
+        """Its reading still stands: the pool has not reopened since (a reading past its reset is no evidence)."""
+        return self.resets_at is None or self.resets_at > now
+
+
+def pool_stop_percent() -> float:
+    """Where a pool's reading stops new runs on its login (`POOL_STOP_PERCENT`, or this machine's `POOL_STOP_ENV`)."""
+    try:
+        return min(100.0, max(1.0, float(os.environ[POOL_STOP_ENV])))
+    except (KeyError, ValueError):
+        return POOL_STOP_PERCENT
 
 
 def _path() -> Path:
@@ -477,9 +528,40 @@ def _until(key: str, now: float | None) -> float | None:
     return block.until if block is not None and block.until > moment else None
 
 
+def _pool_key(provider: str, pool: str, subscription: UUID | None = None) -> str:
+    """One model family's block under one login (`POOLS`): beside the models' own, `~` keeping it from any model id."""
+    return f"{provider}/~{pool}" + (f"#{subscription}" if subscription is not None else "")
+
+
 def blocked_until(provider: str, model: str | None, *, subscription: UUID | None = None, now: float | None = None) -> float | None:
-    """When this model may be tried again, or None when nothing is remembered against it."""
-    return _until(_key(provider, model, subscription), now)
+    """When this model may be tried again on this login, or None when nothing is remembered against it there: the model's own
+    block, or its family's pool (`POOLS`) refused or past its stop (`hold_pool`) on this login."""
+    moment = time.time() if now is None else now
+    entries = _read(moment)
+    keys = [_key(provider, model, subscription), *(_pool_key(provider, token, subscription) for token in sorted(POOL_TOKENS) if token in (model or "").lower())]
+    untils = [block.until for key in keys if (block := entries.get(key)) is not None and block.until > moment]
+    return max(untils, default=None)
+
+
+def hold_pool(provider: str, pool: str, *, until: float, subscription: UUID | None = None, now: float | None = None) -> None:
+    """Pass this family's models over on this login until `until` (a pool at his stop, `ModelPool`): every other model and
+    every other login of his still runs. Never shortens a block already standing; clearing one early is `release_pool`'s job."""
+    moment = time.time() if now is None else now
+    entries = _read(moment)
+    key = _pool_key(provider, pool, subscription)
+    previous = entries.get(key)
+    until = max(until, previous.until) if previous is not None else until
+    entries[key] = Block(until=until, count=previous.count if previous is not None else 1, at=moment)
+    _write(entries)
+
+
+def release_pool(provider: str, pool: str, *, subscription: UUID | None = None, now: float | None = None) -> None:
+    """The vendor reads this family's pool under his stop on this login again: the block it put (`hold_pool`) ends now."""
+    moment = time.time() if now is None else now
+    entries = _read(moment)
+    key = _pool_key(provider, pool, subscription)
+    if (block := entries.get(key)) is not None and block.until > moment:
+        _write({**entries, key: block.model_copy(update={"until": moment})})
 
 
 def on_probation(provider: str, model: str | None, *, subscription: UUID | None = None, now: float | None = None) -> bool:
@@ -510,13 +592,18 @@ def record_refusal(provider: str, model: str | None, *, said: str = "", subscrip
     else:
         count = previous.count + 1
     until = moment + Block.length(count)
-    if (refusal := Refusal.read(said, now=moment)) is not None \
-            and (latest := refusal.latest(now=moment)) is not None:
+    refusal = Refusal.read(said, now=moment)
+    if refusal is not None and (latest := refusal.latest(now=moment)) is not None:
         until = min(until, latest)
     if previous is not None and moment < previous.until:
         # A weaker signal never shortens a live block; clearing one early is `served`'s job.
         until = max(until, previous.until)
     entries[key] = Block(until=until, count=count, at=max(moment, previous.at) if previous else moment)
+    if refusal is not None and refusal.pool:
+        # The vendor refused a FAMILY's pool, not this one model: its sibling models are as shut on this login, while the
+        # login's other models and its other logins are not.
+        pool_key = _pool_key(provider, refusal.pool, subscription)
+        entries[pool_key] = Block(until=max(until, entries[pool_key].until if pool_key in entries else 0.0), count=count, at=moment)
     _write(entries)
     hold_named_window(provider, said, subscription=subscription, now=moment)
     return until
@@ -533,8 +620,8 @@ def hold_named_window(provider: str, said: str, *, subscription: UUID | None = N
     """
     moment = time.time() if now is None else now
     refusal = Refusal.read(said, now=moment)
-    if refusal is None or refusal.reopens_at is None:
-        return None
+    if refusal is None or refusal.reopens_at is None or refusal.pool:
+        return None   # a model family's pool refused (`POOLS`): the login's other models answer, so it is held for none of them
     until = refusal.reopens_at + RESET_SLACK
     pause_login(provider, "usage_limit", subscription=subscription, said=said, now=moment, until=until)
     return until

@@ -8,7 +8,7 @@ from galaius_core import TokenCounts
 import json
 import time
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from galaius_core import UsageWindow
@@ -513,3 +513,54 @@ def test_a_usage_reading_asked_before_the_pause_lifts_nothing():
     quota.usage_heard("claude", (_window("weekly", 51.0, heard + 5),), asked=heard - 1)
 
     assert quota.login_pause("claude", now=heard + 60) is not None
+
+
+# The refusal of 2026-11-20 12:43 as the vendor wrote it (run 65574cda, trimmed): Fable's own weekly pool at 100 % while the
+# account's week read 66 %, then the CLI's notice naming the model. `seven_day_overage_included` is « Fable limit » in Claude
+# Code 2.1.319 (`quota.POOLS`).
+FABLE_REFUSAL = json.dumps({"type": "rate_limit_event", "rate_limit_info": {
+    "status": "rejected", "resetsAt": NOW + 2 * 86400, "rateLimitType": "seven_day_overage_included", "overageStatus": "rejected",
+    "overageDisabledReason": "org_level_disabled", "isUsingOverage": False,
+    "unifiedWindows": {"seven_day": {"utilization": 0.66, "resetsAt": NOW + 2 * 86400, "status": "allowed"},
+                       "seven_day_overage_included": {"utilization": 1, "resetsAt": NOW + 2 * 86400, "status": "rejected", "surpassedThreshold": 1}}}})
+FABLE_TEXT = ("You've reached your Fable limit. Switch to another model, or manage usage credits at "
+              "https://claude.ai/settings/usage?from=cc_cli_limit_message, to continue.")
+
+
+@pytest.mark.parametrize("said", [pytest.param(f"{FABLE_REFUSAL}\n{FABLE_TEXT}", id="the vendor's lines"), pytest.param(FABLE_TEXT, id="its notice alone")])
+def test_a_model_family_pool_refused_shuts_that_family_on_that_login_only_and_holds_no_login(said):
+    """Owner 2026-11-20: the subscription « reached the limit » at 68 % of his week. The vendor refused FABLE only (class: a
+    pool beside the account's week, `quota.POOLS`): Fable's sibling models on that login wait, while that login's other models,
+    its other logins and this PC's own login still run, and no login is paused for the pool's days-away reset."""
+    mine, other = uuid4(), uuid4()
+    until = quota.record_refusal("claude", "claude-fable-5-2", said=said, subscription=mine, now=NOW)
+    assert quota.blocked_until("claude", "claude-fable-5-2", subscription=mine, now=NOW) == pytest.approx(until)
+    assert quota.blocked_until("claude", "claude-fable-5-1", subscription=mine, now=NOW) == pytest.approx(until)   # its sibling
+    for free in (("claude-fable-5-2", other), ("claude-fable-5-2", None), ("claude-opus-5-5", mine), ("claude-sonnet-5-5", mine)):
+        assert quota.blocked_until("claude", free[0], subscription=free[1], now=NOW) is None, free
+    assert quota.login_pause("claude", subscription=mine, now=NOW) is None
+
+
+def test_the_accounts_whole_week_refused_still_pauses_the_whole_login():
+    """The other side of the pool: `seven_day` is every model of the login."""
+    mine = uuid4()
+    quota.record_refusal("claude", "m", said=SEVEN_DAY_REFUSAL, subscription=mine, now=NOW)
+    pause = quota.login_pause("claude", subscription=mine, now=NOW)
+    assert pause is not None and pause.reason == "usage_limit"
+    assert quota.blocked_until("claude", "another-model", subscription=mine, now=NOW) is None   # the model walk reads the pause (`admission`), not a note per model
+
+
+@pytest.mark.parametrize(("percent", "held"), [(94.9, False), (95, True), (100, True)])
+def test_a_pool_read_at_his_stop_passes_its_family_over_on_that_login_until_it_reopens_and_a_lower_reading_lifts_it(percent, held):
+    """His 95 % of the weekly default (owner 2026-10-27) reaches the pool the wire carries no window for: held before the
+    vendor refuses, so no run starts on a model it is about to refuse."""
+    login = uuid4()
+    reopens = datetime.fromtimestamp(time.time() + 3 * 86400, UTC)   # `hold_pool` stamps the real clock, so the reopening is real-clock too
+    pool = quota.ModelPool(pool="fable", used_percent=percent, resets_at=reopens, observed_at=datetime.now(UTC))
+    from galaius.agents.limits.subscriptions import Subscription  # noqa: PLC0415 — only this row needs it
+    Subscription.stop_pools((pool,), provider="claude", subscription=login)
+    until = quota.blocked_until("claude", "claude-fable-5-2", subscription=login)
+    assert (until is not None) is held and (not held or until == pytest.approx(reopens.timestamp() + quota.RESET_SLACK))
+    if held:
+        Subscription.stop_pools((pool.model_copy(update={"used_percent": 10}),), provider="claude", subscription=login)
+        assert quota.blocked_until("claude", "claude-fable-5-2", subscription=login) is None

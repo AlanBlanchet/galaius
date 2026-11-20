@@ -12,7 +12,7 @@ import re
 import shutil
 import threading
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from collections.abc import Iterable, Mapping
 from typing import ClassVar, Self
@@ -62,6 +62,8 @@ class SubscriptionState(BaseModel):
 
     provider: ProviderName
     usage: tuple[UsageWindow, ...] = ()
+    #: The model-family pools its vendor last reported (`quota.POOLS`), never sent to the server: the wire names no such window.
+    pools: tuple[quota.ModelPool, ...] = ()
     reported: tuple[UsageWindow, ...] = ()
     reported_at: datetime | None = None
     identity: LoginIdentity = LoginIdentity()
@@ -306,7 +308,36 @@ class Subscription(BaseModel):
         return SubscriptionState.model_validate_json(self.state_path.read_text(encoding="utf-8"))
 
     def usage(self) -> tuple[UsageWindow, ...]:
-        return self.state().usage
+        """Its readings of windows not reopened since: a reading past its `resets_at` is the old window's, never this one's."""
+        now = datetime.now(UTC)
+        return tuple(window for window in self.state().usage if window.resets_at is None or window.resets_at > now)
+
+    def pools(self) -> tuple[quota.ModelPool, ...]:
+        """Its model-family pool readings (`quota.POOLS`) not reopened since."""
+        now = datetime.now(UTC)
+        return tuple(pool for pool in self.state().pools if pool.open(now))
+
+    def observe_pools(self, pools: tuple[quota.ModelPool, ...]) -> None:
+        """`pools` (oldest first) replace the readings of the same families. A family read at or past his stop
+        (`quota.pool_stop_percent`) passes its models over on this login until it reopens (`quota.hold_pool`); one read under
+        it again ends that block."""
+        if not pools:
+            return
+        with self.WRITING:
+            state = self.state()
+            latest = {pool.pool: pool for pool in (*state.pools, *pools)}
+            self._write(state.model_copy(update={"pools": tuple(latest.values())}))
+        self.stop_pools(pools, subscription=self.id, provider=self.provider)
+
+    @staticmethod
+    def stop_pools(pools: tuple[quota.ModelPool, ...], *, provider: str, subscription: UUID | None) -> None:
+        """The block each pool reading earns on a login (`observe_pools`); a login of no subscription (`subscription` None) is this PC's own."""
+        stop = quota.pool_stop_percent()
+        for pool in pools:
+            if pool.used_percent >= stop and pool.resets_at is not None:
+                quota.hold_pool(provider, pool.pool, until=pool.resets_at.timestamp() + quota.RESET_SLACK, subscription=subscription)
+            else:
+                quota.release_pool(provider, pool.pool, subscription=subscription)
 
     def observe(self, windows: tuple[UsageWindow, ...], *, whole: bool = False) -> tuple[UsageWindow, ...]:
         """`windows` (oldest first) replace the readings of the same windows, or, `whole` (its CLI's full answer now, none
@@ -521,17 +552,23 @@ class RunSubscription(WireRunSubscription):
         return cls(subscription_id=choice.subscription_id, limits=choice.limits)
 
     @classmethod
-    def first_under_cap(cls, offered: list[Self], environment: Mapping[str, str], provider: str) -> tuple[Self | None, dict[str, str], PassedOver]:
+    def first_under_cap(cls, offered: list[Self], environment: Mapping[str, str], provider: str,
+                        model: str | None = None) -> tuple[Self | None, dict[str, str], PassedOver]:
         """The first of `offered` (one provider's, his order) a launch of `provider` can run on now, with its environment
         (`bound`); none: why each was passed over (`PassedOver`). A login at its usage limit waits for its reopening; one
         whose sign-in was lost is asked again after the others, never ahead of a spare that works (2026-10-31: his second
-        Claude account sat unused while the first waited for its weekly reset)."""
-        held, lost, ready = [], [], []
+        Claude account sat unused while the first waited for its weekly reset). `model`: a login that refused it (or its family's
+        pool, `quota.POOLS`) comes after the ones that did not, so a model one login cannot run runs on his next (2026-11-20:
+        Fable refused on his first login, a second one free)."""
+        held, lost, ready, refused = [], [], [], []
         for option in offered:
             pause = quota.login_pause(provider, subscription=option.subscription_id)
+            if pause is None and model is not None and quota.blocked_until(provider, model, subscription=option.subscription_id) is not None:
+                refused.append(option)
+                continue
             (ready if pause is None else held if pause.reason == "usage_limit" else lost).append(option)
         caps, said, waiting = [], [], tuple(option.subscription_id for option in held)
-        for option in ready + lost:
+        for option in ready + refused + lost:
             try:
                 return option, option.bound(environment, provider), PassedOver(held=waiting)
             except SubscriptionCapped as capped:

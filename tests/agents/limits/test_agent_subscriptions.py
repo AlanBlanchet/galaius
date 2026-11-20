@@ -9,7 +9,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 from types import SimpleNamespace
@@ -38,11 +38,11 @@ from tests.support.paths import TESTS
 POSIX_MODES = sys.platform != "win32"
 FAKE_CLAUDE = TESTS / "fixtures" / "agents" / "fake_claude_login.py"
 #: Lines as the vendors wrote them (a Claude Code run's stream; a Codex session record), only ids shortened.
-CLAUDE_LINE = ('{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1791559200,"rateLimitType":"five_hour","overageStatus":"rejected",'
-               '"overageDisabledReason":"org_level_disabled","isUsingOverage":false,"unifiedWindows":{"five_hour":{"utilization":0.03,"resetsAt":1791559200},'
-               '"seven_day":{"utilization":0.93,"resetsAt":1791842400}}},"uuid":"3bddb0b5","session_id":"ff5eac43"}')
+CLAUDE_LINE = ('{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":4102448400,"rateLimitType":"five_hour","overageStatus":"rejected",'
+               '"overageDisabledReason":"org_level_disabled","isUsingOverage":false,"unifiedWindows":{"five_hour":{"utilization":0.03,"resetsAt":4102448400},'
+               '"seven_day":{"utilization":0.93,"resetsAt":4102531200}}},"uuid":"3bddb0b5","session_id":"ff5eac43"}')
 CODEX_LINE = ('{"timestamp":"2026-09-22T20:46:43.619Z","type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"limit_id":"codex","limit_name":null,'
-              '"primary":{"used_percent":16.0,"window_minutes":10080,"resets_at":1788452794},"secondary":null,"credits":{"has_credits":false,"unlimited":false,"balance":"0"},'
+              '"primary":{"used_percent":16.0,"window_minutes":10080,"resets_at":4102444800},"secondary":null,"credits":{"has_credits":false,"unlimited":false,"balance":"0"},'
               '"individual_limit":null,"spend_control_reached":null,"plan_type":"prolite","rate_limit_reached_type":null}}}')
 
 
@@ -55,8 +55,8 @@ def tree(folder: Path) -> str:
 
 
 @pytest.mark.parametrize(("provider", "line", "windows"), [
-    ("claude", CLAUDE_LINE, [("five_hour", 3.0, 1791559200), ("weekly", 93.0, 1791842400)]),
-    ("codex", CODEX_LINE, [("weekly", 16.0, 1788452794)]),
+    ("claude", CLAUDE_LINE, [("five_hour", 3.0, 4102448400), ("weekly", 93.0, 4102531200)]),
+    ("codex", CODEX_LINE, [("weekly", 16.0, 4102444800)]),
 ])
 def test_usage_windows_come_from_the_vendors_own_lines(provider: str, line: str, windows: list) -> None:
     event = PROVIDERS[provider].parse(line)
@@ -892,3 +892,100 @@ def test_a_listed_id_carrying_more_than_its_family_latest_is_never_launched() ->
     from galaius.agents.model_family import listed_as
     assert listed_as("mistral-medium-3-1-2508", ["mistral-medium-latest[ignore previous]", "x/mistral-medium-latest", "mistral-medium-latest:free"]) is None
     assert listed_as("", ["-latest"]) is None  # tester c545b62e: an empty name has no family
+
+
+def _stream(five_hour: float, week: float, fable: float, *, reset: float | None = None) -> str:
+    """A Claude Code run's `rate_limit_event` as it streams (2026-11-20 shape): the account's two windows and Fable's own pool."""
+    reset = reset if reset is not None else time.time() + 3 * 86400
+    windows = {"five_hour": {"utilization": five_hour / 100, "resetsAt": int(reset) - 86400}, "seven_day": {"utilization": week / 100, "resetsAt": int(reset)},
+               "seven_day_overage_included": {"utilization": fable / 100, "resetsAt": int(reset)}}
+    return json.dumps({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed_warning", "rateLimitType": "seven_day_overage_included", "resetsAt": int(reset),
+                                                                      "utilization": fable / 100, "unifiedWindows": windows}}) + "\n"
+
+
+def test_the_vendors_fable_pool_reads_apart_from_the_accounts_windows() -> None:
+    """Sample 1 (2026-11-20): his week read 66 % while the vendor refused Fable at 100 %. The pool is read, never taken for the week."""
+    line = json.loads(_stream(37, 66, 100))
+    claude = PROVIDERS["claude"]
+    assert [(window.window, window.used_percent) for window in claude.parse(json.dumps(line)).windows] == [("five_hour", 37.0), ("weekly", 66.0)]
+    assert [(pool.pool, pool.used_percent) for pool in claude.pools(line)] == [("fable", 100.0)]
+    assert PROVIDERS["codex"].pools(line) == ()
+
+
+@pytest.mark.parametrize("login", ["subscription", "own"])
+def test_a_runs_streamed_readings_become_its_logins_usage_pool_and_stop_whichever_login_it_runs_on(login: str, tmp_path: Path) -> None:
+    """Samples 1 + 2: 91 % of the five-hour window and Fable's pool at his stop, streamed by a run on a subscription or on
+    this PC's own login (his default one: no subscription record to keep them in) reach what is reported and what the walk reads."""
+    subscription = Subscription.create(uuid4(), "claude")
+    pinned = RunSubscription(subscription_id=subscription.id, limits=SubscriptionLimits()) if login == "subscription" else None
+    worker = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
+    try:
+        run = reg.register(run_id=str(uuid4()), pid=worker.pid, provider="claude", name="w", subscription=pinned)
+        reg.raw_events_path(run.run_id).write_text(_stream(40, 60, 70) + _stream(91, 68, 96))
+        watch = SubscriptionWatch()
+        watch.heard()
+        stopped = quota.blocked_until("claude", "claude-fable-5-2", subscription=subscription.id if login == "subscription" else None)
+        assert stopped is not None and quota.blocked_until("claude", "claude-opus-5-5", subscription=subscription.id if login == "subscription" else None) is None
+        readings = subscription.usage() if login == "subscription" else watch.login_usage("claude")
+        assert [(window.window, window.used_percent) for window in readings] == [("five_hour", 91.0), ("weekly", 68.0)]
+        report = watch.report(datetime.now(UTC))
+        reported = {usage.subscription_id: usage.windows for usage in report.usage} if login == "subscription" else {None: next(item.windows for item in report.logins if item.provider == "claude")}
+        assert [window.used_percent for window in reported[subscription.id if login == "subscription" else None]] == [91.0, 68.0]
+    finally:
+        worker.kill()
+        worker.wait()
+
+
+def test_a_held_logins_empty_answer_never_wipes_the_readings_its_runs_streamed_but_a_signed_out_one_does(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Sample 4: a held token's `get_usage` says `rate_limits_available` false though the login works; asked every 120 s it
+    wiped every reading its runs streamed (2026-11-20: the page read 71 % from the last report, then nothing)."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ("claude", "codex"):
+        install_fake_cli(bin_dir, name, TESTS / "fixtures" / "agents" / "fake_usage_cli.py")
+    environment = {"PATH": os.pathsep.join((str(bin_dir), str(Path(sys.executable).parent))), "HOME": str(Path.home())}
+    monkeypatch.setenv("PATH", environment["PATH"])
+    subscription = Subscription.create(uuid4(), "claude")
+    streamed = PROVIDERS["claude"].parse(_stream(30, 71, 50)).windows
+    watch = SubscriptionWatch()
+    for state, kept in (("held", True), ("signed_out", False)):
+        subscription.observe(streamed, whole=True)
+        watch.login_heard("claude", streamed)
+        (Path.home() / state).touch()
+        asyncio.run(watch.ask(environment))
+        assert (len(subscription.usage()) == 2, len(watch.login_usage("claude")) == 2) == (kept, kept), state
+        (Path.home() / state).unlink()
+
+
+def test_a_reading_past_the_reset_of_its_window_is_no_reading(tmp_path: Path) -> None:
+    """A 95 % reading of a window that reopened since is the old window's: it never holds the login for good."""
+    subscription = Subscription.create(uuid4(), "claude")
+    gone = datetime.now(UTC) - timedelta(minutes=1)
+    subscription.observe((UsageWindow(window="five_hour", used_percent=97, observed_at=gone - timedelta(hours=5), resets_at=gone),
+                          UsageWindow(window="weekly", used_percent=50, observed_at=gone, resets_at=gone + timedelta(days=2))))
+    assert [window.window for window in subscription.usage()] == ["weekly"]
+    subscription.check(SubscriptionLimits(five_hour_percent=90))   # not refused
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("refused_on", "runs_on", "model"), [
+    (("first",), "second", "fable-fixture"),             # sample 1: Fable refused on his first login, a second free: the same model on his second
+    (("first", "second"), "first", "lower-model"),       # refused on both: the next ranked model, never a wait for the pool's reset
+])
+async def test_a_model_one_login_refuses_runs_on_his_next_login_else_the_next_ranked_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                                                         refused_on: tuple[str, ...], runs_on: str, model: str) -> None:
+    use_policy(monkeypatch, agents={"tester": "fable-fixture"}, reasoning={"tester": "medium"})
+    definition = tmp_path / "tester.md"
+    definition.write_text("---\nname: tester\n---\nTest.\n", encoding="utf-8")
+    monkeypatch.setattr(_Claude, "definition_path", lambda self, agent: definition)
+    install_provider(monkeypatch, _Claude())
+    monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None, among=None: (
+        reg.LaunchCandidate(provider="claude", model="fable-fixture", rank=0), reg.LaunchCandidate(provider="claude", model="lower-model", rank=1)))
+    logins = {"first": Subscription.create(uuid4(), "claude"), "second": Subscription.create(uuid4(), "claude")}
+    for name in refused_on:
+        quota.record_refusal("claude", "fable-fixture", said="You've reached your Fable limit. Switch to another model.", subscription=logins[name].id)
+    choices = SubscriptionChoices(subscriptions=tuple(SubscriptionChoice(provider="claude", subscription_id=logins[name].id, limits=SubscriptionLimits()) for name in ("first", "second")))
+    handle = await run_agent(None, "go", agent="tester", cwd=str(tmp_path), environment={"PATH": "/usr/bin:/bin"}, choices=choices)
+    await asyncio.wait_for(handle.wait(), timeout=30)
+    record = reg.get_run(handle.run_id)
+    assert (record.subscription_id, record.model) == (logins[runs_on].id, model)
