@@ -4,8 +4,10 @@ import json
 import logging
 import os
 from datetime import UTC, datetime
-from galaius_core import MachineCommand
-from galaius.diagnostics.redaction import redact
+from galaius.agents.limits.subscriptions import Subscription
+from galaius.machine.connection import inventory
+from galaius.machine.connection.config import MachineConfig
+from galaius.diagnostics.redaction import redact, secret_values
 from galaius.workflows.functions import FunctionRegistry
 
 
@@ -69,14 +71,7 @@ def audit(log: str, entry: dict[str, object]) -> None:
         stream.write(json.dumps({"timestamp": datetime.now(UTC).isoformat(), **entry}, separators=(",", ":")) + "\n")
 
 
-def audit_script(command: MachineCommand, path: str | None = None) -> None:
-    """A durable local record of every script ATTEMPT (not just successes): source digest,
-    the workflow/node/run that triggered it. Threat-modeler mitigation #4 — deliberately
-    machine-side, next to the running process, so the record survives even a server outage;
-    pairs with the server's OWN `machine_script_approvals.approved_by_account_id` for who
-    allowlisted the digest in the first place."""
-    audit("script-audit.log", {
-        "language": command.impl.language, "source_digest": command.impl.source_digest, "approval_digest": command.impl.approval_digest(command.config), "workflow_id": str(command.workflow.key.id),
-        "workflow_revision": str(command.workflow.revision), "node_id": str(command.node_id), "run_id": str(command.run_id),
-        **({"path": path} if path is not None else {}),
-    })
+def secrets(config: MachineConfig, spent: tuple[str, ...]) -> tuple[str, ...]:
+    """Exact values masked in every kept log line (and so in error reports): the token, the ones it
+    replaced, the environment's secrets, the tokens of the subscriptions signed in here."""
+    return (config.token.get_secret_value(), *spent, *secret_values(inventory.safe_environment()), *Subscription.tokens())

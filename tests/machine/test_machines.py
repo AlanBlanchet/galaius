@@ -36,7 +36,7 @@ from galaius.workflows.functions import FunctionRegistry, discover_python, disco
 from galaius.host.private_files import PRIVATE_FILES
 from tests.support.private_files import loosen
 from galaius.account.tls import server_tls
-from galaius.machine.connection import inventory, problems, transport
+from galaius.machine.connection import inventory, problems, signing, transport
 from galaius.machine.connection.config import MachineConfig
 from galaius.machine.connection.files import CommandFiles, MachineFiles
 from galaius.machine.connection.logs import CommandLogs
@@ -1117,11 +1117,11 @@ def test_file_query_needs_the_server_signature(tmp_path: Path) -> None:
     query = MachineFileQuery(id=uuid4(), machine=MachineRef(id=config.machine_id), workspace_id=config.workspace_id, path="",
                              expires_at=datetime.now(UTC) + timedelta(seconds=10), signature="0" * 64)
     with pytest.raises(PermissionError, match="signature is invalid"):
-        MachineRunner._verify_signed(config, query, "file query")
+        signing.verify(config, query, "file query")
     unsigned = query.model_dump(mode="json", exclude={"signature"})
     key = hashlib.sha256(config.token.get_secret_value().encode()).digest()
     signed = query.model_copy(update={"signature": hmac.new(key, json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode(), hashlib.sha256).hexdigest()})
-    MachineRunner._verify_signed(config, signed, "file query")
+    signing.verify(config, signed, "file query")
 
 
 def test_approving_a_script_shows_the_file_as_it_is_on_this_machine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

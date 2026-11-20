@@ -7,20 +7,23 @@ from galaius.agents.turns.handback import EndWatch, SilenceWatch
 from galaius.agents.turns.reviews import TurnReviewWatch
 from galaius.config.settings import Config
 from galaius.agents.limits.subscription_watch import SubscriptionWatch
-from galaius.machine.programs import AgentPrograms
 from galaius.agents import registry as reg
 import logging
 
+from galaius.machine.connection import logs
 from galaius.machine.connection.config import MachineConfig
 from galaius.machine.connection.faults import EnrollmentChanged
-from galaius.machine.connection.shared import Shared
+from galaius.machine.connection.runs import Runs
 
 logger = logging.getLogger(__package__)
 
 
-class Watches(Shared):
+class Watches(Runs):
     """Follow-up of the runs this machine hosts."""
 
+    #: How often the usage lines of runs pinned to a subscription are read (caps applied) and moved
+    #: usage goes to the server (`SubscriptionWatch`).
+    subscription_seconds = 5
     #: How often this PC's run records are settled against their processes (`registry.settle_gone`).
     settle_seconds = 60
     #: How often this PC looks which runs ended, to hand their reports back (`handback.EndWatch`): one look reads only
@@ -30,9 +33,8 @@ class Watches(Shared):
     #: How often, while connected, each login here is asked its usage by its own CLI (`SubscriptionWatch.ask`: 1-2 s,
     #: about 1 s of CPU, no model turn each).
     usage_ask_seconds = 120
-    #: What watches this PC's logins' usage, and the agent programs the owner installs from the web with their sign-in.
+    #: What watches this PC's logins' usage.
     _subscriptions: SubscriptionWatch
-    programs: AgentPrograms
 
     async def _follow_up(self, config: MachineConfig) -> None:
         """At start: the messages to web runs a former runner left queued go to their dispatchers,
@@ -65,7 +67,7 @@ class Watches(Shared):
         log ring's masked values follow the subscriptions signed in since (their tokens)."""
         while True:
             try:
-                self._log_ring.secrets = await asyncio.to_thread(self._secrets, self._current_config(config))
+                self._log_ring.secrets = await asyncio.to_thread(logs.secrets, self._current_config(config), self._spent_tokens)
                 await asyncio.to_thread(self._subscriptions.heard)
             except Exception:  # one failed pass never stops the next
                 logger.exception("reading subscription usage failed")

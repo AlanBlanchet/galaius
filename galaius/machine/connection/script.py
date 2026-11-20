@@ -7,7 +7,8 @@ import sys
 from pathlib import Path
 from typing import ClassVar, Literal, Self
 from pydantic import BaseModel, ConfigDict, model_validator
-from galaius_core import ScriptFile, ScriptLanguage
+from galaius_core import MachineCommand, ScriptFile, ScriptLanguage
+from galaius.machine.connection.logs import audit
 if sys.platform == "win32":
     import win32api
 
@@ -125,3 +126,16 @@ class ScriptExecution(BaseModel):
         if self.runtime is not None:
             return self.runtime.label
         return " ".join((self.interpreter if self.program == "custom" else {"runner_python": "galaius's own Python", "uv": "uv"}[self.program], *self.options))
+
+
+def audit_script(command: MachineCommand, path: str | None = None) -> None:
+    """A durable local record of every script ATTEMPT (not just successes): source digest,
+    the workflow/node/run that triggered it. Threat-modeler mitigation #4 — deliberately
+    machine-side, next to the running process, so the record survives even a server outage;
+    pairs with the server's OWN `machine_script_approvals.approved_by_account_id` for who
+    allowlisted the digest in the first place."""
+    audit("script-audit.log", {
+        "language": command.impl.language, "source_digest": command.impl.source_digest, "approval_digest": command.impl.approval_digest(command.config), "workflow_id": str(command.workflow.key.id),
+        "workflow_revision": str(command.workflow.revision), "node_id": str(command.node_id), "run_id": str(command.run_id),
+        **({"path": path} if path is not None else {}),
+    })

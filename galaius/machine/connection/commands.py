@@ -20,20 +20,19 @@ from galaius.inference import user_models
 from galaius.isolation.sandbox import run_pooled
 from galaius.host.windowless import console_python
 
-from galaius.machine.connection import inventory
+from galaius.machine.connection import inventory, signing
 from galaius.machine.connection.config import MachineConfig
 from galaius.machine.connection.faults import said_of
 from galaius.machine.connection.files import CommandFiles, MachineFiles
 from galaius.machine.connection.logs import CommandLogs
 from galaius.inference.env import ModelWorker
-from galaius.machine.connection.logs import audit_script
-from galaius.machine.connection.shared import Shared
-from galaius.machine.connection.script import SCRIPT_RUNTIMES, ScriptExecution, ScriptRuntime
+from galaius.machine.connection.runs import Runs
+from galaius.machine.connection.script import SCRIPT_RUNTIMES, ScriptExecution, ScriptRuntime, audit_script
 
 logger = logging.getLogger(__package__)
 
 
-class Commands(Shared):
+class Commands(Runs):
     """How the runner executes a command: model, speech, function or script."""
 
     #: The model runtimes kept loaded between steps, by script (`MachineConfig.model_keep_warm_seconds`).
@@ -55,7 +54,7 @@ class Commands(Shared):
             # (galaius.inference.weights's safetensors gate, a sandboxed function call) — not built
             # yet; refuse rather than silently run either unsandboxed or not at all.
             raise PermissionError(f"pooled dispatch of a {command.impl.kind!r} step is not supported yet; script only")
-        self._verify_signed(config, command, "machine command")
+        signing.verify(config, command, "machine command")
         if command.nonce in config.seen_nonces:
             raise PermissionError("machine command nonce was already used")
         return config.model_copy(update={"seen_nonces": (*config.seen_nonces[-9998:], command.nonce)})
@@ -413,3 +412,11 @@ class Commands(Shared):
         if not image_path.is_relative_to(root) or not image_path.is_file():
             raise ValueError("model image paths must be files under the machine working directory")
         return image_path
+
+    def _worker(self, script: str, config: MachineConfig) -> ModelWorker:
+        worker = self._workers.get(script)
+        if worker is None or worker.keep_warm != config.model_keep_warm_seconds:
+            if worker is not None:
+                worker.close()
+            worker = self._workers[script] = ModelWorker(script, config.model_keep_warm_seconds)
+        return worker

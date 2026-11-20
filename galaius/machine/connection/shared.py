@@ -1,16 +1,15 @@
-"""What the runner's traits share: the state and knobs more than one of them reads, declared once.
+"""State the runner creates and more than one trait reads, declared once (data only).
 
-Each trait (`Answers`, `Commands`, `Runs`, `Upkeep`, `Watches`) declares what it alone owns in its own class;
-`MachineRunner` creates the values (`__init__`) and owns the connection itself. `tests/machine/test_traits.py`
-fails on a `self.` attribute that none of them declares."""
+A trait declares what it alone owns, and inherits the class that owns what it calls: `MachineFile` (the machine
+file and its audit log), `Events` (numbered events), `Runs` (agent runs and `busy`). `tests/machine/test_traits.py`
+fails on a `self.` attribute a trait neither declares nor inherits."""
 
-from collections.abc import Callable
 from pathlib import Path
 from uuid import UUID
 from galaius.machine.agents import LogRing
+from galaius.machine.programs import AgentPrograms
 from galaius.machine.places.place_reviews import PlaceReviews
 from galaius.upgrade.quiet import QuietPoint
-from galaius.machine.connection.logs import audit
 
 
 class Shared:
@@ -28,9 +27,9 @@ class Shared:
     #: Why the last web version of the agent settings was not applied, and which one (shown on the PC's page).
     _settings_detail: str
     _settings_refused: int
-
-    #: How often the usage lines of runs pinned to a subscription are read (caps applied) and moved
-    #: usage goes to the server (`SubscriptionWatch`).
-    subscription_seconds = 5
-    #: Appends one line to an owner-only log of this PC (`logs.audit`): log name, entry.
-    audit: Callable[[str, dict[str, object]], None] = staticmethod(audit)
+    #: Tokens this runner held before a swap (`take_token_swap`): still masked in every kept line.
+    _spent_tokens: tuple[str, ...]
+    #: Commands being executed now (0 or 1: one worker runs them in order).
+    _executing: int
+    #: The agent programs the owner installs from the web, and their sign-in (`AgentPrograms`).
+    programs: AgentPrograms

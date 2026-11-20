@@ -2,7 +2,6 @@
 
 import asyncio
 import getpass
-import hashlib
 import hmac
 import json
 import logging
@@ -11,38 +10,26 @@ import random
 import time
 import sys
 import traceback
-from collections.abc import Callable
-from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import urlsplit
 from uuid import UUID
 import websockets
 from pydantic import SecretStr, ValidationError
-from galaius_core import PcFeature, PcFeatures, AGENT_IMAGES_WIRE, PROJECTS_ROOT, MachineAgentSettingsUpdate, MachineAgentAnswer, MachineAgentRequest, MachineCommand, MachineDataRequest, MachineEvent, MachineFileQuery, MachineTokenSwap
+from galaius_core import PcFeature, PcFeatures, AGENT_IMAGES_WIRE, PROJECTS_ROOT, MachineCommand, MachineTokenSwap
 from galaius.agents.limits.subscription_watch import SubscriptionWatch
-from galaius.agents.limits.subscriptions import Subscription
-from galaius.host.file_lock import exclusive
-from galaius.host.private_files import PRIVATE_FILES
 from galaius.host.processes import share_malloc_arenas, shell_path
 from galaius.account.address import ServerAddress
-from galaius.machine.agents import AgentSpawns, LogRing, MachineAgents, MachineSessions
-from galaius.machine.web_runs import WebRuns
+from galaius.machine.agents import AgentSpawns, LogRing
 from galaius.machine.presence import PresenceFiles, PresenceWatch
-from galaius.diagnostics.redaction import secret_values
 from galaius.machine.programs import AgentPrograms
 from galaius.machine.projects import relocate
 from galaius.machine.projects.workspaces import MachineWorkspaces, WorkspaceJobs
-from galaius_core.identity.sealing import LoginSeal, SecretsSeal
 from galaius.agents.run import load_policy
 from galaius.agents.turns.followup import FollowUps
 from galaius.agents.limits.warm import WarmStart
 from galaius.agents.turns.session_stops import SETTINGS_OK, SessionStops
 from galaius.agents import registry as reg
-from galaius.desktop.screen.desk import ScreenDesk
 from galaius.desktop.screen.trust import ScreenEnd
 from galaius.workflows.functions import PermissionLevel
-from galaius.inference.env import ModelWorker
-from galaius.host.paths import UserPaths
 from galaius.upgrade.quiet import QuietPoint, UpgradeReady
 from galaius.upgrade.store import RuntimeStore
 from galaius.isolation.fence import available
@@ -52,15 +39,14 @@ from galaius.machine.peer.seal import PeerSeal
 from galaius.machine.peer.switch import PeerSwitch
 from galaius.machine.places.levels import BrowseBudget
 from galaius.machine.places.place_reviews import PlaceReviews
-from galaius.machine.projects.workspace_copy import WorkspaceTransfers
 
-from galaius.machine.connection import inventory, problems, transport
+from galaius.machine.connection import inventory, logs, problems, transport
 from galaius.machine.connection.answers import Answers
 from galaius.machine.connection.commands import Commands
 from galaius.machine.connection.config import MachineConfig
-from galaius.machine.connection.faults import EnrollmentChanged, Paused, Said, TokenSwapped, Woke
+from galaius.machine.connection.faults import EnrollmentChanged, Paused, TokenSwapped, Woke
 from galaius.machine.connection.logs import JsonLines
-from galaius.machine.connection.runs import Runs
+
 from galaius.machine.connection.script import ScriptRuntime
 from galaius.machine.connection.upkeep import Upkeep
 from galaius.machine.connection.watches import Watches
@@ -68,11 +54,7 @@ from galaius.machine.connection.watches import Watches
 logger = logging.getLogger(__package__)
 
 
-class MachineRunner(Answers, Commands, Runs, Upkeep, Watches):
-    #: How long the beats reuse whether a run started for the web still works (`busy`): read from every run record
-    #: (~0.2 s for ~5,000), at each beat it took a tenth of a core (2026-11-03). The server stops an idle cloud
-    #: machine only after 15 idle minutes.
-    busy_runs_seconds = 30
+class MachineRunner(Answers, Commands, Upkeep, Watches):
     reconnect_seconds = (1, 2, 5, 10, 20)
     #: How many refusals of its token in a row stop the connection for good (the service is not restarted after a clean stop): one answer from a server
     #: mid-deploy or a proxy is not a revoked PC, so it asks again after the usual waits (about 8 s in all) before it believes it.
@@ -83,9 +65,6 @@ class MachineRunner(Answers, Commands, Runs, Upkeep, Watches):
     #: over 20 s (most 139 s) while the backoff had grown to 20 s by the time the server was back.
     restart_retry_seconds = 2.0
     restart_window_seconds = 180.0
-    #: A wait that lasted this much longer than asked, by the wall clock or the system's (Windows counts a sleep, Linux
-    #: and macOS do not), means the computer slept: connect again at once rather than wait ~35 s for a ping to fail.
-    woke_after_seconds = 10.0
     #: Failed tries in a row (about 10 s with `reconnect_seconds`) before its page is told why.
     report_after_failures = 3
 
@@ -98,12 +77,10 @@ class MachineRunner(Answers, Commands, Runs, Upkeep, Watches):
         self._workers = {}
         #: File queries being answered (held so the loop does not drop them mid-answer).
         self._queries: set[asyncio.Task] = set()
-        #: This computer's screen sessions (`ScreenDesk`), made for the enrollment that first asks.
-        self._screen_desk: ScreenDesk | None = None
+        self._screen_desk = None
         self._agent_requests = {}
         self._agent_answers = {}
-        #: The sessions this runner hosts for the web (opened on first use) and its recent log lines.
-        self._sessions: MachineSessions | None = None
+        self._sessions = None
         #: Commands being executed now (0 or 1: one worker runs them in order).
         self._executing = 0
         self._quiet = QuietPoint.current()
@@ -111,10 +88,8 @@ class MachineRunner(Answers, Commands, Runs, Upkeep, Watches):
         self._server_restarted = False
         self._log_ring = LogRing()
         logging.getLogger("galaius").addHandler(self._log_ring)
-        #: Why the web runs could not be read at the last beat (`busy`), None when they could.
-        self._runs_unreadable: str | None = None
-        #: (monotonic time, whether a run started for the web worked then): `busy`, renewed every `busy_runs_seconds`.
-        self._runs_working: tuple[float, bool] | None = None
+        self._runs_unreadable = None
+        self._runs_working = None
         #: Tokens this runner held before a swap (`take_token_swap`): still masked in every kept line.
         self._spent_tokens: tuple[str, ...] = ()
         self._settings_detail, self._settings_refused = "", 0
@@ -138,75 +113,12 @@ class MachineRunner(Answers, Commands, Runs, Upkeep, Watches):
         self.programs = AgentPrograms(environment=inventory.system_environment(), log_path=self.config_path.with_name("agent-programs.log"),
                                       active=lambda name: load_policy().provider_active(name), usage=self._subscriptions.login_usage)
 
-    def _worker(self, script: str, config: MachineConfig) -> ModelWorker:
-        worker = self._workers.get(script)
-        if worker is None or worker.keep_warm != config.model_keep_warm_seconds:
-            if worker is not None:
-                worker.close()
-            worker = self._workers[script] = ModelWorker(script, config.model_keep_warm_seconds)
-        return worker
-
-    def _next_sequence(self, command_id: UUID) -> int:
-        self._sequences[command_id] = self._sequences.get(command_id, 0) + 1
-        return self._sequences[command_id]
-
-    async def _event(self, socket, command_id: UUID, kind: str, payload: dict[str, object] | None = None) -> None:
-        event = MachineEvent(command_id=command_id, sequence=self._next_sequence(command_id), kind=kind, timestamp=datetime.now(UTC), payload=payload or {})
-        await socket.send(json.dumps({"type": "event", "event": event.model_dump(mode="json")}))
-
-    @staticmethod
-    def default_config_path() -> Path:
-        return UserPaths.config() / "machine.json"
-
-    def _config_lock(self):
-        """Held by every writer of the machine file (`machine.lock` beside it, never replaced)."""
-        PRIVATE_FILES.directory(self.config_path.parent)
-        return exclusive(os.open(self.config_path.with_suffix(".lock"), os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600))
-
-    def save(self, config: MachineConfig) -> None:
-        with self._config_lock():
-            self._save(config)
-
-    def update(self, change: Callable[[MachineConfig], MachineConfig]) -> MachineConfig:
-        """Read, merge and atomically replace under the same lock as enrollment and owner edits. A
-        change of the agent settings made here counts one more `settings_revision`."""
-        with self._config_lock():
-            before = self.load()
-            config = MachineConfig.model_validate(change(before).model_dump())
-            if config.settings_revision == before.settings_revision and config.agent_settings()[0] != before.agent_settings()[0]:
-                config = config.model_copy(update={"settings_revision": before.settings_revision + 1})
-            self._save(config)
-            return config
-
-    def _save(self, config: MachineConfig) -> None:
-        """The token sealed as `PRIVATE_FILES` stores secrets (as is on POSIX, DPAPI on Windows)."""
-        values = config.model_dump(mode="json")
-        values["token"] = PRIVATE_FILES.seal(config.token.get_secret_value())
-        PRIVATE_FILES.write_text(self.config_path, json.dumps(values, separators=(",", ":")) + "\n")
-
-    def load(self) -> MachineConfig:
-        return self.read(self.config_path)
-
-    @staticmethod
-    def read(path: Path) -> MachineConfig:
-        """The machine file at `path`, with no runner built around it."""
-        values = json.loads(PRIVATE_FILES.read_text(path))
-        values["token"] = PRIVATE_FILES.unseal(values["token"])
-        # Machine files written before levels: each file root was read + write apart from every
-        # other root, i.e. a sandbox (kept as it was; the next save drops `file_roots`).
-        for name in values.pop("file_roots", ()):
-            values.setdefault("places", {}).setdefault(name, "sandbox")
-        # Machine files written while a web widening waited for a confirm here: the web's level
-        # now applies at once, so a widening still waiting is dropped (the web asks it again).
-        values.pop("pending_places", None)
-        return MachineConfig.model_validate(values)
-
     async def connect(self, config: MachineConfig) -> None:
         # Never through an address only this computer has: a tunnel down after a reboot kept this
         # PC offline for six minutes while its server answered all along (2026-10-23).
         config = await asyncio.to_thread(self.public_enrollment, config)
         # Exact secrets masked in every kept log line from the first one on (`LogRing`).
-        self._log_ring.secrets = self._secrets(config)
+        self._log_ring.secrets = logs.secrets(config, self._spent_tokens)
         self._workspace_jobs.settle_interrupted()
         # Projects an earlier Galaius kept (~/.galaius/projects, galaius/projets), moved to ~/galaius/projects before any request names one.
         moved, left = await asyncio.to_thread(self.move_projects, config, True)
@@ -288,11 +200,6 @@ class MachineRunner(Answers, Commands, Runs, Upkeep, Watches):
         except (OSError, ValidationError):  # an unwritable file never stops the link: this run connects anyway
             logger.warning("could not write %s back to the machine file", public.server, extra={"machine_id": config.machine_id})
             return connecting
-
-    def _secrets(self, config: MachineConfig) -> tuple[str, ...]:
-        """Exact values masked in every kept log line (and so in error reports): the token, the ones it
-        replaced, the environment's secrets, the tokens of the subscriptions signed in here."""
-        return (config.token.get_secret_value(), *self._spent_tokens, *secret_values(inventory.safe_environment()), *Subscription.tokens())
 
 
     async def _connect(self, config: MachineConfig) -> None:
@@ -388,11 +295,6 @@ class MachineRunner(Answers, Commands, Runs, Upkeep, Watches):
         if restarting_since is not None and (time.monotonic() if now is None else now) - restarting_since < self.restart_window_seconds:
             return self.restart_retry_seconds + random.uniform(0, 1)
         return self.reconnect_seconds[min(failures, len(self.reconnect_seconds) - 1)]
-
-    def slept(self, monotonic_from: float, wall_from: float, asked: float) -> bool:
-        """Whether a wait of `asked` seconds begun at (`monotonic_from`, `wall_from`) took long enough that this
-        computer slept meanwhile (`woke_after_seconds`)."""
-        return max(time.monotonic() - monotonic_from, time.time() - wall_from) - asked > self.woke_after_seconds
 
     async def _wait(self, seconds: float) -> None:
         """`seconds`, cut short when the computer slept meanwhile: after a sleep the wait is over."""
@@ -535,63 +437,6 @@ class MachineRunner(Answers, Commands, Runs, Upkeep, Watches):
         features = features if PeerBroker.available else features - {PcFeature.PEER_BROKER}
         return PcFeatures(features, frozenset(ScriptRuntime.languages(inventory.safe_environment().get("PATH")))).said()
 
-    @staticmethod
-    def signature(token: str, message: MachineCommand | MachineFileQuery | MachineDataRequest | MachineAgentRequest | MachineAgentSettingsUpdate | MachineTokenSwap) -> str:
-        """What the server signs `message` with for the machine holding `token`: HMAC-SHA256 of its
-        canonical JSON (sorted keys, no spaces, `signature` left out) keyed by SHA-256(token)."""
-        unsigned = message.model_dump(mode="json", exclude={"signature"})
-        return hmac.new(hashlib.sha256(token.encode()).digest(), json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode(), hashlib.sha256).hexdigest()
-
-    @staticmethod
-    def _verify_signed(config: MachineConfig, message: MachineCommand | MachineFileQuery | MachineDataRequest | MachineAgentRequest, what: str) -> None:
-        """Not expired, and signed by the server with this machine's key: the server stores
-        SHA-256(token), so both sides sign with the same derived key."""
-        if message.expires_at.tzinfo is None or message.expires_at <= datetime.now(UTC):
-            raise PermissionError(f"{what} expired")
-        if not hmac.compare_digest(MachineRunner.signature(config.token.get_secret_value(), message), message.signature):
-            raise PermissionError(f"{what} signature is invalid")
-
-    def _current_config(self, connected: MachineConfig) -> MachineConfig:
-        """Current owner permissions, or refusal. A stale connection can never restore access."""
-        current = self.load()
-        self._same_enrollment(current, connected)
-        return current
-
-    @staticmethod
-    def _same_enrollment(current: MachineConfig, connected: MachineConfig) -> None:
-        if (current.machine_id, current.workspace_id, current.server_url, current.token) != (connected.machine_id, connected.workspace_id, connected.server_url, connected.token):
-            raise EnrollmentChanged("machine enrollment changed on this machine; reconnecting with it")
-
-
-    @staticmethod
-    def own_fault(error: BaseException, said: Said) -> bool:
-        """Whether an answered refusal is this computer failing rather than refusing: an OS error no typed refusal names
-        (2026-11-09: every agent start on a Windows PC answered « Nom de fichier ou extension trop long », WinError 206, as if
-        the PC had refused; one warning line, no traceback, no report). A `PermissionError` is a refusal written here."""
-        return isinstance(error, OSError) and not isinstance(error, PermissionError) and said.refusal is None
-
-    def _report_fault(self, config: MachineConfig, op: str, said: str, error: BaseException) -> None:
-        """An agent action this computer failed by its own fault: an error report kept here, its owner asked on the PC's
-        page whether to send it (`MachineErrorReports.prepare`: nothing leaves before his yes) — this runner's recent log
-        and the traceback. Off the event loop (its question is an HTTPS call); never raises."""
-        lines = (*self._log_ring.lines, *"".join(traceback.format_exception(error)).splitlines())
-        drafts, secrets = problems.drafts(), self._secrets(config)
-        asyncio.get_running_loop().run_in_executor(None, lambda: drafts.prepare(config, "exception", f"agent {op} failed: {said}", lines, secrets))
-
-    def _screen(self, config: MachineConfig) -> ScreenDesk:
-        """The screen desk of this enrollment (a re-linked machine gets a new one: its id is in every offer)."""
-        if self._screen_desk is None or self._screen_desk.gate.machine_id != config.machine_id:
-            self._screen_desk = ScreenDesk(config.machine_id, config.server_url)
-        return self._screen_desk
-
-    def _release(self, request_id: UUID, answer: asyncio.Future[MachineAgentAnswer]) -> None:
-        """A first answer that never came (its task cancelled with the connection): its id is free
-        again, and a repeat waiting on it delivers the request itself."""
-        if not answer.done():
-            answer.cancel()
-            if self._agent_answers.get(request_id) is answer:
-                del self._agent_answers[request_id]
-                self._agent_requests.pop(request_id, None)
 
     def move_projects(self, config: MachineConfig, apply: bool) -> tuple[relocate.MovePlan, list[str]]:
         """The projects an earlier Galaius put here, moved to the projects folder with this PC's records naming them
@@ -604,56 +449,6 @@ class MachineRunner(Answers, Commands, Runs, Upkeep, Watches):
             self.web_runs.rehome(root, names, PROJECTS_ROOT), self._workspace_jobs.rehome(root, names, PROJECTS_ROOT)
         return done, relocate.apply(done, rehome, lambda roots: self.update(lambda current: current.model_copy(
             update={"agent_roots": tuple(root for root in current.agent_roots if root not in roots)})))
-
-    @property
-    def web_runs(self) -> WebRuns:
-        """The agent runs this computer started for the web (`machine-agent-runs.json` beside the machine file)."""
-        return WebRuns.in_folder(self.config_path.parent)
-
-    def busy(self) -> bool:
-        """Work of its own is going on here: a step, a web session's turn, a workspace being
-        prepared, or an agent run started for the web still working (as read within `busy_runs_seconds`). Said in every beat (`busy`):
-        a machine the server stops when idle (a cloud machine) is not stopped under it."""
-        if self._executing or (self._sessions is not None and self._sessions.busy) or MachineWorkspaces.busy():
-            return True
-        if (seen := self._runs_working) is not None and time.monotonic() - seen[0] < self.busy_runs_seconds:
-            return seen[1]
-        try:
-            working, unreadable = self.web_runs.working(), None
-        except (OSError, ValueError) as error:
-            working, unreadable = False, str(error)
-        self._runs_working = time.monotonic(), working
-        if unreadable != self._runs_unreadable:  # said once per change, never on every beat
-            if unreadable is not None:
-                logger.warning("web runs unreadable; reported not busy: %s", unreadable)
-            self._runs_unreadable = unreadable
-        return working
-
-    def _agents(self, current: MachineConfig) -> MachineAgents:
-        """What answers the web's agent requests, from the owner's current settings `current`."""
-        self._sessions = self._sessions or MachineSessions(current.working_directory)
-        return MachineAgents(roots=current.agent_roots_by_name(), permission=current.agent_permission, run_agents=current.run_agents,
-                             continue_conversations=current.continue_conversations, answer_approvals=current.answer_approvals, session=MachineAgents.web_session(current.machine_id),
-                             runs=self.web_runs, environment=inventory.safe_environment(),
-                             sessions=self._sessions, logs=self._log_ring, seal=SecretsSeal.for_token(current.token.get_secret_value()), login_seal=LoginSeal.for_token(current.token.get_secret_value()),
-                             workspaces=MachineWorkspaces(roots=current.agent_roots_by_name(), origins=current.clone_origins, jobs=self._workspace_jobs,
-                                                          working_directory=current.working_directory, register_root=self._register_agent_root,
-                                                          transfers=WorkspaceTransfers(endpoint=current.endpoint, headers=current.authorization),
-                                                          environment={**inventory.safe_environment(), **{key: os.environ[key] for key in ("SSH_AUTH_SOCK",) if key in os.environ}}),
-                             places=current.place_map(), fence_agents=current.fence_agents, reviews=self.reviews,
-                             levels_file=self.config_path, egress=(urlsplit(current.server_url).hostname or "",), warm=self.warm, followups=self.followups, audit=self.audit,
-                             programs=self.programs)
-
-    def _register_agent_root(self, name: str) -> bool:
-        """Adds `name` (relative to the working directory) to the agent roots - an existing checkout
-        of a repository the owner allowed; whether it is usable there (never over a file or script
-        root, never hidden, never galaius's own folders)."""
-        after = self.update(lambda current: current if name in current.agent_roots else current.model_copy(update={"agent_roots": (*current.agent_roots, name)}))
-        usable = name in after.agent_roots_by_name()
-        if not usable:
-            self.update(lambda current: current.model_copy(update={"agent_roots": tuple(root for root in current.agent_roots if root != name)}))
-        logger.info("existing checkout %s %s as an agent folder", name, "registered" if usable else "refused")
-        return usable
 
 
 async def connect_command(server_url: str | None, workspace_id: UUID | None, machine_id: UUID | None, token: str | None, permission_ceiling: PermissionLevel, working_directory: Path | None, serve: bool) -> None:

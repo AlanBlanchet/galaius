@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import time
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 from galaius_core import AgentRevisionRef
@@ -16,13 +17,40 @@ import logging
 from galaius.machine.connection import inventory
 from galaius.machine.connection.config import MachineConfig
 from galaius.machine.connection.logs import FORWARDED_EVENT_KINDS
-from galaius.machine.connection.shared import Shared
+from galaius.machine.connection.events import Events
+from galaius.machine.connection.store import MachineFile
+from galaius_core.identity.sealing import LoginSeal
+from galaius.machine.agents import MachineAgents
+from galaius.machine.agents import MachineSessions
+from galaius.machine.projects.workspaces import MachineWorkspaces
+from galaius_core.identity.sealing import SecretsSeal
+from galaius.machine.web_runs import WebRuns
+from galaius.machine.projects.workspace_copy import WorkspaceTransfers
+from galaius.agents.turns.followup import FollowUps
+from galaius.agents.limits.warm import WarmStart
+from galaius.machine.projects.workspaces import WorkspaceJobs
 
 logger = logging.getLogger(__package__)
 
 
-class Runs(Shared):
+class Runs(Events, MachineFile):
     """How the runner starts an agent run and what that run sees of this machine."""
+
+    #: How long the beats reuse whether a run started for the web still works (`busy`): read from every run record
+    #: (~0.2 s for ~5,000), at each beat it took a tenth of a core (2026-11-03). The server stops an idle cloud
+    #: machine only after 15 idle minutes.
+    busy_runs_seconds = 30
+    #: The sessions this runner hosts for the web (opened on first use).
+    _sessions: MachineSessions | None
+    #: Why the web runs could not be read at the last beat (`busy`), None when they could.
+    _runs_unreadable: str | None
+    #: (monotonic time, whether a run started for the web worked then): `busy`, renewed every `busy_runs_seconds`.
+    _runs_working: tuple[float, bool] | None
+    #: Where a workspace's jobs are kept, and the agent child started ahead of the next web start (`WarmStart`) and of
+    #: the next turn of the runs whose turn ended last (`FollowUps`).
+    _workspace_jobs: WorkspaceJobs
+    warm: WarmStart
+    followups: FollowUps
 
     async def _run_agent(self, agent: AgentRevisionRef, task: str, config: MachineConfig, socket, command_id: UUID) -> str:
         safe_environment = inventory.safe_environment()
@@ -94,3 +122,53 @@ class Runs(Shared):
             return terminal.text
         last = next((event for event in reversed(events) if event.kind == "text" and event.text.strip()), None)
         return "" if last is None else last.text
+
+    @property
+    def web_runs(self) -> WebRuns:
+        """The agent runs this computer started for the web (`machine-agent-runs.json` beside the machine file)."""
+        return WebRuns.in_folder(self.config_path.parent)
+
+    def _agents(self, current: MachineConfig) -> MachineAgents:
+        """What answers the web's agent requests, from the owner's current settings `current`."""
+        self._sessions = self._sessions or MachineSessions(current.working_directory)
+        return MachineAgents(roots=current.agent_roots_by_name(), permission=current.agent_permission, run_agents=current.run_agents,
+                             continue_conversations=current.continue_conversations, answer_approvals=current.answer_approvals, session=MachineAgents.web_session(current.machine_id),
+                             runs=self.web_runs, environment=inventory.safe_environment(),
+                             sessions=self._sessions, logs=self._log_ring, seal=SecretsSeal.for_token(current.token.get_secret_value()), login_seal=LoginSeal.for_token(current.token.get_secret_value()),
+                             workspaces=MachineWorkspaces(roots=current.agent_roots_by_name(), origins=current.clone_origins, jobs=self._workspace_jobs,
+                                                          working_directory=current.working_directory, register_root=self._register_agent_root,
+                                                          transfers=WorkspaceTransfers(endpoint=current.endpoint, headers=current.authorization),
+                                                          environment={**inventory.safe_environment(), **{key: os.environ[key] for key in ("SSH_AUTH_SOCK",) if key in os.environ}}),
+                             places=current.place_map(), fence_agents=current.fence_agents, reviews=self.reviews,
+                             levels_file=self.config_path, egress=(urlsplit(current.server_url).hostname or "",), warm=self.warm, followups=self.followups, audit=self.audit,
+                             programs=self.programs)
+
+    def _register_agent_root(self, name: str) -> bool:
+        """Adds `name` (relative to the working directory) to the agent roots - an existing checkout
+        of a repository the owner allowed; whether it is usable there (never over a file or script
+        root, never hidden, never galaius's own folders)."""
+        after = self.update(lambda current: current if name in current.agent_roots else current.model_copy(update={"agent_roots": (*current.agent_roots, name)}))
+        usable = name in after.agent_roots_by_name()
+        if not usable:
+            self.update(lambda current: current.model_copy(update={"agent_roots": tuple(root for root in current.agent_roots if root != name)}))
+        logger.info("existing checkout %s %s as an agent folder", name, "registered" if usable else "refused")
+        return usable
+
+    def busy(self) -> bool:
+        """Work of its own is going on here: a step, a web session's turn, a workspace being
+        prepared, or an agent run started for the web still working (as read within `busy_runs_seconds`). Said in every beat (`busy`):
+        a machine the server stops when idle (a cloud machine) is not stopped under it."""
+        if self._executing or (self._sessions is not None and self._sessions.busy) or MachineWorkspaces.busy():
+            return True
+        if (seen := self._runs_working) is not None and time.monotonic() - seen[0] < self.busy_runs_seconds:
+            return seen[1]
+        try:
+            working, unreadable = self.web_runs.working(), None
+        except (OSError, ValueError) as error:
+            working, unreadable = False, str(error)
+        self._runs_working = time.monotonic(), working
+        if unreadable != self._runs_unreadable:  # said once per change, never on every beat
+            if unreadable is not None:
+                logger.warning("web runs unreadable; reported not busy: %s", unreadable)
+            self._runs_unreadable = unreadable
+        return working

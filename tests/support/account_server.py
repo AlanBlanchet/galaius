@@ -25,7 +25,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from galaius.machine.connection.runner import MachineRunner
+from galaius.machine.connection import signing
 
 
 class Pending(BaseModel):
@@ -161,7 +161,7 @@ class AccountServer(BaseModel):
             workflow=WorkflowRevisionRef(key=WorkflowKey(id=uuid4()), revision=uuid4()), node_id=uuid4(),
             impl=ScriptImplementation.inline(body["language"], body["source"]), config={"source": body["source"]},
             expires_at=datetime.now(UTC) + timedelta(minutes=2), signature="0" * 64)
-        command = unsigned.model_copy(update={"signature": MachineRunner.signature(machine.token, unsigned)})
+        command = unsigned.model_copy(update={"signature": signing.signature(machine.token, unsigned)})
         await self.sockets[machine.id].send_json({"type": "command", "command": command.model_dump(mode="json")})
         for _ in range(600):
             if str(command.id) in machine.results:

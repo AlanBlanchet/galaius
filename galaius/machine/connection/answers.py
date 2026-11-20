@@ -14,16 +14,22 @@ from galaius.agents import registry as reg
 from galaius_core import AgentRefused
 
 from galaius.machine.connection.config import MachineConfig
-from galaius.machine.connection.faults import ANSWERED_REFUSALS, said_of
-from galaius.machine.connection.shared import Shared
+from galaius.machine.connection.faults import ANSWERED_REFUSALS, own_fault, said_of
+from galaius.machine.connection import logs, signing
+from galaius.machine.connection.runs import Runs
 from galaius.machine.connection.files import MachineDataFiles, MachineFiles
+from galaius.desktop.screen.desk import ScreenDesk
+from galaius.machine.connection import problems
+import traceback
 
 logger = logging.getLogger(__package__)
 
 
-class Answers(Shared):
+class Answers(Runs):
     """What the runner answers when the server asks about this machine."""
 
+    #: This computer's screen sessions (`ScreenDesk`), made for the enrollment that first asks.
+    _screen_desk: ScreenDesk | None
     #: Agent actions already accepted (id -> expiry): each is taken once (`_answer_agent_request`).
     _agent_requests: dict[UUID, datetime]
     #: The answer of each accepted action the server may ask again (`idempotent_feature`), by its id,
@@ -41,7 +47,7 @@ class Answers(Shared):
         try:
             if query.machine.id != config.machine_id or query.workspace_id != config.workspace_id:
                 raise PermissionError("file query targets another machine")
-            self._verify_signed(config, query, "file query")
+            signing.verify(config, query, "file query")
             listing = await asyncio.to_thread(MachineFiles(config=self._current_config(config), area="scripts").listing, query.path)
             logger.info("file query %s: %s", query.path or "(roots)", listing.kind)
             answer = MachineFileQueryResult(query_id=query.id, listing=listing)
@@ -60,7 +66,7 @@ class Answers(Shared):
         try:
             if request.machine.id != config.machine_id or request.workspace_id != config.workspace_id:
                 raise PermissionError("data request targets another machine")
-            self._verify_signed(config, request, "data request")
+            signing.verify(config, request, "data request")
             answer = await asyncio.to_thread(MachineDataFiles(config=self._current_config(config)).answer, request)
             logger.info("data %s %s/%s", request.op, request.root or "(roots)", request.path)
         except (PermissionError, OSError, ValueError) as error:
@@ -81,7 +87,7 @@ class Answers(Shared):
         try:
             if update.machine.id != config.machine_id or update.workspace_id != config.workspace_id:
                 raise PermissionError("agent settings target another machine")
-            if not hmac.compare_digest(self.signature(config.token.get_secret_value(), update), update.signature):
+            if not hmac.compare_digest(signing.signature(config.token.get_secret_value(), update), update.signature):
                 raise PermissionError("agent settings signature is invalid")
             def apply(current: MachineConfig) -> MachineConfig:
                 self._same_enrollment(current, config)
@@ -118,7 +124,7 @@ class Answers(Shared):
         try:
             if request.machine.id != config.machine_id or request.workspace_id != config.workspace_id:
                 raise PermissionError("agent request targets another machine")
-            self._verify_signed(config, request, "agent request")
+            signing.verify(config, request, "agent request")
             if request.action:
                 now = datetime.now(UTC)
                 self._agent_requests = {key: until for key, until in self._agent_requests.items() if until > now}
@@ -156,7 +162,7 @@ class Answers(Shared):
                 answer = await asyncio.to_thread(PlaceDesk(self).answer, request)
                 await socket.send(json.dumps({"type": "agent_answer", "result": answer.model_dump(mode="json")}))
                 return
-            self._log_ring.secrets = self._secrets(current)
+            self._log_ring.secrets = logs.secrets(current, self._spent_tokens)
             agents = self._agents(current)
             answer = await agents.answer(request)
             # Reading (the page polls every few seconds) stays out of the owner's log; actions go in.
@@ -170,7 +176,7 @@ class Answers(Shared):
             logger.log(logging.INFO if request.action else logging.DEBUG, "agent %s %s", request.op, said)
         except ANSWERED_REFUSALS as error:
             answer = MachineAgentAnswer(request_id=request.id, error=fitted(MachineAgentAnswer, "error", (said := said_of(error, doing="driving_agent")).said), refusal=said.refusal)
-            if self.own_fault(error, said) and request.action:
+            if own_fault(error, said) and request.action:
                 logger.error("agent %s failed: %s", request.op, answer.error, exc_info=error)
                 self._report_fault(config, request.op, answer.error or "", error)
             else:
@@ -191,3 +197,26 @@ class Answers(Shared):
         if answered is not None:
             answered.set_result(answer)
         await socket.send(json.dumps({"type": "agent_answer", "result": answer.model_dump(mode="json")}))
+
+    def _screen(self, config: MachineConfig) -> ScreenDesk:
+        """The screen desk of this enrollment (a re-linked machine gets a new one: its id is in every offer)."""
+        if self._screen_desk is None or self._screen_desk.gate.machine_id != config.machine_id:
+            self._screen_desk = ScreenDesk(config.machine_id, config.server_url)
+        return self._screen_desk
+
+    def _release(self, request_id: UUID, answer: asyncio.Future[MachineAgentAnswer]) -> None:
+        """A first answer that never came (its task cancelled with the connection): its id is free
+        again, and a repeat waiting on it delivers the request itself."""
+        if not answer.done():
+            answer.cancel()
+            if self._agent_answers.get(request_id) is answer:
+                del self._agent_answers[request_id]
+                self._agent_requests.pop(request_id, None)
+
+    def _report_fault(self, config: MachineConfig, op: str, said: str, error: BaseException) -> None:
+        """An agent action this computer failed by its own fault: an error report kept here, its owner asked on the PC's
+        page whether to send it (`MachineErrorReports.prepare`: nothing leaves before his yes) — this runner's recent log
+        and the traceback. Off the event loop (its question is an HTTPS call); never raises."""
+        lines = (*self._log_ring.lines, *"".join(traceback.format_exception(error)).splitlines())
+        drafts, secrets = problems.drafts(), logs.secrets(config, self._spent_tokens)
+        asyncio.get_running_loop().run_in_executor(None, lambda: drafts.prepare(config, "exception", f"agent {op} failed: {said}", lines, secrets))

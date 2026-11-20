@@ -25,15 +25,20 @@ import logging
 from galaius.machine.connection import inventory, problems
 from galaius.machine.connection.config import MachineConfig
 from galaius.machine.connection.faults import Paused, Woke
-from galaius.machine.connection.shared import Shared
+from galaius.machine.connection.runs import Runs
 
 logger = logging.getLogger(__package__)
 
 
-class Upkeep(Shared):
+class Upkeep(Runs):
     """Periodic work of a connected machine."""
 
     heartbeat_seconds = 3
+    #: A wait that lasted this much longer than asked, by the wall clock or the system's (Windows counts a sleep, Linux
+    #: and macOS do not), means the computer slept: connect again at once rather than wait ~35 s for a ping to fail.
+    woke_after_seconds = 10.0
+    #: How often the prompt check looks again whether it is due (`prompt_sync_seconds`), and a subscription signed in since is installed.
+    prompt_tick_seconds = 5
     #: How often this PC checks whether the prompts it runs changed (a company granted or withdrew
     #: it, a prompt or agent was saved); a check is one 304 per workspace when nothing moved.
     prompt_sync_seconds = 300
@@ -54,7 +59,7 @@ class Upkeep(Shared):
     async def _sync_prompts(self) -> None:
         """Keep this PC's agents on the prompts of the workspace it runs, and its ~/galaius copies
         current, without anyone running `galaius prompts sync` (`prompt_mirror.sync`); a subscription
-        signed in since the last install gets it within `subscription_seconds`. A failed check is
+        signed in since the last install gets it within `prompt_tick_seconds`. A failed check is
         logged and retried next round; it never touches the machine channel."""
         seen: dict[UUID, str] = {}
         waited, failed = self.prompt_sync_seconds, False
@@ -77,8 +82,8 @@ class Upkeep(Shared):
                 seen.clear()
                 failed = True  # a failed sync waits for the next full round
                 logger.warning("prompt sync failed: %s", error)
-            await asyncio.sleep(self.subscription_seconds)
-            waited += self.subscription_seconds
+            await asyncio.sleep(self.prompt_tick_seconds)
+            waited += self.prompt_tick_seconds
 
     async def _renew_policy(self) -> None:
         """Keep what a start reads first (`load_policy`: the agent catalog, the tool list) renewed in
@@ -193,3 +198,8 @@ class Upkeep(Shared):
             except Exception:  # one failed look never stops the next
                 logger.exception("delivering an error report failed")
             await asyncio.sleep(self.deliver_seconds)
+
+    def slept(self, monotonic_from: float, wall_from: float, asked: float) -> bool:
+        """Whether a wait of `asked` seconds begun at (`monotonic_from`, `wall_from`) took long enough that this
+        computer slept meanwhile (`woke_after_seconds`)."""
+        return max(time.monotonic() - monotonic_from, time.time() - wall_from) - asked > self.woke_after_seconds

@@ -39,6 +39,7 @@ from galaius_core import AGENT_PROGRAMS, AgentRefused, GitRemote
 from galaius.config.user import UserConfig
 from galaius.machine.connection import faults as machines
 from galaius.diagnostics.error_reports import MachineErrorReports
+from galaius.machine.connection import signing
 from galaius.machine.connection.config import MachineConfig
 from galaius.machine.connection.runner import MachineRunner
 from galaius.agents.limits import admission
@@ -1030,7 +1031,7 @@ def test_a_rule_that_cannot_be_read_says_why_instead_of_resolving(monkeypatch: p
 def _signed_settings(config: MachineConfig, version: int, based_on: int, **settings) -> dict:
     update = MachineAgentSettingsUpdate(machine={"id": config.machine_id}, workspace_id=config.workspace_id, version=version, based_on=based_on,
                                         settings=settings, changed_by=uuid4(), changed_at=datetime.now(UTC), signature="0" * 64)
-    return {**update.model_dump(mode="json"), "signature": MachineRunner.signature(config.token.get_secret_value(), update)}
+    return {**update.model_dump(mode="json"), "signature": signing.signature(config.token.get_secret_value(), update)}
 
 
 def test_web_settings_apply_once_from_the_revision_the_page_read(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

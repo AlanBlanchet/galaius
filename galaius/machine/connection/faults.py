@@ -90,3 +90,10 @@ class TokenSwapped(Exception):
 #: all the same — as a failure, with its words — because a request left unanswered reads at the server as a PC
 #: that never confirmed, which is neither true nor actionable.
 ANSWERED_REFUSALS: tuple[type[BaseException], ...] = (PermissionError, OSError, ValueError, RuntimeError, subprocess.TimeoutExpired)
+
+
+def own_fault(error: BaseException, said: Said) -> bool:
+    """Whether an answered refusal is this computer failing rather than refusing: an OS error no typed refusal names
+    (2026-11-09: every agent start on a Windows PC answered « Nom de fichier ou extension trop long », WinError 206, as if
+    the PC had refused; one warning line, no traceback, no report). A `PermissionError` is a refusal written here."""
+    return isinstance(error, OSError) and not isinstance(error, PermissionError) and said.refusal is None
