@@ -38,7 +38,7 @@ from typing import Any, Literal, Self
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from galaius_core import UsageWindow
+from galaius_core import POOL_WINDOWS, UsageWindow
 from pydantic import BaseModel, ConfigDict, Field
 
 from galaius.agents.transport.events import instant
@@ -473,7 +473,8 @@ class ModelPool(BaseModel):
     @property
     def window(self) -> UsageWindow:
         """It as the wire's window (`galaius_core.POOL_WINDOWS`): `weekly_fable`."""
-        return UsageWindow(window=f"weekly_{self.pool}", used_percent=self.used_percent, resets_at=self.resets_at, observed_at=self.observed_at)
+        name = next(window for window, family in POOL_WINDOWS.items() if family == self.pool)   # one table (`galaius_core.POOL_WINDOWS`), never a spelled-out name
+        return UsageWindow(window=name, used_percent=self.used_percent, resets_at=self.resets_at, observed_at=self.observed_at)
 
     def open(self, now: datetime) -> bool:
         """Its reading still stands: the pool has not reopened since (a reading past its reset is no evidence)."""

@@ -641,3 +641,12 @@ def test_his_continue_keeps_a_model_familys_pool_until_its_reset_but_another_acc
 
     quota.forget_login("claude", now=now + 3)
     assert quota.blocked_until("claude", "claude-fable-5-2", now=now + 4) is None
+
+
+def test_every_pool_the_pc_reads_has_its_window_on_the_wire() -> None:
+    """One table: a family `quota.POOLS` names without a `galaius_core.POOL_WINDOWS` entry would raise inside the report loop."""
+    from galaius_core import POOL_WINDOWS
+    assert {family for family in quota.POOLS.values()} == set(POOL_WINDOWS.values())
+    for family in quota.POOLS.values():
+        pool = quota.ModelPool(pool=family, used_percent=96, observed_at=datetime.now(UTC))
+        assert pool.window.family == family

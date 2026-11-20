@@ -62,7 +62,7 @@ class SubscriptionState(BaseModel):
 
     provider: ProviderName
     usage: tuple[UsageWindow, ...] = ()
-    #: The model-family pools its vendor last reported (`quota.POOLS`), never sent to the server: the wire names no such window.
+    #: The model-family pools its vendor last reported (`quota.POOLS`), sent to the server beside `usage` as windows of their own (`POOL_WINDOWS`).
     pools: tuple[quota.ModelPool, ...] = ()
     reported: tuple[UsageWindow, ...] = ()
     reported_at: datetime | None = None
