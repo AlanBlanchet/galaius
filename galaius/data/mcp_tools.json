@@ -133,6 +133,12 @@
  },
  {
   "server": "galaius",
+  "name": "keep_file",
+  "category": "media",
+  "description": "Keep a file you made any way you like \u2014 a shell, a program on this PC, another tool \u2014 under its key, so the person sees it in their chat and other agents are handed it by that key."
+ },
+ {
+  "server": "galaius",
   "name": "launch_app",
   "category": "desktop",
   "description": "Launch an app in galaius's isolated sandbox display and drive it there."
@@ -160,6 +166,12 @@
   "name": "navigate",
   "category": "browser",
   "description": "Navigate to a URL and return page content. Browser-only \u2014 requires a session, not a window."
+ },
+ {
+  "server": "galaius",
+  "name": "open_file",
+  "category": "media",
+  "description": "Write the kept file `key` \u2014 one you made, or one another agent or the person handed you \u2014 into your working folder at `path` (relative; folders made when missing; any format), its bytes exactly the key's. replace: write over a file already there. Returns where it was written, or why not."
  },
  {
   "server": "galaius",

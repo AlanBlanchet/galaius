@@ -595,7 +595,7 @@
     },
     {
      "name": "agent_send",
-     "description": "Send a message to another agent — it answers with its full context intact.\n\nDelivery resumes the recipient's own session rather than handing it a cold summary, so it\nremembers everything it already did and its reply lands in the same transcript — what makes\nthe exchange readable afterwards, and what a sequence view draws its arrows from.\n\nUse it to ask a teammate for something, or answer one. The exchange is recorded on BOTH\nsides, so either agent's history shows it.\n\nrun_id: the agent to address (agent_list shows the ids).\nmessage: what to say — write it as a complete request; it cannot ask you a follow-up.\nwait: block until it has replied, instead of returning as soon as the message is delivered.\nfyi: a one-way note (a report, an ack, a heads-up): it reads it, and its turns never report back to you for it.\nmachine: the run is on another of the person's PCs (one you placed there with agent_spawn(machine=...)): its PC name or id. The message reaches it\n    under a header saying it comes from another agent, never as the person's word. A run placed on a PC cannot write back to the one that placed it:\n    the placing agent reads its events.",
+     "description": "Send a message to another agent — it answers with its full context intact.\n\nDelivery resumes the recipient's own session rather than handing it a cold summary, so it\nremembers everything it already did and its reply lands in the same transcript — what makes\nthe exchange readable afterwards, and what a sequence view draws its arrows from.\n\nUse it to ask a teammate for something, or answer one. The exchange is recorded on BOTH\nsides, so either agent's history shows it.\n\nrun_id: the agent to address (agent_list shows the ids).\nmessage: what to say — write it as a complete request; it cannot ask you a follow-up.\nwait: block until it has replied, instead of returning as soon as the message is delivered.\nfyi: a one-way note (a report, an ack, a heads-up): it reads it, and its turns never report back to you for it.\nfiles: the keys of kept files to hand it (up to 10; keys you made with create_file / keep_file or were handed, never paths: keep_file\n    a file first). Each is kept for it as it is now — whatever you do to your copy later — with who made it and from what, and it writes one into\n    its own folder with open_file, on this PC or (machine=...) on another of the person's PCs, where its bytes cross once and count against\n    that PC's hourly link limit. Handing a file never lets it read yours.\nmachine: the run is on another of the person's PCs (one you placed there with agent_spawn(machine=...)): its PC name or id. The message reaches it\n    under a header saying it comes from another agent, never as the person's word. A run placed on a PC cannot write back to the one that placed it:\n    the placing agent reads its events.",
      "inputSchema": {
       "properties": {
        "run_id": {
@@ -627,6 +627,21 @@
         ],
         "default": null,
         "title": "Machine"
+       },
+       "files": {
+        "anyOf": [
+         {
+          "items": {
+           "type": "string"
+          },
+          "type": "array"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Files"
        }
       },
       "required": [
@@ -1417,7 +1432,7 @@
     },
     {
      "name": "create_file",
-     "description": "Write a file the person opens — a document, a spreadsheet, a deck, a PDF, a mail draft — in your working folder.\n\nUse this for every file meant for the person: it is written here at no cost, and shows in their chat as a file\nthey can download. `path` is relative to your working folder (folders made when missing); its suffix picks the\nformat and what it reads:\n\n- .txt, .md: `content` as is. .json: `content`, which must be valid JSON.\n- .csv: `rows` (the first row is the header).\n- .xlsx: `rows`, or `sheets` {sheet name: rows} for several (numbers stay numbers; header in bold).\n- .docx: `content` as Markdown-lite (`#` headings, `-` bullets, paragraphs), then `rows` as a table.\n- .pptx: `content` as Markdown-lite, one slide per `#` heading with its bullets.\n- .pdf: `content` as Typst markup (`= Title`, `- item`, `*bold*`), then `rows` as a table.\n- .eml: a mail DRAFT the person sends themselves: `to`, `cc`, `subject`, `content` as its body, `attach` the paths\n  of files you wrote with create_file in this run (a report, a sheet; 4 MiB together). Never sent from here.\n\ncontent_from: instead of `content`, the absolute path of a file a community agent you started wrote in its own\nfolder (a deck's Markdown-lite, a page's Typst): its text becomes `content` without you reading it, so a stranger's\nwords reach the person, never your context. Only that agent's folder; check its report before passing it on.\n\nreplace: write over a file already at `path` (refused otherwise). Written only where you may write on this\ncomputer, never as an agent's steering file (CLAUDE.md, AGENTS.md…). Returns where it was written and its size, or\nwhy nothing was written.",
+     "description": "Write a file the person opens — a document, a spreadsheet, a deck, a PDF, a mail draft — in your working folder.\n\nUse this for every file meant for the person: it is written here at no cost, and shows in their chat as a file\nthey can download. `path` is relative to your working folder (folders made when missing); its suffix picks the\nformat and what it reads:\n\n- .txt, .md: `content` as is. .json: `content`, which must be valid JSON.\n- .csv: `rows` (the first row is the header).\n- .xlsx: `rows`, or `sheets` {sheet name: rows} for several (numbers stay numbers; header in bold).\n- .docx: `content` as Markdown-lite (`#` headings, `-` bullets, paragraphs), then `rows` as a table.\n- .pptx: `content` as Markdown-lite, one slide per `#` heading with its bullets.\n- .pdf: `content` as Typst markup (`= Title`, `- item`, `*bold*`), then `rows` as a table.\n- .eml: a mail DRAFT the person sends themselves: `to`, `cc`, `subject`, `content` as its body, `attach` the paths\n  of files you wrote with create_file in this run (a report, a sheet; 4 MiB together). Never sent from here.\n\ncontent_from: instead of `content`, the absolute path of a file a community agent you started wrote in its own\nfolder (a deck's Markdown-lite, a page's Typst): its text becomes `content` without you reading it, so a stranger's\nwords reach the person, never your context. Only that agent's folder; check its report before passing it on.\n\nfrom_files, replaces: the keys of the kept files you made this from (a sheet it summarises, a draft it improves) and the\none it takes the place of; keys you made or were handed, else refused. They show in the person's chat and tell\nthe agent that reads it what it came from.\n\nreplace: write over a file already at `path` (refused otherwise). Written only where you may write on this\ncomputer, never as an agent's steering file (CLAUDE.md, AGENTS.md…). Returns where it was written and its size, or\nwhy nothing was written.",
      "inputSchema": {
       "properties": {
        "path": {
@@ -1566,6 +1581,33 @@
         "default": false,
         "title": "Replace",
         "type": "boolean"
+       },
+       "from_files": {
+        "anyOf": [
+         {
+          "items": {
+           "type": "string"
+          },
+          "type": "array"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "From Files"
+       },
+       "replaces": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Replaces"
        }
       },
       "required": [
@@ -1585,6 +1627,109 @@
        "result"
       ],
       "title": "create_fileOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "media"
+     }
+    },
+    {
+     "name": "keep_file",
+     "description": "Keep a file you made any way you like — a shell, a program on this PC, another tool — under its key, so the person sees it\nin their chat and other agents are handed it by that key.\n\npath: the file, relative to your working folder; any format; never a hidden file, a credential store, a file whose name says secret, token, password or key, nor one holding a private key. Its key is the\nhash of its bytes: the same bytes are the same key on every PC, and a copy of it is kept for your run, whatever you do\nto the file after. from_files: the keys of the kept files you made it from; replaces: the key of the one it takes\nthe place of — both said by you (keys you made or were handed), never read from a name. Returns its key.",
+     "inputSchema": {
+      "properties": {
+       "path": {
+        "title": "Path",
+        "type": "string"
+       },
+       "from_files": {
+        "anyOf": [
+         {
+          "items": {
+           "type": "string"
+          },
+          "type": "array"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "From Files"
+       },
+       "replaces": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Replaces"
+       }
+      },
+      "required": [
+       "path"
+      ],
+      "title": "keep_fileArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "keep_fileOutput",
+      "type": "object"
+     },
+     "_meta": {
+      "category": "media"
+     }
+    },
+    {
+     "name": "open_file",
+     "description": "Write the kept file `key` — one you made, or one another agent or the person handed you — into your working folder at\n`path` (relative; folders made when missing; any format), its bytes exactly the key's. replace: write over a file already\nthere. Returns where it was written, or why not.",
+     "inputSchema": {
+      "properties": {
+       "key": {
+        "title": "Key",
+        "type": "string"
+       },
+       "path": {
+        "title": "Path",
+        "type": "string"
+       },
+       "replace": {
+        "default": false,
+        "title": "Replace",
+        "type": "boolean"
+       }
+      },
+      "required": [
+       "key",
+       "path"
+      ],
+      "title": "open_fileArguments",
+      "type": "object"
+     },
+     "outputSchema": {
+      "properties": {
+       "result": {
+        "title": "Result",
+        "type": "string"
+       }
+      },
+      "required": [
+       "result"
+      ],
+      "title": "open_fileOutput",
       "type": "object"
      },
      "_meta": {
@@ -1708,7 +1853,7 @@
     },
     {
      "name": "translate",
-     "description": "Translate a text into another language with your company's text model, keeping its layout.\n\nUse this for every translation the person asks for. text: any length. target_language: a language tag\n(fr, en, en-GB, de, es…). source_language: when known (else read from the text). context: what the text is and for\nwhom (« a reply to a client », « app labels »), so its register is kept.\n\nIt runs on the Galaius platform with your company's connection: charged to the person you work for, held to their\nceilings and the company's, and shown in Galaius › Facturation, linked to your run. Ask first WITHOUT max_cost_usd: the\nanswer is its price, nothing made, nothing charged. Then ask again with max_cost_usd (dollars, platform fee included)\nat or above that price to make it. folder: where its files go, inside your working folder (made when missing).\n\nReturns the price, or the translation and the file it is saved in (shown in the person's chat), or why nothing was\nmade.",
+     "description": "Translate a text into another language with your company's text model, keeping its layout.\n\nUse this for every translation the person asks for. text: any length. target_language: a language tag\n(fr, en, en-GB, de, es…). source_language: when known (else read from the text). context: what the text is and for\nwhom (« a reply to a client », « app labels »), so its register is kept.\n\nIt runs on the Galaius platform with your company's connection: charged to the person you work for, held to their\nceilings and the company's, and shown in Galaius › Facturation, linked to your run. Ask first WITHOUT max_cost_usd: the\nanswer is its price, nothing made, nothing charged. Then ask again with max_cost_usd (dollars, platform fee included)\nat or above that price to make it. folder: where its files go, inside your working folder (made when missing). from_files, replaces: the keys of the\nkept files you made it from and the one it takes the place of (see keep_file).\n\nReturns the price, or the translation and the file it is saved in (shown in the person's chat), or why nothing was\nmade.",
      "inputSchema": {
       "properties": {
        "text": {
@@ -1752,6 +1897,33 @@
         "default": "galaius-media",
         "title": "Folder",
         "type": "string"
+       },
+       "from_files": {
+        "anyOf": [
+         {
+          "items": {
+           "type": "string"
+          },
+          "type": "array"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "From Files"
+       },
+       "replaces": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Replaces"
        }
       },
       "required": [
@@ -1780,7 +1952,7 @@
     },
     {
      "name": "generate_3d",
-     "description": "Make a 3D model (a .glb file) of the object shown in an image, with your company's 3D model.\n\nimage: the path of a PNG, JPEG or WebP image inside your working folder (one object on a plain background works best;\nmake one with generate_image first when you only have a description). pbr: physically-based materials (slower).\n\nIt runs on the Galaius platform with your company's connection: charged to the person you work for, held to their\nceilings and the company's, and shown in Galaius › Facturation, linked to your run. Ask first WITHOUT max_cost_usd: the\nanswer is its price, nothing made, nothing charged. Then ask again with max_cost_usd (dollars, platform fee included)\nat or above that price to make it. folder: where its files go, inside your working folder (made when missing).\n\nReturns the price, or the .glb file made (shown in the person's chat), or why nothing was made.",
+     "description": "Make a 3D model (a .glb file) of the object shown in an image, with your company's 3D model.\n\nimage: the path of a PNG, JPEG or WebP image inside your working folder (one object on a plain background works best;\nmake one with generate_image first when you only have a description). pbr: physically-based materials (slower).\n\nIt runs on the Galaius platform with your company's connection: charged to the person you work for, held to their\nceilings and the company's, and shown in Galaius › Facturation, linked to your run. Ask first WITHOUT max_cost_usd: the\nanswer is its price, nothing made, nothing charged. Then ask again with max_cost_usd (dollars, platform fee included)\nat or above that price to make it. folder: where its files go, inside your working folder (made when missing). from_files, replaces: the keys of the\nkept files you made it from and the one it takes the place of (see keep_file).\n\nReturns the price, or the .glb file made (shown in the person's chat), or why nothing was made.",
      "inputSchema": {
       "properties": {
        "image": {
@@ -1808,6 +1980,33 @@
         "default": "galaius-media",
         "title": "Folder",
         "type": "string"
+       },
+       "from_files": {
+        "anyOf": [
+         {
+          "items": {
+           "type": "string"
+          },
+          "type": "array"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "From Files"
+       },
+       "replaces": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Replaces"
        }
       },
       "required": [
@@ -1835,7 +2034,7 @@
     },
     {
      "name": "generate_speech",
-     "description": "Say a text aloud with your company's voice model, as an audio file.\n\nUse this for every voice-over, narration or spoken message the person asks for. text: the words said. voice: the model's voice id; empty: its default. style: how to\nsay it (« calm and warm », « cheerful »); empty: neutral.\n\nIt runs on the Galaius platform with your company's connection: charged to the person you work for, held to their\nceilings and the company's, and shown in Galaius › Facturation, linked to your run. Ask first WITHOUT max_cost_usd: the\nanswer is its price, nothing made, nothing charged. Then ask again with max_cost_usd (dollars, platform fee included)\nat or above that price to make it. folder: where its files go, inside your working folder (made when missing).\n\nReturns the price, or the audio file made (shown in the person's chat), or why nothing was made.",
+     "description": "Say a text aloud with your company's voice model, as an audio file.\n\nUse this for every voice-over, narration or spoken message the person asks for. text: the words said. voice: the model's voice id; empty: its default. style: how to\nsay it (« calm and warm », « cheerful »); empty: neutral.\n\nIt runs on the Galaius platform with your company's connection: charged to the person you work for, held to their\nceilings and the company's, and shown in Galaius › Facturation, linked to your run. Ask first WITHOUT max_cost_usd: the\nanswer is its price, nothing made, nothing charged. Then ask again with max_cost_usd (dollars, platform fee included)\nat or above that price to make it. folder: where its files go, inside your working folder (made when missing). from_files, replaces: the keys of the\nkept files you made it from and the one it takes the place of (see keep_file).\n\nReturns the price, or the audio file made (shown in the person's chat), or why nothing was made.",
      "inputSchema": {
       "properties": {
        "text": {
@@ -1868,6 +2067,33 @@
         "default": "galaius-media",
         "title": "Folder",
         "type": "string"
+       },
+       "from_files": {
+        "anyOf": [
+         {
+          "items": {
+           "type": "string"
+          },
+          "type": "array"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "From Files"
+       },
+       "replaces": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Replaces"
        }
       },
       "required": [
@@ -1895,7 +2121,7 @@
     },
     {
      "name": "generate_music",
-     "description": "Compose music from a description with your company's music model, as an audio file.\n\nUse this for every song, jingle or soundtrack the person asks for. prompt: genre, mood, instruments, tempo,\nstructure, lyrics when it sings, and the length wanted.\n\nIt runs on the Galaius platform with your company's connection: charged to the person you work for, held to their\nceilings and the company's, and shown in Galaius › Facturation, linked to your run. Ask first WITHOUT max_cost_usd: the\nanswer is its price, nothing made, nothing charged. Then ask again with max_cost_usd (dollars, platform fee included)\nat or above that price to make it. folder: where its files go, inside your working folder (made when missing).\n\nReturns the price, or the music file made (shown in the person's chat), or why nothing was made.",
+     "description": "Compose music from a description with your company's music model, as an audio file.\n\nUse this for every song, jingle or soundtrack the person asks for. prompt: genre, mood, instruments, tempo,\nstructure, lyrics when it sings, and the length wanted.\n\nIt runs on the Galaius platform with your company's connection: charged to the person you work for, held to their\nceilings and the company's, and shown in Galaius › Facturation, linked to your run. Ask first WITHOUT max_cost_usd: the\nanswer is its price, nothing made, nothing charged. Then ask again with max_cost_usd (dollars, platform fee included)\nat or above that price to make it. folder: where its files go, inside your working folder (made when missing). from_files, replaces: the keys of the\nkept files you made it from and the one it takes the place of (see keep_file).\n\nReturns the price, or the music file made (shown in the person's chat), or why nothing was made.",
      "inputSchema": {
       "properties": {
        "prompt": {
@@ -1918,6 +2144,33 @@
         "default": "galaius-media",
         "title": "Folder",
         "type": "string"
+       },
+       "from_files": {
+        "anyOf": [
+         {
+          "items": {
+           "type": "string"
+          },
+          "type": "array"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "From Files"
+       },
+       "replaces": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Replaces"
        }
       },
       "required": [
@@ -1945,7 +2198,7 @@
     },
     {
      "name": "generate_sound",
-     "description": "Make a sound effect from a description with your company's sound model, as an audio file.\n\nUse this for every sound effect or ambience the person asks for (« rain on a tin roof », « a door creaking »), never\nfor words said (generate_speech). seconds: its length, 0.5 to 30; empty: from the description. loop: made to repeat\nseamlessly.\n\nIt runs on the Galaius platform with your company's connection: charged to the person you work for, held to their\nceilings and the company's, and shown in Galaius › Facturation, linked to your run. Ask first WITHOUT max_cost_usd: the\nanswer is its price, nothing made, nothing charged. Then ask again with max_cost_usd (dollars, platform fee included)\nat or above that price to make it. folder: where its files go, inside your working folder (made when missing).\n\nReturns the price, or the sound file made (shown in the person's chat), or why nothing was made.",
+     "description": "Make a sound effect from a description with your company's sound model, as an audio file.\n\nUse this for every sound effect or ambience the person asks for (« rain on a tin roof », « a door creaking »), never\nfor words said (generate_speech). seconds: its length, 0.5 to 30; empty: from the description. loop: made to repeat\nseamlessly.\n\nIt runs on the Galaius platform with your company's connection: charged to the person you work for, held to their\nceilings and the company's, and shown in Galaius › Facturation, linked to your run. Ask first WITHOUT max_cost_usd: the\nanswer is its price, nothing made, nothing charged. Then ask again with max_cost_usd (dollars, platform fee included)\nat or above that price to make it. folder: where its files go, inside your working folder (made when missing). from_files, replaces: the keys of the\nkept files you made it from and the one it takes the place of (see keep_file).\n\nReturns the price, or the sound file made (shown in the person's chat), or why nothing was made.",
      "inputSchema": {
       "properties": {
        "prompt": {
@@ -1985,6 +2238,33 @@
         "default": "galaius-media",
         "title": "Folder",
         "type": "string"
+       },
+       "from_files": {
+        "anyOf": [
+         {
+          "items": {
+           "type": "string"
+          },
+          "type": "array"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "From Files"
+       },
+       "replaces": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Replaces"
        }
       },
       "required": [
@@ -2083,7 +2363,7 @@
     },
     {
      "name": "edit_video",
-     "description": "Edit a video in your working folder — cut it, join clips, caption it, lay text over it, resize it, take its\nsound — on this PC, at no cost, and show the result in the person's chat as a video they can play and download.\n\nUse this for every video edit meant for the person, never ffmpeg or a script of your own. `input` and every path are\nrelative to your working folder; `steps` run in order, each on the result of the one before:\n\n- {\"op\": \"trim\", \"start\": 3}: keep from 3 s to the end (cut the first 3 seconds); \"end\": 10 stops at 10 s.\n- {\"op\": \"join\", \"clips\": [\"b.mp4\"], \"transition\": \"fade\"}: the video so far, then each clip (transition optional).\n- {\"op\": \"caption\", \"text\": \"bonjour\", \"start\": 0, \"end\": 2}: a subtitle burnt in at the bottom (end omitted: to the end).\n- {\"op\": \"add_text\", \"text\": \"Title\", \"position\": \"center\", \"size\": 48, \"color\": \"white\", \"start\": 0, \"duration\": 3}.\n- {\"op\": \"resize\", \"width\": 1280} or {\"op\": \"resize\", \"aspect\": \"9:16\"}.\n- {\"op\": \"extract_audio\"}: its sound alone, the last step, with an .mp3 or .wav `output`.\n\n`output`: where the result goes (.mp4 or .webm for a video; its suffix picks the format). replace: write over a file\nalready there (refused otherwise). Returns where it was written, its length and size, and what it cost ($0), or why\nnothing was written.",
+     "description": "Edit a video in your working folder — cut it, join clips, caption it, lay text over it, resize it, take its\nsound — on this PC, at no cost, and show the result in the person's chat as a video they can play and download.\n\nUse this for every video edit meant for the person, never ffmpeg or a script of your own. `input` and every path are\nrelative to your working folder; `steps` run in order, each on the result of the one before:\n\n- {\"op\": \"trim\", \"start\": 3}: keep from 3 s to the end (cut the first 3 seconds); \"end\": 10 stops at 10 s.\n- {\"op\": \"join\", \"clips\": [\"b.mp4\"], \"transition\": \"fade\"}: the video so far, then each clip (transition optional).\n- {\"op\": \"caption\", \"text\": \"bonjour\", \"start\": 0, \"end\": 2}: a subtitle burnt in at the bottom (end omitted: to the end).\n- {\"op\": \"add_text\", \"text\": \"Title\", \"position\": \"center\", \"size\": 48, \"color\": \"white\", \"start\": 0, \"duration\": 3}.\n- {\"op\": \"resize\", \"width\": 1280} or {\"op\": \"resize\", \"aspect\": \"9:16\"}.\n- {\"op\": \"extract_audio\"}: its sound alone, the last step, with an .mp3 or .wav `output`.\n\n`output`: where the result goes (.mp4 or .webm for a video; its suffix picks the format). replace: write over a file\nalready there (refused otherwise). from_files, replaces: the keys of the kept files you made this from and the one it\ntakes the place of (see keep_file). Returns where it was written, its length and size, and what it cost ($0), or why\nnothing was written.",
      "inputSchema": {
       "$defs": {
        "AddText": {
@@ -2415,6 +2695,33 @@
         "default": false,
         "title": "Replace",
         "type": "boolean"
+       },
+       "from_files": {
+        "anyOf": [
+         {
+          "items": {
+           "type": "string"
+          },
+          "type": "array"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "From Files"
+       },
+       "replaces": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "default": null,
+        "title": "Replaces"
        }
       },
       "required": [
