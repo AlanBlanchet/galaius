@@ -6,7 +6,6 @@ import sys
 from typing import cast
 from galaius.catalog import models as model_catalog
 from galaius.agents import providers as agent_providers
-from galaius.agents import registry as reg
 from galaius.agents.policy import ParadigmProjection, Policy, PolicyError, policy_path
 from galaius.agents.providers import (
     PROVIDERS,
@@ -361,18 +360,3 @@ def agents_paradigm_assign(agent: str, paradigm: str, projection: str) -> None:
         print(f"ERROR: {err}", file=sys.stderr)
         raise SystemExit(2) from err
     print(f"{agent} now carries {paradigm!r} as {projection}.")
-
-
-@agents_app.command(name="clear")
-def agents_clear(run_id: str | None = None) -> None:
-    """Forget finished agent runs — all of them, or one by the short id `agents list` prints.
-
-    A running agent is never forgotten: its record is the only handle on the process.
-    """
-
-    if run_id:
-        print(f"Forgot {run_id}." if reg.forget(run_id)
-              else f"Kept {run_id!r} — unknown, or still running.")
-        return
-    cleared = reg.clear_finished()
-    print(f"Forgot {len(cleared)} finished run(s)." if cleared else "Nothing finished to clear.")

@@ -6,12 +6,12 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, TextIO
 from uuid import UUID
 from cyclopts import Parameter
 from galaius.machine.peer.client import PeerClient, PeerError, PeerUnavailable
 from galaius.machine.peer.words import pick, place
-from galaius_core import refusal_of, ASKED_BY_MAX, IMAGE_TYPES, Coded
+from galaius_core import MachineRefusal, RefusedLine, refusal_of, ASKED_BY_MAX, IMAGE_TYPES, Coded
 from galaius.agents import messaging
 from galaius.agents import agent_queue
 from galaius.agents.turns import handback
@@ -31,8 +31,16 @@ from galaius.agents.providers import (
 )
 from galaius.agents.run import run_agent
 from galaius.agents.spawn_line import Admission, Continued, Spawn, SpawnLine
-from galaius.cli.commands.agents.app import agents_app, said_refused
-from galaius.cli.commands.agents.providers import _provider_modes
+from galaius.cli.commands.agents.app import agents_app
+from galaius.cli.commands.agents.providers import modes_by_provider
+
+
+def said_refused(sentence: str, refusal: MachineRefusal | None, *, file: TextIO | None = None) -> None:
+    """A refusal said to whoever runs the command: its `ERROR:` line, then, typed, its reason as one `RefusedLine`."""
+    print(f"ERROR: {sentence}" if not sentence.startswith("ERROR: ") else sentence, file=file)
+    if refusal is not None:
+        print(RefusedLine(refusal=refusal).model_dump_json(), file=file)
+
 
 
 @agents_app.command(name="turn-end", show=False)
@@ -467,7 +475,7 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
                 permission_mode=permission_mode, image_paths=tuple(image_paths or ()),
                 agent_ref=AgentCatalog.reference(agent_id, agent_revision), delegate=delegate,
                 parent_run_id=parent_run_id, session_id=owner,
-                denied_tools=tuple(denied_tools or ()), provider_modes=_provider_modes(provider_modes),
+                denied_tools=tuple(denied_tools or ()), provider_modes=modes_by_provider(provider_modes),
                 quota_window=quota_window,
                 fence=FenceSpec.model_validate_json(fence.read_text()) if fence is not None else None,
                 for_run=for_run, single=single, continues=continues, helper=helper, cross_project=cross_project,
@@ -551,7 +559,7 @@ def agents_run(task: str, provider: str | None = None, agent: str | None = None,
                                  agent_ref=AgentCatalog.reference(agent_id, agent_revision),
                                  delegate=delegate, parent_run_id=parent_run_id,
                                  denied_tools=tuple(denied_tools or ()),
-                                 provider_modes=_provider_modes(provider_modes))
+                                 provider_modes=modes_by_provider(provider_modes))
         print(f"run_id {handle.run_id}")
         seen = 0
         while True:
@@ -574,3 +582,18 @@ def agents_run(task: str, provider: str | None = None, agent: str | None = None,
         # other galaius failure prints one actionable line.
         print(f"ERROR: {e}", file=sys.stderr)
         raise SystemExit(2) from None
+
+
+@agents_app.command(name="clear")
+def agents_clear(run_id: str | None = None) -> None:
+    """Forget finished agent runs — all of them, or one by the short id `agents list` prints.
+
+    A running agent is never forgotten: its record is the only handle on the process.
+    """
+
+    if run_id:
+        print(f"Forgot {run_id}." if reg.forget(run_id)
+              else f"Kept {run_id!r} — unknown, or still running.")
+        return
+    cleared = reg.clear_finished()
+    print(f"Forgot {len(cleared)} finished run(s)." if cleared else "Nothing finished to clear.")

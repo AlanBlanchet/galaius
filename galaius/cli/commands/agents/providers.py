@@ -143,7 +143,7 @@ def agents_modes(provider: str = DEFAULT_PROGRAM) -> None:
         print(f"{mode.id}\t{mode.label}\t{mode.detail}\t{'yes' if mode.unrestricted else 'no'}")
 
 
-def _provider_modes(values: list[str] | None) -> dict[str, str]:
+def modes_by_provider(values: list[str] | None) -> dict[str, str]:
     modes: dict[str, str] = {}
     for value in values or ():
         name, separator, mode = value.partition("=")
