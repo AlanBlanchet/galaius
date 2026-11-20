@@ -10,6 +10,7 @@ import base64
 import json
 import sys
 import threading
+import time
 
 import pytest
 
@@ -408,11 +409,10 @@ def test_a_resumed_turn_skips_a_cooled_model_and_uses_the_next_ranked_one(monkey
     assert resume_calls[-1][3]["model"] == "opus"
 
 
-def test_a_resumed_turn_refuses_when_every_candidate_for_its_provider_is_cooled(monkeypatch):
-    """When the ONLY models this session's provider can run are all cooled, resume must REFUSE
-    naming what the user can do — never spawn on a model that already refused for quota once
-    (the exact bug), and never silently pick a different provider (a vendor session cannot
-    switch CLI mid-conversation; that would abandon the conversation history)."""
+def test_a_resumed_turn_asks_the_vendor_when_every_candidate_for_its_provider_is_cooled(monkeypatch):
+    """Every model this session's provider can run is cooled: the turn is NEVER refused here (owner 2026-11-20: « The
+    harness should never dissalow if i have any form of usage »). The note is a forecast, so the vendor is asked
+    about the model whose note ends first — still the same provider (a vendor session cannot switch CLI mid-conversation)."""
     from galaius.agents import agent_queue
     from galaius.agents.limits import quota
     from galaius.models.capability import ModelCapability
@@ -426,9 +426,6 @@ def test_a_resumed_turn_refuses_when_every_candidate_for_its_provider_is_cooled(
     register_run("r1", name="reviewer", provider="resume-fake", task="t", pid=99999,
                 agent="tester", provider_session_id="vendor-thread", model="fable")
     reg._merge_record_locked("r1", {"status": "crashed", "exit_code": None})
-    # Sent by a PEER RUN, not by him: his own message to a cut run is his « Continuer » and asks
-    # the vendor again whatever this PC remembers (`AgentRun.prepare_continue`), so only an agent's
-    # message is still answered from the cooldown memory this test is about.
     register_run("r2", name="peer", provider="resume-fake", task="t", pid=99998, agent="tester",
                  provider_session_id="other-thread", model="fable")
     monkeypatch.setattr(reg, "_alive", lambda pid: False)
@@ -438,15 +435,14 @@ def test_a_resumed_turn_refuses_when_every_candidate_for_its_provider_is_cooled(
         fixture_model("fable", provider="fixture", caps={ModelCapability.LLM}, input_cost=0.1, output_cost=0.1),
         fixture_model("opus", provider="fixture", caps={ModelCapability.LLM}, input_cost=5.0, output_cost=5.0),
     ):
-        quota.record_refusal("resume-fake", "fable")
+        quota.record_refusal("resume-fake", "fable", now=time.time() - 600)
         quota.record_refusal("resume-fake", "opus")
-        # Refused eagerly at delivery time — never even enqueued, so nothing here should reach
-        # a "resend explicitly" or "uncertain" outcome; the caller learns the reason immediately.
         delivery = messaging.deliver_message("r1", "keep going", sender="r2")
+        agent_queue.dispatch("r1")
+        asyncio.run(messaging.wait_for_reply(delivery))
 
-    assert delivery.state == "error" and delivery.queue_id is None
-    assert "cooldown" in delivery.text and "agent_spawn" in delivery.text
-    assert not any(call[0] == "resume" for call in provider.calls)
+    assert delivery.state == "replied"
+    assert [call for call in provider.calls if call[0] == "resume"][-1][3]["model"] == "fable"
 
 
 def test_delivery_is_a_validated_model_not_a_dataclass():
@@ -786,8 +782,9 @@ def _cut_run_on(monkeypatch, provider, model: str):
 
 
 def test_a_resumed_turn_never_moves_its_conversation_to_a_smaller_model(monkeypatch):
-    """Its own model cooled and only a SMALLER one live: refuse and say so, never hand the session to a
-    model that cannot hold it."""
+    """Its own model cooled and only a SMALLER one live: the vendor is asked about its own model again (a note is
+    a forecast, and no turn is refused here while a model could answer), never is the session handed to a model
+    that cannot hold it."""
     from galaius.agents import agent_queue
     from galaius.agents.limits import quota
 
@@ -805,9 +802,11 @@ def test_a_resumed_turn_never_moves_its_conversation_to_a_smaller_model(monkeypa
         quota.record_refusal("resume-fake", "opus")
         delivery = messaging.deliver_message("r1", "keep going", sender="r2")
 
-    assert delivery.state == "error" and delivery.queue_id is None
-    assert "smaller" in delivery.text
-    assert not any(call[0] == "resume" for call in provider.calls)
+        agent_queue.dispatch("r1")
+        asyncio.run(messaging.wait_for_reply(delivery))
+
+    assert delivery.state == "replied"
+    assert [call for call in provider.calls if call[0] == "resume"][-1][3]["model"] == "opus"
 
 
 def test_a_resumed_turn_may_still_move_its_conversation_to_a_bigger_model(monkeypatch):
@@ -828,6 +827,41 @@ def test_a_resumed_turn_may_still_move_its_conversation_to_a_bigger_model(monkey
         asyncio.run(messaging.wait_for_reply(delivery))
 
     assert [call for call in provider.calls if call[0] == "resume"][-1][3]["model"] == "opus"
+
+
+@pytest.mark.parametrize("said", [
+    "You've reached your Fable limit. Switch to another model to continue.",
+    "Prompt is too long · automatic compaction failed: You've reached your Fable limit. Switch to another model to continue.",
+])
+def test_a_resumed_turn_leaves_a_model_whose_own_pool_is_shut_for_the_next_ranked(monkeypatch, said):
+    """2026-11-20: the floor answers a conversation's SIZE. The model it runs on refusing for its own pool (the account
+    still answers) is no size: the most capable model still open carries it (never the cheapest the criterion lists first), even one the catalog scores lower."""
+    from galaius.agents import agent_queue
+    from galaius.agents.limits import quota
+
+    provider = _FixtureCatalogProvider()
+    provider.calls = []
+    _ranked_policy(monkeypatch)
+    monkeypatch.setattr(messaging, "provider_for", lambda _: provider)
+    install_provider(monkeypatch, provider)
+    _cut_run_on(monkeypatch, provider, "opus")
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
+
+    from galaius.models.capability import ModelCapability
+    from tests.support import catalog_of, model as fixture_model
+
+    with catalog_of(
+        fixture_model("haiku", provider="fixture", caps={ModelCapability.LLM}, input_cost=0.1, output_cost=0.1, score=30.0),
+        fixture_model("sonnet", provider="fixture", caps={ModelCapability.LLM}, input_cost=1.0, output_cost=1.0, score=55.0),
+        fixture_model("opus", provider="fixture", caps={ModelCapability.LLM}, input_cost=5.0, output_cost=5.0, score=70.0),
+    ):
+        quota.remember(quota.classify(said), "resume-fake", "opus", said=said, login="")
+        delivery = messaging.deliver_message("r1", "keep going", sender="operator")
+        agent_queue.dispatch("r1")
+        asyncio.run(messaging.wait_for_reply(delivery))
+
+    assert delivery.state == "replied"
+    assert [call for call in provider.calls if call[0] == "resume"][-1][3]["model"] == "sonnet"
 
 
 # ── His message to a cut run asks the vendor again, as « Continuer » does ──────────────────────
@@ -860,9 +894,9 @@ def test_his_message_to_a_cut_run_asks_the_vendor_again(monkeypatch):
     assert [call for call in provider.calls if call[0] == "resume"][-1][3]["model"] == "opus"
 
 
-def test_an_agents_message_to_a_cut_run_asks_nothing_again(monkeypatch):
-    """Only a PERSON's message is his « Continuer ». An agent's would make a run whose model the vendor
-    just refused ask it again on every message it is sent."""
+def test_an_agents_message_to_a_cut_run_is_never_refused_by_this_pcs_memory(monkeypatch):
+    """Only a PERSON's message drops what this PC remembers (his « Continuer »). An agent's is answered from it, and when it
+    leaves no model open the vendor is asked, never the message refused."""
     from galaius.agents import agent_queue
     from galaius.agents.limits import quota
 
@@ -880,7 +914,8 @@ def test_an_agents_message_to_a_cut_run_asks_nothing_again(monkeypatch):
         quota.record_refusal("resume-fake", "opus", said="You've hit your session limit · resets 9pm (Europe/Paris)")
         delivery = messaging.deliver_message("r1", "keep going", sender="r2")
 
-    assert delivery.state == "error" and "cooldown" in delivery.text
+    # Never refused: the login's window is shut, so the turn is queued and held until it reopens (`admission`).
+    assert delivery.state == "queued" and delivery.queue_id is not None
 
 
 def test_a_message_waits_while_the_catalog_is_unreachable_and_is_never_refused(monkeypatch):

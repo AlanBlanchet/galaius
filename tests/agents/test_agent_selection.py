@@ -334,7 +334,7 @@ def _turn(model: str, text: str = "on it") -> dict:
     # 59d1a39a: the five-hour pool allows, the next line refuses for the seven-day one.
     pytest.param([_ALLOWED_5H, {"type": "rate_limit_event", "rate_limit_info": {
         "status": "rejected", "rateLimitType": "seven_day_overage_included"}}],
-                 "quota_exceeded", False, id="an allowed line before a refusal proves nothing"),
+                 "model_limit", False, id="an allowed line before a refusal proves nothing"),
     pytest.param([{"type": "error", "message": "The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account."}],
                  "model_capability_unsupported", False, id="codex refusing the model for this login"),
     pytest.param([{"type": "rate_limit_event", "rate_limit_info": {"status": "allowed_warning", "rateLimitType": "seven_day",
@@ -405,7 +405,7 @@ async def test_a_refusal_that_reaches_disk_after_the_child_exits_is_still_seen(t
     writer = asyncio.create_task(refuse_late())
     reason = await quota_probe("probe-run", SimpleNamespace(returncode=1), window=1.0)
     await writer
-    assert reason == "quota_exceeded"
+    assert reason == "model_limit"   # « reached your Fable limit »: that model's own pool
 
 
 class _ClaudeNamed(_Cli):

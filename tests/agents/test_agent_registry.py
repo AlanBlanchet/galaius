@@ -2222,7 +2222,6 @@ def _ended_on(run_id: str, said: str, *, pid: int, parent: str | None = None, wo
 
 @pytest.mark.parametrize("said, paused", [
     (_SESSION_LIMIT, True),
-    ("You've reached your Fable limit. Switch to another model, or manage usage credits.", False),  # names no reset
     ("Error: the build failed", False),
 ])
 def test_only_a_usage_limit_naming_its_reset_pauses_a_run(resuming, said, paused):
@@ -2237,6 +2236,21 @@ def test_only_a_usage_limit_naming_its_reset_pauses_a_run(resuming, said, paused
     assert [(r.run_id, r.resumes) for r, _ in written] == [("lim1", "itself")]
     assert reg.get_run("lim1").resume_at == reopens + quota.RESET_SLACK
     assert 0 < reopens - run.finished_at <= 24 * 3600
+
+
+@pytest.mark.parametrize("said", [
+    "You've reached your Fable limit. Switch to another model, or manage usage credits.",
+    "Prompt is too long · automatic compaction failed: You've reached your Fable limit. Switch to another model to continue.",
+])
+def test_a_run_cut_by_its_models_own_pool_resumes_at_once_on_the_next_model(resuming, said):
+    """2026-11-20 « You've reached your Fable limit »: the account answers, so waiting for a reset (or for none: the line
+    names none) strands a conversation another model can carry. One automatic resume, due when it ended."""
+    run = _ended_on("lim-pool", said, pid=402)
+
+    written = reg.schedule_resumes()
+
+    assert [(r.run_id, r.resumes) for r, _ in written] == [("lim-pool", "itself")]
+    assert reg.get_run("lim-pool").resume_at == run.finished_at
 
 
 @pytest.mark.parametrize("answered_by, after, early", [
