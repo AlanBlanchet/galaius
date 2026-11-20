@@ -104,3 +104,12 @@ def test_installed_programs_are_named_as_data_and_the_missing_standard_is_said(m
     text = CommunityAgent.search("editor", "mcp")
     assert "Some Editor" in inside_quote(text).splitlines()[-1] or "Some Editor" in text
     assert "No standard lets Galaius ask a program" in text
+
+
+def test_servers_a_registry_record_describes_come_first_and_the_count_is_what_is_listed(served):
+    bare = [entry(f"Popular {at}", None) for at in range(12)]
+    served(CommunityPage(entries=(*bare, entry("Described", NPM)), next=None, sort="popular", matched=McpMatched(servers=1, publishers=1)))
+    text = CommunityAgent.search("tool", "mcp")
+    quoted = inside_quote(text)
+    assert "Described" in quoted.splitlines()[0] and "package npm @a/tool" in quoted.splitlines()[1]   # first row, its fact line right under it
+    assert sum(1 for line in quoted.splitlines() if line.startswith("- ")) == 10 and "10 listed above" in text
