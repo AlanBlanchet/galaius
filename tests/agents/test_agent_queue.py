@@ -433,9 +433,6 @@ ATTEMPTS = {
     "died saying nothing, then replied": ([_stream(code=1), _stream(_TEXT, _DONE)], "replied", 2),
     "died twice, then replied": ([_stream(code=1), _stream(code=1), _stream(_TEXT, _DONE)], "replied", 3),
     "died three times": ([_stream(code=1)] * 3, "failed", 3),
-    # 13 refused by the plan's limit: sending again before the reset is refused again.
-    "usage limit": ([_stream({"type": "assistant", "session_id": "vendor", "message": {"model": "<synthetic>", "content": [{"type": "text", "text": _LIMIT}]}},
-                             {**_DONE, "is_error": True, "result": _LIMIT}, code=1)], "failed", 1),
     # Died after it acted: sent again, its tool calls (a commit, a message) would run twice.
     "acted, then died": ([_stream({"type": "assistant", "session_id": "vendor", "message": {"content": [
         {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "git commit -m x"}}]}}, code=1)], "failed", 1),
@@ -468,6 +465,36 @@ def test_a_message_is_sent_once_more_only_when_its_turn_died_before_answering(mo
     # At work between tries, never failed before the last one; how the last one ended is the run's.
     assert between == ["starting"] * (launched - 1)
     assert _listed("r1") != "starting" and (state != "failed" or _listed("r1") == "failed")
+
+
+_POOL_LIMIT = "You've reached your Opus limit. Switch to another model to continue."
+_LIMITED = _stream({"type": "assistant", "session_id": "vendor", "message": {"model": "<synthetic>", "content": [{"type": "text", "text": _POOL_LIMIT}]}},
+                   {**_DONE, "is_error": True, "result": _POOL_LIMIT}, code=1)
+
+
+@pytest.mark.parametrize(("streams", "state", "launched"), [
+    pytest.param([_LIMITED, _stream(_TEXT, _DONE)], "replied", 2, id="refused by a limit, the same turn runs again at once and replies"),
+    pytest.param([_LIMITED, _LIMITED, _LIMITED], "failed", 3, id="refused on every model it is sent to: failed only when the fallbacks are spent"),
+])
+def test_a_turn_a_provider_limit_refused_is_sent_again_at_once_never_failed_or_parked(monkeypatch, streams, state, launched):
+    """Owner 2026-11-20: « We should NEVER stop the user request and instead use a fallback ». A refusal before the turn
+    answered or acted benches the model it refused (`quota.remember`: until the vendor's stated reset) and re-dispatches the
+    SAME item, whose model is chosen anew; only once `LIMIT_FALLBACKS` are spent does the item fail."""
+    monkeypatch.setattr(agent_queue, "LIMIT_FALLBACKS", 2)
+    scripts = iter(streams)
+
+    class Provider(QueueProvider):
+        def resume_command(self, session_id, message, **kwargs):
+            self.messages.append(said(message))
+            return [sys.executable, "-c", next(scripts)]
+
+    provider = setup_queue(monkeypatch, Provider())
+    messaging.deliver_message("r1", "do it", sender="operator")
+    agent_queue.dispatch("r1")
+
+    [item] = agent_queue.items("r1")
+    assert (item.state, len(provider.messages)) == (state, launched), item.error
+    assert item.fallbacks == launched - 1 and item.attempts == 0
 
 
 def test_a_failed_resume_records_the_providers_own_last_words(monkeypatch):

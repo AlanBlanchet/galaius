@@ -113,7 +113,7 @@ def _rejected(**fields) -> str:
 
 
 @pytest.mark.parametrize(("said", "blocked_for"), [
-    pytest.param(SEVEN_DAY_REFUSAL, HOUR, id="one seven-day refusal: an hour, not the 39 h to its reset"),
+    pytest.param(SEVEN_DAY_REFUSAL, 1791237600 + quota.RESET_SLACK - NOW, id="a stated reset holds the block until it, the 39 h included"),
     pytest.param("seven_day limit: rejected", HOUR, id="a named window alone: an hour"),
     pytest.param("You've reached your Fable limit. Switch to another model.", HOUR, id="no window named"),
     pytest.param(_rejected(rateLimitType="five_hour", resetsAt=NOW + 600), 600 + quota.RESET_SLACK,
@@ -125,14 +125,16 @@ def _rejected(**fields) -> str:
     pytest.param(json.dumps({"status": "rejected", "windowDurationMins": 20}), 20 * 60,
                  id="a measured window shorter than an hour"),
     pytest.param(_rejected(resetsAt=NOW - 5000), HOUR, id="a reset already past is ignored"),
-    pytest.param(_rejected(resetsAt=NOW + 99 * 86400), HOUR, id="an absurd reset is ignored"),
+    pytest.param(_rejected(resetsAt=NOW + 99 * 86400), quota.MAX_COOLDOWN, id="an absurd reset is held no longer than the longest window"),
     pytest.param(json.dumps({"status": "rejected", "retry-after-ms": 60000}), HOUR,
                  id="a millisecond hint is not read as seconds"),
     pytest.param("\n".join([ALLOWED_LINE, "seven_day limit: rejected", ALLOWED_LINE]), HOUR,
                  id="the healthy lines around a refusal lend it no reset"),
 ])
-def test_one_refusal_blocks_an_hour_at_most_and_sooner_if_the_vendor_says_so(said, blocked_for):
-    """Owner 2026-10-05: « A warning or one refusal must never block a model for 10 h »."""
+def test_a_refusal_blocks_until_the_reset_the_vendor_stated_else_an_hour(said, blocked_for):
+    """Owner 2026-11-20: a Fable pool the vendor said shut until Monday was benched 19 minutes and the next turn asked Fable
+    again: the block lasts until the STATED reset (owner 2026-10-05 « A warning or one refusal must never block a model for
+    10 h » stands for a refusal that stated none: an hour, doubled by each refusal heard right after it ended)."""
     assert quota.record_refusal("claude", "m", said=said, now=NOW) == pytest.approx(NOW + blocked_for)
 
 
@@ -152,7 +154,7 @@ def test_refusals_in_a_row_double_the_block_and_a_quiet_spell_resets_it():
     never past what the vendor named. Refused again much later, it is a new story."""
     blocks, moment = [], NOW
     for _ in range(4):
-        until = quota.record_refusal("claude", "m", said=SEVEN_DAY_REFUSAL, now=moment)
+        until = quota.record_refusal("claude", "m", said="seven_day limit: rejected", now=moment)
         blocks.append(until - moment)
         moment = until  # tried again the moment the block ends, refused again
     assert blocks == pytest.approx([HOUR, 2 * HOUR, 4 * HOUR, 8 * HOUR])

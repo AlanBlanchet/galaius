@@ -49,6 +49,9 @@ MAX_PENDING = 128
 #: (three in all). This PC tries again by itself: owner 2026-10-26 « i should have no buttons to press and it sohuld
 #: simply work ». A refusal waiting cannot change (`_permanent`) is not tried again.
 RESUME_BACKOFF: tuple[float, ...] = (5.0, 20.0)
+#: How many times ONE turn a provider limit refused is sent again at once, each time on what the refusals before it left open
+#: (the next model, then the next login: `registry.swap_login`): every model of the run's provider is benched by the fifth.
+LIMIT_FALLBACKS = 6
 _POLL_SECONDS = 0.1
 #: Runs whose hand-off to another provider was refused (`fallback.HandOff.make`) in this dispatcher: their turn goes to their own provider.
 _HANDOFF_REFUSED: set[str] = set()
@@ -324,6 +327,9 @@ class QueueItem(BaseModel):
     #: `len(RESUME_BACKOFF)`). Written only once one was: a dispatcher of an older galaius cannot read an item carrying it
     #: (`_entries`), so it never claims it; the dispatcher that tries it again delivers it.
     attempts: int = Field(default=0, ge=0, exclude_if=lambda value: value == 0)
+    #: Turns sent again at once on the next model after the provider refused one for a limit (`_fall_back_locked`: at most
+    #: `LIMIT_FALLBACKS`). Written only once one was, like `attempts`.
+    fallbacks: int = Field(default=0, ge=0, exclude_if=lambda value: value == 0)
     #: Not claimed before this instant (epoch s): the pause before its next try (`RESUME_BACKOFF`). Cleared at its claim.
     not_before: float | None = Field(default=None, exclude_if=lambda value: value is None)
     #: What its turn waits for before it can start, when it waits for anything: `service` (this computer's link to the
@@ -948,7 +954,7 @@ def rearm_locked(run_id: str, message_id: str) -> QueueItem | None:
     if item is None:
         return None
     return _replace_item_locked(run_id, item.id, state="pending", started_at=None, finished_at=None, raw_index=None, attempt_token=None,
-                                attempts=0, not_before=None, waiting=None, waiting_since=None, error="")
+                                attempts=0, fallbacks=0, not_before=None, waiting=None, waiting_since=None, error="")
 
 
 #: How long a dispatcher waits before trying a turn again whose pinned revision its service could not be reached for
@@ -1043,11 +1049,30 @@ def _again_locked(run_id: str, item: QueueItem, why: str) -> bool:
     return True
 
 
+def _fall_back_locked(run_id: str, item: QueueItem, run: "reg.AgentRun | None", refusal: str) -> bool:
+    """A provider LIMIT refused the turn `item` before it answered or acted: the same turn is sent again at once, and its
+    model is chosen anew with that refusal remembered (`quota.remember`: benched until the vendor's stated reset), so it runs
+    on the next model, then the next login — never failed or parked for the reset (owner 2026-11-20 « We should NEVER stop the
+    user request and instead use a fallback »). False once `LIMIT_FALLBACKS` are spent: no model of the run's logins answers.
+    The caller owns the run lock."""
+    if item.fallbacks >= LIMIT_FALLBACKS:
+        return False
+    if run is not None and (kind := quota.classify(refusal)) is not None:
+        quota.remember(kind, run.provider, run.model, said=refusal, subscription=run.subscription_id, login=run.login)
+    _replace_item_locked(run_id, item.id, state="pending", started_at=None, raw_index=None, attempt_token=None, error="",
+                         fallbacks=item.fallbacks + 1, not_before=time.time() + 1.0, waiting=None, waiting_since=None)
+    reg.begin_resume_locked(run_id)
+    log.warning("agent queue %s: item %s sent again on the next model (fallback %d of %d): %s", path(run_id), item.id,
+                item.fallbacks + 1, LIMIT_FALLBACKS, refusal[:200])
+    _hand_on_locked(run_id)
+    return True
+
+
 def settle(run_id: str, item: QueueItem, code: int) -> None:
     """Record how the attempt `item` ended once its provider child exited with `code`: replied, failed or uncertain.
     One whose CLI exited non-zero is replied when its turn answered all the same; tried again (`_again_locked`) when it
-    died having answered and done nothing, unless it was stopped or refused by its plan's limit (sent again before
-    the reset, it is refused again); else failed, and a child that died saying nothing fails the run's turn."""
+    died having answered and done nothing; refused by a provider limit before it did anything, it is sent again at once on
+    the next model (`_fall_back_locked`), failed only once none answers; else failed, and a child that died saying nothing fails the run's turn."""
     events = _attempt_events(run_id, item)
     attempt_state, attempt_error = _classify_attempt(item, events)
     if code and attempt_state != "replied":
@@ -1062,11 +1087,15 @@ def settle(run_id: str, item: QueueItem, code: int) -> None:
         stopped = code in (-signal.SIGTERM, 128 + signal.SIGTERM)
         # A turn that answered, or acted (a commit, a message, a deploy) before it died, is never sent again: its
         # tool calls would run twice.
-        answered = any(item.turn.accepts(event) or event.kind == "tool" for event in events)
+        # (The provider's own refusal, a synthetic text or a `done` carrying it, is no answer.)
+        answered = any((item.turn.accepts(event) and not (event.text and quota.classify(event.text) is not None)) or event.kind == "tool"
+                       for event in events)
         limited = said is not None and said.kind == "error" and quota.classify(said.text) is not None
         with reg.record_lock(run_id):
             current = item_locked(run_id, item.id)
             if current is None or current.state != "running":
+                return
+            if limited and not (stopped or answered) and _fall_back_locked(run_id, current, reg.get_run(run_id), said.text):
                 return
             if not (stopped or answered or limited) and _again_locked(run_id, current, error):
                 return

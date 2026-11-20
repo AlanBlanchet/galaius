@@ -621,15 +621,18 @@ def record_refusal(provider: str, model: str | None, *, said: str = "", subscrip
     """Remember that this model refused; returns when it may be tried again.
 
     `said` is whatever the vendor wrote — the child's raw stream, an exception message, one
-    event's text. What it names only ever SHORTENS the block (a five-hour pool reopening in ten
-    minutes); the length itself is earned by refusals in a row (`Block.length`).
+    event's text. A reset it STATES holds the block until then; without one the length is earned by refusals in a row
+    (`Block.length`), shortened to a window length it named.
     """
     moment = time.time() if now is None else now
     refusal = Refusal.read(said, now=moment)
     named = {"window": refusal.window, "reopens_at": refusal.reopens_at} if refusal is not None else {}
+    # ONE key per (login, pool): a refused FAMILY's pool shuts its sibling models on this login, while the login's other models
+    # and its other logins stay open; the model's own key would be a second, differing note of the same fact.
+    key = _family(refusal.pool) if refusal is not None and refusal.pool else model or ""
     with _usage(moment) as entries:
         blocks = entries.setdefault(_login(provider, subscription), LoginUsage()).blocks
-        previous = blocks.get(model or "")
+        previous = blocks.get(key)
         if previous is None:
             count = 1
         elif moment < previous.until:
@@ -639,17 +642,18 @@ def record_refusal(provider: str, model: str | None, *, said: str = "", subscrip
         else:
             count = previous.count + 1
         until = moment + Block.length(count)
-        if refusal is not None and (latest := refusal.latest(now=moment)) is not None:
+        latest = refusal.latest(now=moment) if refusal is not None else None
+        if refusal is not None and refusal.reopens_at is not None and latest is not None:
+            # The vendor STATED when it reopens: the block lasts until then, never a shorter default window (owner 2026-11-20:
+            # a Fable pool shut until Monday was benched 19 minutes, and the next turn asked Fable again). A reset it did not
+            # state, or only the length of a window, keeps the earned length, shortened to that bound (`Block.length`).
+            until = min(latest, moment + MAX_COOLDOWN)
+        elif latest is not None:
             until = min(until, latest)
         if previous is not None and moment < previous.until:
             # A weaker signal never shortens a live block; clearing one early is `served`'s job.
             until = max(until, previous.until)
-        blocks[model or ""] = Block(until=until, count=count, at=max(moment, previous.at) if previous else moment, **named)
-        if refusal is not None and refusal.pool:
-            # The vendor refused a FAMILY's pool, not this one model: its sibling models are as shut on this login, while the
-            # login's other models and its other logins are not.
-            family = _family(refusal.pool)
-            blocks[family] = Block(until=max(until, blocks[family].until if family in blocks else 0.0), count=count, at=moment, **named)
+        blocks[key] = Block(until=until, count=count, at=max(moment, previous.at) if previous else moment, **named)
     hold_named_window(provider, said, subscription=subscription, now=moment)
     return until
 
