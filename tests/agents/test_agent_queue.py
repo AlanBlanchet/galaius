@@ -495,6 +495,25 @@ def test_a_turn_a_provider_limit_refused_is_sent_again_at_once_never_failed_or_p
     [item] = agent_queue.items("r1")
     assert (item.state, len(provider.messages)) == (state, launched), item.error
     assert item.fallbacks == launched - 1 and item.attempts == 0
+    # The record says which model's pool refused the turn (the first one, whatever the later fall-backs), for every reader of it.
+    fell = reg.get_run("r1").fell_back_from
+    assert fell is not None and fell.pool == "opus" and fell.model == "queue-model"
+
+
+def test_the_next_message_a_run_takes_clears_the_last_turns_fall_back(monkeypatch):
+    """`fell_back_from` is the latest turn's: a message that arrives afterwards starts a turn that was refused by nothing yet."""
+    class Provider(QueueProvider):
+        def resume_command(self, session_id, message, **kwargs):
+            self.messages.append(said(message))
+            return [sys.executable, "-c", next(scripts)]
+
+    scripts = iter([_LIMITED, _stream(_TEXT, _DONE), _stream(_TEXT, _DONE)])
+    setup_queue(monkeypatch, Provider())
+    messaging.deliver_message("r1", "do it", sender="operator")
+    agent_queue.dispatch("r1")
+    assert reg.get_run("r1").fell_back_from is not None
+    messaging.deliver_message("r1", "and then", sender="operator")
+    assert reg.get_run("r1").fell_back_from is None
 
 
 def test_a_failed_resume_records_the_providers_own_last_words(monkeypatch):

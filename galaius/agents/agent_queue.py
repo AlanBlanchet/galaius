@@ -465,6 +465,7 @@ def enqueue_locked(run_id: str, *, message_id: str, sender: str, turn: QueuedTur
     state["version"] = 1
     state["items"] = [*state.get("items", []), item.model_dump(mode="json")]
     _write_state(run_id, state)
+    reg.clear_fell_back_locked(run_id)
     if turn.asks():
         reg.note_asker_locked(run_id, sender)
     return item
@@ -1059,6 +1060,10 @@ def _fall_back_locked(run_id: str, item: QueueItem, run: "reg.AgentRun | None", 
         return False
     if run is not None and (kind := quota.classify(refusal)) is not None:
         quota.remember(kind, run.provider, run.model, said=refusal, subscription=run.subscription_id, login=run.login)
+        if run.model:
+            named = quota.Refusal.read(refusal, now=time.time())
+            reg.note_fell_back_locked(run_id, reg.FellBack(model=run.model, pool=(named.pool or None) if named else None,
+                                                           resets_at=named.reopens_at if named else None))
     _replace_item_locked(run_id, item.id, state="pending", started_at=None, raw_index=None, attempt_token=None, error="",
                          fallbacks=item.fallbacks + 1, not_before=time.time() + 1.0, waiting=None, waiting_since=None)
     reg.begin_resume_locked(run_id)

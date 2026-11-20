@@ -144,6 +144,18 @@ class SkippedCandidate(BaseModel):
     until: float | None = None
 
 
+class FellBack(BaseModel):
+    """A turn a provider's usage limit refused before it answered, sent again at once on another model (`agent_queue`): the
+    model that refused it, the model family's pool when the vendor named one (`quota.POOLS`), and when the vendor says that
+    pool reopens (epoch seconds; None: it named none). The run's own `model` is what the turn ran on instead."""
+
+    model_config = {"frozen": True, "extra": "forbid"}
+
+    model: str
+    pool: str | None = None
+    resets_at: float | None = None
+
+
 class Interruption(BaseModel):
     """How a run's process went away when it never said how it ended itself (status `interrupted`), as
     the system recorded it: the journal of the systemd unit that held it (`AgentRun.unit`) when it can
@@ -435,6 +447,10 @@ class AgentRun(OlderTokens, ContextGauge):
     #: Automatic resumes in a row for `resumed_cut` (`claim_resume`), back to 0 once a turn ends done: past
     #: `AUTO_RESUMES_PER_CUT`, a cut that keeps coming back (the same memory peak, a time limit) is left to a person.
     resumed_cuts: int = 0
+    #: The model a usage limit refused the latest turn on, which then ran on another (`FellBack`): written when the turn is
+    #: sent again, kept through its fall-backs (the model he asked for, never an intermediate one), cleared by the next message
+    #: this run takes. None: the latest turn was never refused by a limit.
+    fell_back_from: FellBack | None = None
     #: True for a session galaius did NOT spawn — the user's own editor windows, surfaced so the
     #: supervisor shows the machine's real state rather than only its own children.
     foreign: bool = False
@@ -2860,6 +2876,21 @@ def begin_resume_locked(run_id: str) -> AgentRun | None:
     if run is None or run.kind != "process" or run.process_running():
         return run
     return run if run.status == "starting" else _merge_record_locked(run_id, {"status": "starting", "finished_at": None})
+
+
+def note_fell_back_locked(run_id: str, refused: FellBack) -> None:
+    """The latest turn's model was refused by a limit and the turn is sent again (`FellBack`), while the caller owns the run
+    lock: its first refused model stays the one the record names, a second refusal on the way adds nothing."""
+    run = _read_record(run_id)
+    if run is not None and run.fell_back_from is None:
+        _merge_record_locked(run_id, {"fell_back_from": refused.model_dump(mode="json")})
+
+
+def clear_fell_back_locked(run_id: str) -> None:
+    """A new message reaches the run, while the caller owns its lock: the last turn's fall-back is that turn's, no longer this one's."""
+    run = _read_record(run_id)
+    if run is not None and run.fell_back_from is not None:
+        _merge_record_locked(run_id, {"fell_back_from": None})
 
 
 def end_resume_locked(run_id: str) -> AgentRun | None:
