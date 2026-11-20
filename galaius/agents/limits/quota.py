@@ -629,7 +629,8 @@ def record_refusal(provider: str, model: str | None, *, said: str = "", subscrip
     named = {"window": refusal.window, "reopens_at": refusal.reopens_at} if refusal is not None else {}
     # ONE key per (login, pool): a refused FAMILY's pool shuts its sibling models on this login, while the login's other models
     # and its other logins stay open; the model's own key would be a second, differing note of the same fact.
-    key = _family(refusal.pool) if refusal is not None and refusal.pool else model or ""
+    family = _family(refusal.pool) if refusal is not None and refusal.pool else None
+    key = family or model or ""
     with _usage(moment) as entries:
         blocks = entries.setdefault(_login(provider, subscription), LoginUsage()).blocks
         previous = blocks.get(key)
@@ -654,6 +655,9 @@ def record_refusal(provider: str, model: str | None, *, said: str = "", subscrip
             # A weaker signal never shortens a live block; clearing one early is `served`'s job.
             until = max(until, previous.until)
         blocks[key] = Block(until=until, count=count, at=max(moment, previous.at) if previous else moment, **named)
+        if family is not None and model and refusal.pool not in model.lower():
+            # A model id that carries no family token (an alias) is not reached by the pool's key: it is noted itself.
+            blocks[model] = blocks[key]
     hold_named_window(provider, said, subscription=subscription, now=moment)
     return until
 
