@@ -5,6 +5,7 @@ import hmac
 import json
 import logging
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 from pydantic import ValidationError
 from galaius_core import PcFeature, MACHINE_AGENT_REQUESTS, MachineAgentSettingsUpdate, AgentRefusal, MachineAgentAnswer, MachineAgentRequest, MachineDataAnswer, MachineDataRequest, MachineFileQuery, MachineFileQueryResult
 from galaius.machine.places.places import PlaceDesk
@@ -14,13 +15,20 @@ from galaius_core import AgentRefused
 
 from galaius.machine.connection.config import MachineConfig
 from galaius.machine.connection.faults import ANSWERED_REFUSALS, said_of
+from galaius.machine.connection.shared import Shared
 from galaius.machine.connection.files import MachineDataFiles, MachineFiles
 
 logger = logging.getLogger(__package__)
 
 
-class Answers:
+class Answers(Shared):
     """What the runner answers when the server asks about this machine."""
+
+    #: Agent actions already accepted (id -> expiry): each is taken once (`_answer_agent_request`).
+    _agent_requests: dict[UUID, datetime]
+    #: The answer of each accepted action the server may ask again (`idempotent_feature`), by its id,
+    #: for its `idempotent_seconds`; past a restart a message's queue item or transcript entry tells instead.
+    _agent_answers: dict[UUID, asyncio.Future[MachineAgentAnswer]]
 
     async def _answer_file_query(self, socket, config: MachineConfig, payload: object) -> None:
         """What a person picking a script sees of this machine: checked like a command (this

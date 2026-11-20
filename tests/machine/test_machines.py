@@ -36,6 +36,7 @@ from galaius.workflows.functions import FunctionRegistry, discover_python, disco
 from galaius.host.private_files import PRIVATE_FILES
 from tests.support.private_files import loosen
 from galaius.account.tls import server_tls
+from galaius.machine.connection import inventory, problems, transport
 from galaius.machine.connection.config import MachineConfig
 from galaius.machine.connection.files import CommandFiles, MachineFiles
 from galaius.machine.connection.logs import CommandLogs
@@ -53,7 +54,7 @@ def test_the_machine_channel_never_trusts_the_systems_cached_intermediates(serve
     there failed galaius.ai's valid chain with "certificate has expired" while HTTP calls worked."""
     monkeypatch.setattr(ssl.SSLContext, "load_default_certs", lambda *_: pytest.fail("the system store was loaded"))
     server_tls.cache_clear()
-    tls = MachineRunner._channel(MachineRunner._channel_url(server), "token").connection_kwargs.get("ssl")
+    tls = transport.channel(transport.channel_url(server), "token").connection_kwargs.get("ssl")
     assert (tls is server_tls() and tls.verify_mode == ssl.CERT_REQUIRED and tls.check_hostname) is verified
 
 
@@ -146,18 +147,18 @@ def test_accelerators_reports_cuda_gpus_from_nvidia_smi(tmp_path: Path, monkeypa
         fake_nvidia_smi.write_text('#!/bin/sh\nprintf "NVIDIA GeForce RTX 2070, 8192\\n"\n')
         fake_nvidia_smi.chmod(0o755)
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}")
-    monkeypatch.setattr(MachineRunner, "_mps_accelerator", staticmethod(lambda: ()))  # an Apple host would also report its GPU
+    monkeypatch.setattr(inventory, "mps_accelerator", lambda: ())  # an Apple host would also report its GPU
 
-    accelerators = MachineRunner._accelerators()
+    accelerators = inventory.accelerators()
 
     assert accelerators == [{"kind": "cuda", "name": "NVIDIA GeForce RTX 2070", "memory_mb": 8192}]
 
 
 def test_accelerators_reports_none_when_no_gpu_is_detected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setattr(MachineRunner, "_mps_accelerator", staticmethod(lambda: ()))
+    monkeypatch.setattr(inventory, "mps_accelerator", lambda: ())
 
-    assert MachineRunner._accelerators() == [{"kind": "none", "name": "none", "memory_mb": 0}]
+    assert inventory.accelerators() == [{"kind": "none", "name": "none", "memory_mb": 0}]
 
 
 def test_accelerators_reports_apple_silicon_without_a_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -165,13 +166,13 @@ def test_accelerators_reports_apple_silicon_without_a_subprocess(monkeypatch: py
     monkeypatch.setattr("sys.platform", "darwin")
     monkeypatch.setattr("platform.machine", lambda: "arm64")
 
-    assert MachineRunner._accelerators() == [{"kind": "mps", "name": "Apple GPU", "memory_mb": 0}]
+    assert inventory.accelerators() == [{"kind": "mps", "name": "Apple GPU", "memory_mb": 0}]
 
 
 def test_resources_reports_real_cpu_count_positive_ram_and_free_disk(tmp_path: Path) -> None:
     """CPU/RAM/disk the scheduler's fit check reads — real numbers off this machine, never a
     hardcoded stand-in: `cpu_count` matches `os.cpu_count()`, `ram_mb`/`disk_free_gb` are positive."""
-    resources = MachineRunner._resources(tmp_path)
+    resources = inventory.resources(tmp_path)
 
     assert resources["cpu_count"] == os.cpu_count()
     assert resources["ram_mb"] > 0
@@ -181,7 +182,7 @@ def test_resources_reports_real_cpu_count_positive_ram_and_free_disk(tmp_path: P
 def test_resources_falls_back_to_one_cpu_when_the_count_is_unknown(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr("os.cpu_count", lambda: None)
 
-    assert MachineRunner._resources(tmp_path)["cpu_count"] == 1
+    assert inventory.resources(tmp_path)["cpu_count"] == 1
 
 
 def test_model_input_path_rejects_files_outside_machine_workspace(tmp_path: Path) -> None:
@@ -216,13 +217,13 @@ def _command(machine_id, function: str, version: str, arguments: dict) -> Machin
 
 def test_functions_advertises_registered_entries_as_wire_summaries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    assert MachineRunner._functions() == []
+    assert inventory.functions() == []
     source = tmp_path / "greeter.py"
     source.write_text("import galaius\n\n@galaius.function\ndef greet(name: str) -> str:\n    \"\"\"Greets.\"\"\"\n    return f'hi {name}'\n")
     entry = discover_python(source)[0]
     FunctionRegistry().add(entry)
 
-    advertised = MachineRunner._functions()
+    advertised = inventory.functions()
 
     assert advertised == [entry.summary().model_dump(mode="json")]
 
@@ -454,7 +455,7 @@ def test_a_channel_that_keeps_failing_tells_its_page_why_once(tmp_path: Path, mo
     question = json.loads(asked.content)
     assert asked.url.path == "/v1/machine/error-report" and question["kind"] == "channel_unreachable"
     assert "CERTIFICATE_VERIFY_FAILED" in question["message"] and token not in question["message"] and set(question) == {"id", "kind", "message"}
-    reports = MachineRunner.error_reports()
+    reports = problems.drafts()
     (draft,) = reports.drafts()
     assert draft.asked and reports.prepare(config, "channel_unreachable", draft.question.message, ()).id == draft.id and len(sent) == 2, "the same problem is asked once"
 
@@ -483,7 +484,7 @@ def test_a_report_is_masked_and_its_question_asked_until_the_server_takes_it(tmp
 
     monkeypatch.setattr(httpx, "post", post)
     monkeypatch.setattr(httpx, "get", lambda url, timeout, **options: httpx.Response(204))
-    reports = MachineRunner.error_reports().model_copy(update={"retry": timedelta(0)})  # the next look, not a minute later
+    reports = problems.drafts().model_copy(update={"retry": timedelta(0)})  # the next look, not a minute later
     line = f"\x1b[31mopening {Path.home()}/projets/out.md with Bearer {token}\x1b[0m"
     draft = reports.prepare(config, "crashed", "RuntimeError: gone", (line,))
     assert not draft.asked and "~/projets/out.md" in draft.upload.detail and token not in draft.upload.detail and "\x1b" not in draft.upload.detail
@@ -491,13 +492,13 @@ def test_a_report_is_masked_and_its_question_asked_until_the_server_takes_it(tmp
     # An install's problem words are the service log's raw end (a program the PC ran may have written it):
     # they name the problem on its page, never the report's question or lines.
     monkeypatch.setattr(httpx, "post", lambda url, timeout, **options: posts.append(httpx.Request("POST", url, **options)) or httpx.Response(201 if "error-report" in url else 204))
-    MachineRunner.report_problem(config, "service_stopped", "my-script: customer list exported to /srv/clients.csv", ("17:44:05 error galaius.machine.connection: service stopped",))
+    problems.report(config, "service_stopped", "my-script: customer list exported to /srv/clients.csv", ("17:44:05 error galaius.machine.connection: service stopped",))
     question = json.loads(posts[-2].content)
     assert question["message"] == "17:44:05 error galaius.machine.connection: service stopped" and "clients.csv" not in posts[-2].content.decode()
     # A service log's end is this program's own text as often as a sentence: only what a person can read travels
     # (its page shows it as « the PC's own words »); the rest stays in this computer's log and in the report's
     # lines, which go nowhere before its owner says so (visual-critic 2026-10-15: a page read « KeyError: 'token' »).
-    MachineRunner.report_problem(config, "channel_unreachable", "signing in again: KeyError: 'token'", ("17:44:06 error galaius.machine.connection: KeyError: 'token'",))
+    problems.report(config, "channel_unreachable", "signing in again: KeyError: 'token'", ("17:44:06 error galaius.machine.connection: KeyError: 'token'",))
     told = json.loads(next(post for post in reversed(posts) if post.url.path.endswith("/machine/problem")).content)
     assert told["detail"] == "signing in again"
 
@@ -516,7 +517,7 @@ def test_a_problem_met_again_is_one_question_and_a_full_window_waits_its_retry_a
     posts: list[httpx.Request] = []
     monkeypatch.setattr(httpx, "post", lambda url, timeout, **options: posts.append(httpx.Request("POST", url, **options)) or httpx.Response(429, headers={"Retry-After": "3600"}))
     monkeypatch.setattr(httpx, "get", lambda url, timeout, **options: httpx.Response(204))
-    reports = MachineRunner.error_reports()
+    reports = problems.drafts()
     with caplog.at_level(logging.WARNING, logger="galaius.diagnostics.error_reports"):
         older = reports.prepare(config, "crashed", "KeyError: 'hello'", ())
         for clock in ("20:20:08", "20:28:39", "23:45:52"):
@@ -538,7 +539,7 @@ def test_a_refused_question_waits_what_the_server_says_and_never_raises(tmp_path
 
     header = retry_after().encode("latin-1")
     monkeypatch.setattr(httpx, "post", lambda url, timeout, **options: httpx.Response(429, headers=[(b"Retry-After", header)]))
-    draft = MachineRunner.error_reports().prepare(_config(tmp_path, "read_only"), "crashed", "KeyError: 'hello'", ())
+    draft = problems.drafts().prepare(_config(tmp_path, "read_only"), "crashed", "KeyError: 'hello'", ())
     assert draft is not None and draft.ask_after is not None and abs(draft.ask_after - datetime.now(UTC) - wait) < timedelta(minutes=1)
 
 
@@ -547,7 +548,7 @@ def test_a_crash_is_told_to_its_page_once_per_cause_in_one_process(tmp_path: Pat
     connect`, the Windows task loops on it): a crash is reported there, once per distinct cause,
     and still raised for the service manager to restart it; a deliberate stop is no crash."""
     reported: list[tuple[str, str]] = []
-    monkeypatch.setattr(MachineRunner, "report_problem", classmethod(lambda cls, config, code, detail="", *rest: reported.append((code, detail)) or True))
+    monkeypatch.setattr(problems, "report", lambda config, code, detail="", *rest: reported.append((code, detail)) or True)
     runner = MachineRunner(tmp_path / "machine.json")
     config = _config(tmp_path, "read_only")
     for crash in (RuntimeError("socket gone"), RuntimeError("socket gone"), KeyError("hello"), PermissionError("revoked")):
@@ -881,9 +882,9 @@ async def test_data_query_answers_during_command_and_commands_stay_serial(tmp_pa
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     runner = MachineRunner()
     runner.heartbeat_seconds = 3600
-    for name in ("_runtimes", "_accelerators", "_functions"):
-        monkeypatch.setattr(runner, name, lambda *_: [])
-    monkeypatch.setattr(runner, "_resources", lambda _: {})
+    for name in ("runtimes", "accelerators", "functions"):
+        monkeypatch.setattr(inventory, name, lambda *_: [])
+    monkeypatch.setattr(inventory, "resources", lambda _: {})
     config = _config(tmp_path, "full_access")
     runner.save(config)
     source = "import pathlib, time\npathlib.Path('running').touch()\nwhile not pathlib.Path('release').exists(): time.sleep(0.01)\nprint('released')\n"
@@ -927,7 +928,7 @@ async def test_data_query_answers_during_command_and_commands_stay_serial(tmp_pa
             finished.set_exception(error)
 
     async with websockets.serve(server, "127.0.0.1", 0) as endpoint:
-        monkeypatch.setattr(runner, "_channel_url", lambda _: f"ws://127.0.0.1:{endpoint.sockets[0].getsockname()[1]}")
+        monkeypatch.setattr(transport, "channel_url", lambda _: f"ws://127.0.0.1:{endpoint.sockets[0].getsockname()[1]}")
         connection = asyncio.create_task(runner.connect(config))
         try:
             await asyncio.wait_for(asyncio.shield(finished), 12)
@@ -945,9 +946,9 @@ async def test_a_new_enrollment_on_disk_reconnects_with_its_token(tmp_path, monk
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     runner = MachineRunner()
     runner.heartbeat_seconds = 0.05
-    for name in ("_runtimes", "_accelerators", "_functions"):
-        monkeypatch.setattr(runner, name, lambda *_: [])
-    monkeypatch.setattr(runner, "_resources", lambda _: {})
+    for name in ("runtimes", "accelerators", "functions"):
+        monkeypatch.setattr(inventory, name, lambda *_: [])
+    monkeypatch.setattr(inventory, "resources", lambda _: {})
     config = _config(tmp_path, "read_only")
     runner.save(config)
     renewed = config.model_copy(update={"token": SecretStr("iwm_" + "y" * 48)})
@@ -963,7 +964,7 @@ async def test_a_new_enrollment_on_disk_reconnects_with_its_token(tmp_path, monk
             await socket.send(json.dumps({"type": "revoked"}))
 
     async with websockets.serve(server, "127.0.0.1", 0) as endpoint:
-        monkeypatch.setattr(runner, "_channel_url", lambda _: f"ws://127.0.0.1:{endpoint.sockets[0].getsockname()[1]}")
+        monkeypatch.setattr(transport, "channel_url", lambda _: f"ws://127.0.0.1:{endpoint.sockets[0].getsockname()[1]}")
         await asyncio.wait_for(runner.connect(config), 5)
     assert tokens == [f"Bearer {token.get_secret_value()}" for token in (config.token, renewed.token)]
 

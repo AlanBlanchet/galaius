@@ -41,6 +41,7 @@ from galaius.agents.turns.session_stops import SETTINGS_OK, SessionStops
 from galaius.cli.prompts import PromptMode
 from galaius.prompts.heads import ServerPrompts
 from galaius.machine.service import MACHINE_SERVICE, ServiceUnavailable
+from galaius.machine.connection import problems, transport
 from galaius.machine.connection.config import MachineConfig
 from galaius.machine.connection.runner import MachineRunner
 from galaius.account.address import ServerAddress, ServerAddressError
@@ -222,7 +223,7 @@ class AccountLogin(ServerAddress):
             MACHINE_SERVICE.install()
         except ServiceUnavailable as refused:
             print(f"Could not start it in the background ({refused}). Keep it connected with:  galaius machine connect", file=sys.stderr)
-            MachineRunner.report_problem(machine, "service_unavailable", str(refused), MACHINE_SERVICE.own_last_words())
+            problems.report(machine, "service_unavailable", str(refused), MACHINE_SERVICE.own_last_words())
             if ready := self.report_ready(http, machine):
                 print(ready, file=sys.stderr)
             return False
@@ -234,7 +235,7 @@ class AccountLogin(ServerAddress):
             return True
         running = MACHINE_SERVICE.running()
         said = MACHINE_SERVICE.last_words()
-        MachineRunner.report_problem(machine, "channel_unreachable" if running else "service_stopped", said, MACHINE_SERVICE.own_last_words())
+        problems.report(machine, "channel_unreachable" if running else "service_stopped", said, MACHINE_SERVICE.own_last_words())
         state = "runs but has not reached the server" if running else "is not running"
         print(f"Not online after {self.online_within:g} s: its background service {state}." + (f" Its last words:\n{said}" if said else "")
               + f"\nThe reason shows on its page too. Log: {MACHINE_SERVICE.logs}. Try again with:  galaius machine service restart", file=sys.stderr)
@@ -246,7 +247,7 @@ class AccountLogin(ServerAddress):
         """The one line a failed install says about its error report, when its question reached the
         server: it waits, unsent, for an answer on the PC's page (nothing is asked here: owner
         2026-10-08 « After install, everything should be done from the web »)."""
-        return f"An error report is ready, not sent: answer on this computer's page: {machine.page(http)}" if MachineRunner.error_reports().asked() else None
+        return f"An error report is ready, not sent: answer on this computer's page: {machine.page(http)}" if problems.drafts().asked() else None
 
     def machines(self, machine: MachineConfig) -> tuple[MachineSummary, ...]:
         """The PCs of `machine`'s workspace, read with the key this CLI signed in with (`key_path`); raises when it holds
@@ -737,7 +738,7 @@ def _channel_accepts(server: str, token: str, timeout: float = 15) -> Literal["a
     probe closes at once and sends nothing."""
     async def probe() -> Literal["accepted", "refused", "unreachable"]:
         try:
-            async with MachineRunner._channel(MachineRunner._channel_url(server), token, open_timeout=timeout, close_timeout=3):
+            async with transport.channel(transport.channel_url(server), token, open_timeout=timeout, close_timeout=3):
                 return "accepted"
         except websockets.InvalidStatus as error:
             return "refused" if error.response.status_code == 403 else "unreachable"

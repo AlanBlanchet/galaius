@@ -3,7 +3,7 @@ on the PC's page in the web (owner 2026-10-08: « on error, ask to send the logs
 understand ? (just a normal report thing) »; « After install, everything should be done from the web »:
 never a question in a terminal).
 
-Every problem the PC already tells its page (`MachineRunner.report_problem`: it could not start or reach
+Every problem the PC already tells its page (`connection.problems.report`: it could not start or reach
 the server, its connection crashed) also prepares a report: the problem in one line and the lines leading
 to it — galaius's own recent log, the crash's traceback — with credentials, control characters and this
 person's home folder masked. The draft stays here (`<config>/error-reports/<id>.json`, private) and only a

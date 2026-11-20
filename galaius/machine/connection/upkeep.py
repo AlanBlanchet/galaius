@@ -7,33 +7,49 @@ import time
 import sys
 from uuid import UUID
 import httpx
-import websockets
-from galaius_core import MachineProblem, MachineProblemCode
 from galaius import USER_AGENT, __version__
 from galaius.prompts import mirror as prompt_mirror
 from galaius.prompts import projection as prompt_projection
 from galaius.agents.catalog.connection import CatalogConnection
 from galaius.cli.prompts import PromptMode
 from galaius.account.tls import server_tls
-from galaius.diagnostics.error_reports import MachineErrorReports
 from galaius.machine.tray.launch import TrayLauncher
-from galaius.diagnostics.redaction import redact
-from galaius_core.wire import readable
 from galaius.agents.run import load_policy
 from galaius.agents import registry as reg
 from galaius.host.console_watch import ConsoleWatch
 from galaius.upgrade.release import BuildIdentity
 from galaius.machine.peer.seal import INSTANCE
+from galaius.machine.presence import PresenceWatch
 import logging
 
+from galaius.machine.connection import inventory, problems
 from galaius.machine.connection.config import MachineConfig
 from galaius.machine.connection.faults import Paused, Woke
+from galaius.machine.connection.shared import Shared
 
 logger = logging.getLogger(__package__)
 
 
-class Upkeep:
+class Upkeep(Shared):
     """Periodic work of a connected machine."""
+
+    heartbeat_seconds = 3
+    #: How often this PC checks whether the prompts it runs changed (a company granted or withdrew
+    #: it, a prompt or agent was saved); a check is one 304 per workspace when nothing moved.
+    prompt_sync_seconds = 300
+    #: How often this PC renews the agent catalog and tool list a start reads (a 304 each while
+    #: nothing changed): a start reads them from memory instead of waiting on the server.
+    policy_renew_seconds = 15
+    #: How often this PC looks whether its owner accepted an error report it prepared (only while one waits).
+    deliver_seconds = 60
+    #: How often the tray icon's presence is looked at (written only when it changed), and its run count read again.
+    presence_seconds = 1.0
+    presence_runs_seconds = 5.0
+    #: How often the tray icon is looked for, and started again when it ended (`TrayLauncher.ensure`).
+    tray_seconds = 60.0
+    #: What the tray icon shows (`_present`), and the presence lock this runner holds once it took it.
+    presence: PresenceWatch
+    _presence_lock: int | None
 
     async def _sync_prompts(self) -> None:
         """Keep this PC's agents on the prompts of the workspace it runs, and its ~/galaius copies
@@ -164,52 +180,15 @@ class Upkeep:
         current = self._current_config(connected)
         build = BuildIdentity.installed()
         return {"build": build.model_dump(mode="json") if build is not None else None,
-                "console_windows": [shown.model_dump(mode="json") for shown in ConsoleWatch.recent()[-5:]], "runtimes": self._runtimes(current), "accelerators": self._accelerators(), "functions": self._functions(), "resources": self._resources(current.working_directory),
+                "console_windows": [shown.model_dump(mode="json") for shown in ConsoleWatch.recent()[-5:]], "runtimes": inventory.runtimes(current), "accelerators": inventory.accelerators(), "functions": inventory.functions(), "resources": inventory.resources(current.working_directory),
                 "file_roots": current.reported_file_roots(), "agent_settings": current.agent_state(self._settings_detail, self._settings_refused).model_dump(mode="json"),
                 "busy": self.busy()}
-
-    @staticmethod
-    def _channel_url(server_url: str) -> str:
-        return MachineConfig.endpoint_on(server_url, "/v1/machine-channel", socket=True)
-
-    @staticmethod
-    def _channel(endpoint: str, token: str, open_timeout: float = 10, close_timeout: float = 3, ping_interval: float | None = 20, max_size: int = 1024 * 1024) -> websockets.connect:
-        """The machine channel at `endpoint`, trusting what every HTTP call to the server trusts (`server_tls`)."""
-        return websockets.connect(endpoint, additional_headers={"Authorization": f"Bearer {token}"}, user_agent_header=USER_AGENT,
-                                  ssl=server_tls() if endpoint.startswith("wss:") else None, open_timeout=open_timeout,
-                                  close_timeout=close_timeout, ping_interval=ping_interval, max_size=max_size)
-
-    @classmethod
-    def report_problem(cls, config: MachineConfig, code: MachineProblemCode, detail: str = "", lines: tuple[str, ...] = (), secrets: tuple[str, ...] = ()) -> bool:
-        """Tells its server why this computer is not connected (`MachineProblem`, shown on its page):
-        over HTTPS with its machine token, which still answers when the channel does not. Best
-        effort, credentials masked: False when the server did not take it. The same problem also
-        prepares an error report from `lines` (what led to it) and asks its owner on that page
-        whether to send it (`error_reports`): nothing of the lines leaves before his yes."""
-        # What a person can read of `detail` and no more: a service log's end is this program's own text as
-        # often as a sentence (« KeyError: 'token' »), and its page shows these words as this computer's own
-        # (visual-critic 2026-10-15). The whole text stays in this computer's log and in `lines`, which goes
-        # nowhere before its owner says so.
-        problem = MachineProblem(code=code, detail=readable(redact(detail, (config.token.get_secret_value(),)).strip())[-500:])
-        # The question's line is galaius's own last line, never `detail`: on an install it is the service
-        # log's raw end, which a program the PC ran may have written (threat model S1). Never raises.
-        cls.error_reports().prepare(config, code, lines[-1] if lines else code, lines, secrets)
-        try:
-            response = httpx.post(config.endpoint("/v1/machine/problem"), json=problem.model_dump(mode="json", exclude_none=True), headers=config.authorization, timeout=10)
-        except httpx.HTTPError:
-            return False
-        return response.status_code == 204
-
-    @classmethod
-    def error_reports(cls) -> MachineErrorReports:
-        """This computer's error report drafts, beside its machine file."""
-        return MachineErrorReports(folder=cls.default_config_path().parent / "error-reports")
 
     async def _deliver_reports(self, config: MachineConfig) -> None:
         """Every `deliver_seconds`, the report its owner accepted on the PC's page goes up (`deliver`)."""
         while True:
             try:
-                if await asyncio.to_thread(self.error_reports().deliver, config):
+                if await asyncio.to_thread(problems.drafts().deliver, config):
                     logger.info("error report sent: its owner accepted it on this computer's page")
             except Exception:  # one failed look never stops the next
                 logger.exception("delivering an error report failed")

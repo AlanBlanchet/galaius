@@ -6,17 +6,33 @@ import websockets
 from galaius.agents.turns.handback import EndWatch, SilenceWatch
 from galaius.agents.turns.reviews import TurnReviewWatch
 from galaius.config.settings import Config
+from galaius.agents.limits.subscription_watch import SubscriptionWatch
+from galaius.machine.programs import AgentPrograms
 from galaius.agents import registry as reg
 import logging
 
 from galaius.machine.connection.config import MachineConfig
 from galaius.machine.connection.faults import EnrollmentChanged
+from galaius.machine.connection.shared import Shared
 
 logger = logging.getLogger(__package__)
 
 
-class Watches:
+class Watches(Shared):
     """Follow-up of the runs this machine hosts."""
+
+    #: How often this PC's run records are settled against their processes (`registry.settle_gone`).
+    settle_seconds = 60
+    #: How often this PC looks which runs ended, to hand their reports back (`handback.EndWatch`): one look reads only
+    #: the records that moved (~0.15 s for ~5,000); at `settle_seconds` a finished agent's report waited up to a minute
+    #: before its coordinator could answer the person.
+    handback_seconds = 10
+    #: How often, while connected, each login here is asked its usage by its own CLI (`SubscriptionWatch.ask`: 1-2 s,
+    #: about 1 s of CPU, no model turn each).
+    usage_ask_seconds = 120
+    #: What watches this PC's logins' usage, and the agent programs the owner installs from the web with their sign-in.
+    _subscriptions: SubscriptionWatch
+    programs: AgentPrograms
 
     async def _follow_up(self, config: MachineConfig) -> None:
         """At start: the messages to web runs a former runner left queued go to their dispatchers,

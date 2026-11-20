@@ -54,6 +54,7 @@ from galaius.machine.places.levels import BrowseBudget
 from galaius.machine.places.place_reviews import PlaceReviews
 from galaius.machine.projects.workspace_copy import WorkspaceTransfers
 
+from galaius.machine.connection import inventory, problems, transport
 from galaius.machine.connection.answers import Answers
 from galaius.machine.connection.commands import Commands
 from galaius.machine.connection.config import MachineConfig
@@ -68,31 +69,10 @@ logger = logging.getLogger(__package__)
 
 
 class MachineRunner(Answers, Commands, Runs, Upkeep, Watches):
-    heartbeat_seconds = 3
-    #: How often this PC checks whether the prompts it runs changed (a company granted or withdrew
-    #: it, a prompt or agent was saved); a check is one 304 per workspace when nothing moved.
-    prompt_sync_seconds = 300
-    #: How often this PC renews the agent catalog and tool list a start reads (a 304 each while
-    #: nothing changed): a start reads them from memory instead of waiting on the server.
-    policy_renew_seconds = 15
-    #: How often this PC's run records are settled against their processes (`registry.settle_gone`).
-    settle_seconds = 60
-    #: How often this PC looks which runs ended, to hand their reports back (`handback.EndWatch`): one look reads only
-    #: the records that moved (~0.15 s for ~5,000); at `settle_seconds` a finished agent's report waited up to a minute
-    #: before its coordinator could answer the person.
-    handback_seconds = 10
     #: How long the beats reuse whether a run started for the web still works (`busy`): read from every run record
     #: (~0.2 s for ~5,000), at each beat it took a tenth of a core (2026-11-03). The server stops an idle cloud
     #: machine only after 15 idle minutes.
     busy_runs_seconds = 30
-    #: How often this PC looks whether its owner accepted an error report it prepared (only while one waits).
-    deliver_seconds = 60
-    #: How often the usage lines of runs pinned to a subscription are read (caps applied) and moved
-    #: usage goes to the server (`SubscriptionWatch`).
-    subscription_seconds = 5
-    #: How often, while connected, each login here is asked its usage by its own CLI (`SubscriptionWatch.ask`: 1-2 s,
-    #: about 1 s of CPU, no model turn each).
-    usage_ask_seconds = 120
     reconnect_seconds = (1, 2, 5, 10, 20)
     #: How many refusals of its token in a row stop the connection for good (the service is not restarted after a clean stop): one answer from a server
     #: mid-deploy or a proxy is not a revoked PC, so it asks again after the usual waits (about 8 s in all) before it believes it.
@@ -106,11 +86,6 @@ class MachineRunner(Answers, Commands, Runs, Upkeep, Watches):
     #: A wait that lasted this much longer than asked, by the wall clock or the system's (Windows counts a sleep, Linux
     #: and macOS do not), means the computer slept: connect again at once rather than wait ~35 s for a ping to fail.
     woke_after_seconds = 10.0
-    #: How often the tray icon's presence is looked at (written only when it changed), and its run count read again.
-    presence_seconds = 1.0
-    presence_runs_seconds = 5.0
-    #: How often the tray icon is looked for, and started again when it ended (`TrayLauncher.ensure`).
-    tray_seconds = 60.0
     #: Failed tries in a row (about 10 s with `reconnect_seconds`) before its page is told why.
     report_after_failures = 3
 
@@ -119,24 +94,18 @@ class MachineRunner(Answers, Commands, Runs, Upkeep, Watches):
         #: What the last failed channel try met, and the last crash its page was told of (each said once).
         self._last_failure = ""
         self._reported_crash = ""
-        #: Next event sequence per command in flight: every event of one command, from any path, is ordered.
-        self._sequences: dict[UUID, int] = {}
-        #: The model runtimes kept loaded between steps, by script (`MachineConfig.model_keep_warm_seconds`).
-        self._workers: dict[str, ModelWorker] = {}
+        self._sequences = {}
+        self._workers = {}
         #: File queries being answered (held so the loop does not drop them mid-answer).
         self._queries: set[asyncio.Task] = set()
         #: This computer's screen sessions (`ScreenDesk`), made for the enrollment that first asks.
         self._screen_desk: ScreenDesk | None = None
-        #: Agent actions already accepted (id -> expiry): each is taken once (`_answer_agent_request`).
-        self._agent_requests: dict[UUID, datetime] = {}
-        #: The answer of each accepted action the server may ask again (`idempotent_feature`), by its id,
-        #: for its `idempotent_seconds`; past a restart a message's queue item or transcript entry tells instead.
-        self._agent_answers: dict[UUID, asyncio.Future[MachineAgentAnswer]] = {}
+        self._agent_requests = {}
+        self._agent_answers = {}
         #: The sessions this runner hosts for the web (opened on first use) and its recent log lines.
         self._sessions: MachineSessions | None = None
         #: Commands being executed now (0 or 1: one worker runs them in order).
         self._executing = 0
-        #: Set when supervised: leave for a new runtime once nothing runs (`_leave_when_quiet`).
         self._quiet = QuietPoint.current()
         #: The server closed the connection to restart (1012): ask for a release check once it is back.
         self._server_restarted = False
@@ -148,12 +117,10 @@ class MachineRunner(Answers, Commands, Runs, Upkeep, Watches):
         self._runs_working: tuple[float, bool] | None = None
         #: Tokens this runner held before a swap (`take_token_swap`): still masked in every kept line.
         self._spent_tokens: tuple[str, ...] = ()
-        #: Why the last web version of the agent settings was not applied, and which one (shown on the PC's page).
         self._settings_detail, self._settings_refused = "", 0
         self._workspace_jobs = WorkspaceJobs(path=self.config_path.with_name("machine-workspaces.json"))
-        #: What the tray icon shows (`_present`), and the presence lock this runner holds once it took it.
         self.presence = PresenceWatch(files=PresenceFiles(folder=self.config_path.parent))
-        self._presence_lock: int | None = None
+        self._presence_lock = None
         #: Staged writes waiting for the owner's review, and the web's whole-PC browse budget.
         self.reviews = PlaceReviews.default()
         self._subscriptions = SubscriptionWatch()
@@ -168,7 +135,7 @@ class MachineRunner(Answers, Commands, Runs, Upkeep, Watches):
         self.peer_seal = PeerSeal(self.config_path.with_name("peer-seal"))
         self.peer_broker = PeerBroker(self.peer_link, PeerBroker.socket_path(self.config_path))
         #: The agent programs the owner installs from the web, and their sign-in (`AgentPrograms`).
-        self.programs = AgentPrograms(environment=self._system_environment(), log_path=self.config_path.with_name("agent-programs.log"),
+        self.programs = AgentPrograms(environment=inventory.system_environment(), log_path=self.config_path.with_name("agent-programs.log"),
                                       active=lambda name: load_policy().provider_active(name), usage=self._subscriptions.login_usage)
 
     def _worker(self, script: str, config: MachineConfig) -> ModelWorker:
@@ -275,7 +242,7 @@ class MachineRunner(Answers, Commands, Runs, Upkeep, Watches):
             if said != self._reported_crash:
                 self._reported_crash = said
                 lines = (*self._log_ring.lines, *traceback.format_exception(error))
-                await asyncio.to_thread(self.report_problem, config, "crashed", said, lines, self._log_ring.secrets)
+                await asyncio.to_thread(problems.report, config, "crashed", said, lines, self._log_ring.secrets)
             raise
         finally:
             settler.cancel()
@@ -325,7 +292,7 @@ class MachineRunner(Answers, Commands, Runs, Upkeep, Watches):
     def _secrets(self, config: MachineConfig) -> tuple[str, ...]:
         """Exact values masked in every kept log line (and so in error reports): the token, the ones it
         replaced, the environment's secrets, the tokens of the subscriptions signed in here."""
-        return (config.token.get_secret_value(), *self._spent_tokens, *secret_values(self._safe_environment()), *Subscription.tokens())
+        return (config.token.get_secret_value(), *self._spent_tokens, *secret_values(inventory.safe_environment()), *Subscription.tokens())
 
 
     async def _connect(self, config: MachineConfig) -> None:
@@ -341,10 +308,10 @@ class MachineRunner(Answers, Commands, Runs, Upkeep, Watches):
                 delay_index, restarting_since = 0, None
             if delay_index == self.report_after_failures:
                 # Still not in after these tries: its page says why (the server forgets it once it is in).
-                await asyncio.to_thread(self.report_problem, config, "channel_unreachable", self._last_failure, tuple(self._log_ring.lines), self._log_ring.secrets)
-            endpoint = self._channel_url(config.server_url)
+                await asyncio.to_thread(problems.report, config, "channel_unreachable", self._last_failure, tuple(self._log_ring.lines), self._log_ring.secrets)
+            endpoint = transport.channel_url(config.server_url)
             try:
-                async with self._channel(
+                async with transport.channel(
                     endpoint,
                     config.token.get_secret_value(),
                     open_timeout=10,
@@ -566,7 +533,7 @@ class MachineRunner(Answers, Commands, Runs, Upkeep, Watches):
         features = frozenset(PcFeature) if AgentPrograms.HELD_SIGN_IN else frozenset(PcFeature) - {PcFeature.HELD_SIGN_IN}
         # A runner names the peer features it really has: the broker needs a POSIX socket; a Windows PC is a target of peer runs, never a source.
         features = features if PeerBroker.available else features - {PcFeature.PEER_BROKER}
-        return PcFeatures(features, frozenset(ScriptRuntime.languages(cls._safe_environment().get("PATH")))).said()
+        return PcFeatures(features, frozenset(ScriptRuntime.languages(inventory.safe_environment().get("PATH")))).said()
 
     @staticmethod
     def signature(token: str, message: MachineCommand | MachineFileQuery | MachineDataRequest | MachineAgentRequest | MachineAgentSettingsUpdate | MachineTokenSwap) -> str:
@@ -608,8 +575,8 @@ class MachineRunner(Answers, Commands, Runs, Upkeep, Watches):
         page whether to send it (`MachineErrorReports.prepare`: nothing leaves before his yes) — this runner's recent log
         and the traceback. Off the event loop (its question is an HTTPS call); never raises."""
         lines = (*self._log_ring.lines, *"".join(traceback.format_exception(error)).splitlines())
-        reports, secrets = self.error_reports(), self._secrets(config)
-        asyncio.get_running_loop().run_in_executor(None, lambda: reports.prepare(config, "exception", f"agent {op} failed: {said}", lines, secrets))
+        drafts, secrets = problems.drafts(), self._secrets(config)
+        asyncio.get_running_loop().run_in_executor(None, lambda: drafts.prepare(config, "exception", f"agent {op} failed: {said}", lines, secrets))
 
     def _screen(self, config: MachineConfig) -> ScreenDesk:
         """The screen desk of this enrollment (a re-linked machine gets a new one: its id is in every offer)."""
@@ -667,12 +634,12 @@ class MachineRunner(Answers, Commands, Runs, Upkeep, Watches):
         self._sessions = self._sessions or MachineSessions(current.working_directory)
         return MachineAgents(roots=current.agent_roots_by_name(), permission=current.agent_permission, run_agents=current.run_agents,
                              continue_conversations=current.continue_conversations, answer_approvals=current.answer_approvals, session=MachineAgents.web_session(current.machine_id),
-                             runs=self.web_runs, environment=self._safe_environment(),
+                             runs=self.web_runs, environment=inventory.safe_environment(),
                              sessions=self._sessions, logs=self._log_ring, seal=SecretsSeal.for_token(current.token.get_secret_value()), login_seal=LoginSeal.for_token(current.token.get_secret_value()),
                              workspaces=MachineWorkspaces(roots=current.agent_roots_by_name(), origins=current.clone_origins, jobs=self._workspace_jobs,
                                                           working_directory=current.working_directory, register_root=self._register_agent_root,
                                                           transfers=WorkspaceTransfers(endpoint=current.endpoint, headers=current.authorization),
-                                                          environment={**self._safe_environment(), **{key: os.environ[key] for key in ("SSH_AUTH_SOCK",) if key in os.environ}}),
+                                                          environment={**inventory.safe_environment(), **{key: os.environ[key] for key in ("SSH_AUTH_SOCK",) if key in os.environ}}),
                              places=current.place_map(), fence_agents=current.fence_agents, reviews=self.reviews,
                              levels_file=self.config_path, egress=(urlsplit(current.server_url).hostname or "",), warm=self.warm, followups=self.followups, audit=self.audit,
                              programs=self.programs)
@@ -690,7 +657,7 @@ class MachineRunner(Answers, Commands, Runs, Upkeep, Watches):
 
 
 async def connect_command(server_url: str | None, workspace_id: UUID | None, machine_id: UUID | None, token: str | None, permission_ceiling: PermissionLevel, working_directory: Path | None, serve: bool) -> None:
-    if serve:  # before the runner: its programs take their PATH from it once, when it is built (`_system_environment`)
+    if serve:  # before the runner: its programs take their PATH from it once, when it is built (`inventory.system_environment`)
         os.environ["PATH"] = shell_path(os.environ.get("PATH", ""))
         # Before its first worker thread: a thread per call each kept its own C arena, 36 of them held 722 of the
         # service's 1,367 MB after 3 h (2026-11-09).

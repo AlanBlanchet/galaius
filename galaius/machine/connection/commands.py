@@ -20,18 +20,24 @@ from galaius.inference import user_models
 from galaius.isolation.sandbox import run_pooled
 from galaius.host.windowless import console_python
 
+from galaius.machine.connection import inventory
 from galaius.machine.connection.config import MachineConfig
 from galaius.machine.connection.faults import said_of
 from galaius.machine.connection.files import CommandFiles, MachineFiles
 from galaius.machine.connection.logs import CommandLogs
-from galaius.machine.connection.logs import audit as write_audit
+from galaius.inference.env import ModelWorker
+from galaius.machine.connection.logs import audit_script
+from galaius.machine.connection.shared import Shared
 from galaius.machine.connection.script import SCRIPT_RUNTIMES, ScriptExecution, ScriptRuntime
 
 logger = logging.getLogger(__package__)
 
 
-class Commands:
+class Commands(Shared):
     """How the runner executes a command: model, speech, function or script."""
+
+    #: The model runtimes kept loaded between steps, by script (`MachineConfig.model_keep_warm_seconds`).
+    _workers: dict[str, ModelWorker]
 
     def _accept_command(self, config: MachineConfig, connected: MachineConfig, command: MachineCommand) -> MachineConfig:
         self._same_enrollment(config, connected)
@@ -289,7 +295,7 @@ class Commands:
             found = hashlib.sha256(content).hexdigest()
             if found != spec.file_digest:
                 raise RuntimeError(f"{spec.path} changed on this machine since it was picked (its sha256 is now {found[:12]}, it was {spec.file_digest[:12]}): check the file again in the step, then its owner approves the new digest")
-            self._audit_script(command, spec.path)
+            audit_script(command, spec.path)
             logger.info("%s script file %s (%s), timeout %s s", language, spec.path, found[:12], timeout)
             argv = [*self._interpreter(language, content.decode(errors="replace"), spec), str(path), *spec.args]
             if any(Path(argv[0]).resolve() == root or root in Path(argv[0]).resolve().parents for root in files.config.writable_folders()):
@@ -300,7 +306,7 @@ class Commands:
             command.impl.check(command.config)  # the same rule the server applied: source, language and pin agree
         except ValueError as error:
             raise RuntimeError(f"{error}; refusing to run") from error
-        self._audit_script(command)
+        audit_script(command)
         logger.info("%s script %s (%d lines), timeout %s s", language, digest[:12], source.count("\n") + 1, timeout)
         with tempfile.TemporaryDirectory(prefix="galaius-script-") as scratch:
             script_path = Path(scratch) / f"script{SCRIPT_RUNTIMES[language].suffix}"
@@ -311,7 +317,7 @@ class Commands:
     def _run_process(self, argv: list[str], cwd: Path, timeout: float) -> str:
         """One script process: its standard output is the step's result, a non-zero exit its error."""
         try:
-            completed = subprocess.run(argv, cwd=cwd, env=self._safe_environment(), capture_output=True, text=True, timeout=timeout)
+            completed = subprocess.run(argv, cwd=cwd, env=inventory.safe_environment(), capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired as error:
             raise RuntimeError(f"script exceeded its {timeout}s timeout") from error
         if completed.returncode != 0:
@@ -326,7 +332,7 @@ class Commands:
         """Resolve the same execution description the owner sees before approval; a language this
         computer cannot run is refused in plain words, never run by another program."""
         execution = ScriptExecution.select(language, source, spec)
-        path = cls._safe_environment().get("PATH")
+        path = inventory.safe_environment().get("PATH")
         if execution.program == "custom":
             interpreter = execution.interpreter
             if ("/" in interpreter or "\\" in interpreter) and not Path(interpreter).is_absolute():
@@ -361,7 +367,7 @@ class Commands:
             raise RuntimeError(f"{error}; refusing to run") from error
         if config.permission_ceiling != "full_access":
             raise PermissionError("script nodes always need full-access permission; this machine is read-only")
-        self._audit_script(command)
+        audit_script(command)
         raw_allow = command.config.get("_pool_egress_allow", [])
         policy = EgressPolicy(allow=tuple(EgressAllowEntry.model_validate(entry) for entry in raw_allow)) if isinstance(raw_allow, list) else EgressPolicy()
         runtime = SCRIPT_RUNTIMES[language]
@@ -382,7 +388,7 @@ class Commands:
         CUDA accelerator gets its free VRAM scrubbed (`galaius.isolation.gpu_scrub`) before the next tenant
         can be placed on it, and the server only trusts a fresh `GpuScrubRecord` from THIS event,
         never from the run having merely succeeded."""
-        if not self._cuda_accelerators():
+        if not inventory.cuda_accelerators():
             return
         try:
             scrubbed_bytes = await asyncio.to_thread(gpu_scrub.scrub_all_free_memory)
@@ -398,29 +404,6 @@ class Commands:
             # machine this server must never trust with the next tenant's GPU placement — logged
             # loudly rather than silently letting `gpu_scrub_fresh` stay stale on the server side.
             logger.error("pooled GPU scrub failed, device may be left dirty for the next tenant: %s", error)
-
-    @staticmethod
-    def _audit_script(command: MachineCommand, path: str | None = None) -> None:
-        """A durable local record of every script ATTEMPT (not just successes): source digest,
-        the workflow/node/run that triggered it. Threat-modeler mitigation #4 — deliberately
-        machine-side, next to the running process, so the record survives even a server outage;
-        pairs with the server's OWN `machine_script_approvals.approved_by_account_id` for who
-        allowlisted the digest in the first place."""
-        write_audit("script-audit.log", {
-            "language": command.impl.language, "source_digest": command.impl.source_digest, "approval_digest": command.impl.approval_digest(command.config), "workflow_id": str(command.workflow.key.id),
-            "workflow_revision": str(command.workflow.revision), "node_id": str(command.node_id), "run_id": str(command.run_id),
-            **({"path": path} if path is not None else {}),
-        })
-
-    audit = staticmethod(write_audit)
-
-    @staticmethod
-    def _functions() -> list[dict[str, object]]:
-        try:
-            entries = FunctionRegistry().load()
-        except PermissionError:
-            return []
-        return [entry.summary().model_dump(mode="json") for entry in entries]
 
     @staticmethod
     def _model_input_path(raw_path: str, working_directory: Path) -> Path:

@@ -20,6 +20,7 @@ from galaius_core import DeviceLoginStarted
 from galaius.agents.catalog.connection import CatalogConnection
 from galaius.machine.service import MACHINE_SERVICE
 from galaius.diagnostics.error_reports import MachineErrorReports
+from galaius.machine.connection import problems
 from galaius.machine.connection.config import MachineConfig
 from galaius.machine.connection.runner import MachineRunner
 
@@ -120,7 +121,7 @@ def test_not_online_says_why_here_and_on_its_page(joining: Path, monkeypatch: py
     monkeypatch.setattr(type(MACHINE_SERVICE), "running", lambda self: bool(running))
     monkeypatch.setattr(type(MACHINE_SERVICE), "last_words", lambda self, lines=3: "Task Scheduler: last result 0x1\nTraceback: boom")
     monkeypatch.setattr(account_login.AccountLogin, "online", lambda self, http, machine, key: False)
-    monkeypatch.setattr(MachineRunner, "report_problem", classmethod(lambda cls, machine, said, detail="", *rest: reported.append((said, detail)) or True))
+    monkeypatch.setattr(problems, "report", lambda machine, said, detail="", *rest: reported.append((said, detail)) or True)
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     monkeypatch.setattr(MachineErrorReports, "asked", lambda self: True)  # its question reached the server (test_machines)
     account_login.login("https://galaius.example.org", allow_runs=False, open_browser=False)

@@ -1,37 +1,31 @@
-"""Trait: agent runs started for the server and the environment they get."""
+"""Trait: agent runs started for the server, fenced and given the environment `inventory` allows."""
 
 import asyncio
 import os
-import platform
-import shutil
-import subprocess
-import sys
-from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
-from galaius_core import AgentRevisionRef, MachineAccelerator, MachineRuntime
+from galaius_core import AgentRevisionRef
 from galaius.agents.catalog.entries import AgentCatalog
 from galaius.agents import providers as agent_providers
 from galaius.agents.transport.events import AgentEvent
 from galaius.agents.run import run_agent
 from galaius.agents import registry as reg
-from galaius.agents.catalog.profiles import ALLOWED_ENV
 from galaius.isolation.fence import FenceSpec, available
-if sys.platform == "win32":
-    import win32api
 import logging
 
+from galaius.machine.connection import inventory
 from galaius.machine.connection.config import MachineConfig
 from galaius.machine.connection.logs import FORWARDED_EVENT_KINDS
+from galaius.machine.connection.shared import Shared
 
 logger = logging.getLogger(__package__)
 
 
-class Runs:
+class Runs(Shared):
     """How the runner starts an agent run and what that run sees of this machine."""
 
     async def _run_agent(self, agent: AgentRevisionRef, task: str, config: MachineConfig, socket, command_id: UUID) -> str:
-        safe_environment = self._safe_environment()
+        safe_environment = inventory.safe_environment()
         original_environment = dict(os.environ)
         try:
             os.environ.clear()
@@ -100,86 +94,3 @@ class Runs:
             return terminal.text
         last = next((event for event in reversed(events) if event.kind == "text" and event.text.strip()), None)
         return "" if last is None else last.text
-
-    @classmethod
-    def _safe_environment(cls) -> dict[str, str]:
-        return {**{key: value for key, value in os.environ.items() if key in ALLOWED_ENV}, **cls._system_environment()}
-
-    @staticmethod
-    def _system_environment() -> dict[str, str]:
-        """What any program needs to start here and nothing else (no secret among them), PATH reaching
-        every agent program's own folder; the programs installed from the web run with only this."""
-        fixed = {"HOME", "PATH", "USER", "LOGNAME", "SHELL", "LANG", "TERM", "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
-                 # Where a program opens the person's browser (a sign-in) on a Linux desktop.
-                 "DISPLAY", "WAYLAND_DISPLAY", "BROWSER",
-                 # Windows: what any program needs to start there (Python needs SYSTEMROOT, cmd COMSPEC), no secret among them.
-                 "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "USERPROFILE", "USERNAME", "USERDOMAIN", "APPDATA", "LOCALAPPDATA",
-                 "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "COMMONPROGRAMFILES", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "OS", "PSMODULEPATH"}
-        system = {key: value for key, value in os.environ.items() if key in fixed or key.startswith("LC_")}
-        return {**system, "PATH": agent_providers.AgentProvider.search_path(system.get("PATH", os.defpath))}
-
-    @staticmethod
-    def _runtimes(config: MachineConfig) -> list[dict[str, str]]:
-        """The agent CLIs the server may place agent steps on: none while agent steps are off here."""
-        if not config.run_agents:
-            return []
-        return [MachineRuntime(provider=provider.name).model_dump(mode="json", exclude_none=True) for provider in agent_providers.program_providers() if provider.available()]
-
-    @staticmethod
-    def _resources(working_directory: Path | None = None) -> dict[str, int]:
-        """CPU count, total RAM and free disk on the machine's own working directory — the other
-        half of a placement fit check next to `_accelerators`. POSIX `sysconf`, Windows
-        `GlobalMemoryStatusEx` (no `psutil` dependency, no torch import); `cpu_count() or 1`
-        matches the stdlib's own documented fallback."""
-        ram_mb = 0
-        try:
-            total = win32api.GlobalMemoryStatusEx()["TotalPhys"] if sys.platform == "win32" else os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-            ram_mb = total // (1024 * 1024)
-        except (ValueError, OSError, AttributeError):
-            pass
-        try:
-            disk_free_gb = shutil.disk_usage(working_directory or Path.home()).free // (1024 ** 3)
-        except OSError:
-            disk_free_gb = 0
-        return {"cpu_count": os.cpu_count() or 1, "ram_mb": ram_mb, "disk_free_gb": disk_free_gb}
-
-    @classmethod
-    def _accelerators(cls) -> list[dict[str, object]]:
-        """GPUs on this machine, so a `model` step (detection, segmentation) defaults here.
-
-        Torch-free: `nvidia-smi` is queried directly and Apple's unified GPU is inferred from the
-        platform, never by importing torch just to ask "is there a GPU" and dragging its multi-GB
-        wheel onto a machine that runs no vision node. `none` is reported explicitly (not an empty
-        list) so a runner that checked and found nothing is distinguishable from an older runner
-        that never reported accelerators at all."""
-        found = cls._cuda_accelerators() or cls._mps_accelerator()
-        accelerators = found or (MachineAccelerator(kind="none", name="none", memory_mb=0),)
-        return [item.model_dump(mode="json") for item in accelerators]
-
-    @staticmethod
-    def _cuda_accelerators() -> tuple[MachineAccelerator, ...]:
-        found = shutil.which("nvidia-smi")
-        if found is None:
-            return ()
-        try:
-            completed = subprocess.run(
-                [found, "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
-                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return ()
-        if completed.returncode != 0:
-            return ()
-        accelerators = []
-        for line in completed.stdout.splitlines():
-            name, _, memory = line.partition(",")
-            name, memory = name.strip(), memory.strip()
-            if name and memory.isdigit():
-                accelerators.append(MachineAccelerator(kind="cuda", name=name, memory_mb=int(memory)))
-        return tuple(accelerators)
-
-    @staticmethod
-    def _mps_accelerator() -> tuple[MachineAccelerator, ...]:
-        if sys.platform != "darwin" or platform.machine() != "arm64":
-            return ()
-        return (MachineAccelerator(kind="mps", name="Apple GPU", memory_mb=0),)

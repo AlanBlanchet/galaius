@@ -4,6 +4,7 @@ import json
 import logging
 import os
 from datetime import UTC, datetime
+from galaius_core import MachineCommand
 from galaius.diagnostics.redaction import redact
 from galaius.workflows.functions import FunctionRegistry
 
@@ -66,3 +67,16 @@ def audit(log: str, entry: dict[str, object]) -> None:
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     with os.fdopen(descriptor, "a", encoding="utf-8") as stream:
         stream.write(json.dumps({"timestamp": datetime.now(UTC).isoformat(), **entry}, separators=(",", ":")) + "\n")
+
+
+def audit_script(command: MachineCommand, path: str | None = None) -> None:
+    """A durable local record of every script ATTEMPT (not just successes): source digest,
+    the workflow/node/run that triggered it. Threat-modeler mitigation #4 — deliberately
+    machine-side, next to the running process, so the record survives even a server outage;
+    pairs with the server's OWN `machine_script_approvals.approved_by_account_id` for who
+    allowlisted the digest in the first place."""
+    audit("script-audit.log", {
+        "language": command.impl.language, "source_digest": command.impl.source_digest, "approval_digest": command.impl.approval_digest(command.config), "workflow_id": str(command.workflow.key.id),
+        "workflow_revision": str(command.workflow.revision), "node_id": str(command.node_id), "run_id": str(command.run_id),
+        **({"path": path} if path is not None else {}),
+    })
