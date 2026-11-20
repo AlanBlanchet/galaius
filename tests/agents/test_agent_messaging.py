@@ -781,10 +781,10 @@ def _cut_run_on(monkeypatch, provider, model: str):
     monkeypatch.setattr(reg, "_alive", lambda pid: False)
 
 
-def test_a_resumed_turn_never_moves_its_conversation_to_a_smaller_model(monkeypatch):
-    """Its own model cooled and only a SMALLER one live: the vendor is asked about its own model again (a note is
-    a forecast, and no turn is refused here while a model could answer), never is the session handed to a model
-    that cannot hold it."""
+def test_a_resumed_turn_whose_model_is_held_goes_on_with_the_rules_next_model(monkeypatch):
+    """Its own model held and only a SMALLER one live: the turn is never refused here (owner 2026-11-20 « never dissalow if i
+    have any form of usage »); the rule's next model takes it. The size of the history, not a rating floor, keeps a model
+    that cannot hold it out (`resolve_continuable_model`, its engine row in test_agent_subscriptions)."""
     from galaius.agents import agent_queue
     from galaius.agents.limits import quota
 
@@ -806,7 +806,7 @@ def test_a_resumed_turn_never_moves_its_conversation_to_a_smaller_model(monkeypa
         asyncio.run(messaging.wait_for_reply(delivery))
 
     assert delivery.state == "replied"
-    assert [call for call in provider.calls if call[0] == "resume"][-1][3]["model"] == "opus"
+    assert [call for call in provider.calls if call[0] == "resume"][-1][3]["model"] == "haiku"
 
 
 def test_a_resumed_turn_may_still_move_its_conversation_to_a_bigger_model(monkeypatch):
@@ -835,7 +835,7 @@ def test_a_resumed_turn_may_still_move_its_conversation_to_a_bigger_model(monkey
 ])
 def test_a_resumed_turn_leaves_a_model_whose_own_pool_is_shut_for_the_next_ranked(monkeypatch, said):
     """2026-11-20: the floor answers a conversation's SIZE. The model it runs on refusing for its own pool (the account
-    still answers) is no size: the most capable model still open carries it (never the cheapest the criterion lists first), even one the catalog scores lower."""
+    still answers) is no size: the rule's next model carries it."""
     from galaius.agents import agent_queue
     from galaius.agents.limits import quota
 
@@ -861,7 +861,7 @@ def test_a_resumed_turn_leaves_a_model_whose_own_pool_is_shut_for_the_next_ranke
         asyncio.run(messaging.wait_for_reply(delivery))
 
     assert delivery.state == "replied"
-    assert [call for call in provider.calls if call[0] == "resume"][-1][3]["model"] == "sonnet"
+    assert [call for call in provider.calls if call[0] == "resume"][-1][3]["model"] == "haiku"
 
 
 # ── His message to a cut run asks the vendor again, as « Continuer » does ──────────────────────

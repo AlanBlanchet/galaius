@@ -163,7 +163,7 @@ def policy_for_continuation(run, provider: AgentProvider, environment: Mapping[s
                 f"{provider.name!r}; refusing continuation"
             ) from error
         model = resolve_continuable_model(criterion, dict(Caller.environ(environment)), provider=provider, weights=policy.weights_for(run.agent), role=run.agent,
-                                          subscription=run.subscription_id, floor=run.model)[1]
+                                          subscription=run.subscription_id, current=run.model, context_tokens=run.context_tokens or None)[1]
         return policy, criterion, model, policy.effort_for(run.agent, chosen=run.reasoning_set)
     except CatalogOffline:
         raise

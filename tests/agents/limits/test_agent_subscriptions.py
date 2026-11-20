@@ -1023,20 +1023,62 @@ async def test_a_model_one_login_refuses_runs_on_his_next_login_else_the_next_ra
     assert (record.subscription_id, record.model) == (logins[runs_on].id, model)
 
 
-@pytest.mark.parametrize(("refused", "goes_to"), [(True, "claude-opus-5-5"), (False, "claude-fable-5-2")])
-def test_a_conversation_on_a_model_its_login_refuses_goes_on_with_the_next_one_else_it_is_never_moved_down(monkeypatch: pytest.MonkeyPatch, refused: bool, goes_to: str | None) -> None:
-    """Owner 2026-11-20: his Fable conversation was refused « every model … passed over as smaller than the model this conversation runs on »
-    while only Fable's own pool was shut. Floor held while its model answers or is refused by an account-level limit (a size cut earns
-    none); dropped when its family's own pool is shut on this login (the vendor says « Switch to another model »)."""
-    login = uuid4()
-    scores = {"claude-fable-5-2": 90.0, "claude-opus-5-5": 70.0}
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("cooled", "runs"), [(False, "asked-model"), (True, "fable-fixture")])
+async def test_a_model_asked_for_by_name_runs_while_it_has_usage_else_its_roles_next_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                                                        cooled: bool, runs: str) -> None:
+    """Tester 5240687e round 1: `--model` on a role launch was dropped (`requested_model` null, the role's rule ran). Asked by
+    name, a model with usage runs and is recorded as asked; one without falls back to its role's list (owner 2026-11-20
+    « If fable is not available it should fallback »)."""
+    use_policy(monkeypatch, agents={"tester": "fable-fixture"}, reasoning={"tester": "medium"})
+    definition = tmp_path / "tester.md"
+    definition.write_text("---\nname: tester\n---\nTest.\n", encoding="utf-8")
+    monkeypatch.setattr(_Claude, "definition_path", lambda self, agent: definition)
+    install_provider(monkeypatch, _Claude())
     monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None, among=None: tuple(
-        reg.LaunchCandidate(provider="claude", model=name, rank=index) for index, name in enumerate(scores)))
-    monkeypatch.setattr(run_module, "_capability_of", lambda model, candidates: scores.get(model))
-    monkeypatch.setattr(run_module, "resolve_model", lambda model, env, *, provider, weights="": ({}, model))
-    if refused:
-        quota.record_refusal("claude", "claude-fable-5-2", said="You've reached your Fable limit. Switch to another model.", subscription=login)
-    else:
-        quota.record_refusal("claude", "claude-fable-5-2", said="You've hit your weekly limit · resets 9pm (Europe/Paris)", subscription=login)   # an account limit keeps the floor
-    resolve = lambda: run_module.resolve_continuable_model("crit", {}, provider=PROVIDERS["claude"], subscription=login, floor="claude-fable-5-2")[1]  # noqa: E731
-    assert resolve() == goes_to   # an account limit keeps the floor: the vendor is asked about its own model again, never a smaller one, never a refusal here
+        reg.LaunchCandidate(provider="claude", model=name, rank=index)
+        for index, name in enumerate(["asked-model"] if rule == "asked-model" else ["fable-fixture", "lower-model"])))
+    if cooled:
+        quota.record_refusal("claude", "asked-model", said="Error: usage limit reached")
+    handle = await run_agent(None, "go", agent="tester", model="asked-model", cwd=str(tmp_path), environment={"PATH": "/usr/bin:/bin"})
+    await asyncio.wait_for(handle.wait(), timeout=30)
+    record = reg.get_run(handle.run_id)
+    assert (record.model, record.requested_model) == (runs, "asked-model")
+
+
+_FABLE, _OPUS, _SONNET, _HAIKU = "claude-fable-5-2", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"
+_SCORES = {_FABLE: 65.0, _OPUS: 59.1, _SONNET: 55.0, _HAIKU: 36.0}
+_WINDOWS = {_FABLE: 1_000_000, _OPUS: 1_000_000, _SONNET: 1_000_000, _HAIKU: 200_000}
+_FAIR = "You've hit your weekly limit · resets 9pm (Europe/Paris)"   # the account's own limit
+_POOL = "You've reached your Fable limit. Switch to another model."
+
+
+@pytest.mark.parametrize(("rule", "current", "held", "context", "goes_to"), [
+    # The owner's words 2026-11-20: « If fable is not available it should fallback … never dissalow if i have any form of usage »
+    pytest.param([_HAIKU, _SONNET, _OPUS, _FABLE], _FABLE, {_FABLE: _POOL}, None, _HAIKU, id="a-family-pool-shut-the-rules-next-model"),
+    pytest.param([_HAIKU, _SONNET, _OPUS, _FABLE], _FABLE, {_FABLE: _FAIR}, None, _HAIKU, id="an-account-limit-on-its-model-never-a-refusal"),
+    pytest.param([_SONNET, _OPUS, _FABLE], _FABLE, {_FABLE: _POOL}, None, _SONNET, id="a-coding-rule-falls-to-its-own-next-model"),
+    pytest.param([_FABLE], _FABLE, {_FABLE: _POOL}, None, _OPUS, id="a-plain-model-id-falls-to-the-most-capable-other"),
+    pytest.param([_HAIKU, _SONNET, _OPUS, _FABLE], _FABLE, {_FABLE: _POOL}, 267_450, _SONNET, id="a-conversation-too-big-for-haiku-skips-it"),
+    pytest.param([_HAIKU, _SONNET, _OPUS, _FABLE], _OPUS, {}, 267_450, _OPUS, id="an-open-model-it-is-on-is-kept-whatever-the-rule-lists-first"),
+    pytest.param([_OPUS, _FABLE], _HAIKU, {}, None, _OPUS, id="a-rule-that-no-longer-lists-its-model-moves-it"),
+    pytest.param([_HAIKU, _SONNET, _OPUS, _FABLE], _FABLE, {_FABLE: _POOL, _HAIKU: _FAIR, _SONNET: _FAIR, _OPUS: _FAIR}, None, _FABLE, id="every-model-held-the-vendor-is-asked-never-a-refusal"),
+])
+def test_a_resumed_conversation_is_never_refused_while_a_model_could_answer(
+    monkeypatch: pytest.MonkeyPatch, rule: list[str], current: str, held: dict[str, str], context: int | None, goes_to: str,
+) -> None:
+    """Owner 2026-11-20 « The harness should never dissalow if i have any form of usage »: a resume asks its own model while it
+    answers, else the rule's next model that holds the history, else the most capable other of its provider, else the vendor
+    about the model whose note ends first. The rating « floor » that refused is gone (`context_tokens` replaces it)."""
+    login = uuid4()
+    monkeypatch.setattr(run_module, "rank_candidates", lambda rule_text, env, *, providers, weights="", role=None, among=None: tuple(
+        reg.LaunchCandidate(provider="claude", model=name, rank=index)
+        for index, name in enumerate(rule if rule_text != "aa.intelligence" else list(_SCORES))))
+    monkeypatch.setattr(run_module, "_capability_of", lambda name, candidates: _SCORES.get(name))
+    monkeypatch.setattr(run_module, "_context_of", lambda name, candidates: _WINDOWS.get(name))
+    monkeypatch.setattr(run_module, "resolve_model", lambda name, env, *, provider, weights="": ({}, name))
+    for index, (name, said) in enumerate(held.items()):
+        quota.record_refusal("claude", name, said=said, subscription=login, now=time.time() - 60 * (len(held) - index))
+    chosen = run_module.resolve_continuable_model("crit" if len(rule) > 1 else _FABLE, {}, provider=PROVIDERS["claude"], subscription=login,
+                                                  current=current, context_tokens=context)[1]
+    assert chosen == goes_to

@@ -372,60 +372,57 @@ def _noted_until(provider: str, model: str, logins: Sequence[UUID | None]) -> fl
     return None if not untils or any(until is None for until in untils) else min(until for until in untils if until is not None)
 
 
+def _context_of(model: str, candidates: Sequence[reg.LaunchCandidate]) -> int | None:
+    """The catalog's context window for `model` (as `_capability_of` reads it); None when it names none."""
+    named = next((entry.catalog_id for entry in candidates if entry.model == model and entry.catalog_id), None)
+    row = Model.named(named) if named else Model.by_id(model)
+    return None if row is None else row.context_length
+
+
 def resolve_continuable_model(
     model: str, env: dict[str, str], *, provider: AgentProvider, weights: str = "", role: str | None = None,
-    subscription: UUID | None = None, floor: str | None = None,
+    subscription: UUID | None = None, current: str | None = None, context_tokens: int | None = None,
 ) -> tuple[dict[str, str], str]:
-    """Re-resolve a criterion for a RESUMED turn exactly like a fresh spawn does — walk the same
-    ranked candidate list, skip anything still in quota cooldown — instead of replaying whatever
-    model was recorded on the run at its ORIGINAL spawn. `resolve_model`/`_resolve_criteria` alone
-    have no notion of quota: their single `criteria.choose()` ranks straight back to a model that
-    already refused a moment ago, which is the whole bug a "just reuse `run.model`" resume has.
+    """Re-resolve `model` (a criterion, or a plain model id) for a RESUMED turn like a fresh spawn: the ranked list, a
+    model still in quota cooldown passed over — instead of replaying whatever model the run recorded at its original
+    spawn, which already refused a moment ago.
 
-    Scoped to ONE provider, unlike a fresh spawn's cross-provider walk: a vendor session cannot
-    switch CLI mid-conversation (the history lives in `provider`'s own store), only the model it
-    is asked for. When every one of THIS provider's candidates for `model` is currently cooled, it
-    asks the one whose note ends first (a note is a forecast, the vendor decides) rather than refuse the turn.
-
-    `floor` is the model the conversation is ON (its record's own): the walk never hands it to a
-    candidate the catalog scores BELOW that one. A resume may move UP — the criterion's own order
-    decides, and a bigger model holds what a smaller one held — but down it cannot, because what cut
-    the conversation is as often its SIZE as the account's pool, and the smaller model is then the one
-    certainty of failure (2026-10-23: a 1M-token conversation walked down to haiku-5.5, which Claude
-    Code refused to compact with at all). No `floor`, or no score for it, leaves the walk as it was.
+    NEVER a refusal while this provider has a model that could answer (owner 2026-11-20: « If fable is not available it
+    should fallback. … The harness should never dissalow if i have any form of usage »). The order tried:
+    1. `current`, the model the conversation is on, while the rule still lists it and no cooldown note holds it: a
+       resume changes nothing it has no cause to change (a value-ranked rule lists the cheapest first, and put the owner's
+       main conversation on haiku-5.5);
+    2. the rule's own list;
+    3. every other model of the provider, the most capable first — a plain id that cannot run falls here, as a rule whose
+       models are all cooled does.
+    A model whose context window is below `context_tokens` (the conversation's size now) goes behind every model that
+    fits: it could not take the history (2026-10-23: a 1M-token conversation put on haiku-5.5, which Claude Code could
+    not compact with); when none fits the largest window is asked, and it compacts. Within that order the first model no
+    cooldown note holds runs; every model held: the one whose note ends first is asked (a note is a forecast, the vendor
+    decides). The vendor's own refusal is that turn's, recorded. Scoped to ONE provider: a vendor session cannot switch
+    CLI mid-conversation (a move to another login or provider is `registry.movable`'s).
     """
-    candidates = rank_candidates(model, env, providers=[provider], weights=weights, role=role)
-    least = _capability_of(floor, candidates) if floor else None
-    # The model the conversation is ON has its family's own pool shut on this login (« Switch to another model », `quota.POOLS`): the
-    # vendor itself sends it to another model, and the floor would leave it stuck until the pool reopens days later. A block by an
-    # account-level limit keeps the floor: what cut the conversation there is as often its size (2026-10-23, below).
-    if floor and quota.pool_blocked_until(provider.name, floor, subscription=subscription) is not None:
-        least = None
-        # No ladder to walk down then: a bare criterion lists the cheapest first (2026-11-20: haiku-5.5 took the owner's
-        # conversation before opus-5.5), so the most capable model still open takes it.
-        candidates = sorted(candidates, key=lambda entry: -(_capability_of(entry.model, candidates) or float("-inf")))
-    cooled: dict[str, tuple[float, reg.LaunchCandidate]] = {}
-    smaller: list[reg.LaunchCandidate] = []
-    for candidate in candidates:
-        score = _capability_of(candidate.model, candidates)
-        if least is not None and score is not None and score < least:
-            smaller.append(candidate)
-            continue
-        until = quota.blocked_until(candidate.provider, candidate.model, subscription=subscription)
+    primary = rank_candidates(model, env, providers=[provider], weights=weights, role=role)
+    try:
+        wider = rank_candidates("aa.intelligence", env, providers=[provider])
+    except (ModelUnavailable, ValueError):
+        wider = ()   # no catalog scores: the rule's own list is all there is
+    everything = tuple({c.model: c for c in (*primary, *wider)}.values())
+    by_capability = sorted(everything, key=lambda entry: -(_capability_of(entry.model, everything) or float("-inf")))
+    ordered = list(dict.fromkeys((*((current,) if current in {c.model for c in primary} else ()), *(c.model for c in primary),
+                                  *(c.model for c in by_capability))))
+    if context_tokens:
+        window = lambda name: _context_of(name, everything)   # noqa: E731
+        fits = [name for name in ordered if (size := window(name)) is None or size >= context_tokens]
+        ordered = [*fits, *sorted((name for name in ordered if name not in fits), key=lambda name: -(window(name) or 0))]
+    held: dict[str, float] = {}
+    for name in ordered:
+        until = quota.blocked_until(provider.name, name, subscription=subscription)
         if until is None:
-            return resolve_model(candidate.model, env, provider=provider, weights=weights)
-        cooled[candidate.model] = (until, candidate)
-    # Nothing is open by this PC's notes. A note is a forecast (a rolling window reopens before the reset it names), and
-    # the vendor is the one that knows: the turn is never refused here while a model could still answer it (owner
-    # 2026-11-20: « The harness should never dissalow if i have any form of usage »). It asks the model whose note ends
-    # first, never one smaller than the conversation's own; a refusal then is that turn's, recorded (`finish`).
-    if cooled:
-        _, candidate = min(cooled.values(), key=lambda held: held[0])
-        return resolve_model(candidate.model, env, provider=provider, weights=weights)
-    if smaller:
-        # Only models the conversation outgrew remain: the most capable of them is asked.
-        best = max(smaller, key=lambda candidate: _capability_of(candidate.model, candidates) or float("-inf"))
-        return resolve_model(best.model, env, provider=provider, weights=weights)
+            return resolve_model(name, env, provider=provider, weights=weights)
+        held[name] = until
+    if held:
+        return resolve_model(min(held, key=held.__getitem__), env, provider=provider, weights=weights)
     raise ModelUnavailable(sentence=f"no model {provider.name!r} can run for {model!r}")
 
 
@@ -1050,7 +1047,7 @@ class ResumeLaunch(AheadLaunch):
             if not criterion:
                 raise ModelUnavailable(sentence=f"No model criterion for {run.agent!r}")
             routed, model = resolve_continuable_model(criterion, environment, provider=provider, weights=policy.weights_for(run.agent), role=run.agent,
-                                                      subscription=run.subscription_id, floor=run.model)
+                                                      subscription=run.subscription_id, current=run.model, context_tokens=run.context_tokens or None)
             reasoning = policy.effort_for(run.agent, f"{provider.name}/{model}" if model else None, chosen=run.reasoning_set)
         coarse_accepted = policy.accepts_coarse_tool_policy(run.agent, provider.name) if run.agent else False
         tools = tools_of(policy, run.agent, run.community is not None)
@@ -1686,7 +1683,7 @@ async def run_agent(
             sentence="A named agent's model policy cannot be bypassed with a provider profile. "
             "Change the agent's rule in the policy UI instead."
         )
-    model = required_model or model
+    asked_model, model = model, required_model   # a model asked for by name goes first below, its role's rule behind it
     weights = policy.weights_for(agent)
     # Explicit provider only narrows the pool; every candidate uses the same preflight.
     pool = [provider] if provider is not None else list(PROVIDERS.values())
@@ -1703,6 +1700,12 @@ async def run_agent(
     if pinned is not None and pinned.subscription_id is not None:
         among.setdefault(Subscription.of(pinned.subscription_id).program.name, []).append(pinned.subscription_id)
     candidates = rank_candidates(model, environment, providers=pool, weights=weights, role=agent, among=among)
+    if asked_model and asked_model != model:
+        # An explicit model is honoured while it has usage; its role's own list follows it, so a model with none falls back
+        # (the walk passes a cooled candidate over and records it in `skipped`) — owner 2026-11-20 « If fable is not available
+        # it should fallback ».
+        first = rank_candidates(asked_model, environment, providers=pool, weights=weights, role=agent, among=among)
+        candidates = tuple({(c.provider, c.model): c for c in (*first, *candidates)}.values())
     skipped: list[reg.SkippedCandidate] = []
     #: How many children this run has already handed to the vendor that owns session ids.
     #: The first gets the run id itself, so `claude --resume <run_id>` works; a later one
@@ -1957,7 +1960,7 @@ async def run_agent(
             run_id=run_id, pid=candidate_process.pid, provider=candidate_provider.name, name=label,
             task=task, cwd=cwd, model=candidate_model, parent_run_id=parent, agent=agent,
             permission_mode=candidate_permission_mode, requested_criterion=required_model,
-            mesh_enabled=mesh, reasoning=candidate_effort, reasoning_set=reasoning,
+            requested_model=asked_model, mesh_enabled=mesh, reasoning=candidate_effort, reasoning_set=reasoning,
             candidates=candidates, skipped=tuple(skipped), denied_tools=denied_tools,
             served_tools=served_tools(candidate_provider, allowed_tools),
             provider_session_id=vendor_session if candidate_provider.session_is_run else None,
@@ -2045,7 +2048,7 @@ async def run_agent(
         run_id=run_id, pid=process.pid, provider=provider.name, name=label,
         task=task, cwd=cwd, model=model, parent_run_id=parent, agent=agent,
         permission_mode=permission_mode, requested_criterion=required_model,
-        mesh_enabled=mesh,
+        requested_model=asked_model, mesh_enabled=mesh,
         reasoning=effort, reasoning_set=reasoning,
         candidates=candidates, skipped=tuple(skipped), denied_tools=denied_tools, served_tools=served_tools(provider, allowed_tools),
         provider_session_id=provider.session_named(run_id),

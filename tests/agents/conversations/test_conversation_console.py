@@ -1377,7 +1377,7 @@ async def test_resumed_conversation_skips_a_cooled_model_and_uses_the_next_ranke
         await _stop_console(resumed_process)
 
 
-async def test_resumed_conversation_refuses_when_every_candidate_is_cooled(
+async def test_resumed_conversation_asks_the_vendor_when_every_candidate_is_cooled(
     console_workspace, monkeypatch
 ) -> None:
     from galaius.agents.limits import quota
@@ -1417,10 +1417,13 @@ async def test_resumed_conversation_refuses_when_every_candidate_is_cooled(
             "version": 1, "request_id": "resume", "method": "send",
             "run_id": run_id, "prompt": "continue after the host restarted",
         })
-        assert resumed["ok"] is False and resumed["error_code"] == "unavailable"
-        assert "cooldown" in resumed["error"] and "new conversation" in resumed["error"]
-        # Never actually asked the provider to resume the dead conversation.
-        assert not any(record["method"] == "thread/resume" for record in _codex_log(binary_dir))
+        # Never refused here (owner 2026-11-20 « never dissalow if i have any form of usage »): the model whose note ends first
+        # (the cheap one, refused first) is asked, and the vendor answers.
+        assert resumed["ok"] is True and resumed["run"]["model"] == "openai/cheap-example"
+        assert any(record["method"] == "thread/resume" for record in _codex_log(binary_dir))
+        await _exchange(resumed_process, {
+            "version": 1, "request_id": "cancel-again", "method": "cancel", "run_id": run_id,
+        })
     finally:
         await _stop_console(resumed_process)
 

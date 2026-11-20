@@ -1,6 +1,5 @@
 """Typed conversation contract shared by the local host and generated TypeScript bindings."""
 
-import time
 from typing import Annotated, Literal, Self
 
 from pydantic import (
@@ -30,22 +29,6 @@ from galaius.agents.registry import (
 from galaius.catalog.criteria import Criteria, CriteriaError
 from galaius.models.registry import Model
 
-
-def _cooldown_refusal(provider: str, cooled: dict[str, float]) -> str:
-    """Same shape as the CLI-subprocess spawn's refusal (`agents/run.py::resolve_continuable_model`)
-    — name every cooled model and when it clears, and what the operator can do instead. This
-    subsystem shares the SAME quota memory a vendor-CLI agent run writes to
-    (`~/.galaius/out/agents/quota-usage.json`) but never writes its own refusals into it;
-    `resolve` only READS it, so a refusal recorded by an agent run is honoured here too."""
-    detail = "; ".join(
-        f"{model_id} until {time.strftime('%H:%M:%S', time.localtime(until))}"
-        for model_id, until in cooled.items()
-    )
-    return (
-        f"every model {provider!r} can run on this route is in quota cooldown ({detail}) — "
-        "wait for one to clear and resend, or start a new conversation, which can pick a "
-        "different provider"
-    )
 
 RouteAvailability = Literal[
     "available", "unavailable", "unauthenticated", "incompatible", "policy_blocked"
@@ -146,9 +129,11 @@ class ConversationRoute(BaseModel):
             model = self.model_by_id(selection.model)
             if model is None:
                 raise ValueError("the selected model is no longer available on this route")
-            if model.id in cooled_until:
-                raise ValueError(_cooldown_refusal(self.provider, {model.id: cooled_until[model.id]}))
-            return model
+            if model.id not in cooled_until:
+                return model
+            # Cooled: the route's next model with usage takes it (owner 2026-11-20 « If fable is not available it should
+            # fallback »); none with usage: the vendor is asked about the one whose note ends first.
+            return live[0] if live else self._earliest(cooled_until)
         if selection.criterion is not None:
             try:
                 criterion = Criteria.parse(selection.criterion)
@@ -157,7 +142,7 @@ class ConversationRoute(BaseModel):
             model = criterion.choose(available_only=False, candidates=live)
             if model is None:
                 if self.models and not live:
-                    raise ValueError(_cooldown_refusal(self.provider, cooled_until))
+                    return self._earliest(cooled_until)
                 raise ValueError("no model on the selected route clears this criterion")
             return model
         if self.default_model is not None:
@@ -166,9 +151,14 @@ class ConversationRoute(BaseModel):
                 return model
         if not live:
             if cooled_until:
-                raise ValueError(_cooldown_refusal(self.provider, cooled_until))
+                return self._earliest(cooled_until)
             raise ValueError("the selected route currently exposes no runnable model")
         return live[0]
+
+    def _earliest(self, cooled_until: dict[str, float]) -> Model:
+        """No model of this route is free by this PC's notes: a note is a forecast, so the vendor is asked about the model whose
+        note ends first — a turn is never refused here while a model could answer it."""
+        return self.models[[model.id for model in self.models].index(min(cooled_until, key=cooled_until.__getitem__))]
 
 
 class ConversationCatalog(BaseModel):
