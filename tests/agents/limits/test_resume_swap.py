@@ -152,16 +152,18 @@ class _Other(QueueProvider):
     name = "other"
 
 
-@pytest.mark.parametrize(("shut_models", "open_login", "other_provider", "exhausted"), [
-    (("fable-fixture", "lower-model"), False, True, True),        # every model shut on every login, another provider installed
-    (("fable-fixture", "lower-model"), True, True, False),        # his other login can take it (`swap_login`'s rung)
-    (("fable-fixture",), False, True, False),                      # one model still answers on its own login (`resolve_continuable_model`'s rung)
-    (("fable-fixture", "lower-model"), False, False, False),       # no other provider to go to
+@pytest.mark.parametrize(("shut_models", "open_login", "other_provider", "exhausted", "switched_on"), [
+    (("fable-fixture", "lower-model"), False, True, True, True),        # every model shut on every login, another provider installed
+    (("fable-fixture", "lower-model"), True, True, False, True),        # his other login can take it (`swap_login`'s rung)
+    (("fable-fixture",), False, True, False, True),                      # one model still answers on its own login (`resolve_continuable_model`'s rung)
+    (("fable-fixture", "lower-model"), False, False, False, True),       # no other provider to go to
+    (("fable-fixture", "lower-model"), False, True, False, False),       # another provider installed but switched off in his policy
 ])
 def test_a_conversation_moves_to_another_provider_only_when_nothing_of_its_own_can_answer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, shut_models: tuple[str, ...],
-                                                                                         open_login: bool, other_provider: bool, exhausted: bool) -> None:
+                                                                                         open_login: bool, other_provider: bool, exhausted: bool, switched_on: bool) -> None:
     provider, logins, _ = _stopped_run(monkeypatch, tmp_path)
     monkeypatch.setattr(fallback, "PROVIDERS", {"claude": provider, **({"other": _Other()} if other_provider else {})})
+    monkeypatch.setattr(fallback, "_active", lambda name: switched_on)
     for name, login in logins.items():
         if open_login and name == "b":
             continue
@@ -175,6 +177,7 @@ def test_a_conversation_moves_to_another_provider_only_when_nothing_of_its_own_c
 def test_an_exhausted_providers_waiting_message_goes_to_a_successor_on_another_provider_else_to_its_own_provider(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, spawn_answers: bool) -> None:
     provider, logins, _ = _stopped_run(monkeypatch, tmp_path)
     monkeypatch.setattr(fallback, "PROVIDERS", {"claude": provider, "other": _Other()})
+    monkeypatch.setattr(fallback, "_active", lambda name: True)
     monkeypatch.setattr(agent_queue, "_HANDOFF_REFUSED", set())
     for login in logins.values():
         for model in ("fable-fixture", "lower-model"):

@@ -35,7 +35,7 @@ def _shut(provider: str, login, models: Iterable[str]) -> bool:
 def exhausted(run: reg.AgentRun, models: Iterable[str]) -> bool:
     """Whether stopped `run`'s own provider can answer nothing now: every one of `models` (what its rule lists, its own included)
     is passed over, or the login paused, on every login of that provider on this PC (the one it is pinned to and each subscription),
-    AND another provider is installed with its own login open. Never for a run the owner holds a move for (`pending_move`), a member's
+    AND another provider is installed, switched on in his policy and with its login open. Never for a run the owner holds a move for (`pending_move`), a member's
     lent run, a CLI no login runs, or a run of no process."""
     models = tuple(dict.fromkeys(model for model in models if model))
     if not models or run.pending_move is not None or run.kind != "process" or run.foreign or not run.agent:
@@ -45,8 +45,20 @@ def exhausted(run: reg.AgentRun, models: Iterable[str]) -> bool:
     logins = {run.subscription_id, *(one.id for one in Subscription.all() if one.provider == run.provider)}
     if not all(_shut(run.provider, login, models) for login in logins):
         return False
-    return any(other.name != run.provider and other.can_resume and other.available() and quota.login_pause(other.name) is None
+    return any(other.name != run.provider and other.can_resume and other.available() and quota.login_pause(other.name) is None and _active(other.name)
                for other in PROVIDERS.values())
+
+
+def _active(provider: str) -> bool:
+    """The owner's policy has `provider` switched on: a CLI he turned off is never the one his conversation moves to (the ranked walk
+    skips it too, `Policy.provider_active`). False when the policy cannot be read now."""
+    from galaius.agents.run import load_policy   # noqa: PLC0415 — circular: run imports this package
+
+    try:
+        return load_policy().provider_active(provider)
+    except Exception as error:   # noqa: BLE001 — an unreadable policy moves nothing
+        log.info("the provider policy could not be read for a hand-off: %s", error)
+        return False
 
 
 def candidates(run: reg.AgentRun) -> tuple[str, ...]:
