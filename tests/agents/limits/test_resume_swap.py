@@ -123,7 +123,7 @@ def test_every_part_of_a_logins_usage_is_one_record_in_one_file() -> None:
     quota.record_refusal("claude", "fable-fixture", said=FABLE_POOL, subscription=login)
     quota.record_refusal("claude", "lower-model", said=_week_line(), subscription=login)
     record = quota._read(time.time())[f"claude#{login}"]
-    assert set(record.blocks) == {"fable-fixture", "~fable", "lower-model"}
+    assert set(record.blocks) == {"~fable", "lower-model"}   # one key per (login, pool): the Fable pool is not noted again under a model id
     assert record.blocks["~fable"].window == "seven_day_overage_included"
     assert record.pauses["usage_limit"].until is not None
     assert sorted(path.name for path in quota._path().parent.glob("quota-*.json")) == ["quota-usage.json"]
