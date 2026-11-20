@@ -272,6 +272,13 @@ def test_keep_file_never_keeps_a_credential_a_link_or_a_person_s_own_session(tmp
         with pytest.raises((ValueError, PermissionError, OSError)):
             keep(refused)
     assert keep("ok.txt").key
+    # A secret under an ordinary name: refused by its name, or by the key it holds.
+    (tmp_path / "api_token.txt").write_text("sk-123")
+    (tmp_path / "notes.txt").write_text("a\n" + "-----BEGIN OPENSSH " + "PRIVATE KEY-----\nxx\n")
+    for refused in ("api_token.txt", "Secrets.YAML", "notes.txt"):
+        (tmp_path / refused).touch(exist_ok=True)
+        with pytest.raises(ValueError, match="secret|private key"):
+            keep(refused)
 
 
 def test_the_same_bytes_kept_again_answer_with_the_story_they_were_first_kept_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

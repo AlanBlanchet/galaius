@@ -533,6 +533,20 @@ def story_of(run: "reg.AgentRun | None", sources: Iterable[str], replaces: str |
         raise ValueError(str(error).splitlines()[0]) from error
 
 
+#: Words in a file's name that say it holds a secret, and the line that opens a private key: `keep` refuses both (a card is read by everyone who
+#: reads the conversation). The fence blanks credential files by their exact names only; this adds the names and contents a person would not share.
+SECRET_WORDS = ("secret", "token", "passw", "credential", "apikey", "api_key", "api-key", "private_key", "private-key", "privatekey")
+_PRIVATE_KEY = re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+SECRET_SCAN_BYTES = 4 * 1024 * 1024
+
+
+def secret_refusal(path: str) -> str | None:
+    """Why file `path` (by its name) is never kept, None when its name says nothing."""
+    name = PurePosixPath(path).name.casefold()
+    word = next((word for word in SECRET_WORDS if word in name), None)
+    return None if word is None else f"{path}: its name says it holds a secret (« {word} »): a kept file is shown to everyone who reads this conversation"
+
+
 def keep(path: str, *, sources: Iterable[str] = (), replaces: str | None = None) -> Written:
     """The file at `path` in the caller's working folder, of any format, kept under its key for the run asking (`reg.RunFiles`):
     what a file made any other way (a shell, a program, another tool) becomes a file other agents are handed by key and the
@@ -543,11 +557,16 @@ def keep(path: str, *, sources: Iterable[str] = (), replaces: str | None = None)
         raise PermissionError("keep_file keeps a file for an agent run; this session is none")
     if any(project_hidden(part) for part in PurePosixPath(path).parts):
         raise ValueError(f"{path}: a hidden file or a credential store is never kept")
+    if (said := secret_refusal(path)) is not None:
+        raise ValueError(said)
     story_of(run, sources, replaces)  # refused before anything is copied when it names a file this run does not hold
     scratch = Path(tempfile.mkdtemp(prefix="keep-", dir=reg.agents_dir()))
     try:
         copied = scratch / "copy"
         size = copy_working(path, copied, KEPT_FILE_MAX)
+        with copied.open("rb") as handle:
+            if _PRIVATE_KEY.search(handle.read(SECRET_SCAN_BYTES)):
+                raise ValueError(f"{path}: it holds a private key: never kept")
         story = story_of(run, sources, replaces, size)
         name = PurePosixPath(path).name
         suffix = key_suffix(name)

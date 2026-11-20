@@ -74,7 +74,7 @@ async def keep_file(path: str, from_files: list[str] | None = None, replaces: st
     """Keep a file you made any way you like — a shell, a program on this PC, another tool — under its key, so the person sees it
     in their chat and other agents are handed it by that key.
 
-    path: the file, relative to your working folder; any format; never a hidden file or a credential store. Its key is the
+    path: the file, relative to your working folder; any format; never a hidden file, a credential store, a file whose name says secret, token, password or key, nor one holding a private key. Its key is the
     hash of its bytes: the same bytes are the same key on every PC, and a copy of it is kept for your run, whatever you do
     to the file after. from_files: the keys of the kept files you made it from; replaces: the key of the one it takes
     the place of — both said by you (keys you made or were handed), never read from a name. Returns its key.
