@@ -978,6 +978,13 @@ def test_a_pool_reading_past_its_reset_is_no_reading_and_holds_nothing(tmp_path:
     assert quota.blocked_until("claude", "claude-fable-5-2", subscription=subscription.id) is None
 
 
+def test_a_pool_at_his_stop_naming_no_reopening_is_held_one_cooldown_never_forever_never_not_at_all() -> None:
+    login = uuid4()
+    Subscription.stop_pools((quota.ModelPool(pool="fable", used_percent=100, resets_at=None, observed_at=datetime.now(UTC)),), provider="claude", subscription=login)
+    until = quota.blocked_until("claude", "claude-fable-5-2", subscription=login)
+    assert until is not None and until == pytest.approx(time.time() + quota.DEFAULT_COOLDOWN, abs=30)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("held_by", ["refusal", "stop"])
 @pytest.mark.parametrize(("refused_on", "runs_on", "model"), [

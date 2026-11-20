@@ -334,8 +334,10 @@ class Subscription(BaseModel):
         """The block each pool reading earns on a login (`observe_pools`); a login of no subscription (`subscription` None) is this PC's own."""
         stop = quota.pool_stop_percent()
         for pool in pools:
-            if pool.used_percent >= stop and pool.resets_at is not None:
-                quota.hold_pool(provider, pool.pool, until=pool.resets_at.timestamp() + quota.RESET_SLACK, subscription=subscription)
+            if pool.used_percent >= stop:
+                # No reopening named: one cooldown, read again by the next reading (never a hold with no end, never none).
+                until = pool.resets_at.timestamp() + quota.RESET_SLACK if pool.resets_at is not None else time.time() + quota.DEFAULT_COOLDOWN
+                quota.hold_pool(provider, pool.pool, until=until, subscription=subscription)
             else:
                 quota.release_pool(provider, pool.pool, subscription=subscription)
 
