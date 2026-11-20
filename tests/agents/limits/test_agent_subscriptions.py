@@ -943,7 +943,7 @@ def test_a_held_logins_empty_answer_never_wipes_the_readings_its_runs_streamed_b
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name in ("claude", "codex"):
-        install_fake_cli(bin_dir, name, TESTS / "fixtures" / "agents" / "fake_usage_cli.py")
+        install_fake_cli(bin_dir, name, TESTS / "fixtures" / "agents" / "fake_usage.py")
     environment = {"PATH": os.pathsep.join((str(bin_dir), str(Path(sys.executable).parent))), "HOME": str(Path.home())}
     monkeypatch.setenv("PATH", environment["PATH"])
     subscription = Subscription.create(uuid4(), "claude")
