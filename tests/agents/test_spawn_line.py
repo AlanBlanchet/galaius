@@ -24,7 +24,8 @@ from galaius.agents.policy import Policy
 from galaius.agents.providers import ClaudeCodeProvider
 from galaius.agents.run import ChildLaunch, TaskNotHanded, run_agent
 from galaius.agents.spawn_line import ASIDE, READY_STATE, STUCK, Admission, Load, Spawn, SpawnLine
-from galaius.cli.commands.agents.runs import agents_require_role, agents_spawn
+from galaius.cli.commands.agents.runs import agents_require_role
+from galaius.cli.commands.agents.spawn import agents_spawn
 from galaius.host.processes import process_parent, process_started
 from galaius.machine.web_runs import WebRun, WebRuns
 from galaius.host.paths import UserPaths

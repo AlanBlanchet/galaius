@@ -23,7 +23,7 @@ import pytest
 
 from galaius.diagnostics import extension_status as es
 from galaius.mcp import registry as reg
-from galaius.cli.commands import status as cli_status
+from galaius.cli.commands import sections
 from tests.support.paths import REPO
 
 
@@ -382,14 +382,14 @@ def test_doctor_applies_the_machine_readable_extension_remedy(
     monkeypatch, capsys, status, message, expected_deliveries
 ):
     deliveries = []
-    monkeypatch.setattr(cli_status, "extension_status", lambda: status)
+    monkeypatch.setattr(sections, "extension_status", lambda: status)
     monkeypatch.setattr(
-        cli_status,
+        sections,
         "deliver_extension",
         lambda: deliveries.append(status["remedy"]) or True,
     )
 
-    cli_status._print_extension_status(fix=True)
+    sections.print_extension_status(fix=True)
 
     assert message in capsys.readouterr().out
     assert deliveries == ["install"] * expected_deliveries

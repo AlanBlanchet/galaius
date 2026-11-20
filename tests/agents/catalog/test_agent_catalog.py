@@ -37,7 +37,7 @@ from galaius.host.private_files import PRIVATE_FILES
 from tests.support.agents import claude_definitions
 from tests.support.private_files import loosen
 from galaius.cli.app import app
-from galaius.cli.commands.agents import runs as cli_runs
+from galaius.cli.commands.agents import spawn as cli_spawn
 
 #: The conversation tools a role reading files is given (`ToolGateway.granted`).
 CONVERSATIONS = [f"mcp__galaius__{name}" for name in CONVERSATION_TOOLS]
@@ -996,8 +996,8 @@ def test_cli_parses_exact_reference_and_delegate_parent(catalog_home, monkeypatc
         calls.append(kwargs)
         return SimpleNamespace(run_id="fixture-run", process=SimpleNamespace(returncode=0), wait=finished)
 
-    monkeypatch.setattr(cli_runs, "_run_agent_for_cli", launch)
-    monkeypatch.setattr(cli_runs, "run_agent", launch)
+    monkeypatch.setattr(cli_spawn, "_run_agent_for_cli", launch)
+    monkeypatch.setattr(cli_spawn, "run_agent", launch)
     with pytest.raises(SystemExit) as result:
         app(["agents", command, "Bounded task", "--agent-id", str(identity), "--agent-revision", str(revision),
              "--delegate", "ask_worker", "--parent-run-id", "fixture-parent"])
@@ -1012,7 +1012,7 @@ def test_cli_refuses_half_a_revision_pair_before_launch(catalog_home, monkeypatc
     async def forbidden(*args, **kwargs):
         pytest.fail("incomplete revision reached launch")
 
-    monkeypatch.setattr(cli_runs, "_run_agent_for_cli", forbidden)
+    monkeypatch.setattr(cli_spawn, "_run_agent_for_cli", forbidden)
     with pytest.raises(SystemExit) as result:
         app(["agents", "spawn", "Bounded task", flag, str(uuid4())])
     assert result.value.code == 2

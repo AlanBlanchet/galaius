@@ -30,7 +30,7 @@ from galaius.isolation.fence import FenceBind, FenceSpec
 from galaius.machine.programs import AgentPrograms
 from galaius.machine import agents as machine_agents
 from galaius.machine.agents import MachineAgents
-from galaius.cli.commands.agents.runs import agents_resume
+from galaius.cli.commands.agents.conversations import agents_resume
 from tests.support.agents import ScriptedProvider, install_fake_cli, install_provider, use_policy
 from tests.support.paths import TESTS
 

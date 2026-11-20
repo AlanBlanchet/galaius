@@ -432,7 +432,7 @@ async def test_a_broken_read_never_kills_the_pump(tmp_path, monkeypatch):
 
 
 def test_spawn_returns_the_run_id_without_waiting(monkeypatch, tmp_path, capsys):
-    from galaius.cli.commands.agents import runs as cli_runs
+    from galaius.cli.commands.agents import spawn as cli_spawn
 
     class _Handle:
         run_id = "abcd1234-0000-0000-0000-000000000000"
@@ -441,8 +441,8 @@ def test_spawn_returns_the_run_id_without_waiting(monkeypatch, tmp_path, capsys)
         assert kw["agent"] == "code-reviewer"
         return _Handle()
 
-    monkeypatch.setattr(cli_runs, "_run_agent_for_cli", _fake_run)
-    cli_runs.agents_spawn("review the diff", agent="code-reviewer")
+    monkeypatch.setattr(cli_spawn, "_run_agent_for_cli", _fake_run)
+    cli_spawn.agents_spawn("review the diff", agent="code-reviewer")
     assert "abcd1234" in capsys.readouterr().out
 
 

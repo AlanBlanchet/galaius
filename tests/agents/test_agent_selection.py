@@ -35,7 +35,7 @@ from galaius_core import ModelRelation
 import galaius.agents.run as run_module
 from galaius.models.registry import Benchmark
 import galaius.server.tools.agents as tools_agents
-from galaius.cli.commands.agents import runs as cli_runs
+from galaius.cli.commands.agents import spawn as cli_spawn
 from tests.support.models import catalog_of, model
 
 CRITERION = "cap.vlm and price.in >= 0"
@@ -442,9 +442,9 @@ async def test_a_terminal_launch_waits_longer_for_the_vendors_refusal(tmp_path, 
         seen["window"] = kwargs.get("quota_window")
         return SimpleNamespace(run_id="r")
 
-    monkeypatch.setattr(cli_runs, "run_agent", capture)
-    await cli_runs._run_agent_for_cli(None, "t", cwd=str(tmp_path))
-    assert seen["window"] == cli_runs.CLI_QUOTA_WINDOW and cli_runs.CLI_QUOTA_WINDOW > 4.0
+    monkeypatch.setattr(cli_spawn, "run_agent", capture)
+    await cli_spawn._run_agent_for_cli(None, "t", cwd=str(tmp_path))
+    assert seen["window"] == cli_spawn.CLI_QUOTA_WINDOW and cli_spawn.CLI_QUOTA_WINDOW > 4.0
 
 
 @pytest.mark.asyncio
@@ -659,9 +659,9 @@ async def test_mcp_spawn_defaults_to_the_ranked_choice(monkeypatch):
 
 def test_cli_spawn_defaults_to_the_ranked_choice(monkeypatch):
     seen = []
-    monkeypatch.setattr(cli_runs, "_run_agent_for_cli", _capture(seen))
+    monkeypatch.setattr(cli_spawn, "_run_agent_for_cli", _capture(seen))
     with pytest.raises(SystemExit):
-        cli_runs.agents_spawn("do it", agent="tester", session_id="fixture-conversation")
+        cli_spawn.agents_spawn("do it", agent="tester", session_id="fixture-conversation")
     assert seen == [None]
 
 

@@ -20,7 +20,7 @@ import pytest
 
 from galaius.mcp import registry as sr
 from galaius.mcp import registry as reg
-from galaius.cli.commands import status as cli_status
+from galaius.cli.commands import sections, status as cli_status
 
 # HOME isolation comes from tests/conftest.py's `_isolate_unit_configuration`; the runtime dir
 # below is derived from HOME so nothing here has to redirect it.
@@ -230,9 +230,9 @@ def test_a_pid_confirmed_dead_after_SIGKILL_is_reported_killed(monkeypatch):
 def test_status_command_accepts_fix(monkeypatch, tmp_path):
     """#144: `status` printed the stale-server warning but had no `--fix` of its own — repairing
     required knowing about a second command. It must be reachable from the command that reports it."""
-    monkeypatch.setattr(cli_status, "stale_servers", lambda: [{"pid": 1, "version": "0.1.0", "reason": "version"}])
-    monkeypatch.setattr(cli_status, "latest_version", lambda: "9.9.9")
-    monkeypatch.setattr(cli_status, "kill_stale_servers", lambda: [1])
+    monkeypatch.setattr(sections, "stale_servers", lambda: [{"pid": 1, "version": "0.1.0", "reason": "version"}])
+    monkeypatch.setattr(sections, "latest_version", lambda: "9.9.9")
+    monkeypatch.setattr(sections, "kill_stale_servers", lambda: [1])
     monkeypatch.chdir(tmp_path)
 
     cli_status.status(fix=True)
@@ -242,15 +242,15 @@ def test_fix_reports_confirmed_stop_without_overclaiming_respawn(capsys):
     """The message must not assert every host reconnects automatically (#144's Codex host did
     not) — it states what is known (stopped) and names the manual fallback."""
     orig_stale, orig_latest, orig_kill = (
-        cli_status.stale_servers, cli_status.latest_version, cli_status.kill_stale_servers,
+        sections.stale_servers, sections.latest_version, sections.kill_stale_servers,
     )
     try:
-        cli_status.stale_servers = lambda: [{"pid": 1, "version": "0.1.0", "reason": "version"}]
-        cli_status.latest_version = lambda: "9.9.9"
-        cli_status.kill_stale_servers = lambda: [1]
-        cli_status._print_stale_servers(fix=True)
+        sections.stale_servers = lambda: [{"pid": 1, "version": "0.1.0", "reason": "version"}]
+        sections.latest_version = lambda: "9.9.9"
+        sections.kill_stale_servers = lambda: [1]
+        sections.print_stale_servers(fix=True)
     finally:
-        cli_status.stale_servers, cli_status.latest_version, cli_status.kill_stale_servers = (
+        sections.stale_servers, sections.latest_version, sections.kill_stale_servers = (
             orig_stale, orig_latest, orig_kill,
         )
     out = capsys.readouterr().out
@@ -261,15 +261,15 @@ def test_fix_reports_confirmed_stop_without_overclaiming_respawn(capsys):
 
 def test_fix_names_the_unresolved_pid_and_the_manual_repair(capsys):
     orig_stale, orig_latest, orig_kill = (
-        cli_status.stale_servers, cli_status.latest_version, cli_status.kill_stale_servers,
+        sections.stale_servers, sections.latest_version, sections.kill_stale_servers,
     )
     try:
-        cli_status.stale_servers = lambda: [{"pid": 7, "version": "0.1.0", "reason": "version"}]
-        cli_status.latest_version = lambda: "9.9.9"
-        cli_status.kill_stale_servers = lambda: []  # could not confirm termination
-        cli_status._print_stale_servers(fix=True)
+        sections.stale_servers = lambda: [{"pid": 7, "version": "0.1.0", "reason": "version"}]
+        sections.latest_version = lambda: "9.9.9"
+        sections.kill_stale_servers = lambda: []  # could not confirm termination
+        sections.print_stale_servers(fix=True)
     finally:
-        cli_status.stale_servers, cli_status.latest_version, cli_status.kill_stale_servers = (
+        sections.stale_servers, sections.latest_version, sections.kill_stale_servers = (
             orig_stale, orig_latest, orig_kill,
         )
     out = capsys.readouterr().out

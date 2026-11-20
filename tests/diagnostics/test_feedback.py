@@ -185,7 +185,7 @@ def test_prefilled_url_stays_valid_for_huge_bodies(monkeypatch, tmp_path, huge):
 def test_cli_report_command_sends_through_feedback(monkeypatch, capsys):
     """`galaius report` is the shell-accessible twin of the MCP report_issue tool, so any
     agent with a terminal can file feedback without an MCP connection."""
-    from galaius.cli.commands import status as cli_status
+    from galaius.cli.commands import feedback as cli_feedback
 
     sent: dict = {}
 
@@ -194,7 +194,7 @@ def test_cli_report_command_sends_through_feedback(monkeypatch, capsys):
         return "Reported to galaius — https://github.com/AlanBlanchet/galaius/issues/7"
 
     monkeypatch.setattr(fb, "report", fake_report)
-    cli_status.report("emulator black", "frames are black", kind="limitation")
+    cli_feedback.report("emulator black", "frames are black", kind="limitation")
     assert sent == {"title": "emulator black", "body": "frames are black", "kind": "limitation"}
     assert "issues/7" in capsys.readouterr().out
 

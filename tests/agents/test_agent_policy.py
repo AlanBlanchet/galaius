@@ -333,7 +333,7 @@ def test_the_cli_says_one_line_when_nothing_clears_a_criterion(monkeypatch, caps
     every other galaius failure prints one actionable ERROR line — and the model was resolved
     AFTER the vendor argv had been built, so the binary would have been handed the raw text."""
     import galaius.agents.providers as providers
-    from galaius.cli.commands.agents.runs import agents_spawn
+    from galaius.cli.commands.agents.spawn import agents_spawn
 
     monkeypatch.setattr(providers.ClaudeCodeProvider, "available", lambda self: True)
     # This test isolates criterion failure, with the caller's conversation already known.

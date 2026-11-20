@@ -44,7 +44,7 @@ app.command(
     help="Show registrations, model setup, desktop readiness, and recent usage.",
 )
 app.command(
-    "galaius.cli.commands.status:install", name="install",
+    "galaius.cli.commands.install:install", name="install",
     help="Register the galaius MCP server with a coding client.",
 )
 app.command(
@@ -56,7 +56,7 @@ app.command(
     help="Show the status dashboard in the terminal.",
 )
 app.command(
-    "galaius.cli.commands.status:usage", name="usage",
+    "galaius.cli.commands.usage:usage", name="usage",
     help="Summarise local VLM spend, tokens, and calls.",
 )
 app.command(
@@ -64,11 +64,11 @@ app.command(
     help="Automatic upgrades: status, check now, pin, turn off, go back.",
 )
 app.command(
-    "galaius.cli.commands.status:report", name="report",
+    "galaius.cli.commands.feedback:report", name="report",
     help="Report a problem or idea about galaius.",
 )
 app.command(
-    "galaius.cli.commands.status:doctor", name="doctor",
+    "galaius.cli.commands.doctor:doctor", name="doctor",
     help="Diagnose the environment and optionally deliver fixes.",
 )
 app.command(
