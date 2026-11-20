@@ -1478,7 +1478,12 @@ class ClaudeCodeProvider(AgentProvider):
 
     #: What a run whose writes its fence refuses (`fence_decides`) and whose role names no tools is granted besides
     #: galaius's: the tools Claude Code asks before running (`dontAsk` refuses each one not granted).
-    FENCED_GRANT: ClassVar[tuple[str, ...]] = ("Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch")
+    FENCED_GRANT: ClassVar[tuple[str, ...]] = ("Bash", "Edit", "Write", "NotebookEdit")
+    #: The read-only web tools every run is granted and served, whatever its mode, fence, PC or role (a role listing none is
+    #: served them beside its own, one listing no tool at all still has none; `--disallowedTools` still wins): a run no one
+    #: is there to answer stops on the prompt Claude Code raises for a tool no rule grants, and a PC that cannot fence a
+    #: run (Windows) leaves the decision to its CLI's own mode, which asks.
+    WEB_GRANT: ClassVar[tuple[str, ...]] = ("WebFetch", "WebSearch")
 
     def _permission_flag(self, mode: str | None, fence_decides: bool = False, allowed_tools: list[str] | None = None) -> list[str]:
         """Every run is granted galaius's tools, whatever its mode: a headless Claude refuses each MCP tool no rule grants
@@ -1487,13 +1492,14 @@ class ClaudeCodeProvider(AgentProvider):
         tools a run has stays its role's (`--agents` tools) minus its denied ones (`--disallowedTools` wins over a grant).
         A read-only run (`plan`) then calls only galaius's read-only ones: plan refuses every granted tool not marked
         `readOnlyHint` (2.1.288: « Cannot call mcp__galaius__launch_app while in plan mode »; `_SessionScopedMCP.tool`'s
-        `read_only`). `fence_decides`: inside a fence that refuses
+        `read_only`). `WEB_GRANT`: every run, the web's read-only tools.
+        `fence_decides`: inside a fence that refuses
         its writes, `dontAsk` granted its role's `allowed_tools` (`FENCED_GRANT` for a role naming none) — every tool of its
         role runs, galaius's app tools too, and a write fails in the kernel."""
         if fence_decides:
-            granted = (*(self.FENCED_GRANT if allowed_tools is None else allowed_tools), _GALAIUS_MCP_PREFIX.removesuffix("__"))
+            granted = (*(self.FENCED_GRANT if allowed_tools is None else allowed_tools), *self.WEB_GRANT, _GALAIUS_MCP_PREFIX.removesuffix("__"))
             return [*super()._permission_flag("dontAsk"), "--allowedTools", ",".join(dict.fromkeys(granted))]
-        return [*super()._permission_flag(mode), "--allowedTools", _GALAIUS_MCP_PREFIX.removesuffix("__")]
+        return [*super()._permission_flag(mode), "--allowedTools", ",".join((*self.WEB_GRANT, _GALAIUS_MCP_PREFIX.removesuffix("__")))]
 
     #: Claude's own subagent tools, removed from every run (`role_arguments`): a subagent they start runs inside this run,
     #: outside galaius's run records, agent places and role policy. A run delegates through galaius's `agent_spawn` (or
@@ -1554,7 +1560,7 @@ class ClaudeCodeProvider(AgentProvider):
                 agent_prompt = self.definition_prompt(agent)
             definition = {"description": f"Galaius role {agent}", "prompt": agent_prompt}
             if allowed_tools is not None:
-                definition["tools"] = self.deferred_loading(allowed_tools)
+                definition["tools"] = self.deferred_loading(allowed_tools if no_tools(allowed_tools) else [*allowed_tools, *(tool for tool in self.WEB_GRANT if tool not in allowed_tools)])
             arguments += ["--agents", self.agents_argument({agent: definition})]
         if agent:
             arguments += ["--agent", agent]

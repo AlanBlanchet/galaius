@@ -557,7 +557,7 @@ def test_a_read_only_run_drives_apps_and_writes_only_in_its_scratch(home: Path, 
     if cli == "claude":  # `dontAsk` refuses every tool not granted: its role's tools are, each one
         granted = provider.command("t", cwd=str(home / "docs"), model=None, run_id="r1", permission_mode="read_only", fence_decides=True,
                                    agent="tester", agent_prompt="p", allowed_tools=["Read", "WebFetch", "mcp__galaius__screenshot"], mcp_config=None)
-        assert granted[granted.index("--allowedTools") + 1].split(",") == ["Read", "WebFetch", "mcp__galaius__screenshot", "mcp__galaius"]
+        assert granted[granted.index("--allowedTools") + 1].split(",") == ["Read", "WebFetch", "mcp__galaius__screenshot", "WebSearch", "mcp__galaius"]
     assert argv[0] != sys.executable  # never Galaius's weaker confinement under the fence
 
     monkeypatch.setattr(config, "scratch", scratch)

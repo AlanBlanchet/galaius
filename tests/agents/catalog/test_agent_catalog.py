@@ -289,7 +289,7 @@ def test_a_role_with_an_empty_tool_list_starts_with_no_tool_and_no_mcp_server(ca
     options = argv[:argv.index("--")]
     definition = claude_definitions(options)["fixture-worker"]
     none = tools == ()
-    assert (allowed is None, definition.get("tools"), "--mcp-config" in options) == (tools is None, None if tools is None else allowed, not none)
+    assert (allowed is None, definition.get("tools"), "--mcp-config" in options) == (tools is None, None if tools is None else allowed if none else [*allowed, "WebFetch", "WebSearch"], not none)
     assert (options[options.index("--tools"):options.index("--tools") + 3] == ["--tools", "", "--strict-mcp-config"]) if none else "--tools" not in options
     if none:
         with pytest.raises(UnsupportedToolPolicy, match="no tools"):
@@ -331,7 +331,7 @@ async def test_common_launcher_uses_one_catalog_for_prompt_and_policy(catalog_ho
     assert captured[1][1]["allowed_tools"] == (None if provider_type is CodexProvider else ["Write", *REPORT])
     if provider_type is ClaudeCodeProvider:
         assert captured[1][1]["agent"] == "fixture-worker"
-        assert "--agents" in captured[1][2] and captured[1][2][captured[1][2].index("--allowedTools") + 1] == "mcp__galaius"  # the grant, never the toolset
+        assert "--agents" in captured[1][2] and captured[1][2][captured[1][2].index("--allowedTools") + 1] == "WebFetch,WebSearch,mcp__galaius"  # the grant, never the toolset
     else:
         assert captured[1][1]["agent"] == "fixture-worker" and "--agent" not in captured[1][2]
         actual_task = captured[1][2][-1]  # the task is last, after "--"

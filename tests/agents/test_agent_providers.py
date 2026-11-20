@@ -42,10 +42,10 @@ def test_claude_role_tools_and_denials_are_available_tool_restrictions_on_every_
         "Review", cwd="/tmp", mcp_config=None, run_id="fixture-run", **options)
     definition = claude_definitions(command)["visual-critic"]
     assert definition["prompt"] == "Pinned role instructions"
-    assert definition["tools"] == options["allowed_tools"]
+    assert definition["tools"] == [*options["allowed_tools"], "WebFetch", "WebSearch"], "the role's tools, and the web beside them"
     assert command[command.index("--agent") + 1] == "visual-critic"
     assert command[command.index("--disallowedTools") + 1] == "Agent,Task,mcp__galaius__report_issue"
-    assert command[command.index("--allowedTools") + 1] == "mcp__galaius", "a grant lets galaius's tools run; the role's list still decides which"
+    assert command[command.index("--allowedTools") + 1] == "WebFetch,WebSearch,mcp__galaius", "a grant lets galaius's tools run; the role's list still decides which"
     assert "--permission-mode" not in command
 
 
@@ -58,7 +58,7 @@ def test_every_claude_run_is_granted_galaius_tools_whatever_its_mode(resume, per
     provider = ClaudeCodeProvider()
     command = provider.resume_command("s", "Review", permission_mode=permission_mode) if resume else provider.command(
         "Review", cwd="/tmp", model=None, mcp_config=None, run_id="r", permission_mode=permission_mode)
-    assert command[command.index("--allowedTools") + 1] == "mcp__galaius"
+    assert command[command.index("--allowedTools") + 1] == "WebFetch,WebSearch,mcp__galaius"
     assert command[command.index("--disallowedTools") + 1] == "Agent,Task"
     if permission_mode in ("read_only", "plan"):
         assert command[command.index("--permission-mode") + 1] == "plan"
@@ -1387,4 +1387,24 @@ def test_a_role_listing_many_mcp_tools_loads_them_on_demand(listed, expected_loa
     28.1k with it; one `ToolSearch` call loads a tool before its first use."""
     definition = claude_definitions(ClaudeCodeProvider().command("t", cwd="/tmp", model=None, mcp_config=None, run_id="r", agent="x", agent_prompt="p", allowed_tools=listed))["x"]
     assert definition["tools"].count("ToolSearch") == (1 if expected_loader or "ToolSearch" in listed else 0)
-    assert [tool for tool in definition["tools"] if tool != "ToolSearch"] == [tool for tool in listed if tool != "ToolSearch"]
+    assert [tool for tool in definition["tools"] if tool not in ("ToolSearch", *ClaudeCodeProvider.WEB_GRANT)] == [tool for tool in listed if tool != "ToolSearch"]
+
+
+@pytest.mark.parametrize("resume", [False, True])
+@pytest.mark.parametrize("fence_decides", [False, True])
+@pytest.mark.parametrize("permission_mode", ["read_only", "workspace_write", "full_access", None])
+@pytest.mark.parametrize("allowed_tools", [None, ["Read"], ["Bash", "mcp__galaius__screenshot"], ["WebSearch", "Read"], []],
+                         ids=["no list", "list without web", "list with shell", "list with web", "no tool at all"])
+def test_every_claude_run_may_use_the_web_whatever_its_role_mode_or_fence(resume, fence_decides, permission_mode, allowed_tools):
+    """A run on a PC that cannot fence it (Windows) or whose role lists no web tool stopped on Claude Code's prompt for
+    WebSearch / WebFetch, which no one answers. The grant is one rule on every command, once each."""
+    provider = ClaudeCodeProvider()
+    options = dict(permission_mode=permission_mode, fence_decides=fence_decides, allowed_tools=allowed_tools, agent="r" if allowed_tools is not None else None,
+                   agent_prompt="p" if allowed_tools is not None else None)
+    command = provider.resume_command("s", "t", **options) if resume else provider.command("t", cwd="/tmp", model=None, mcp_config=None, run_id="r", **options)
+    granted = command[command.index("--allowedTools") + 1].split(",")
+    assert {"WebFetch", "WebSearch", "mcp__galaius"} <= set(granted) and len(granted) == len(set(granted))
+    assert not {"WebFetch", "WebSearch"} & set(command[command.index("--disallowedTools") + 1].split(","))
+    if allowed_tools is not None:  # served beside the role's own tools (a role of no tool stays so)
+        served = claude_definitions(command)["r"]["tools"]
+        assert served == [] if allowed_tools == [] else served.count("WebFetch") == served.count("WebSearch") == 1

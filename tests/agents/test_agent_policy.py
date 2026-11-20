@@ -181,9 +181,9 @@ def test_the_allow_list_reaches_the_vendor_command():
     argv = claude.command("t", cwd=".", model=None, mcp_config=None, run_id="r",
                           agent="fixture", agent_prompt="Pinned fixture role",
                           allowed_tools=["mcp__galaius__screenshot", "mcp__galaius__navigate"])
-    assert argv[argv.index("--allowedTools") + 1] == "mcp__galaius", "the permission grant, never the toolset"
+    assert argv[argv.index("--allowedTools") + 1] == "WebFetch,WebSearch,mcp__galaius", "the permission grant, never the toolset"
     assert claude_definitions(argv)["fixture"]["tools"] == [
-        "mcp__galaius__screenshot", "mcp__galaius__navigate"]
+        "mcp__galaius__screenshot", "mcp__galaius__navigate", "WebFetch", "WebSearch"]
     # No toolset configured: no `--agents` list, so an unrestricted agent stays unrestricted (the grant narrows nothing).
     assert "--agents" not in claude.command("t", cwd=".", model=None, mcp_config=None, run_id="r")
 
