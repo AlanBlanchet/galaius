@@ -60,7 +60,7 @@ from galaius.catalog.criteria import Criteria, CriteriaError, Valued, ValueRule,
 from galaius.catalog.models import live_scores
 from galaius.models.registry import Model
 from galaius.models.capability import ModelCapability
-from galaius.prompts.projection import coordinator_instructions
+from galaius.prompts.projection import coordinator_instructions, unloaded_rules
 from galaius.runtime import config
 from galaius.host.windowless import console_python
 from galaius.mcp.announcement import GatewayServed
@@ -875,20 +875,21 @@ class AheadLaunch(BaseModel):
 
     @staticmethod
     def turn_arguments(provider: AgentProvider, run_id: str, fence: FenceSpec | None, *, role: str | None,
-                       isolated: bool = False) -> dict[str, ClaudeTurnSettings]:
+                       isolated: bool = False, unloaded: tuple[str, ...] = ()) -> dict[str, ClaudeTurnSettings]:
         """What each turn of agent run `run_id` playing `role` runs under where `provider` takes it (`takes_turn_settings`): the
         name peers message it by, its role then the id `galaius agents list` prints (`app-engineer-0f9576d3`: unique on the
         machine; a peer naming only the role gets each running one back to pick from) and its Bash output (its conversation compacts where Claude Code's own default puts it); the messages sent to it while it works where it reads them
         (`agent_queue.inbox_hook`); its launch task once a compaction replaced its conversation (`reg.brief_hook`); a RUNNING
         close no run reports back to refused (`reg.close_hook`),
         except inside a `fence`, where the run's record and galaius's interpreter are out of reach (its home is empty). `isolated`:
-        a community agent's (`ClaudeTurnSettings.isolated`), named `community-<short id>` so no peer takes it for its caller's role."""
+        a community agent's (`ClaudeTurnSettings.isolated`), named `community-<short id>` so no peer takes it for its caller's role.
+        `unloaded`: the rules files it must not load (`ClaudeTurnSettings.unloaded`, `unloaded_rules`)."""
         if not provider.takes_turn_settings:
             return {}
         return {"turn": ClaudeTurnSettings(bash_output_chars=config.claude_bash_output_chars,
                                      inbox_hook=agent_queue.inbox_hook(run_id) if provider.reads_mid_turn else None,
                                      brief_hook=None if fence else reg.brief_hook(run_id),
-                                     close_hook=None if fence else reg.close_hook(run_id), isolated=isolated,
+                                     close_hook=None if fence else reg.close_hook(run_id), isolated=isolated, unloaded=unloaded,
                                      name=f"{'community' if isolated else role or 'agent'}-{reg.short_id(run_id)}")}
 
     def digest(self, environment: Mapping[str, str], *parts: str) -> str:
@@ -963,6 +964,8 @@ class ChildLaunch(AheadLaunch):
     role: str | None
     #: A community agent's child (`ClaudeTurnSettings.isolated`).
     isolated: bool = False
+    #: The rules files it must not load (`ClaudeTurnSettings.unloaded`).
+    unloaded: tuple[str, ...] = ()
 
     #: The run id launches are compared under (`key`).
     _ANY_RUN: ClassVar[str] = str(uuid.UUID(int=0))
@@ -975,7 +978,7 @@ class ChildLaunch(AheadLaunch):
     def command_arguments(self, run_id: str, session: str) -> dict[str, object]:
         arguments = {**self.arguments, "run_id": session, "environment": self.env(run_id),
                      "mcp_config": mesh_config(run_id=run_id, role=self.role, fence=self.fence) if self.meshed else None}
-        return arguments | self.turn_arguments(self.provider, run_id, self.fence, role=self.role, isolated=self.isolated)
+        return arguments | self.turn_arguments(self.provider, run_id, self.fence, role=self.role, isolated=self.isolated, unloaded=self.unloaded)
 
     async def launch(self, run_id: str, session: str, task: str) -> asyncio.subprocess.Process:
         """Run `run_id`'s child doing `task` (as vendor session `session`): handed on its stdin as to a child started
@@ -1067,7 +1070,8 @@ class ResumeLaunch(AheadLaunch):
             if mesh_handed(provider, environment, mesh=run.mesh_enabled, alone=decides or run.community is not None) else None,
             coarse_accepted=coarse_accepted, base_url=routed.get("OPENAI_BASE_URL"),
             **AheadLaunch.turn_arguments(provider, run.run_id, run.fence, role=run.agent,
-                                         isolated=run.community is not None),
+                                         isolated=run.community is not None,
+                                         unloaded=_unloaded_rules(catalog, None if run.community else run.agent, provider, env)),
         )
         env.update(provider.effort_environment(reasoning))
         return cls(provider=provider, run_id=run.run_id, session_id=session_id, cwd=run.cwd or ".", env=env, arguments=arguments,
@@ -1096,6 +1100,13 @@ def _role_prompt(catalog: AgentCatalog, role: str, provider: AgentProvider, envi
     """`role`'s prompt for `provider`, without the body its user instructions file already loads."""
     return catalog.role_prompt(role, loaded_from=coordinator_instructions(
         catalog, role, provider.user_instructions(environment)))
+
+
+def _unloaded_rules(catalog: AgentCatalog | None, role: str | None, provider: AgentProvider, environment: Mapping[str, str]) -> tuple[str, ...]:
+    """The coordinator's rules files `role`'s run must not load: its CLI's start reads them beside the role prompt (`_role_prompt`)."""
+    if catalog is None or not provider.takes_turn_settings:
+        return ()
+    return tuple(str(path) for path in unloaded_rules(catalog, role, provider.user_instructions(environment), Path.home()))
 
 
 @dataclass
@@ -1932,6 +1943,7 @@ async def run_agent(
             provider=candidate_provider, cwd=cwd, environment=env, arguments=command_kwargs, meshed=handed, fence=candidate_fence,
             role=None if community else agent,
             isolated=community is not None,
+            unloaded=_unloaded_rules(policy.catalog, None if community else agent, candidate_provider, env),
         )
         # A child started ahead for this very launch skips its CLI's own startup. Its run id is the
         # vendor session id, so it serves only the first child handed to that vendor.

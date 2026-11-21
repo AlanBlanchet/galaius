@@ -290,7 +290,8 @@ def test_each_subscription_folder_gets_its_own_clis_projection_and_no_default_lo
     assert set(prompt_projection.unprojected_subscriptions()) == {claude.folder, codex.folder}
     prompt_projection.install_subscription_projections(projection, home, vscode)
 
-    assert not (claude.folder / "CLAUDE.md").exists() and (claude.folder / "agents" / "a.md").is_file()  # its instructions are the owner's (adopt)
+    # its Claude instructions are the install's own (one load per run: `unloaded_rules`)
+    assert (claude.folder / "CLAUDE.md").read_text() == "instructions\n" and (claude.folder / "agents" / "a.md").is_file()
     assert (claude.folder / "skills" / "s" / "SKILL.md").is_file()
     # its hooks and settings are the owner's own, one writer (`Subscription.adopt`)
     assert not (claude.folder / "hooks").exists() and not (claude.folder / "settings.json").exists()

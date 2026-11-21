@@ -31,7 +31,7 @@ from galaius.host.windowless import console_python
 
 MANIFEST_NAME = "projection-manifest.json"
 #: A subscription folder's own install state (`install_subscription_projections`).
-PROJECTION_STATE = "galaius-prompts.json"
+PROJECTION_STATE = Subscription.PROMPT_STATE
 
 
 class NoMainAgent(ValueError):
@@ -59,17 +59,32 @@ class ConsumerHomes(BaseModel):
         """`cli`'s (`.claude` / `.codex`) consumer files written into `folder` alone."""
         return cls.of(home).model_copy(update={cli.removeprefix("."): folder, "only": frozenset({folder})})
 
+    @property
+    def claude_rules(self) -> Path:
+        """Where `instructions.md` lands: the CLI's user-level file (never `~/CLAUDE.md`, which every project under home loads again)."""
+        return self.claude / "CLAUDE.md"
+
+    @property
+    def shared_rules(self) -> Path:
+        """Where `AGENTS.md` lands for the CLIs that read the home folder's own."""
+        return self.home / "AGENTS.md"
+
+    def took_over(self, destination: Path) -> bool:
+        """`destination` is the instructions file of a subscription folder, which `Subscription.adopt` wrote there as a copy of the
+        default login's before the install managed it: the first install replaces it."""
+        return bool(self.only) and destination == self.claude_rules
+
     def writes(self, destination: Path) -> bool:
         """Whether `destination` is written here: inside `only` when set, and never a CLI's credential
-        file. In a subscription folder its instructions, settings and hooks are the owner's own, one
-        writer (`Subscription.adopt`): the projection writes its agents, skills and rules."""
+        file. In a subscription folder its settings, hooks and Codex instructions are the owner's own, one
+        writer (`Subscription.adopt`): the projection writes its agents, skills, rules and Claude's instructions."""
         if destination.name in Subscription.CREDENTIALS:
             return False
         return not self.only or any(destination.is_relative_to(folder) and not self._adopted(destination.relative_to(folder)) for folder in self.only)
 
     @staticmethod
     def _adopted(relative: Path) -> bool:
-        return relative.parts[0] == "hooks" or str(relative) in {"CLAUDE.md", "AGENTS.md", "settings.json", "hooks.json"}
+        return relative.parts[0] == "hooks" or str(relative) in {"AGENTS.md", "settings.json", "hooks.json"}
 _OUTPUT_ROOTS = ("agents", "skills", "rules", "scopes", "references")
 _OUTPUT_FILES = ("AGENTS.md", "instructions.md", "vscode-instructions.md", "org.json")
 _PASSTHROUGH_ROOTS = ("hooks",)
@@ -514,6 +529,27 @@ def installed_state_path() -> Path:
     return Path(root) / "galaius" / "prompts" / "installed.json"
 
 
+def _install_states(instructions: Path, state_path: Path | None) -> list[InstalledState]:
+    """The installs that may hold `instructions`: this PC's own, and the one in the folder beside it (a subscription's)."""
+    states = []
+    for path in dict.fromkeys((state_path or installed_state_path(), instructions.parent / PROJECTION_STATE)):
+        try:
+            states.append(InstalledState.load(path))
+        except (OSError, ValueError):
+            continue
+    return states
+
+
+def _holds_rules(instructions: Path, state: InstalledState) -> bool:
+    """`instructions` has the bytes this install wrote as a user-level rules file: at its own path, or (a subscription's login
+    folder, a copy of the default login's before its own install) as any other rules file it wrote."""
+    try:
+        digest = hashlib.sha256(instructions.read_bytes()).hexdigest()
+    except OSError:
+        return False
+    return digest in {value for path, value in state.managed.items() if path.name in {"CLAUDE.md", "AGENTS.md"}}
+
+
 def coordinator_instructions(catalog: AgentCatalog, role: str, instructions: Path | None,
                              state_path: Path | None = None) -> Path | None:
     """`instructions` when a CLI reading it at start already holds `role`'s body, else None.
@@ -527,13 +563,30 @@ def coordinator_instructions(catalog: AgentCatalog, role: str, instructions: Pat
     agent = catalog.role(role)
     if (agent.id, agent.revision) != (root.id, root.revision):
         return None
-    try:
-        state = InstalledState.load(state_path or installed_state_path())
-    except (OSError, ValueError):
-        return None
-    if state.source_kind != "server-catalog" or state.catalog_cursor != catalog.snapshot.cursor:
-        return None
-    return instructions if state.holds(instructions) else None
+    return instructions if any(state.source_kind == "server-catalog" and state.catalog_cursor == catalog.snapshot.cursor
+                               and _holds_rules(instructions, state)
+                               for state in _install_states(instructions, state_path)) else None
+
+
+def unloaded_rules(catalog: AgentCatalog, role: str | None, instructions: Path | None, home: Path,
+                   state_path: Path | None = None) -> tuple[Path, ...]:
+    """The files holding the coordinator's rules that a run of `role` (None: a community agent) must not load, so the rules
+    reach the model once or, for any role but the coordinator, never.
+
+    The CLI loads its user-level file (`instructions`), and every project under `home` loads `home`'s own copies as an
+    ancestor's. The coordinator whose body `instructions` holds (`coordinator_instructions`) keeps that file, loses the others;
+    any other run (its role prompt carries its own body, or the coordinator's when the file is not this snapshot's) loses
+    them all. A file that is not an install's output (his own text) is never listed."""
+    if instructions is None:
+        return ()
+    copies = ConsumerHomes.of(home)
+    states = _install_states(instructions, state_path)
+    listed = [path for path in (copies.claude_rules, copies.shared_rules)
+              if path != instructions and any(_holds_rules(path, state) for state in states)]
+    keeps = role is not None and coordinator_instructions(catalog, role, instructions, state_path) is not None
+    if not keeps and any(_holds_rules(instructions, state) for state in states):
+        listed.append(instructions)
+    return tuple(listed)
 
 
 def install_prompt_projection(
@@ -623,7 +676,7 @@ def _install_prompt_projection(
             raise ValueError("managed prompt target is not a regular file")
         current = observed[target][-1]
         expected = previous.get(target)
-        if expected is None and target not in mergeable:
+        if expected is None and target not in mergeable and not consumers.took_over(target):
             raise ValueError("unmanaged prompt target collision")
         if expected is not None and current != expected and target not in mergeable:
             raise ValueError("managed prompt target changed locally")
@@ -870,11 +923,11 @@ def _consumer_payloads(
             # Codex reads the GLOBAL AGENTS.md at $CODEX_HOME, and the repo chain
             # from the git root down to cwd — never ~/AGENTS.md for a project
             # outside $HOME, so the home copy alone reached no Codex session.
-            destinations = (home / "AGENTS.md", codex / "AGENTS.md")
+            destinations = (consumers.shared_rules, codex / "AGENTS.md")
         elif relative == "instructions.md":
             # Only the user-level file: a copy at ~/CLAUDE.md was loaded a SECOND
             # time as an ancestor project file by every project under $HOME.
-            destinations = (claude / "CLAUDE.md",)
+            destinations = (consumers.claude_rules,)
         elif relative == "vscode-instructions.md":
             destinations = (vscode_root / "alan.instructions.md",)
         elif relative == "org.json":

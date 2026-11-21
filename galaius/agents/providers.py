@@ -1105,6 +1105,9 @@ class ClaudeTurnSettings(BaseModel):
     #: No MCP server but the one galaius hands it (`--strict-mcp-config`): none the person configured for himself, so no
     #: credential of his reaches it through one (a community agent, `galaius.agents.catalog.community`).
     isolated: bool = False
+    #: Files of the coordinator's rules this run must not load (`claudeMdExcludes`, absolute paths): every copy the CLI would read
+    #: beyond the one its role prompt points at (`galaius.prompts.projection.unloaded_rules`).
+    unloaded: tuple[str, ...] = ()
 
     def arguments(self) -> list[str]:
         hooks = {
@@ -1112,7 +1115,8 @@ class ClaudeTurnSettings(BaseModel):
             **({"SessionStart": [{"matcher": "compact", "hooks": [{"type": "command", "command": self.brief_hook}]}]} if self.brief_hook else {}),
             **({"Stop": [{"hooks": [{"type": "command", "command": self.close_hook, "timeout": CLOSE_TIMEOUT + 15}]}]} if self.close_hook else {}),
         }
-        settings = {"bashOutputMaxChars": self.bash_output_chars, **({"hooks": hooks} if hooks else {})}
+        settings = {"bashOutputMaxChars": self.bash_output_chars, **({"hooks": hooks} if hooks else {}),
+                    **({"claudeMdExcludes": list(self.unloaded)} if self.unloaded else {})}
         notes = [note for hook, note in ((self.inbox_hook, INBOX_NOTE), (self.brief_hook, BRIEF_NOTE)) if hook]
         return (["-n", self.name, "--settings", json.dumps(settings)] + (["--append-system-prompt", "\n\n".join(notes)] if notes else [])
                 + (["--strict-mcp-config"] if self.isolated else []))

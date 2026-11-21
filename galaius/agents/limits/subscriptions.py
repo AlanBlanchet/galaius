@@ -92,6 +92,9 @@ class Subscription(BaseModel):
     provider: ProviderName
 
     STATE: ClassVar[str] = "galaius-subscription.json"
+    #: The prompt projection's install state in the folder (`prompts.projection.install_subscription_projections`): the files it
+    #: lists are its own, never `adopt`'s.
+    PROMPT_STATE: ClassVar[str] = "galaius-prompts.json"
     #: Held around every read-then-write of a state file: the runner's threads (its usage ask, its stream reader, its report) each write it.
     WRITING: ClassVar[threading.Lock] = threading.Lock()
     #: Per CLI, the folder its login is pointed at where none of its logins may answer (another CLI than
@@ -216,7 +219,8 @@ class Subscription(BaseModel):
         read (no credential, `.claude.json`, session or history) and nothing is ever written there."""
         default = self.default_home(self.program, environment)
         login = {name: str(default) for name in self.program.auth_home_env}
-        if (instructions := self.program.user_instructions({**environment, **login})) is not None and instructions.is_file():
+        if (instructions := self.program.user_instructions({**environment, **login})) is not None and instructions.is_file() \
+                and not self._projected(self.folder / instructions.name):
             self._replace(self.folder / instructions.name, instructions.read_bytes())
         if self.program.settings_file is not None and (settings := default / self.program.settings_file).is_file():
             owner = json.loads(settings.read_text(encoding="utf-8"))
@@ -225,6 +229,14 @@ class Subscription(BaseModel):
             adopted = self._rehome({key: owner[key] for key in self.ADOPTED_SETTINGS if key in owner}, environment)
             kept = {key: value for key, value in kept.items() if key not in self.ADOPTED_SETTINGS}
             self._replace(mine, (json.dumps({**kept, **adopted}, indent=2) + "\n").encode())
+
+    def _projected(self, path: Path) -> bool:
+        """The prompt install lists `path` as its own: it refreshes it with every install, so a copy of the default login's would
+        only overwrite it with an older one."""
+        try:
+            return str(path) in json.loads((self.folder / self.PROMPT_STATE).read_text(encoding="utf-8")).get("managed", {})
+        except (OSError, ValueError):
+            return False
 
     @classmethod
     def default_home(cls, program: AgentProvider, environment: Mapping[str, str]) -> Path:

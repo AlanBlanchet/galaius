@@ -24,8 +24,8 @@ from galaius.agents.run import _role_prompt
 from galaius.host.pinned_directory import PathDirectory
 from galaius.agents.tool_gateway import CONVERSATION_TOOLS, REPORT_TOOLS, AgentToolList, GatewayTool
 from galaius.prompts.projection import (
-    MANIFEST_NAME, _server_destination, _server_outputs, compile_server_prompt_projection, install_prompt_projection,
-    install_server_prompt_projection,
+    MANIFEST_NAME, PROJECTION_STATE, ConsumerHomes, _server_destination, _server_outputs, compile_server_prompt_projection,
+    install_prompt_projection, install_server_prompt_projection, unloaded_rules,
 )
 
 #: The conversation tools a role reading files is given, as its file lists them.
@@ -655,3 +655,66 @@ def test_coordinator_body_is_sent_once(tmp_path, monkeypatch, provider, case, ro
     assert (body in prompt) is sent
     if not sent:
         assert body in instructions.read_text() and str(instructions) in prompt
+
+
+@pytest.mark.parametrize('case,role,expected', [
+    # Which of the three files holding the rules (`sub` = the login folder's, `claude` / `agents` = the ones under home) are NOT loaded.
+    ('default_login', 'main', {'agents'}),                       # the CLI's user file IS `claude`: loaded once
+    ('subscription', 'main', {'claude', 'agents'}),             # the folder's file loads, home's ancestor copies do not
+    ('subscription', 'worker', {'sub', 'claude', 'agents'}),    # its role prompt carries its own body: none of main's rules
+    ('default_login', 'worker', {'claude', 'agents'}),
+    ('subscription', None, {'sub', 'claude', 'agents'}),        # a community agent
+    ('stale_snapshot', 'main', {'sub', 'claude', 'agents'}),    # the file is not this snapshot's: the role prompt carries the body
+    ('own_text', 'worker', {'claude', 'agents'}),               # his own text in the login folder is never excluded
+])
+def test_rules_reach_a_run_once(tmp_path, monkeypatch, case, role, expected):
+    """The coordinator's rules sit in the login folder's user file AND in copies under home that every project there loads as an
+    ancestor's: a run loads one copy (the coordinator) or none (any other role)."""
+    monkeypatch.setenv('XDG_STATE_HOME', str(tmp_path / 'xdg'))
+    catalog = catalog_fixture()
+    home, projection = tmp_path / 'home', tmp_path / 'projection'
+    sub = home / '.galaius/subscriptions/login'
+    stage(_server_outputs(catalog, home, projection), projection)
+    manifest = json.loads((projection / MANIFEST_NAME).read_text())
+    manifest['catalog_cursor'] = catalog.snapshot.cursor
+    (projection / MANIFEST_NAME).write_text(json.dumps(manifest))
+    install_prompt_projection(projection, home, home / 'vscode', tmp_path / 'xdg/galaius/prompts/installed.json')
+    sub.mkdir(parents=True)
+    (sub / 'CLAUDE.md').write_text('a stale copy of the rules, written by an earlier adoption')
+    install_prompt_projection(projection, home, home / 'vscode', sub / PROJECTION_STATE, consumers=ConsumerHomes.folder(home, '.claude', sub))
+    paths = {'sub': sub / 'CLAUDE.md', 'claude': home / '.claude/CLAUDE.md', 'agents': home / 'AGENTS.md'}
+    assert paths['sub'].read_bytes() == paths['claude'].read_bytes()  # the install took the adopted copy over
+    if case == 'stale_snapshot':
+        state = sub / PROJECTION_STATE
+        state.write_text(state.read_text().replace(catalog.snapshot.cursor, 'older-snapshot'))
+        (tmp_path / 'xdg/galaius/prompts/installed.json').write_text(
+            (tmp_path / 'xdg/galaius/prompts/installed.json').read_text().replace(catalog.snapshot.cursor, 'older-snapshot'))
+    if case == 'own_text':
+        paths['sub'].write_text('his own rules')
+    user = paths['claude'] if case == 'default_login' else paths['sub']
+    unloaded = set(unloaded_rules(catalog, role, user, home))
+    assert unloaded == {paths[name] for name in expected}
+
+
+def test_a_login_folder_s_instructions_are_the_installs_not_a_copy_of_the_default_logins(tmp_path):
+    """`Subscription.adopt` leaves a file the install manages alone: a copy of the default login's, older, would be a local edit to it."""
+    from galaius.agents.limits.subscriptions import Subscription
+    subscription = Subscription.create(uuid4(), 'claude')
+    default = tmp_path / '.claude'
+    default.mkdir()
+    (default / 'CLAUDE.md').write_text('the default login\'s, older')
+    environment = {'HOME': str(tmp_path), 'CLAUDE_CONFIG_DIR': str(default)}
+    subscription.adopt(environment)
+    assert (subscription.folder / 'CLAUDE.md').read_text() == 'the default login\'s, older'  # not yet installed: the copy stands
+    (subscription.folder / 'CLAUDE.md').write_text('the install\'s')
+    (subscription.folder / Subscription.PROMPT_STATE).write_text(json.dumps({'managed': {str(subscription.folder / 'CLAUDE.md'): 'x'}}))
+    subscription.adopt(environment)
+    assert (subscription.folder / 'CLAUDE.md').read_text() == 'the install\'s'
+
+
+def test_a_turn_names_the_rules_files_the_cli_must_not_load():
+    """`claudeMdExcludes` in the turn's `--settings` (absolute paths, so no pattern of his own is widened); none listed, none sent."""
+    from galaius.agents.providers import ClaudeTurnSettings
+    sent = lambda **kw: json.loads(ClaudeTurnSettings(bash_output_chars=1, name='x-1', **kw).arguments()[3])
+    assert sent(unloaded=('/h/.claude/CLAUDE.md', '/h/AGENTS.md'))['claudeMdExcludes'] == ['/h/.claude/CLAUDE.md', '/h/AGENTS.md']
+    assert 'claudeMdExcludes' not in sent()
