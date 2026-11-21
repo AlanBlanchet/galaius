@@ -175,7 +175,7 @@ def test_a_listing_that_cannot_finish_says_where_it_is_stuck_instead_of_hanging(
         agents_runs._within(0.2, wait_for_a_lock, "listing the conversation's runs")
     release.set()
     err = capsys.readouterr().err
-    assert stopped.value.code == 1 and "took more than 0.2 s" in err and "stuck in wait" in err
+    assert stopped.value.code == 1 and "took more than 0.2 s" in err and "is still in wait" in err
 
 
 def test_agents_list_finds_a_root_conversation_that_never_had_a_session_id(folder: Path, monkeypatch, capsys) -> None:
@@ -198,3 +198,73 @@ def test_the_cache_serves_unchanged_records_and_never_a_stale_or_broken_one(fold
     (folder / ".run-ledger.cache").write_text("{not json")
     assert {row.run_id for row in RunLedger(folder).rows()} == {row.run_id for row in first}, "a broken cache is no cache"
     assert not any(name.startswith(".run-ledger.cache.") for name in os.listdir(folder)), "no temporary file left behind"
+
+
+def test_a_run_at_work_is_never_dropped_by_since_however_long_ago_it_started(folder: Path) -> None:
+    """A run working for 30 h writes its record with every event: `agents list` (24 h default) and `recent` must still show it."""
+    put(folder, CHILD, parent_run_id=ROOT, status="running", pid=os.getpid(), pid_started=None, started_at=time.time() - 30 * 3600, finished_at=None)
+    shown = {row.run_id: row.status for row in RunLedger(folder).rows(RunQuery(conversation=ROOT, since=parse_since("24h")))}
+    assert shown[CHILD] == "running"
+    put(folder, GRAND, parent_run_id=CHILD, age=3 * 86400, started_at=time.time() - 4 * 86400)
+    assert GRAND not in {row.run_id for row in RunLedger(folder).rows(RunQuery(conversation=ROOT, since=parse_since("24h")))}
+
+
+@pytest.mark.parametrize("fields, status", [
+    ({"kind": "conversation", "status": "running", "pid": None}, "gone"),                     # a conversation holds its process from its start
+    ({"kind": "conversation", "status": "waiting", "pid": None}, "waiting"),
+    ({"kind": "process", "status": "running", "pid": os.getpid(), "exit_code": 0}, "done"),   # an exit the record never turned into a status
+    ({"kind": "process", "status": "running", "pid": os.getpid(), "exit_code": -15}, "stopped"),
+    ({"kind": "process", "status": "starting", "pid": None}, "starting"),                      # still launching: no pid yet
+], ids=["conversation-no-process", "conversation-waiting", "exit-zero", "terminated", "launching"])
+def test_a_status_reads_as_the_registry_lists_it(folder: Path, fields: dict, status: str) -> None:
+    put(folder, CHILD, parent_run_id=ROOT, **fields)
+    assert {row.run_id: row.status for row in RunLedger(folder).rows()}[CHILD] == status
+
+
+def test_a_run_its_provider_hosts_is_as_alive_as_its_host(folder: Path) -> None:
+    put(folder, CHILD, parent_run_id=ROOT, status="running", pid=DEAD_PID, pid_started=1)
+    put(folder, GRAND, parent_run_id=CHILD, kind="provider_child", status="running")
+    assert {row.run_id: row.status for row in RunLedger(folder).rows()}[GRAND] == "gone"
+    put(folder, CHILD, parent_run_id=ROOT, status="running", pid=os.getpid(), pid_started=None)
+    assert {row.run_id: row.status for row in RunLedger(folder).rows()}[GRAND] == "running"
+
+
+def test_a_forgotten_run_leaves_nothing_in_the_cache_and_a_rewrite_in_one_clock_tick_is_not_served_stale(folder: Path) -> None:
+    RunLedger(folder).rows()
+    assert "refused" in (folder / ".run-ledger.cache").read_text()
+    before = os.stat(folder / f"{GRAND}.json")
+    put(folder, GRAND, parent_run_id=CHILD, stream_digest={"source": "x", "ending_text": "refuseZ", "cut": "usage_limit"})  # same size, then the old time back
+    os.utime(folder / f"{GRAND}.json", ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert {row.run_id: row.said for row in RunLedger(folder).rows()}[GRAND] == "refuseZ"
+    (folder / f"{GRAND}.json").unlink()
+    RunLedger(folder).rows()
+    assert "refuseZ" not in (folder / ".run-ledger.cache").read_text()
+
+
+@pytest.mark.parametrize("broken", ['{"version": 2, "records": []}', '{"version": 2, "records": {"x.json": 5}}',
+                                    '{"version": 2, "records": {"' + CHILD + '.json": {"stamp": 1, "record": []}}}', '[]'])
+def test_a_cache_of_the_wrong_shape_is_no_cache(folder: Path, broken: str) -> None:
+    (folder / ".run-ledger.cache").write_text(broken)
+    assert {row.run_id for row in RunLedger(folder).rows()} == {ROOT, CHILD, GRAND, WEB, OTHER}
+
+
+def test_a_reference_that_is_a_conversation_and_a_run_of_another_is_refused(folder: Path) -> None:
+    put(folder, "66666666-0000-4000-8000-000000000000", parent_run_id=ROOT)
+    put(folder, "77777777-0000-4000-8000-000000000000", session_id="66666666-zz")
+    with pytest.raises(LookupError, match="both a conversation"):
+        RunLedger(folder).rows(RunQuery(conversation="66666666"))
+
+
+def test_agents_list_every_session_goes_through_the_ledger_and_an_unknown_harness_thread_lists_nothing(folder: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(folder))
+    monkeypatch.delenv("GALAIUS_PARENT_RUN_ID", raising=False)
+    monkeypatch.delenv("GALAIUS_RUN_ID", raising=False)
+    agents_runs.agents_list(all_sessions=True)
+    out = capsys.readouterr().out
+    assert out.startswith("All sessions") and all(run_id[:8] in out for run_id in (ROOT, WEB, OTHER))
+    monkeypatch.setenv("GALAIUS_SESSION_ID", "thread-without-records")
+    agents_runs.agents_list()
+    assert "No agent runs" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as stopped:
+        agents_runs.agents_list(session_id="thread-without-records")
+    assert stopped.value.code == 2, "a conversation he NAMED that nothing holds is an error; only an inherited one lists empty"

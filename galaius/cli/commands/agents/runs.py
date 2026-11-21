@@ -51,7 +51,7 @@ def _within(patience: float, work, what: str):
     if worker.is_alive():
         frame = sys._current_frames().get(worker.ident)
         where = f"{frame.f_code.co_name} ({Path(frame.f_code.co_filename).name}:{frame.f_lineno})" if frame is not None else "unknown"
-        print(f"ERROR: {what} took more than {patience:g} s; stuck in {where}. A lock another galaius process holds is the usual cause: "
+        print(f"ERROR: {what} took more than {patience:g} s and is still in {where}: slow work, or a lock another galaius process holds. "
               "`galaius conversation recent` reads the same runs without any lock.", file=sys.stderr)
         raise SystemExit(1)
     if "error" in outcome:
@@ -61,7 +61,7 @@ def _within(patience: float, work, what: str):
 
 @agents_app.command(name="list")
 def agents_list(foreign: bool = False, session_id: str | None = None, all_sessions: bool = False, since: str = "24h") -> None:
-    """Show launched runs belonging to this conversation, including nested children.
+    """Show launched runs belonging to this conversation, including nested children (those at work always; the others that moved within --since).
 
     Parameters
     ----------
@@ -74,12 +74,14 @@ def agents_list(foreign: bool = False, session_id: str | None = None, all_sessio
         Explicitly show machine-wide history, including runs with unknown owners.
     since
         Only runs that moved this recently (`6h`, `2d`, a date) or `all`; default 24h, so a conversation of thousands of runs
-        lists the ones at work now. Ignored with --all-sessions. `galaius conversation recent` is the richer view.
+        lists the ones at work now. `galaius conversation recent` is the richer view.
     """
 
     try:
         if all_sessions:
-            identity, runs = session_id, _within(LIST_PATIENCE, lambda: reg.session_runs(session_id=session_id, all_sessions=True, include_foreign=foreign), "listing every run")
+            if session_id is not None:
+                raise ValueError("Choose session_id or all_sessions, not both")
+            identity, runs = None, _within(LIST_PATIENCE, lambda: _runs_of(RunQuery(since=_since(since))) + (reg.foreign_runs() if foreign else []), "listing every run")
         else:
             identity, runs = _within(LIST_PATIENCE, lambda: _conversation_runs(session_id, since), "listing the conversation's runs")
     except (ValueError, LookupError) as error:
@@ -105,17 +107,32 @@ def agents_list(foreign: bool = False, session_id: str | None = None, all_sessio
         print("\n* not started by galaius")
 
 
+def _since(since: str) -> float | None:
+    return None if since == "all" else parse_since(since)
+
+
+def _runs_of(query: RunQuery) -> list[reg.AgentRun]:
+    """The runs `query` keeps (`RunLedger`), each read alone from its record with its status re-checked (`registry.current_of`)."""
+    return [run for row in RunLedger().rows(query) if (run := reg.current_of(row.run_id)) is not None]
+
+
 def _conversation_runs(session_id: str | None, since: str) -> tuple[str, list[reg.AgentRun]]:
-    """The conversation asked (else the caller's own) and its runs that moved within `since`, each read alone, status re-checked.
-    A conversation is what the run ledger says (`run_ledger`): a session's runs and every run descended from its root, which
-    the registry's session filter missed for a root run that never had a session id (« Session identity required »)."""
+    """The conversation asked (else the caller's own) and its runs that moved within `since`. A conversation is what the run ledger
+    says (`run_ledger`): a session's runs and every run descended from its root, which the registry's session filter missed for a root
+    run that never had a session id (« Session identity required »). An id the caller's harness set that no record has yet (a
+    thread before its first spawn) is a conversation with no runs, as before."""
     ledger = RunLedger()
-    if session_id is not None or (session_id := reg.resolve_session_id(None, cli_harness=True)) is not None:
-        conversation = ledger.resolve_conversation(session_id)
+    inherited = session_id is None and (session_id := reg.resolve_session_id(None, cli_harness=True)) is not None
+    if session_id is not None:
+        try:
+            conversation = ledger.resolve_conversation(session_id)
+        except LookupError:
+            if not inherited:
+                raise
+            return session_id, []
     elif (conversation := own_conversation()) is None:
         raise ValueError("Session identity required: run this inside an agent run, pass --session-id, or set GALAIUS_SESSION_ID; use --all-sessions for every run")
-    rows = ledger.rows(RunQuery(conversation=conversation, since=None if since == "all" else parse_since(since)))
-    return conversation, [run for row in rows if (run := reg.current_of(row.run_id)) is not None]
+    return conversation, _runs_of(RunQuery(conversation=conversation, since=_since(since)))
 
 
 @agents_app.command(name="events")

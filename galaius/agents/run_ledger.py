@@ -10,6 +10,7 @@ A conversation is what the registry calls one: a run's `session_id`, else its pa
 which has neither) its own run id. Pointed at a run id, a conversation is that run's.
 """
 
+import contextlib
 import json
 import os
 import re
@@ -33,7 +34,7 @@ GONE = "gone"
 SAID_CHARS = 240
 #: The cache of trimmed records, beside the registry's files: a dot name, which the registry's own listings skip.
 CACHE = ".run-ledger.cache"
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 #: What the engine reads of a record; everything else (prompts, candidate lists, lifecycle tokens) never enters the cache.
 _KEPT = ("run_id", "name", "agent", "status", "kind", "provider", "model", "login", "subscription_id", "parent_run_id", "session_id", "project", "started_at",
          "finished_at", "cost_usd", "usage", "exit_code", "resumed_cuts", "last", "pid", "pid_started")
@@ -84,7 +85,8 @@ class RunRow(BaseModel):
     said: str = ""
 
     def activity(self) -> float:
-        """The instant this run last moved, as far as its record says."""
+        """The instant this run last moved, as far as its record says: its start or its end, never its file's time (a backfill over the
+        registry rewrites every record at once: 5,166 of 5,232 files were younger than 24 h when this was measured)."""
         return max(self.started_at, self.finished_at or 0.0)
 
     def seconds(self, now: float) -> float:
@@ -108,12 +110,17 @@ class RunQuery(BaseModel):
     limit: int | None = Field(default=None, ge=1)
 
     def keeps(self, row: RunRow) -> bool:
-        return ((self.since is None or row.activity() >= self.since) and (self.until is None or row.started_at <= self.until)
+        return ((self.since is None or row.activity() >= self.since or row.status in AT_WORK) and (self.until is None or row.started_at <= self.until)
                 and (not self.roles or row.role in self.roles)
                 and (not self.statuses or row.status in self.statuses)
                 and (not self.models or any(want in f"{row.provider}/{row.model}" for want in self.models))
                 and (not self.logins or any(row.login.startswith(want) for want in self.logins))
                 and (not self.cut or bool(row.cut)))
+
+
+def _stamp(found: os.stat_result) -> list[int]:
+    """What says a record's file is the one cached: its time, size, inode and change time (two rewrites in one clock tick differ in the last two)."""
+    return [found.st_mtime_ns, found.st_size, found.st_ino, found.st_ctime_ns]
 
 
 def parse_since(text: str, *, now: float | None = None) -> float:
@@ -152,56 +159,82 @@ class RunLedger:
         self._keys: dict[str, str] = {}
         self._cache: dict[str, list] | None = None
         self._dirty = False
+        self._listed: set[str] | None = None
+
+    def status_of(self, raw: dict, *, depth: int = 0) -> str:
+        """The status the registry would list the run under (`registry._status_for`), without deriving it: a record at work whose process is
+        gone reads `gone` (the registry says `interrupted` and settles it later); an exit code the record never turned into a status
+        gives its end; a run its provider hosts is as alive as its host."""
+        status = str(raw.get("status") or "?")
+        kind = raw.get("kind") or "process"
+        if status not in AT_WORK:
+            return status
+        if kind == "provider_child":
+            host = self._record(raw.get("parent_run_id") or raw.get("root_run_id") or "") if depth < 5 else None
+            return status if host is None or self.status_of(host, depth=depth + 1) in AT_WORK else GONE
+        if kind == "conversation":
+            return status if status == "waiting" or _alive(raw, strict=True) else GONE
+        code = raw.get("exit_code")
+        if isinstance(code, int) and not isinstance(code, bool):
+            return "stopped" if code == -15 else "done" if code == 0 else "failed"
+        return status if _alive(raw, strict=False) else GONE
 
     # --- reading -------------------------------------------------------------------------------------------------
 
     def _cached(self) -> dict[str, list]:
-        """The trimmed records kept from earlier reads: file name -> [mtime_ns, size, trimmed record]. A record is parsed again only when its
+        """The trimmed records kept from earlier reads: file name -> its file's stamp (`_stamp`) and the trimmed record. A record is parsed again only when its
         file moved; a missing or unreadable cache is no cache (5,000 records parse in ~1 s, from the cache in ~0.2 s)."""
         if self._cache is None:
             try:
                 loaded = json.loads((self.root / CACHE).read_text(encoding="utf-8"))
-                self._cache = loaded if isinstance(loaded, dict) and loaded.get("version") == CACHE_VERSION else {}
-                self._cache = self._cache.get("records", {})
-            except (OSError, ValueError, AttributeError):
+                records = loaded.get("records") if isinstance(loaded, dict) and loaded.get("version") == CACHE_VERSION else None
+                self._cache = records if isinstance(records, dict) else {}
+            except (OSError, ValueError):
                 self._cache = {}
         return self._cache
 
-    def _record(self, run_id: str, stamp: tuple[int, int] | None = None) -> dict | None:
+    def _record(self, run_id: str, stamp: list[int] | None = None) -> dict | None:
         if run_id in self._raw:
             return self._raw[run_id]
         name = f"{run_id}.json"
         try:
             if stamp is None:
                 found = os.stat(self.root / name)
-                stamp = (found.st_mtime_ns, found.st_size)
-            if (hit := self._cached().get(name)) is not None and hit[0] == stamp[0] and hit[1] == stamp[1]:
-                self._raw[run_id] = hit[2]
-                return hit[2]
+                stamp = _stamp(found)
+            hit = self._cached().get(name)
+            if isinstance(hit, dict) and hit.get("stamp") == stamp and isinstance(hit.get("record"), dict):
+                self._raw[run_id] = hit["record"]
+                return hit["record"]
             loaded = json.loads((self.root / name).read_text(encoding="utf-8", errors="replace"))
         except (OSError, ValueError):
             loaded = None
         trimmed = _trim(loaded) if isinstance(loaded, dict) else None
         if trimmed is not None and stamp is not None:
-            self._cached()[name] = [stamp[0], stamp[1], trimmed]
+            self._cached()[name] = {"stamp": stamp, "record": trimmed}
             self._dirty = True
         self._raw[run_id] = trimmed
         return trimmed
 
     def keep_cache(self) -> None:
         """Write what this instance read afresh, if anything, for the next command: one rename, a failed write loses only the speed-up."""
-        if not self._dirty or self._cache is None:
+        if self._cache is None:
             return
         target = self.root / CACHE
+        if self._listed is not None and (gone := self._cache.keys() - self._listed):   # a run forgotten since leaves nothing of its words behind
+            self._cache = {name: kept for name, kept in self._cache.items() if name not in gone}
+            self._dirty = True
+        if not self._dirty:
+            return
+        temporary = target.with_name(f"{CACHE}.{os.getpid()}.tmp")
         try:
-            temporary = target.with_name(f"{CACHE}.{os.getpid()}.tmp")
             descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                 json.dump({"version": CACHE_VERSION, "records": self._cache}, handle, separators=(",", ":"))
             os.replace(temporary, target)
             self._dirty = False
         except OSError:
-            pass
+            with contextlib.suppress(OSError):
+                temporary.unlink()
 
     def conversation_key(self, run_id: str, raw: dict | None = None, *, depth: int = 0) -> str:
         """The conversation of the run `run_id`: its session, else its parent's, else itself."""
@@ -239,6 +272,9 @@ class RunLedger:
             return self.conversation_key(ref)
         keys = {self.conversation_key(run_id, raw) for run_id, raw in self._scan(0.0) if run_id.startswith(ref) or (raw.get("session_id") or "").startswith(ref)}
         exact = {key for key in keys if key.startswith(ref)}
+        runs = {self.conversation_key(run_id) for run_id in self._ids_like(ref)}
+        if exact and runs - exact:
+            raise LookupError(f"{ref!r} is both a conversation ({', '.join(sorted(k[:12] for k in exact))}) and a run of another ({', '.join(sorted(k[:12] for k in runs - exact))}): give more of it")
         if len(exact) == 1:
             return next(iter(exact))
         if (run_conversation := self.conversation_of(ref)) is not None and not exact:
@@ -248,11 +284,13 @@ class RunLedger:
         raise LookupError(f"no conversation or run {ref!r} on this computer")
 
     def _scan(self, since: float) -> Iterator[tuple[str, dict]]:
-        """Each record whose file moved at or after `since`, parsed. A record unreadable (half-written, foreign) is skipped."""
+        """Each record whose file moved at or after `since`, parsed. A record unreadable (half-written, foreign) is skipped.
+        Having listed the folder, it also forgets cached records whose file is gone (`keep_cache`)."""
         try:
             entries = [entry for entry in os.scandir(self.root) if RECORD.match(entry.name)]
         except OSError:
             return
+        self._listed = {entry.name for entry in entries}
         for entry in entries:
             try:
                 found = entry.stat()
@@ -261,7 +299,7 @@ class RunLedger:
             if since and found.st_mtime < since:
                 continue
             run_id = entry.name.removesuffix(".json")
-            if (raw := self._record(run_id, (found.st_mtime_ns, found.st_size))) is not None:
+            if (raw := self._record(run_id, _stamp(found))) is not None:
                 yield run_id, raw
 
     def rows(self, query: RunQuery = RunQuery(), *, now: float | None = None) -> list[RunRow]:
@@ -273,7 +311,7 @@ class RunLedger:
             key = self.conversation_key(run_id, raw)
             if wanted is not None and key != wanted:
                 continue
-            row = _row(run_id, raw, key, moment)
+            row = _row(run_id, raw, key, self.status_of(raw))
             if query.keeps(row):
                 found.append(row)
         found.sort(key=lambda row: (row.started_at, row.run_id))
@@ -289,7 +327,7 @@ class RunLedger:
         full, raw = found[0], self._record(found[0])
         if raw is None:
             raise LookupError(f"the record of {run_id!r} is unreadable")
-        row = _row(full, raw, self.conversation_key(full, raw), time.time())
+        row = _row(full, raw, self.conversation_key(full, raw), self.status_of(raw))
         kind, text = _closing_event(self.root / f"{full}.jsonl")
         return Ending(run=row, event=kind, text=text if text_chars is None else text[:text_chars], chars=len(text), digest=_digest_said(raw))
 
@@ -358,12 +396,13 @@ def _int(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
-def _alive(raw: dict) -> bool:
-    """A run's recorded process still runs and is still that process (the registry's `process_running`, from /proc, no import).
+def _alive(raw: dict, *, strict: bool) -> bool:
+    """A run's recorded process still runs and is still that process (the registry's `process_running`, from /proc, no import). With no pid
+    recorded: running when not `strict` (a run still launching), else not (a conversation holds its process from its start).
     Where /proc is absent (macOS, Windows) the process is taken as running: this verb never claims a death it cannot see."""
     pid = raw.get("pid")
     if not isinstance(pid, int) or pid <= 0:
-        return True
+        return not strict
     stat = Path(f"/proc/{pid}/stat")
     if not stat.parent.parent.exists():
         return True
@@ -377,13 +416,10 @@ def _alive(raw: dict) -> bool:
     return not isinstance(started, int) or int(fields[19]) == started
 
 
-def _row(run_id: str, raw: dict, conversation: str, now: float) -> RunRow:
+def _row(run_id: str, raw: dict, conversation: str, status: str) -> RunRow:
     digest = raw.get("stream_digest") if isinstance(raw.get("stream_digest"), dict) else {}
     usage = raw.get("usage") if isinstance(raw.get("usage"), dict) else digest.get("usage") if isinstance(digest.get("usage"), dict) else {}
     interruption = raw.get("interruption") if isinstance(raw.get("interruption"), dict) else {}
-    status = str(raw.get("status") or "?")
-    if status in AT_WORK and raw.get("kind", "process") == "process" and not _alive(raw):
-        status = GONE
     relaunched = raw.get("relaunched_from") if isinstance(raw.get("relaunched_from"), dict) else {}
     successor = raw.get("successor") if isinstance(raw.get("successor"), dict) else {}
     cost = raw.get("cost_usd") if raw.get("cost_usd") is not None else digest.get("cost_usd")
