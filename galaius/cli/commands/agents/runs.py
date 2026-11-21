@@ -3,13 +3,14 @@
 import os
 import sys
 import threading
+import traceback
 from pathlib import Path
 from uuid import UUID
 from galaius.machine.peer.client import PeerClient, PeerError, PeerUnavailable
 from galaius.machine.peer.words import pick
 from galaius_core import ASKED_BY_MAX
 from galaius.agents import messaging
-from galaius.agents.run_ledger import RunLedger, RunQuery, own_conversation, parse_since
+from galaius.agents.run_ledger import AT_WORK, RunLedger, RunQuery, UnknownConversation, own_conversation, parse_since
 from galaius.agents.turns import handback
 from galaius.agents import registry as reg
 from galaius.agents.catalog import community as community_agents
@@ -33,9 +34,13 @@ def agents_console(workspace_root: Path) -> None:
 LIST_PATIENCE = 20.0
 
 
+#: The registry's functions that wait for a lock held by another process: on a stuck stack, they are the evidence of a lock.
+_LOCK_WAITS = frozenset({"record_lock", "exclusive", "_pinned_registry", "flock", "lockf", "acquire", "_exclusive", "locked"})
+
+
 def _within(patience: float, work, what: str):
     """`work()` run on a thread, its result returned; past `patience` seconds, an `ERROR:` line saying `what` and the function it
-    is stuck in (the reason), exit 1. The registry's locks wait for their holder with no end of their own: a listing hung
+    is in (the reason: a lock another process holds, or slow work), exit 1. The registry's locks wait for their holder with no end of their own: a listing hung
     behind one for half an hour (2026-11-16) and said nothing."""
     outcome: dict = {}
 
@@ -50,9 +55,12 @@ def _within(patience: float, work, what: str):
     worker.join(patience)
     if worker.is_alive():
         frame = sys._current_frames().get(worker.ident)
-        where = f"{frame.f_code.co_name} ({Path(frame.f_code.co_filename).name}:{frame.f_lineno})" if frame is not None else "unknown"
-        print(f"ERROR: {what} took more than {patience:g} s and is still in {where}: slow work, or a lock another galaius process holds. "
-              "`galaius conversation recent` reads the same runs without any lock.", file=sys.stderr)
+        stack = traceback.extract_stack(frame) if frame is not None else []
+        locked = next((entry for entry in reversed(stack) if entry.name in _LOCK_WAITS), None)
+        where = f"{stack[-1].name} ({Path(stack[-1].filename).name}:{stack[-1].lineno})" if stack else "unknown"
+        cause = (f"waiting on a lock another galaius process holds (`{locked.name}`, {Path(locked.filename).name}:{locked.lineno})" if locked is not None
+                 else f"still working in {where}, no lock on its stack: slow, not stuck; narrow it with --since or --limit")
+        print(f"ERROR: {what} took more than {patience:g} s: {cause}. `galaius conversation recent` reads the same runs without any lock.", file=sys.stderr)
         raise SystemExit(1)
     if "error" in outcome:
         raise outcome["error"]
@@ -60,7 +68,7 @@ def _within(patience: float, work, what: str):
 
 
 @agents_app.command(name="list")
-def agents_list(foreign: bool = False, session_id: str | None = None, all_sessions: bool = False, since: str = "24h") -> None:
+def agents_list(foreign: bool = False, session_id: str | None = None, all_sessions: bool = False, since: str = "24h", limit: int = 100) -> None:
     """Show launched runs belonging to this conversation, including nested children (those at work always; the others that moved within --since).
 
     Parameters
@@ -75,15 +83,19 @@ def agents_list(foreign: bool = False, session_id: str | None = None, all_sessio
     since
         Only runs that moved this recently (`6h`, `2d`, a date) or `all`; default 24h, so a conversation of thousands of runs
         lists the ones at work now. `galaius conversation recent` is the richer view.
+    limit
+        Every run at work and this many of the others, the newest (0: all; each costs ~20 ms to read); the older ones are counted.
     """
 
     try:
         if all_sessions:
             if session_id is not None:
                 raise ValueError("Choose session_id or all_sessions, not both")
-            identity, runs = None, _within(LIST_PATIENCE, lambda: _runs_of(RunQuery(since=_since(since))) + (reg.foreign_runs() if foreign else []), "listing every run")
+            identity = None
+            runs, older = _within(LIST_PATIENCE, lambda: _runs_of(RunQuery(since=_since(since)), limit), "listing every run")
+            runs += reg.foreign_runs() if foreign else []
         else:
-            identity, runs = _within(LIST_PATIENCE, lambda: _conversation_runs(session_id, since), "listing the conversation's runs")
+            identity, runs, older = _within(LIST_PATIENCE, lambda: _conversation_runs(session_id, since, limit), "listing the conversation's runs")
     except (ValueError, LookupError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         raise SystemExit(2) from None
@@ -103,6 +115,8 @@ def agents_list(foreign: bool = False, session_id: str | None = None, all_sessio
         said = run.interruption.describe() if run.interruption else waiting.get(run.run_id, run.last)
         print(f"{mark} {run.status:8} {reg.short_id(run.run_id)}  {run.provider:7} {run.name:16} "
               f"{cost:>10}  {said[:60]}")
+    if older:
+        print(f"\n… {older} older runs not shown: --limit 0 for all, or `galaius conversation recent --since 7d`.")
     if any(r.foreign for r in runs):
         print("\n* not started by galaius")
 
@@ -111,12 +125,16 @@ def _since(since: str) -> float | None:
     return None if since == "all" else parse_since(since)
 
 
-def _runs_of(query: RunQuery) -> list[reg.AgentRun]:
-    """The runs `query` keeps (`RunLedger`), each read alone from its record with its status re-checked (`registry.current_of`)."""
-    return [run for row in RunLedger().rows(query) if (run := reg.current_of(row.run_id)) is not None]
+def _runs_of(query: RunQuery, limit: int) -> tuple[list[reg.AgentRun], int]:
+    """The runs `query` keeps (`RunLedger`): every one at work and the `limit` newest of the others (0: all), each read alone from its record
+    with its status re-checked (`registry.current_of`, ~20 ms a run), and how many older ones are not shown."""
+    rows = RunLedger().rows(query)
+    others = [row for row in rows if row.status not in AT_WORK]
+    shown = {row.run_id for row in rows if row.status in AT_WORK} | {row.run_id for row in (others[-limit:] if limit else others)}
+    return [run for row in rows if row.run_id in shown and (run := reg.current_of(row.run_id)) is not None], len(rows) - len(shown)
 
 
-def _conversation_runs(session_id: str | None, since: str) -> tuple[str, list[reg.AgentRun]]:
+def _conversation_runs(session_id: str | None, since: str, limit: int) -> tuple[str, list[reg.AgentRun], int]:
     """The conversation asked (else the caller's own) and its runs that moved within `since`. A conversation is what the run ledger
     says (`run_ledger`): a session's runs and every run descended from its root, which the registry's session filter missed for a root
     run that never had a session id (« Session identity required »). An id the caller's harness set that no record has yet (a
@@ -126,13 +144,13 @@ def _conversation_runs(session_id: str | None, since: str) -> tuple[str, list[re
     if session_id is not None:
         try:
             conversation = ledger.resolve_conversation(session_id)
-        except LookupError:
+        except UnknownConversation:
             if not inherited:
                 raise
-            return session_id, []
+            return session_id, [], 0
     elif (conversation := own_conversation()) is None:
         raise ValueError("Session identity required: run this inside an agent run, pass --session-id, or set GALAIUS_SESSION_ID; use --all-sessions for every run")
-    return conversation, _runs_of(RunQuery(conversation=conversation, since=_since(since)))
+    return (conversation, *_runs_of(RunQuery(conversation=conversation, since=_since(since)), limit))
 
 
 @agents_app.command(name="events")

@@ -28,6 +28,8 @@ from galaius.host.paths import UserPaths
 #: A run record's file name: its full id. Locks, streams, queues and the registry's other files share the folder.
 RECORD = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$")
 #: The statuses a record keeps while its process is expected to run: only these are checked against the process table.
+#: The statuses the registry keeps a run in for good (`registry.TERMINAL_STATUSES`).
+TERMINAL = frozenset({"done", "failed", "cancelled", "interrupted", "stopped"})
 AT_WORK = frozenset({"starting", "running", "waiting"})
 #: What a run still at work reads when its process is gone and its record was never settled.
 GONE = "gone"
@@ -35,9 +37,11 @@ SAID_CHARS = 240
 #: The cache of trimmed records, beside the registry's files: a dot name, which the registry's own listings skip.
 CACHE = ".run-ledger.cache"
 CACHE_VERSION = 2
-#: What the engine reads of a record; everything else (prompts, candidate lists, lifecycle tokens) never enters the cache.
-_KEPT = ("run_id", "name", "agent", "status", "kind", "provider", "model", "login", "subscription_id", "parent_run_id", "session_id", "project", "started_at",
-         "finished_at", "cost_usd", "usage", "exit_code", "resumed_cuts", "last", "pid", "pid_started")
+#: What the engine reads of a record, by type; everything else (prompts, candidate lists, lifecycle tokens) never enters the cache.
+_TEXT = ("run_id", "name", "agent", "status", "kind", "provider", "model", "login", "subscription_id", "parent_run_id", "root_run_id", "session_id",
+         "project", "last")
+_NUMBER = ("started_at", "finished_at", "cost_usd")
+_WHOLE = ("exit_code", "resumed_cuts", "pid", "pid_started")
 _SINCE = re.compile(r"^(\d+(?:\.\d+)?)\s*([smhdw])$")
 _UNIT = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 
@@ -163,19 +167,22 @@ class RunLedger:
 
     def status_of(self, raw: dict, *, depth: int = 0) -> str:
         """The status the registry would list the run under (`registry._status_for`), without deriving it: a record at work whose process is
-        gone reads `gone` (the registry says `interrupted` and settles it later); an exit code the record never turned into a status
-        gives its end; a run its provider hosts is as alive as its host."""
-        status = str(raw.get("status") or "?")
-        kind = raw.get("kind") or "process"
-        if status not in AT_WORK:
+        gone reads `gone` (the registry says `interrupted` and settles it later); a conversation whose process is gone is `interrupted` as
+        there; an exit code the record never turned into a status gives its end; a run its provider hosts is as alive as its host. One
+        case is not mirrored: a run `starting` or `running` that is coming back for a queued message (`registry._resuming`, read from
+        the run's queue) reads `starting` here only when its record says so."""
+        status, kind = str(raw.get("status") or "?"), raw.get("kind") or "process"
+        if status == "starting" or (status not in AT_WORK and kind != "conversation"):
             return status
         if kind == "provider_child":
             host = self._record(raw.get("parent_run_id") or raw.get("root_run_id") or "") if depth < 5 else None
             return status if host is None or self.status_of(host, depth=depth + 1) in AT_WORK else GONE
         if kind == "conversation":
-            return status if status == "waiting" or _alive(raw, strict=True) else GONE
+            if status in TERMINAL or status == "waiting" or _alive(raw, strict=True):
+                return status
+            return GONE if status in AT_WORK else "interrupted"
         code = raw.get("exit_code")
-        if isinstance(code, int) and not isinstance(code, bool):
+        if isinstance(code, int):
             return "stopped" if code == -15 else "done" if code == 0 else "failed"
         return status if _alive(raw, strict=False) else GONE
 
@@ -203,8 +210,8 @@ class RunLedger:
                 stamp = _stamp(found)
             hit = self._cached().get(name)
             if isinstance(hit, dict) and hit.get("stamp") == stamp and isinstance(hit.get("record"), dict):
-                self._raw[run_id] = hit["record"]
-                return hit["record"]
+                self._raw[run_id] = trimmed = _trim(hit["record"])
+                return trimmed
             loaded = json.loads((self.root / name).read_text(encoding="utf-8", errors="replace"))
         except (OSError, ValueError):
             loaded = None
@@ -270,7 +277,7 @@ class RunLedger:
         conversation of the run it is the id of. Refused (`LookupError`) when it names none or several."""
         if (self.root / f"{ref}.json").exists():   # a full run id: no scan of the other records
             return self.conversation_key(ref)
-        keys = {self.conversation_key(run_id, raw) for run_id, raw in self._scan(0.0) if run_id.startswith(ref) or (raw.get("session_id") or "").startswith(ref)}
+        keys = {self.conversation_key(run_id, raw) for run_id, raw in self._scan() if run_id.startswith(ref) or (raw.get("session_id") or "").startswith(ref)}
         exact = {key for key in keys if key.startswith(ref)}
         runs = {self.conversation_key(run_id) for run_id in self._ids_like(ref)}
         if exact and runs - exact:
@@ -281,11 +288,12 @@ class RunLedger:
             return run_conversation
         if len(exact) > 1:
             raise LookupError(f"{ref!r} names {len(exact)} conversations: " + ", ".join(sorted(key[:12] for key in exact)))
-        raise LookupError(f"no conversation or run {ref!r} on this computer")
+        raise UnknownConversation(f"no conversation or run {ref!r} on this computer")
 
-    def _scan(self, since: float) -> Iterator[tuple[str, dict]]:
-        """Each record whose file moved at or after `since`, parsed. A record unreadable (half-written, foreign) is skipped.
-        Having listed the folder, it also forgets cached records whose file is gone (`keep_cache`)."""
+    def _scan(self) -> Iterator[tuple[str, dict]]:
+        """Each record of the folder, parsed (from the cache when its file has not moved). A record unreadable (half-written, foreign) is
+        skipped. No file time is a filter: a backfill rewrites every record at once (5,166 of 5,232 files were younger than 24 h), and a
+        run at work may have written nothing for hours. Having listed the folder, it also tells `keep_cache` which records are gone."""
         try:
             entries = [entry for entry in os.scandir(self.root) if RECORD.match(entry.name)]
         except OSError:
@@ -296,8 +304,6 @@ class RunLedger:
                 found = entry.stat()
             except OSError:
                 continue
-            if since and found.st_mtime < since:
-                continue
             run_id = entry.name.removesuffix(".json")
             if (raw := self._record(run_id, _stamp(found))) is not None:
                 yield run_id, raw
@@ -307,7 +313,9 @@ class RunLedger:
         moment = time.time() if now is None else now
         wanted = None if query.conversation is None else self.resolve_conversation(query.conversation)
         found = []
-        for run_id, raw in self._scan(query.since or 0.0):
+        for run_id, raw in self._scan():
+            if query.since and raw.get("status") not in AT_WORK and max(raw.get("started_at") or 0.0, raw.get("finished_at") or 0.0) < query.since:
+                continue   # cheap cut before a row is built: only a run at work outlives `since`
             key = self.conversation_key(run_id, raw)
             if wanted is not None and key != wanted:
                 continue
@@ -330,6 +338,10 @@ class RunLedger:
         row = _row(full, raw, self.conversation_key(full, raw), self.status_of(raw))
         kind, text = _closing_event(self.root / f"{full}.jsonl")
         return Ending(run=row, event=kind, text=text if text_chars is None else text[:text_chars], chars=len(text), digest=_digest_said(raw))
+
+
+class UnknownConversation(LookupError):
+    """No conversation or run on this computer has the id asked: unlike an ambiguous or clashing one, a fact a caller may take as « none »."""
 
 
 class Ending(BaseModel):
@@ -366,18 +378,33 @@ def _closing_event(path: Path) -> tuple[str, str]:
     return "", ""
 
 
+def _number(value: object) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _counts(value: object) -> dict[str, int]:
+    return {name: count for name in Tokens.model_fields if isinstance((count := value.get(name)), int) and not isinstance(count, bool)} if isinstance(value, dict) else {}
+
+
 def _trim(raw: dict) -> dict:
-    """The fields of one record the engine reads, as plain JSON: its task cut to its first line, each nested record to what is read of it."""
-    trimmed = {name: raw[name] for name in _KEPT if name in raw}
-    task = str(raw.get("task") or "").lstrip().split("\n", 1)[0]
-    trimmed["task"] = task[:160]
-    digest = raw.get("stream_digest")
-    if isinstance(digest, dict):
-        trimmed["stream_digest"] = {name: digest[name] for name in ("ending_text", "last", "cut", "cost_usd", "usage") if name in digest}
-        trimmed["stream_digest"]["ending_text"] = str(digest.get("ending_text") or "")[:600]
-    for name, keys in (("interruption", ("cause",)), ("relaunched_from", ("said",)), ("successor", ("run_id",))):
-        if isinstance(raw.get(name), dict):
-            trimmed[name] = {key: raw[name].get(key) for key in keys}
+    """The fields of one record the engine reads, each of the type it is read as (a field of another type is left out), its task cut to its
+    first line. The one gate for a record read from its file AND from the cache: a foreign file or a damaged cache entry never reaches a row."""
+    trimmed: dict = {name: raw[name] for name in _TEXT if isinstance(raw.get(name), str)}
+    trimmed |= {name: number for name in _NUMBER if (number := _number(raw.get(name))) is not None}
+    trimmed |= {name: raw[name] for name in _WHOLE if isinstance(raw.get(name), int) and not isinstance(raw.get(name), bool)}
+    trimmed["task"] = str(raw.get("task") or "").lstrip().split("\n", 1)[0][:160] if isinstance(raw.get("task"), str) else ""
+    if usage := _counts(raw.get("usage")):
+        trimmed["usage"] = usage
+    if isinstance(digest := raw.get("stream_digest"), dict):
+        kept: dict = {name: digest[name][:600 if name == "ending_text" else 300] for name in ("ending_text", "last", "cut") if isinstance(digest.get(name), str)}
+        if (cost := _number(digest.get("cost_usd"))) is not None:
+            kept["cost_usd"] = cost
+        if usage := _counts(digest.get("usage")):
+            kept["usage"] = usage
+        trimmed["stream_digest"] = kept
+    for name, key in (("interruption", "cause"), ("relaunched_from", "said"), ("successor", "run_id")):
+        if isinstance(raw.get(name), dict) and isinstance(raw[name].get(key), str):
+            trimmed[name] = {key: raw[name][key]}
     return trimmed
 
 

@@ -3,6 +3,7 @@ folder, written the way the registry writes it (`<run id>.json` beside its trans
 
 import json
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -165,17 +166,25 @@ def test_stats_prints_the_axes_and_json_carries_the_same_numbers(folder: Path, m
     assert json.loads(capsys.readouterr().out)["stats"]["cuts"] == {"usage_limit": 1}
 
 
-def test_a_listing_that_cannot_finish_says_where_it_is_stuck_instead_of_hanging(capsys) -> None:
-    release = __import__("threading").Event()
+def test_a_listing_that_cannot_finish_says_whether_a_lock_holds_it_or_it_is_only_slow(capsys) -> None:
+    release = threading.Event()
 
-    def wait_for_a_lock() -> None:
+    def record_lock() -> None:   # a function of this name on the stack is the registry's wait for another process's lock
         release.wait(30)
 
-    with pytest.raises(SystemExit) as stopped:
-        agents_runs._within(0.2, wait_for_a_lock, "listing the conversation's runs")
-    release.set()
-    err = capsys.readouterr().err
-    assert stopped.value.code == 1 and "took more than 0.2 s" in err and "is still in wait" in err
+    def locked() -> None:
+        record_lock()
+
+    def slow() -> None:
+        release.wait(30)
+
+    for work, said in ((locked, "waiting on a lock another galaius process holds (`record_lock`"), (slow, "no lock on its stack: slow, not stuck")):
+        with pytest.raises(SystemExit) as stopped:
+            agents_runs._within(0.2, work, "listing the conversation's runs")
+        release.set()
+        err = capsys.readouterr().err
+        assert stopped.value.code == 1 and "took more than 0.2 s" in err and said in err, err
+        release.clear()
 
 
 def test_agents_list_finds_a_root_conversation_that_never_had_a_session_id(folder: Path, monkeypatch, capsys) -> None:
@@ -268,3 +277,48 @@ def test_agents_list_every_session_goes_through_the_ledger_and_an_unknown_harnes
     with pytest.raises(SystemExit) as stopped:
         agents_runs.agents_list(session_id="thread-without-records")
     assert stopped.value.code == 2, "a conversation he NAMED that nothing holds is an error; only an inherited one lists empty"
+
+
+def test_a_run_at_work_survives_since_even_when_its_file_is_old_and_a_finished_old_one_does_not(folder: Path) -> None:
+    """A backfill rewrites every file, and a run at work may write nothing for hours: no file time decides, only the record's own."""
+    put(folder, CHILD, parent_run_id=ROOT, status="waiting", kind="conversation", age=3 * 86400, started_at=time.time() - 5 * 86400, finished_at=None)
+    put(folder, GRAND, parent_run_id=CHILD, status="done", age=0, started_at=time.time() - 5 * 86400, finished_at=time.time() - 4 * 86400)  # file new, run old
+    found = {row.run_id for row in RunLedger(folder).rows(RunQuery(conversation=ROOT, since=parse_since("24h")))}
+    assert CHILD in found and GRAND not in found
+
+
+@pytest.mark.parametrize("record", [{"started_at": "abc"}, {"session_id": [1]}, {"parent_run_id": 5}, {"stream_digest": {"ending_text": 3, "cut": []}},
+                                    {"usage": {"input": "x"}}, {"cost_usd": "free"}, {"interruption": "oom"}], ids=lambda record: next(iter(record)))
+def test_a_field_of_the_wrong_type_in_a_record_or_the_cache_never_stops_a_listing(folder: Path, record: dict) -> None:
+    put(folder, CHILD, **{"parent_run_id": ROOT, **record})
+    assert CHILD in {row.run_id for row in RunLedger(folder).rows()}   # from the file
+    cached = json.loads((folder / ".run-ledger.cache").read_text())
+    cached["records"][f"{CHILD}.json"]["record"].update(record)       # the same damage inside the cache, its stamp still matching
+    (folder / ".run-ledger.cache").write_text(json.dumps(cached))
+    assert CHILD in {row.run_id for row in RunLedger(folder).rows()}
+
+
+@pytest.mark.parametrize("fields, status", [
+    ({"kind": "conversation", "status": "crashed", "pid": None}, "interrupted"),
+    ({"kind": "conversation", "status": "starting", "pid": None}, "starting"),
+    ({"kind": "process", "status": "starting", "pid": None, "exit_code": 0}, "starting"),
+], ids=["conversation-crashed", "conversation-starting", "starting-with-exit-code"])
+def test_the_statuses_the_registry_reads_from_its_queue_are_not_second_guessed(folder: Path, fields: dict, status: str) -> None:
+    put(folder, CHILD, parent_run_id=ROOT, **fields)
+    assert {row.run_id: row.status for row in RunLedger(folder).rows()}[CHILD] == status
+
+
+def test_agents_list_swallows_only_an_unknown_inherited_thread_never_an_ambiguous_one_and_counts_what_it_leaves_out(folder: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(folder))
+    monkeypatch.delenv("GALAIUS_PARENT_RUN_ID", raising=False)
+    monkeypatch.delenv("GALAIUS_RUN_ID", raising=False)
+    put(folder, "66666666-0000-4000-8000-000000000000", session_id="web-ab1")
+    put(folder, "77777777-0000-4000-8000-000000000000", session_id="web-ab2")
+    monkeypatch.setenv("GALAIUS_SESSION_ID", "web-ab")
+    with pytest.raises(SystemExit) as stopped:
+        agents_runs.agents_list()
+    assert stopped.value.code == 2 and "3 conversations" in capsys.readouterr().err
+    monkeypatch.setenv("GALAIUS_SESSION_ID", ROOT)
+    agents_runs.agents_list(limit=1)
+    out = capsys.readouterr().out
+    assert "… 2 older runs not shown" in out and GRAND[:8] in out, "the newest stays; the two older are counted"
