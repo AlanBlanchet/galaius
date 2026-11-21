@@ -279,7 +279,7 @@ class AgentPrograms(BaseModel):
             subscription = Subscription.of(subscription_id) if subscription_id is not None else None
         except SubscriptionRefused:
             return False
-        return self._status(PROVIDERS[name], self._environment(subscription)).signed_in
+        return self._known(PROVIDERS[name], self._environment(subscription)).signed_in
 
     def signed_in_as(self, name: str, login: str, *, besides: tuple[UUID | None, ...] = ()) -> Iterator[UUID | None]:
         """Each login of `name` here signed in now as account `login` (`LoginStatus.login`: one account signed in in two
@@ -290,7 +290,7 @@ class AgentPrograms(BaseModel):
             here = subscription.id if subscription is not None else None
             if here in besides:
                 continue
-            status = self._status(program, self._environment(subscription))
+            status = self._known(program, self._environment(subscription))
             if status.signed_in and status.login == login:
                 yield here
 
@@ -615,6 +615,18 @@ class AgentPrograms(BaseModel):
                 return last[1]
         return status
 
+    def _known(self, provider: Program, environment: dict[str, str]) -> LoginStatus:
+        """Its login as `_status` last answered (signed in or out), while `provider.LOGIN_REUSE_SECONDS` have not passed since:
+        every look at the programs (the web's page polling every few seconds, a list, a resume pass) ran each login's CLI for
+        it, up to three starts per login (`login_status`), 25 logins (21 of them signed out) 2 starts a second, ~1 s of CPU
+        each: load 30 on 12 cores, 2026-11-21. An expired login (the one he is about to sign in again) and a check that could not answer are never reused; the sign-in's own
+        reads (`_job`) never come here, and write what they find."""
+        with self._lock:
+            last = self._answered.get((provider.name, frozenset(environment.items())))
+        if last is not None and not last[1].expired and time.monotonic() - last[0] < provider.LOGIN_REUSE_SECONDS:
+            return last[1]
+        return self._status(provider, environment)
+
     def _logout(self, subscription: Subscription) -> None:
         """Its program's own sign-out inside its folder, then the folder. A sign-out that fails keeps
         the folder (refused, saying why): where the login also lives outside it (macOS keychain, keyed
@@ -628,6 +640,8 @@ class AgentPrograms(BaseModel):
                 raise PermissionError(f"{subscription.provider}'s sign-out did not complete ({type(error).__name__}); the subscription stays, sign out again") from error
             if done.returncode != 0:
                 raise PermissionError(f"{subscription.provider}'s sign-out failed: {self.last_line(done.stderr or done.stdout) or f'exit {done.returncode}'}; the subscription stays, sign out again")
+        with self._lock:
+            self._answered.pop((subscription.provider, frozenset(self._environment(subscription).items())), None)
         subscription.remove()
 
     def _base(self, provider: Program, subscription: Subscription | None = None) -> AgentProviderState:
@@ -642,7 +656,7 @@ class AgentPrograms(BaseModel):
         its `changed_at` (when the web's job last moved it) while it is still ready: the server tells
         the owner of a sign-in once, by that time."""
         base = self._base(provider, subscription)
-        status = self._status(provider, self._environment(subscription)) if base.available else LoginStatus(signed_in=None)
+        status = self._known(provider, self._environment(subscription)) if base.available else LoginStatus(signed_in=None)
         if not status.signed_in and last is not None and last.step == "failed":
             return last
         step: AgentProgramStep = "missing" if not base.available else "ready" if status.signed_in else "signed_out"

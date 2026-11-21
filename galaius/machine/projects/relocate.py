@@ -131,8 +131,18 @@ def _claude_homes(runs: list[reg.AgentRun], moved: set[str]) -> tuple[Path, ...]
 
 def plan(working_directory: Path, agent_roots: tuple[str, ...], busy: bool = False) -> MovePlan:
     """`busy`: a project is being put in place or sent now (`MachineWorkspaces.busy`): nothing moves."""
-    runs, cwds, new = reg.list_runs(include_foreign=True), _worked_in(), UserPaths.projects()
+    new = UserPaths.projects()
     moves, kept, every = [], [], []
+    #: Every run, and every process's folder: read at the first folder that could move, never before. `list_runs` reads each
+    #: run's record and event stream (5,228 runs: 27-37 s, 2026-11-21) and a PC with no earlier folder, every start but
+    #: one, paid it before the link connected.
+    asked: list[tuple[list[reg.AgentRun], tuple[str, ...]]] = []
+
+    def known() -> tuple[list[reg.AgentRun], tuple[str, ...]]:
+        if not asked:
+            asked.append((reg.list_runs(include_foreign=True), _worked_in()))
+        return asked[0]
+
     homes = _homes(working_directory, agent_roots)
     blocked = unplain(new)
     for home, root in homes:
@@ -152,6 +162,7 @@ def plan(working_directory: Path, agent_roots: tuple[str, ...], busy: bool = Fal
             elif folder.is_symlink() or not folder.is_dir():
                 kept.append(Kept(folder=folder, why="a link or a file: left as it is"))
             else:
+                runs, cwds = known()
                 live = [run.run_id[:8] for run in runs if run.cwd and inside(run.cwd, folder) and run.process_running()]
                 if live or any(inside(cwd, folder) for cwd in cwds):
                     kept.append(Kept(folder=folder, why="in use now" + (f" by {', '.join(live[:4])}" if live else "")))
@@ -161,6 +172,7 @@ def plan(working_directory: Path, agent_roots: tuple[str, ...], busy: bool = Fal
                     kept.append(Kept(folder=folder, why=f"another earlier folder of that name moves to {new / folder.name} first"))
                 else:
                     moves.append(Move(source=folder, target=new / folder.name, root=root))
+    runs = known()[0] if moves else []
     moved = {run.run_id for run in runs if run.cwd and any(inside(run.cwd, move.source) for move in moves)}
     sessions = []
     by_source = {move.source: move for move in moves}

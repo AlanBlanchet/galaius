@@ -307,6 +307,32 @@ def test_an_expired_login_reads_signed_out_never_ready_and_a_slow_check_keeps_th
     assert jobs.states()[0].step == "ready"
 
 
+def test_a_signed_in_login_is_read_once_per_reuse_window_however_often_the_web_polls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The web's page polled every few seconds and each poll ran every login's CLI (14 logins, 2 starts a second, load 30 on
+    12 cores, 2026-11-21: the PC read offline on the phone): a signed-in login is asked again only past `LOGIN_REUSE_SECONDS`, signed out
+    as well (21 of 25 logins on his PC)."""
+    asked, signed = [], {"in": True}
+
+    async def login_status(self, env, **_):
+        asked.append(env)
+        return LoginStatus(signed_in=signed["in"], login="9" * 16)
+    monkeypatch.setattr(AgentProvider, "login_status", login_status)
+    monkeypatch.setattr(type(PROVIDERS["claude"]), "available", lambda self: True)
+    monkeypatch.setattr(AgentPrograms, "installable", staticmethod(lambda: (PROVIDERS["claude"],)))
+    monkeypatch.setattr(AgentPrograms, "version", lambda self, provider: "2.1.288 (Claude Code)")
+    jobs = AgentPrograms(environment={"PATH": "/usr/bin:/bin"}, log_path=tmp_path / "agent-programs.log")
+    for _ in range(5):
+        assert jobs.states()[0].step == "ready" and jobs.signed_in("claude", None) is True
+    assert len(asked) == 1
+    monkeypatch.setattr(type(PROVIDERS["claude"]), "LOGIN_REUSE_SECONDS", 0.0)
+    jobs.states()
+    assert len(asked) == 2
+    signed["in"] = False
+    assert jobs.states()[0].step == "signed_out" and len(asked) == 3
+    monkeypatch.setattr(type(PROVIDERS["claude"]), "LOGIN_REUSE_SECONDS", 300.0)
+    assert [jobs.states()[0].step for _ in range(3)] == ["signed_out"] * 3 and len(asked) == 3
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="its stand-in program is a POSIX shell script")
 def test_a_check_that_cannot_answer_never_reads_signed_out_however_long_ago_the_last_answer_was(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A signed-in login whose status check times out (load 60-80, 2026-11-18: ready, signed out, ready, in four reads) keeps its

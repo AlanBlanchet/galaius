@@ -82,6 +82,17 @@ def test_a_source_that_is_the_projects_folder_moves_nothing(tmp_path: Path, monk
     assert relocate.plan(tmp_path, ()).moves == ()
 
 
+def test_a_pc_with_no_earlier_folder_never_reads_its_runs_to_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The link's start planned the move before it connected, reading every run's record and stream (5,228 runs: 27-37 s,
+    2026-11-21: « I hit the "Start" and it litteraly took 1min until i got something »): only a folder that could move reads them."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(reg, "list_runs", lambda **_: pytest.fail("every run was read to plan nothing"))
+    assert relocate.plan(tmp_path, ()) == relocate.MovePlan()
+    (tmp_path / "galaius" / "projects" / ".1234.partial").mkdir(parents=True)   # kept for its name alone
+    (tmp_path / "galaius" / "projects" / "elsewhere").symlink_to(tmp_path)
+    assert relocate.plan(tmp_path, ()).moves == ()
+
+
 def test_a_hidden_entry_a_link_and_a_running_job_keep_their_folders(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     earlier = tmp_path / "galaius" / "projects"
