@@ -3590,6 +3590,13 @@ def trees(root_run_ids: frozenset[str]) -> list[AgentRun]:
     return newest_first(forest(root_run_ids))
 
 
+def current_of(run_id: str) -> AgentRun | None:
+    """One stored run with its status re-checked as `forest` lists it (`_current`); None for an id no record has. Reads that
+    record alone: `agents list` names a conversation's runs from the run ledger and asks each here, never the whole history."""
+    stored = _read_record(run_id)
+    return None if stored is None else _current(stored)
+
+
 def current_runs(keep: Callable[[AgentRun], bool]) -> list[AgentRun]:
     """The stored runs `keep` takes (asked of the record as stored), each status re-checked as `forest` lists it
     (`_current`), oldest first: never the whole history's streams re-read (`list_runs`, ~4 s at 5,000 records), for a

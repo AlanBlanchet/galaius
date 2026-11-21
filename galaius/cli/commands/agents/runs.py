@@ -2,12 +2,14 @@
 
 import os
 import sys
+import threading
 from pathlib import Path
 from uuid import UUID
 from galaius.machine.peer.client import PeerClient, PeerError, PeerUnavailable
 from galaius.machine.peer.words import pick
 from galaius_core import ASKED_BY_MAX
 from galaius.agents import messaging
+from galaius.agents.run_ledger import RunLedger, RunQuery, own_conversation, parse_since
 from galaius.agents.turns import handback
 from galaius.agents import registry as reg
 from galaius.agents.catalog import community as community_agents
@@ -27,8 +29,38 @@ def agents_console(workspace_root: Path) -> None:
     run_console(workspace_root)
 
 
+#: How long `agents list` waits for the registry before saying where it is stuck (a record lock another process holds).
+LIST_PATIENCE = 20.0
+
+
+def _within(patience: float, work, what: str):
+    """`work()` run on a thread, its result returned; past `patience` seconds, an `ERROR:` line saying `what` and the function it
+    is stuck in (the reason), exit 1. The registry's locks wait for their holder with no end of their own: a listing hung
+    behind one for half an hour (2026-11-16) and said nothing."""
+    outcome: dict = {}
+
+    def run() -> None:
+        try:
+            outcome["value"] = work()
+        except BaseException as error:  # noqa: BLE001 - carried to the caller's thread, raised there
+            outcome["error"] = error
+
+    worker = threading.Thread(target=run, daemon=True, name="agents-list")
+    worker.start()
+    worker.join(patience)
+    if worker.is_alive():
+        frame = sys._current_frames().get(worker.ident)
+        where = f"{frame.f_code.co_name} ({Path(frame.f_code.co_filename).name}:{frame.f_lineno})" if frame is not None else "unknown"
+        print(f"ERROR: {what} took more than {patience:g} s; stuck in {where}. A lock another galaius process holds is the usual cause: "
+              "`galaius conversation recent` reads the same runs without any lock.", file=sys.stderr)
+        raise SystemExit(1)
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
+
+
 @agents_app.command(name="list")
-def agents_list(foreign: bool = False, session_id: str | None = None, all_sessions: bool = False) -> None:
+def agents_list(foreign: bool = False, session_id: str | None = None, all_sessions: bool = False, since: str = "24h") -> None:
     """Show launched runs belonging to this conversation, including nested children.
 
     Parameters
@@ -36,16 +68,21 @@ def agents_list(foreign: bool = False, session_id: str | None = None, all_sessio
     foreign
         Include discovered editor sessions only with --all-sessions.
     session_id
-        Caller conversation used at spawn; defaults to recorded parent, GALAIUS_SESSION_ID,
-        or the current CLI harness CODEX_THREAD_ID. Never inferred from cwd or PID.
+        Conversation to list (an id, or any run id of it); defaults to the calling run's own conversation (its parent
+        chain, GALAIUS_SESSION_ID, or the current CLI harness CODEX_THREAD_ID). Never inferred from cwd or PID.
     all_sessions
         Explicitly show machine-wide history, including runs with unknown owners.
+    since
+        Only runs that moved this recently (`6h`, `2d`, a date) or `all`; default 24h, so a conversation of thousands of runs
+        lists the ones at work now. Ignored with --all-sessions. `galaius conversation recent` is the richer view.
     """
 
     try:
-        identity = session_id if all_sessions else reg.resolve_session_id(session_id, cli_harness=True)
-        runs = reg.session_runs(session_id=identity, all_sessions=all_sessions, include_foreign=foreign)
-    except ValueError as error:
+        if all_sessions:
+            identity, runs = session_id, _within(LIST_PATIENCE, lambda: reg.session_runs(session_id=session_id, all_sessions=True, include_foreign=foreign), "listing every run")
+        else:
+            identity, runs = _within(LIST_PATIENCE, lambda: _conversation_runs(session_id, since), "listing the conversation's runs")
+    except (ValueError, LookupError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         raise SystemExit(2) from None
     print("All sessions (including unknown owners)" if all_sessions else f"Session: {identity}")
@@ -66,6 +103,19 @@ def agents_list(foreign: bool = False, session_id: str | None = None, all_sessio
               f"{cost:>10}  {said[:60]}")
     if any(r.foreign for r in runs):
         print("\n* not started by galaius")
+
+
+def _conversation_runs(session_id: str | None, since: str) -> tuple[str, list[reg.AgentRun]]:
+    """The conversation asked (else the caller's own) and its runs that moved within `since`, each read alone, status re-checked.
+    A conversation is what the run ledger says (`run_ledger`): a session's runs and every run descended from its root, which
+    the registry's session filter missed for a root run that never had a session id (« Session identity required »)."""
+    ledger = RunLedger()
+    if session_id is not None or (session_id := reg.resolve_session_id(None, cli_harness=True)) is not None:
+        conversation = ledger.resolve_conversation(session_id)
+    elif (conversation := own_conversation()) is None:
+        raise ValueError("Session identity required: run this inside an agent run, pass --session-id, or set GALAIUS_SESSION_ID; use --all-sessions for every run")
+    rows = ledger.rows(RunQuery(conversation=conversation, since=None if since == "all" else parse_since(since)))
+    return conversation, [run for row in rows if (run := reg.current_of(row.run_id)) is not None]
 
 
 @agents_app.command(name="events")

@@ -6,6 +6,13 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+- `galaius conversation` reads what ran without a script over the run records: `recent` (a conversation's runs as a tree: status, role, model,
+  login, length, spend, last words or the limit that cut it), `last` (a run's last report and how it ended), `stats` (counts, tokens and
+  spend by status / role / model / login, runs cut by a limit, `--live`: places taken, who waits, the agents' memory) and `limits` (each
+  login's usage windows, pools, what this PC passes over). One query engine, filters as options (`--conversation`, `--since`, `--role`,
+  `--status`, `--model`, `--login`, `--cut`, `--all`), `--json` for programs; local files only, ~0.7 s over 5,000 records. A run asking reads
+  its own conversation. `galaius agents list` no longer refuses a conversation whose root run has no session id (« Session identity
+  required »), lists the last 24 h by default (`--since all` for more), and past 20 s says where it is stuck instead of hanging.
 - A stopped conversation whose subscription login cannot take its next turn (usage window shut, sign-in lost, or its model refused
   there, a model family's weekly pool included) resumes on another subscription login that can, session carried, same model;
   with none, the next ranked model on its own login. What the vendor refused is kept in one typed record per login

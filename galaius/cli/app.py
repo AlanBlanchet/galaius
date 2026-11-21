@@ -84,6 +84,10 @@ app.command(
     help="Spawn and supervise agent runs across providers.",
 )
 app.command(
+    "galaius.cli.commands.conversation:conversation_app", name="conversation",
+    help="Read what ran in a conversation: recent runs, how one ended, counts and spend, limits.",
+)
+app.command(
     "galaius.cli.commands.login:login", name="login",
     help="Connect this computer to your Galaius account.",
 )

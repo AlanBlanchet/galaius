@@ -866,6 +866,12 @@ class SpawnLine(BaseModel):
         (`agents list`, `agents events`) never waits behind a spawn holding the line (2026-11-16)."""
         return self._prune(_seen("spawn-line", Place))
 
+    def standing(self) -> tuple[Load, list[Place]]:
+        """What works here against the limit now, and the spawns still waiting (a run held, or only for a place), read without
+        the line's lock like `session`: what `galaius conversation stats --live` shows."""
+        places = self._places_seen()
+        return self.load(places), [place for place in places if place.asked() and place.state != "starting"]
+
     @staticmethod
     def _prune(places: list[Place]) -> list[Place]:
         """A place whose holder is gone: `starting` — dropped once its run is on record, else failed (its start was

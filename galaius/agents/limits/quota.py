@@ -542,6 +542,12 @@ def _read(now: float) -> dict[str, LoginUsage]:
     return found
 
 
+def readings(now: float | None = None) -> dict[str, LoginUsage]:
+    """Every login's remembered refusals and pauses at `now`, keyed `<provider>` or `<provider>#<subscription id>`: what a reader
+    (`galaius conversation limits`) shows, a copy it may not write back."""
+    return _read(time.time() if now is None else now)
+
+
 def _write_json(path: Path, data: dict) -> None:
     """`data` replaces `path` in one rename; a failed write leaves the last one."""
     with suppress(Exception):
