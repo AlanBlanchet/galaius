@@ -287,7 +287,7 @@ def test_a_run_at_work_survives_since_even_when_its_file_is_old_and_a_finished_o
     assert CHILD in found and GRAND not in found
 
 
-@pytest.mark.parametrize("record", [{"started_at": "abc"}, {"session_id": [1]}, {"parent_run_id": 5}, {"stream_digest": {"ending_text": 3, "cut": []}},
+@pytest.mark.parametrize("record", [{"started_at": "abc"}, {"session_id": [1]}, {"parent_run_id": 5}, {"stream_digest": {"ending_text": 3, "cut": []}}, {"started_at": 10**30}, {"cost_usd": 10**400}, {"finished_at": float("inf")},
                                     {"usage": {"input": "x"}}, {"cost_usd": "free"}, {"interruption": "oom"}], ids=lambda record: next(iter(record)))
 def test_a_field_of_the_wrong_type_in_a_record_or_the_cache_never_stops_a_listing(folder: Path, record: dict) -> None:
     put(folder, CHILD, **{"parent_run_id": ROOT, **record})
@@ -301,9 +301,11 @@ def test_a_field_of_the_wrong_type_in_a_record_or_the_cache_never_stops_a_listin
 @pytest.mark.parametrize("fields, status", [
     ({"kind": "conversation", "status": "crashed", "pid": None}, "interrupted"),
     ({"kind": "conversation", "status": "starting", "pid": None}, "starting"),
-    ({"kind": "process", "status": "starting", "pid": None, "exit_code": 0}, "starting"),
-], ids=["conversation-crashed", "conversation-starting", "starting-with-exit-code"])
-def test_the_statuses_the_registry_reads_from_its_queue_are_not_second_guessed(folder: Path, fields: dict, status: str) -> None:
+    ({"kind": "process", "status": "starting", "pid": None, "exit_code": 0}, "done"),
+    ({"kind": "process", "status": "crashed", "pid": None}, "interrupted"),                     # a status the registry once wrote, now read as interrupted
+    ({"kind": "process", "status": "starting", "pid": None, "started_at": 1.0}, "gone"),        # `starting` for 30 years with no process
+], ids=["conversation-crashed", "conversation-starting", "starting-with-exit-code", "legacy-crashed", "starting-forever"])
+def test_a_status_is_what_the_registry_says_except_for_a_run_coming_back_for_a_queued_message(folder: Path, fields: dict, status: str) -> None:
     put(folder, CHILD, parent_run_id=ROOT, **fields)
     assert {row.run_id: row.status for row in RunLedger(folder).rows()}[CHILD] == status
 
@@ -322,3 +324,13 @@ def test_agents_list_swallows_only_an_unknown_inherited_thread_never_an_ambiguou
     agents_runs.agents_list(limit=1)
     out = capsys.readouterr().out
     assert "… 2 older runs not shown" in out and GRAND[:8] in out, "the newest stays; the two older are counted"
+
+
+def test_the_terminal_statuses_are_the_registry_s_and_a_negative_limit_is_refused(folder: Path, monkeypatch, capsys) -> None:
+    from galaius.agents import registry as reg
+    from galaius.agents.run_ledger import TERMINAL
+    assert TERMINAL == reg.TERMINAL_STATUSES
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(folder))
+    with pytest.raises(SystemExit) as stopped:
+        agents_runs.agents_list(all_sessions=True, limit=-5)
+    assert stopped.value.code == 2 and "--limit takes 0" in capsys.readouterr().err

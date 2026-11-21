@@ -35,7 +35,7 @@ LIST_PATIENCE = 20.0
 
 
 #: The registry's functions that wait for a lock held by another process: on a stuck stack, they are the evidence of a lock.
-_LOCK_WAITS = frozenset({"record_lock", "exclusive", "_pinned_registry", "flock", "lockf", "acquire", "_exclusive", "locked"})
+_LOCK_WAITS = frozenset({"record_lock", "_pinned_registry", "exclusive", "acquire"})
 
 
 def _within(patience: float, work, what: str):
@@ -88,6 +88,8 @@ def agents_list(foreign: bool = False, session_id: str | None = None, all_sessio
     """
 
     try:
+        if limit < 0:
+            raise ValueError("--limit takes 0 (every run) or the number of older runs to list")
         if all_sessions:
             if session_id is not None:
                 raise ValueError("Choose session_id or all_sessions, not both")

@@ -3,8 +3,8 @@
 A debugging agent asks the same few things of the records: what ran in a conversation lately, how a run ended, counts and
 spend by status / role / model / login. They are options of one `RunQuery`, never a script per question. The engine reads
 the JSON records directly, with no run derived and no server asked: stdlib JSON, no registry import (the registry's own
-typed read of ~5,000 records takes seconds). A record's file time is never earlier than its run's last write, so a `since`
-filter skips old files before parsing them.
+typed read of ~5,000 records takes seconds). A cache of the fields it reads (`.run-ledger.cache`, beside the records) makes the
+next read ~0.3 s. No file time is a filter: `since` judges a run by its own start and end, and a run at work always passes.
 
 A conversation is what the registry calls one: a run's `session_id`, else its parent's, else (a conversation's root run,
 which has neither) its own run id. Pointed at a run id, a conversation is that run's.
@@ -12,6 +12,7 @@ which has neither) its own run id. Pointed at a run id, a conversation is that r
 
 import contextlib
 import json
+import math
 import os
 import re
 import time
@@ -27,10 +28,14 @@ from galaius.host.paths import UserPaths
 
 #: A run record's file name: its full id. Locks, streams, queues and the registry's other files share the folder.
 RECORD = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$")
-#: The statuses a record keeps while its process is expected to run: only these are checked against the process table.
-#: The statuses the registry keeps a run in for good (`registry.TERMINAL_STATUSES`).
+#: The statuses the registry keeps a run in for good (`registry.TERMINAL_STATUSES`; a test holds the two equal).
 TERMINAL = frozenset({"done", "failed", "cancelled", "interrupted", "stopped"})
+#: The statuses a record keeps while its process is expected to run: only these are checked against the process table.
 AT_WORK = frozenset({"starting", "running", "waiting"})
+#: How long a run may be `starting` with no live process before it reads `gone`: a launch records its process a moment after its record.
+LAUNCH_GRACE = 600.0
+#: A status the registry once wrote and now reads as `interrupted` (`registry._LEGACY_INTERRUPTED`).
+LEGACY_INTERRUPTED = "crashed"
 #: What a run still at work reads when its process is gone and its record was never settled.
 GONE = "gone"
 SAID_CHARS = 240
@@ -168,15 +173,19 @@ class RunLedger:
     def status_of(self, raw: dict, *, depth: int = 0) -> str:
         """The status the registry would list the run under (`registry._status_for`), without deriving it: a record at work whose process is
         gone reads `gone` (the registry says `interrupted` and settles it later); a conversation whose process is gone is `interrupted` as
-        there; an exit code the record never turned into a status gives its end; a run its provider hosts is as alive as its host. One
-        case is not mirrored: a run `starting` or `running` that is coming back for a queued message (`registry._resuming`, read from
-        the run's queue) reads `starting` here only when its record says so."""
+        there; an exit code the record never turned into a status gives its end; a run its provider hosts is as alive as its host; a run
+        `starting` with no process recorded is launching for `LAUNCH_GRACE`, then `gone`. One case is not mirrored: a run coming back for a
+        queued message (`registry._resuming`, read from the run's queue) reads as its record says."""
         status, kind = str(raw.get("status") or "?"), raw.get("kind") or "process"
-        if status == "starting" or (status not in AT_WORK and kind != "conversation"):
+        if status == LEGACY_INTERRUPTED:
+            return "interrupted"
+        if status not in AT_WORK and kind != "conversation":
             return status
         if kind == "provider_child":
             host = self._record(raw.get("parent_run_id") or raw.get("root_run_id") or "") if depth < 5 else None
             return status if host is None or self.status_of(host, depth=depth + 1) in AT_WORK else GONE
+        if status == "starting" and not raw.get("pid") and not isinstance(raw.get("exit_code"), int):   # launching: its process is recorded a moment after its record
+            return status if time.time() - (raw.get("started_at") or 0.0) < LAUNCH_GRACE else GONE
         if kind == "conversation":
             if status in TERMINAL or status == "waiting" or _alive(raw, strict=True):
                 return status
@@ -379,7 +388,14 @@ def _closing_event(path: Path) -> tuple[str, str]:
 
 
 def _number(value: object) -> float | None:
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    """`value` as a finite float; None for anything else (a bool, a text, an integer too large for a float, infinity, NaN)."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _counts(value: object) -> dict[str, int]:
