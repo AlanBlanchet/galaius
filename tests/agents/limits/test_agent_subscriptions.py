@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 from galaius_core import AGENT_PROGRAMS, AgentMoveRequest, MachineRef, SubscriptionAllowance, SubscriptionChoice, UsageWindow, SubscriptionChoices, SubscriptionLimits
@@ -1072,6 +1073,10 @@ def test_a_resumed_conversation_is_never_refused_while_a_model_could_answer(
     answers, else the rule's next model that holds the history, else the most capable other of its provider, else the vendor
     about the model whose note ends first. The rating « floor » that refused is gone (`context_tokens` replaces it)."""
     login = uuid4()
+    # A fixed noon in Paris: « resets 9pm » is read against the clock, and at 8:30 pm it ended before the pool's own block did, which made
+    # the choice depend on the hour the suite ran (2026-11-21 20:2x: red on main).
+    noon = datetime(2026, 11, 20, 12, 0, tzinfo=ZoneInfo("Europe/Paris")).timestamp()
+    monkeypatch.setattr(quota, "time", SimpleNamespace(time=lambda: noon))
     monkeypatch.setattr(run_module, "rank_candidates", lambda rule_text, env, *, providers, weights="", role=None, among=None: tuple(
         reg.LaunchCandidate(provider="claude", model=name, rank=index)
         for index, name in enumerate(rule if rule_text != "aa.intelligence" else list(_SCORES))))
@@ -1079,7 +1084,7 @@ def test_a_resumed_conversation_is_never_refused_while_a_model_could_answer(
     monkeypatch.setattr(run_module, "_context_of", lambda name, candidates: _WINDOWS.get(name))
     monkeypatch.setattr(run_module, "resolve_model", lambda name, env, *, provider, weights="": ({}, name))
     for index, (name, said) in enumerate(held.items()):
-        quota.record_refusal("claude", name, said=said, subscription=login, now=time.time() - 60 * (len(held) - index))
+        quota.record_refusal("claude", name, said=said, subscription=login, now=noon - 60 * (len(held) - index))
     chosen = run_module.resolve_continuable_model("crit" if len(rule) > 1 else _FABLE, {}, provider=PROVIDERS["claude"], subscription=login,
                                                   current=current, context_tokens=context)[1]
     assert chosen == goes_to
