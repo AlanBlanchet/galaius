@@ -27,7 +27,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from galaius.host.paths import UserPaths
 
 #: A run record's file name: its full id. Locks, streams, queues and the registry's other files share the folder.
-RECORD = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$")
+#: The registry's own rule for a run id (`registry._RUN_ID`): launched runs are uuids, a test or a foreign writer may name one otherwise. A file
+#: of that shape that is no run record (the quota file, a queue) is told by its content: its `run_id` is not its name.
+_ID = r"[A-Za-z0-9._:@+-]{1,160}"
+RECORD = re.compile(rf"^(?![.#])(?!.*\.queue\.json$){_ID}\.json$")
 #: The statuses the registry keeps a run in for good (`registry.TERMINAL_STATUSES`; a test holds the two equal).
 TERMINAL = frozenset({"done", "failed", "cancelled", "interrupted", "stopped"})
 #: The statuses a record keeps while its process is expected to run: only these are checked against the process table.
@@ -224,7 +227,7 @@ class RunLedger:
             loaded = json.loads((self.root / name).read_text(encoding="utf-8", errors="replace"))
         except (OSError, ValueError):
             loaded = None
-        trimmed = _trim(loaded) if isinstance(loaded, dict) else None
+        trimmed = _trim(loaded) if isinstance(loaded, dict) and loaded.get("run_id") == run_id else None
         if trimmed is not None and stamp is not None:
             self._cached()[name] = {"stamp": stamp, "record": trimmed}
             self._dirty = True
@@ -272,7 +275,7 @@ class RunLedger:
         return None
 
     def _ids_like(self, ref: str) -> list[str]:
-        if not re.fullmatch(r"[0-9a-f-]{4,36}", ref):
+        if not re.fullmatch(_ID, ref):
             return []
         if (self.root / f"{ref}.json").exists():
             return [ref]

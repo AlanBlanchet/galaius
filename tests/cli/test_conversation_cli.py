@@ -334,3 +334,14 @@ def test_the_terminal_statuses_are_the_registry_s_and_a_negative_limit_is_refuse
     with pytest.raises(SystemExit) as stopped:
         agents_runs.agents_list(all_sessions=True, limit=-5)
     assert stopped.value.code == 2 and "--limit takes 0" in capsys.readouterr().err
+
+
+def test_a_run_named_as_the_registry_allows_is_read_and_a_json_file_that_is_no_run_is_not(folder: Path) -> None:
+    """The registry accepts any `[A-Za-z0-9._:@+-]{1,160}` run id; its folder also holds the quota file, queues and the like."""
+    put(folder, "visible-a", session_id="conversation-a")
+    (folder / "quota-usage.json").write_text('{"claude": {"blocks": {}}}')
+    (folder / "brief-titles.json").write_text('{"run_id": "other"}')
+    (folder / "visible-a.queue.json").write_text('{"run_id": "visible-a"}')
+    ledger = RunLedger(folder)
+    assert {row.run_id for row in ledger.rows(RunQuery(conversation="conversation-a"))} == {"visible-a"}
+    assert {row.run_id for row in ledger.rows()} == {ROOT, CHILD, GRAND, WEB, OTHER, "visible-a"}
