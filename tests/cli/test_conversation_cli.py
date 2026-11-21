@@ -18,6 +18,8 @@ CHILD = "22222222-0000-4000-8000-000000000000"
 GRAND = "33333333-0000-4000-8000-000000000000"
 WEB = "44444444-0000-4000-8000-000000000000"
 OTHER = "55555555-0000-4000-8000-000000000000"
+#: Liveness is read from /proc: where there is none (macOS, Windows) a process is never called gone (`run_ledger._alive`).
+needs_proc = pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="no /proc: a process is never called gone here")
 DEAD_PID = 2**22 + 12345  # beyond pid_max on Linux defaults
 
 
@@ -84,6 +86,7 @@ def test_since_refuses_what_is_no_time(text: str) -> None:
         parse_since(text)
 
 
+@needs_proc
 def test_a_record_at_work_whose_process_is_gone_reads_gone_and_one_alive_reads_running(folder: Path) -> None:
     put(folder, CHILD, parent_run_id=ROOT, status="running", pid=DEAD_PID, pid_started=1)
     put(folder, GRAND, parent_run_id=CHILD, status="running", pid=os.getpid(), pid_started=None)
@@ -230,6 +233,7 @@ def test_a_status_reads_as_the_registry_lists_it(folder: Path, fields: dict, sta
     assert {row.run_id: row.status for row in RunLedger(folder).rows()}[CHILD] == status
 
 
+@needs_proc
 def test_a_run_its_provider_hosts_is_as_alive_as_its_host(folder: Path) -> None:
     put(folder, CHILD, parent_run_id=ROOT, status="running", pid=DEAD_PID, pid_started=1)
     put(folder, GRAND, parent_run_id=CHILD, kind="provider_child", status="running")
