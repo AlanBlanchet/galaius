@@ -269,11 +269,11 @@ def _relaunched(run_id: str, message: str, error: Exception, resend: Callable[[s
     if not fallback.code_fault(error):
         return None
     run = reg.get_run(reg.resolve_run_id(run_id) or run_id)
-    if run is None or run.kind != "process" or run.working() or run.finished_at is None:
+    if run is None or run.kind != "process" or run.working():
         return None
     fresh = reg.get_run(run.replaced_by.run_id) if run.replaced_by is not None else None
     if fresh is not None and fresh.relaunched_from is not None and fresh.relaunched_from.cause == "fault":
-        if message in fresh.task:
+        if fresh.task.startswith(f"{message}\n\n[Galaius: you continue run {run.run_id[:8]}"):   # its task opens on the message itself, never a part of the report
             return Delivery(state="queued", run_id=fresh.run_id, relaunched_as=fresh.run_id, repeated=True,
                             text=f"Already carried by {fresh.name} ({fresh.run_id[:8]}), the fresh run that took {run.name} ({run.run_id[:8]})'s place.")
         return resend(relations.live(fresh.run_id))

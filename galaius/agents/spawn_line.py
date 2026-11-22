@@ -818,12 +818,15 @@ class SpawnLine(BaseModel):
         service restarted, a killed waiter), so it starts when a place frees: a queued spawn is never lost to a restart
         (2026-11-21: six vanished at a reboot, no run record left). Called at every look of the machine service (`EndWatch`).
         A waiter that cannot start (its folder gone) leaves the spawn failed and lost, its asker told (`report_lost`). The run ids held."""
-        with self._places() as places:
+        me = os.getpid()
+        with self._places() as places:   # claimed under the lock, so a second look finds them held and starts no second waiter
             orphans = [(place.run_id, place.spawn) for place in places if place.state == "waiting" and place.spawn is not None and place.holder_started is None]
+            places[:] = [place.model_copy(update={"holder": me, "holder_started": process_started(me)})
+                         if place.state == "waiting" and place.spawn is not None and place.holder_started is None else place for place in places]
         revived = []
         for run_id, spawn in orphans:
             try:
-                self._hold(run_id, spawn, 0)
+                self._hold(run_id, spawn, me)
             except OSError:
                 with self._places() as places:
                     places[:] = [place.model_copy(update={"lost": True}) if place.run_id == run_id and place.state == "failed" else place for place in places]

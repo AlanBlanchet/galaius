@@ -59,14 +59,14 @@ def _line(run: reg.AgentRun) -> str:
     return f"{reg.short_id(run.run_id)} {run.agent or run.name}, {state}: « {relations._first_line(run.task)} »"
 
 
-def refusal(run_id: str, text: str, *, now: float | None = None) -> str | None:
+def refusal(run_id: str, text: str, *, now: float | None = None, cwd: str | None = None) -> str | None:
     """Why the close `text` of run `run_id` may not stand, None when it may: it says RUNNING while no run will report back
     to it, or it names a run or role that is neither reporting to it nor at work in its conversation; or it says DONE on a slice
     that passed its critic and is on no remote (`unshipped.refusal`)."""
     lines = claimed(text)
     run = reg.get_run(run_id)
     if not lines or run is None:
-        return unshipped.refusal(run_id, text)
+        return unshipped.refusal(run_id, text, cwd)
     reporters = handback.reporting(run_id)
     in_line = SpawnLine.here().waiting_for(run_id)
     conversation = reg.conversation_of(run_id)
@@ -104,4 +104,4 @@ def refusal(run_id: str, text: str, *, now: float | None = None) -> str | None:
 
 
 if __name__ == "__main__":
-    print(refusal(sys.argv[1], sys.stdin.read()) or "", end="")
+    print(refusal(sys.argv[1], sys.stdin.read(), cwd=sys.argv[2] if len(sys.argv) > 2 else None) or "", end="")

@@ -84,7 +84,8 @@ def main() -> None:
     if not isinstance(event, dict):
         return
     words = _closing_words(event)
-    if not claimed(words) and not (says_done(words) and unpushed(event.get("cwd") if isinstance(event.get("cwd"), str) else None)):
+    cwd = event["cwd"] if isinstance(event.get("cwd"), str) else None
+    if not claimed(words) and not (says_done(words) and unpushed(cwd)):
         return
     run_id, records = sys.argv[1], sys.argv[2]
     count = Path(records) / f"{run_id}.close-refusals"
@@ -94,7 +95,7 @@ def main() -> None:
         count.unlink(missing_ok=True)
         return
     try:
-        reason = subprocess.run([sys.executable, "-P", "-m", "galaius.agents.turns.running_claim", run_id], input=words,
+        reason = subprocess.run([sys.executable, "-P", "-m", "galaius.agents.turns.running_claim", run_id, *([cwd] if cwd else [])], input=words,
                                 capture_output=True, text=True, timeout=TIMEOUT, check=True).stdout.strip()
     except (OSError, subprocess.SubprocessError) as error:
         raise SystemExit(f"galaius: the RUNNING close was not checked: {error}")

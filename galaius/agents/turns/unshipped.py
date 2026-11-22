@@ -23,21 +23,23 @@ def _verdict(child: reg.AgentRun) -> bool:
     return any(VERDICTS.match(part) for part in relations.final_parts(child.run_id)[:1])
 
 
-def refusal(run_id: str, text: str) -> str | None:
+def refusal(run_id: str, text: str, cwd: str | None = None) -> str | None:
     """Why the close `text` of run `run_id` may not stand, None when it may: it says DONE while its folder's HEAD, made during this
-    run, is on no remote and a child of this run passed it after it was made."""
+    run, is on no remote and a child of this run, started after it was made, passed it. `cwd`: the folder the turn ended in (the
+    hook's), else the run's own."""
     run = reg.get_run(run_id)
-    if run is None or not run.cwd or not says_done(text):
+    cwd = cwd or (run.cwd if run is not None else None)
+    if run is None or not cwd or not says_done(text):
         return None
-    held = unpushed(run.cwd)
+    held = unpushed(cwd)
     if held is None or held[1] < run.started_at:
         return None
     head, made = held
-    passed = [child for child in reg.children_of(run_id) if child.finished_at is not None and child.finished_at > made and _verdict(child)]
+    passed = [child for child in reg.children_of(run_id) if child.started_at >= made and child.finished_at is not None and child.finished_at > made and _verdict(child)]
     if not passed:
         return None
     stamp = datetime.fromtimestamp(made).strftime("%m-%d %H:%M")
     judged = ", ".join(f"{child.agent or child.name} {reg.short_id(child.run_id)}" for child in passed)
-    return (f"DELIVERY CHECK (galaius runtime): this close says DONE, but commit {head[:10]} ({stamp}) in {run.cwd} is on no remote and "
+    return (f"DELIVERY CHECK (galaius runtime): this close says DONE, but commit {head[:10]} ({stamp}) in {cwd} is on no remote and "
             f"{judged} passed it after it was made: a slice that passed its critic and was neither pushed nor enqueued is not delivered. "
             "Ship it as the project's delivery says (push, enqueue, wait for it), or close PARTIAL naming what holds it.")

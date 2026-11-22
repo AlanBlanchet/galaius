@@ -401,3 +401,52 @@ def test_the_stop_hook_blocks_that_close_and_stays_silent_on_a_delivered_one(tmp
     run_git(Path(work), "push", "-q", "origin", "main")
     assert stop(work) == ""
     assert stop(str(tmp_path)) == "", "a folder that is no repository costs no read of the records"
+
+
+def test_a_critic_that_began_before_the_commit_never_passes_it_though_it_ended_after(tmp_path):
+    from galaius.agents.turns import running_claim
+
+    _slice(tmp_path, pushed=False, verdict="PASS: ok.")
+    made = reg.get_run("maker").started_at + 100
+    reg._merge_record_locked("critic", {"started_at": made - 50})   # it began on the tree before the commit
+    assert running_claim.refusal("maker", DONE_CLOSE) is None
+
+
+def test_the_close_is_judged_in_the_folder_its_turn_ended_in(tmp_path):
+    from galaius.agents.turns import running_claim
+
+    work = _slice(tmp_path, pushed=False, verdict="PASS: ok.")
+    reg._merge_record_locked("maker", {"cwd": str(tmp_path)})   # started elsewhere than where it worked
+    assert running_claim.refusal("maker", DONE_CLOSE) is None
+    assert running_claim.refusal("maker", DONE_CLOSE, cwd=work) is not None
+
+
+def test_a_message_that_is_a_piece_of_the_last_report_is_still_sent_not_taken_for_a_replay(monkeypatch, tmp_path):
+    _stopped_run(monkeypatch, tmp_path)
+    _reported("r1", "VERDICT: PASS on the perf review, ok.")
+    _a_resume_raising(monkeypatch)
+    started = _fresh_runs(monkeypatch)
+    messaging.deliver_message("r1", "first question", sender="operator")
+    sent: list[str] = []
+    monkeypatch.setattr(messaging, "queue_message", lambda live, message, **rest: (sent.append(message), messaging.Delivery(state="queued", text="q", run_id=live))[1])
+    real = messaging._relaunched
+    monkeypatch.setattr(messaging, "_queue_message", lambda *args, **rest: (_ for _ in ()).throw(AttributeError(BUG)))
+    delivery = real("r1", "ok", AttributeError(BUG), lambda live: messaging.queue_message(live, "ok"))
+    assert not delivery.repeated and sent == ["ok"] and len(started) == 1
+
+
+def test_two_looks_reviving_at_once_start_one_waiter_for_a_spawn(monkeypatch):
+    import threading
+
+    started: list[str] = []
+    monkeypatch.setattr(SpawnLine, "_hold", lambda self, run_id, spawn, asker: (time.sleep(0.2), started.append(run_id))[1])
+    line = _busy_line()
+    asked = line.enter(_spawn())
+    started.clear()
+    with line._places() as places:
+        places[:] = [place.model_copy(update={"holder_started": -1}) for place in places]
+    results: list[list[str]] = []
+    threads = [threading.Thread(target=lambda: results.append(line.revive())) for _ in range(2)]
+    [thread.start() for thread in threads]
+    [thread.join() for thread in threads]
+    assert started == [asked.run_id] and sorted(map(len, results)) == [0, 1]
