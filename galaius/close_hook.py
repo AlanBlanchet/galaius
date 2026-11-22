@@ -1,6 +1,7 @@
 """The hook a Claude agent turn runs as it ends (`Stop`): a close saying « RUNNING » with no run reporting back to it is
 refused, with the reason (`galaius.agents.turns.running_claim.refusal`), so the agent dispatches the work or closes on
-what is true.
+what is true. So is a close saying « DONE » while its folder's HEAD is on no remote and a child of the run passed it
+(`galaius.agents.turns.unshipped`): only a close in such a folder (`unpushed`) pays for the records' read.
 
 Called as `python -m galaius.close_hook RUN_ID` (`registry.close_hook`), with the hook's event on stdin. Standard library
 only, like `galaius.inbox_hook`: it runs at every turn's end, and only a close stating RUNNING (`claimed`) pays for the
@@ -24,6 +25,35 @@ STATUS = re.compile(r"(?:^|\|)[\s*_`>-]*(?:\d+[.)]\s*)?(?:[A-Za-z]+[*_`]*\s*:[\s
 def claimed(text: str) -> tuple[str, ...]:
     """The lines of `text` stating RUNNING."""
     return tuple(line.strip() for line in text.splitlines() if STATUS.search(line))
+
+
+DONE = re.compile(r"(?:^|\|)[\s*_`>-]*(?:\d+[.)]\s*)?(?:[A-Za-z]+[*_`]*\s*:[\s*_`]*)?DONE[*_`]*(?:\s*[:(—|]|\s+-|\s*$)")
+#: What a `git` call of `unpushed` may take.
+GIT_SECONDS = 10
+
+
+def says_done(text: str) -> bool:
+    """Whether a line of `text` states DONE, as `claimed` reads RUNNING."""
+    return any(DONE.search(line) for line in text.splitlines())
+
+
+def _git(cwd: str, *arguments: str) -> str | None:
+    try:
+        done = subprocess.run(["git", "-C", cwd, *arguments], capture_output=True, text=True, timeout=GIT_SECONDS, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout.strip() if done.returncode == 0 else None
+
+
+def unpushed(cwd: str | None) -> tuple[str, float] | None:
+    """`cwd`'s HEAD commit and when it was made, when a remote is configured and no remote-tracking branch holds it (committed,
+    delivered nowhere); None otherwise, or for a folder that is no repository."""
+    if not cwd:
+        return None
+    head, made = _git(cwd, "rev-parse", "HEAD"), _git(cwd, "log", "-1", "--format=%ct", "HEAD")
+    if not head or not made or not made.isdigit() or not _git(cwd, "remote"):
+        return None
+    return None if _git(cwd, "branch", "-r", "--contains", head) else (head, float(made))
 
 
 def _closing_words(event: dict) -> str:
@@ -51,7 +81,10 @@ def main() -> None:
         event = json.load(sys.stdin)
     except ValueError:
         return
-    if not isinstance(event, dict) or not claimed(words := _closing_words(event)):
+    if not isinstance(event, dict):
+        return
+    words = _closing_words(event)
+    if not claimed(words) and not (says_done(words) and unpushed(event.get("cwd") if isinstance(event.get("cwd"), str) else None)):
         return
     run_id, records = sys.argv[1], sys.argv[2]
     count = Path(records) / f"{run_id}.close-refusals"

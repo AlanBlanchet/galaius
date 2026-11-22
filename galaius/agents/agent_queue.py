@@ -1133,6 +1133,7 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
         while True:
             recover: tuple[QueueItem, reg.AgentRun] | None = None
             handoff: tuple[QueueItem, reg.AgentRun, str] | None = None   # made after the lock (`fallback.hand_on`: the spawn takes it)
+            faulted: tuple[QueueItem, reg.AgentRun, str, Exception] | None = None   # likewise (`fallback.relaunch_fresh`)
             pause = _POLL_SECONDS
             with reg.record_lock(run_id):
                 state = _state(run_id)
@@ -1214,12 +1215,18 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                                                              waiting="service", waiting_since=since)
                                         item, pause = None, SERVICE_POLL_SECONDS
                                 except Exception as error:
+                                    detail = _safe_process_detail(str(error))
+                                    if fallback.code_fault(error) and type(item.turn) is MessageTurn and run.kind == "process":
+                                        # A bug of this computer's own code: waiting never changes it, the same resume would raise
+                                        # again. A fresh run of the role takes the message at once, after the lock.
+                                        log.error("agent queue %s: item %s resume raised %s: %s", path(run_id), item.id, type(error).__name__,
+                                                  error, exc_info=error)
+                                        faulted = (item, run, prompt, error)
                                     # Tried again by this PC after a pause, unless waiting cannot change it (`_permanent`).
                                     # Its tries spent, the run itself reads failed, with the reason: a message to an ended
                                     # run whose resume cannot start otherwise leaves it "done" and its sender watching a
                                     # message "delivered" forever.
-                                    detail = _safe_process_detail(str(error))
-                                    if _permanent(error) or not _again_locked(run_id, item, f"resume refused: {detail}"):
+                                    elif _permanent(error) or not _again_locked(run_id, item, f"resume refused: {detail}"):
                                         _replace_item_locked(
                                             run_id, item.id, state="failed", finished_at=time.time(),
                                             error=detail, waiting=None, waiting_since=None,
@@ -1235,6 +1242,19 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                     else:
                         _HANDOFF_REFUSED.add(run_id)   # its turn is asked of its own provider after all: the vendor is the one that knows
                         _replace_item_locked(run_id, handed.id, state="pending", started_at=None, raw_index=None, attempt_token=None, error="")
+                    reg.end_resume_locked(run_id)
+                continue
+            if faulted is not None:
+                stuck, stuck_run, said, fault = faulted
+                successor = fallback.relaunch_fresh(stuck_run, said, fault)
+                with reg.record_lock(run_id):
+                    if successor is not None:
+                        _replace_item_locked(run_id, stuck.id, state="replied", finished_at=time.time(), waiting=None, waiting_since=None,
+                                             error=f"continued by run {successor[:8]}: its resume raised {type(fault).__name__}")
+                    else:   # no fresh run could start either: the run reads failed with the reason, its sender told
+                        detail = _safe_process_detail(str(fault))
+                        _replace_item_locked(run_id, stuck.id, state="failed", finished_at=time.time(), error=detail, waiting=None, waiting_since=None)
+                        reg.fail_turn_locked(run_id, f"resume refused: {detail}")
                     reg.end_resume_locked(run_id)
                 continue
             if recover is not None:

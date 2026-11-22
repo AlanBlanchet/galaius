@@ -308,8 +308,11 @@ class Relaunch(BaseModel):
     run_id: str
     provider: str
     model: str | None = None
-    #: The refusal, as its CLI said it.
+    #: The refusal, as its CLI said it; for a `fault`, the error its resume raised.
     said: str = Field(default="", max_length=RELAUNCH_SAID_MAX)
+    #: `refused`: its plan's limit refused it before it started. `fault`: this computer's own code raised resuming it
+    #: (`limits.fallback.relaunch_fresh`), so a fresh run of its role carries its last report and the message it could not take.
+    cause: Literal["refused", "fault"] = "refused"
     #: Every (provider, model) that refused this brief along its relaunches, this one's last: none is started again
     #: (`run_agent`'s `passed_over`), so a chain ends once the ranked list has no other.
     passed_over: tuple[tuple[str, str | None], ...] = ()
@@ -325,6 +328,8 @@ class Relaunch(BaseModel):
     def line(self, agent: str | None) -> str:
         """What its relaunch says of it: which run, which model refused, in the vendor's words."""
         refused = f"{self.provider}/{self.model}" if self.model else self.provider
+        if self.cause == "fault":
+            return f"relaunched from {agent or 'agent'} {self.run_id[:8]}: it could not be resumed ({self.said}); this run carries its last report"
         return f"relaunched from {agent or 'agent'} {self.run_id[:8]}: {refused} refused it before it started ({self.said})"
 
 

@@ -279,7 +279,7 @@ def test_a_start_cut_off_or_an_unreadable_entry_reads_failed_and_never_refuses(a
     line = SpawnLine(limit=1, waiting_flag_minutes=5, waiting_gap_seconds=60)
     cut = line.enter(_spawn())  # starts now: `starting`, held by this process
     with line._places() as places:
-        places[0] = places[0].model_copy(update={"holder_started": -1})
+        places[0] = places[0].model_copy(update={"holder_started": -1, "revivals": spawn_line.REVIVALS_MAX})  # holder gone, its revivals spent
     with reg.shared_state("spawn-line") as (raw, replace, _):
         replace(json.dumps([*json.loads(raw), {"run_id": "from-a-newer-galaius", "state": "parked"}]).encode())
     assert line.describe(cut.run_id).startswith("not started: its start was cut off")
@@ -297,7 +297,7 @@ def test_a_start_cut_off_or_an_unreadable_entry_reads_failed_and_never_refuses(a
     (None, True, None, "asked from the person's terminal: no run to tell"),
 ])
 def test_a_spawn_whose_holder_went_away_is_told_once_to_the_run_that_asked_it(at_work, started, monkeypatch, parent_works, lead_works, told_run, kind):
-    """The place a spawn waits in is lost with its holder (`_prune`): its parent, else the coordinator, hears which role and which
+    """The place a spawn waits in is lost with its holder once its revivals are spent (`_prune`, `revive`): its parent, else the coordinator, hears which role and which
     task, once, from any look (2026-11-19: a tester and a generalizer read « the process holding its place went away » two hours later)."""
     sent: list[dict] = []
 
@@ -314,7 +314,7 @@ def test_a_spawn_whose_holder_went_away_is_told_once_to_the_run_that_asked_it(at
     assert asked.ahead == 0, "it waits for a place"
     assert line.report_lost() == [] and sent == [], "its holder is there: nothing lost"
     with line._places() as places:
-        places[0] = places[0].model_copy(update={"holder_started": -1})  # its holder is gone
+        places[0] = places[0].model_copy(update={"holder_started": -1, "revivals": spawn_line.REVIVALS_MAX})  # its holder is gone, its revivals spent
     assert line.describe(asked.run_id).startswith("not started: the process holding its place in line went away")
     for _ in range(2):  # one look, then the next
         line.report_lost()

@@ -81,6 +81,9 @@ ASIDE_GRACE_SECONDS = 15.0
 FAILED_KEPT_SECONDS = 24 * 3600.0
 #: How much of a lost spawn's task its parent's message quotes (`SpawnLine.report_lost`).
 LOST_TASK_CHARS = 200
+#: How many times a spawn in line whose holder went away (a reboot, a killed service) is put back in its place and held again
+#: (`SpawnLine._prune`, `revive`) before it is told lost: one whose start kills its own process each time must end somewhere.
+REVIVALS_MAX = 3
 
 #: The tools a run may be served and still take no place (`takes_place`): none starts a process or a browser on this PC.
 #: Galaius's own by name after `TOOL_PREFIX`: its conversation reads, and its connector tools (`ext__`: calls to the server).
@@ -651,6 +654,8 @@ class Place(Held):
     #: `SpawnLine.report_lost`; `told`: it did, once.
     lost: bool = False
     told: bool = False
+    #: How many times its holder went away and it was put back in line, in its place, for `SpawnLine.revive` to hold again.
+    revivals: int = 0
 
     def queued(self) -> bool:
         """Waiting for a place only: one held (`said`) waits on its cause, never ahead of the line."""
@@ -808,6 +813,24 @@ class SpawnLine(BaseModel):
             places[:] = self._prune(places)
             yield places
 
+    def revive(self) -> list[str]:
+        """Hold again every spawn in line whose holder went away (`_prune` keeps it waiting, in its place: a reboot, the machine
+        service restarted, a killed waiter), so it starts when a place frees: a queued spawn is never lost to a restart
+        (2026-11-21: six vanished at a reboot, no run record left). Called at every look of the machine service (`EndWatch`).
+        A waiter that cannot start (its folder gone) leaves the spawn failed and lost, its asker told (`report_lost`). The run ids held."""
+        with self._places() as places:
+            orphans = [(place.run_id, place.spawn) for place in places if place.state == "waiting" and place.spawn is not None and place.holder_started is None]
+        revived = []
+        for run_id, spawn in orphans:
+            try:
+                self._hold(run_id, spawn, 0)
+            except OSError:
+                with self._places() as places:
+                    places[:] = [place.model_copy(update={"lost": True}) if place.run_id == run_id and place.state == "failed" else place for place in places]
+                continue
+            revived.append(run_id)
+        return revived
+
     def report_lost(self) -> list[messaging.Delivery]:
         """Tell the run that asked each spawn whose holder went away (`Place.lost`) that it will not start, once: its parent
         when it is at work, else the conversation's coordinator (the run at the top of its tree), else the parent's record
@@ -886,10 +909,16 @@ class SpawnLine(BaseModel):
             elif place.held():
                 kept.append(place)
             elif place.spawn is not None and reg.get_run(place.run_id) is None:
-                said = reg.read_stderr(place.run_id, 300).strip()
-                gone = "the process holding its place in line went away" if place.state == "waiting" else "its start was cut off"
-                kept.append(place.model_copy(update={"state": "failed", "lost": True,
-                                                     "said": f"{gone}{': ' + said if said else ''}; spawn it again"}))
+                if place.holder_started is None:   # already without a holder: waiting for `revive`
+                    kept.append(place)
+                elif place.revivals < REVIVALS_MAX:   # a queued spawn is a durable record: its place in line stays, its holder is held again
+                    kept.append(place.model_copy(update={"state": "waiting", "holder": 0, "holder_started": None, "revivals": place.revivals + 1,
+                                                         "said": place.said if place.state == "waiting" else ""}))
+                else:
+                    said = reg.read_stderr(place.run_id, 300).strip()
+                    gone = "the process holding its place in line went away" if place.state == "waiting" else "its start was cut off"
+                    kept.append(place.model_copy(update={"state": "failed", "lost": True,
+                                                         "said": f"{gone}{': ' + said if said else ''}; spawn it again"}))
         return kept
 
     @staticmethod
@@ -1025,11 +1054,14 @@ class SpawnLine(BaseModel):
             relations.succeed(run.run_id, launched.run_id)
         return launched.run_id
 
-    async def hand_on(self, run: reg.AgentRun, task: str, runner: Callable[..., Awaitable[RunHandle]] | None = None) -> str:
+    async def hand_on(self, run: reg.AgentRun, task: str, runner: Callable[..., Awaitable[RunHandle]] | None = None,
+                      relaunches: reg.Relaunch | None = None) -> str:
         """`run`'s conversation continued as a new run of its role with `task`, on the provider the ranked walk picks (its own
         passed over, `limits.fallback`): in line like any spawn, taking over `run`'s asks (`relations.succeed`) once it is in
-        line, so what is sent or handed back to `run` reaches it. Asked as `run`'s own parent would ask (`Spawn.relaunching`). Its run id."""
-        spawn = Spawn.relaunching(run).model_copy(update={"task": task, "relaunches": None})
+        line, so what is sent or handed back to `run` reaches it. Asked as `run`'s own parent would ask (`Spawn.relaunching`).
+        `relaunches`: the record each run keeps of the other (`registry.record_relaunch`), none for a hand-off across providers.
+        Its run id."""
+        spawn = Spawn.relaunching(run).model_copy(update={"task": task, "relaunches": relaunches})
         admission = self.enter(spawn)
         launched = admission if admission.ahead is not None else await self.launch(admission, spawn, runner)
         if isinstance(launched, Admission):

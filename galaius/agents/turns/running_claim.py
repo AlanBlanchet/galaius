@@ -18,7 +18,7 @@ from galaius.agents import registry as reg
 from galaius.agents.catalog import relations
 from galaius.agents.spawn_line import SpawnLine
 from galaius.close_hook import claimed
-from galaius.agents.turns import handback
+from galaius.agents.turns import handback, unshipped
 
 #: Roles whose name is an everyday word in a close (« the main page », « galaius ships it »), never read as a run named.
 UNNAMED_ROLES = frozenset({"main", "galaius", "community", "agent"})
@@ -61,11 +61,12 @@ def _line(run: reg.AgentRun) -> str:
 
 def refusal(run_id: str, text: str, *, now: float | None = None) -> str | None:
     """Why the close `text` of run `run_id` may not stand, None when it may: it says RUNNING while no run will report back
-    to it, or it names a run or role that is neither reporting to it nor at work in its conversation."""
+    to it, or it names a run or role that is neither reporting to it nor at work in its conversation; or it says DONE on a slice
+    that passed its critic and is on no remote (`unshipped.refusal`)."""
     lines = claimed(text)
     run = reg.get_run(run_id)
     if not lines or run is None:
-        return None
+        return unshipped.refusal(run_id, text)
     reporters = handback.reporting(run_id)
     in_line = SpawnLine.here().waiting_for(run_id)
     conversation = reg.conversation_of(run_id)

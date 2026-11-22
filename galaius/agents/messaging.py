@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import secrets
 import time
 from collections.abc import Mapping
@@ -20,11 +21,14 @@ from galaius.agents.catalog import relations
 from galaius.agents.turns.critic_rounds import CriticRounds, turn_of
 from galaius.agents import registry as reg
 from galaius.agents.catalog.connection import CatalogOffline
+from galaius.agents.limits import fallback
 from galaius.agents.transport.events import Relation
 from galaius.agents.policy import PolicyError
 from galaius.agents.providers import PROVIDERS, AgentProvider, provider_for
 from galaius.agents.run import ModelUnavailable, load_policy, resolve_continuable_model
 from galaius.agents.catalog.connection import RoleAbsent
+
+logger = logging.getLogger(__name__)
 
 DeliveryState = Literal["queued", "replied", "error"]
 
@@ -46,6 +50,9 @@ class Delivery(BaseModel):
     reads_at: ReadsAt | None = None
     #: `queued`: the message was queued by an earlier call under the same message id, not by this one.
     repeated: bool = False
+    #: The fresh run that took the message because the run it was sent to could not be resumed for a code reason
+    #: (`limits.fallback.relaunch_fresh`); None when the run itself holds it.
+    relaunched_as: str | None = None
 
     def taken(self, fallback: str) -> "Delivery":
         """This delivery, or its refusal raised with its words (`fallback` when it said none): `Undelivered` typed, a
@@ -189,7 +196,7 @@ def deliver_message(
     when `sender` does not (`GALAIUS_RUN_ID`); this process's own when None."""
     delivery = queue_message(run_id, message, sender=sender, environment=environment, message_id=message_id, turn=turn,
                              only_if_idle=only_if_idle, for_run=for_run, across_conversations=across_conversations)
-    if delivery.state != "queued":
+    if delivery.state != "queued" or delivery.relaunched_as is not None:
         return delivery
     refused = start_dispatcher(delivery.run_id, Caller.environ(environment))
     if refused is None:
@@ -237,9 +244,34 @@ def queue_message(
     (`check_deliverable`)."""
     environment = dict(Caller.environ(environment))
     speaker = sender or sender_id(environment)
-    with reg.lock_patience(PERSON_PATIENCE if reg.get_run(speaker) is None else None):
-        return _queue_message(run_id, message, speaker=speaker, environment=environment, message_id=message_id, turn=turn,
-                              only_if_idle=only_if_idle, for_run=for_run, across_conversations=across_conversations)
+    try:
+        with reg.lock_patience(PERSON_PATIENCE if reg.get_run(speaker) is None else None):
+            return _queue_message(run_id, message, speaker=speaker, environment=environment, message_id=message_id, turn=turn,
+                                  only_if_idle=only_if_idle, for_run=for_run, across_conversations=across_conversations)
+    except Exception as error:
+        if (taken := _relaunched(run_id, message, error)) is None:
+            raise
+        return taken
+
+
+def _relaunched(run_id: str, message: str, error: Exception) -> Delivery | None:
+    """`message` taken by a fresh run of an ended run's role when queueing it raised a bug of this computer's own code
+    (`fallback.code_fault`), the run's context and last report carried (`fallback.relaunch_fresh`): a repair that resumes
+    nothing, so it never depends on the path that broke (2026-11-22: a resume read a field its model has not; four critic
+    reports never reached their makers for a day). None: not such an error, no ended run, or no fresh run could start;
+    the error is then the caller's, as it was. Called with no run lock held."""
+    if not fallback.code_fault(error):
+        return None
+    run = reg.get_run(reg.resolve_run_id(run_id) or run_id)
+    if run is None or run.kind != "process" or run.working() or run.finished_at is None:
+        return None
+    logger.error("queueing a message for run %s raised %s: %s; a fresh run of its role takes it", run.run_id[:8], type(error).__name__, error,
+                 exc_info=error)
+    if (successor := fallback.relaunch_fresh(run, message, error)) is None:
+        return None
+    return Delivery(state="queued", run_id=successor, relaunched_as=successor,
+                    text=f"{run.name} ({run.run_id[:8]}) could not be resumed ({type(error).__name__}: {str(error)[:200]}): a fresh run of its role, "
+                         f"{successor[:8]}, carries your message and its last report.")
 
 
 def _queue_message(

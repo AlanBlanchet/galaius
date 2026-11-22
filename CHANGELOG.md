@@ -6,6 +6,12 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+- The run machinery repairs itself when its own code breaks or the PC restarts. A message to an ended run whose resume raises a bug of
+  galaius's own (an attribute missing, a wrong type) goes at once to a fresh run of its role carrying the message and the ended run's
+  last report, each recording the other (`relaunched_from`, `replaced_by`); the hand-back watch tries a failing hand-back with growing
+  pauses and reports it once, not at every look. A queued spawn survives a reboot: its place in line is kept and its waiter started
+  again by the machine service, up to three times. A close saying DONE on a commit that no remote holds, after a child of the run passed
+  it, is refused at the end of the turn.
 - `galaius conversation` reads what ran without a script over the run records: `recent` (a conversation's runs as a tree: status, role, model,
   login, length, spend, last words or the limit that cut it), `last` (a run's last report and how it ended), `stats` (counts, tokens and
   spend by status / role / model / login, runs cut by a limit, `--live`: places taken, who waits, the agents' memory) and `limits` (each

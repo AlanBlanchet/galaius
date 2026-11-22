@@ -94,7 +94,7 @@ def _seen(path: str) -> bytes | None:
 def wait(run_id: str, places_path: str, ready_path: str) -> int:
     """Hold `run_id`'s place until it may start, the full waiter its child meanwhile; the exit code ends the process."""
     since = time.time()
-    while True:
+    while True:   # rate-bound: a full waiter starts only on a `wake` verdict, and sleeps POLL_SECONDS after each one that yields
         said = verdict(_seen(places_path), _seen(ready_path), run_id, now=time.time(), since=since)
         if said == "gone":
             return 0

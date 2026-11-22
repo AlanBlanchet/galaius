@@ -271,6 +271,26 @@ def _last_look() -> float:
         return now
 
 
+#: The pause before a failed hand-back's next try: doubled at each, so a bug raising every time is met a few times an hour, not at every look
+#: (2026-11-22: ~200 identical tracebacks an hour per run for a day).
+HAND_BACK_FIRST_PAUSE = 30.0
+HAND_BACK_LAST_PAUSE = 3600.0
+#: Tries before a hand-back is given up (logged once more, then left to `registry` / the person: the run's report stays readable).
+HAND_BACK_TRIES = 8
+
+
+class HandBackFailure(BaseModel):
+    """One ended run's hand-back that raised: how many times, and when it is tried again."""
+
+    tries: int = 1
+    next_at: float
+
+    @classmethod
+    def after(cls, before: "HandBackFailure | None", now: float) -> "HandBackFailure":
+        tries = before.tries + 1 if before is not None else 1
+        return cls(tries=tries, next_at=now + min(HAND_BACK_FIRST_PAUSE * 2 ** (tries - 1), HAND_BACK_LAST_PAUSE))
+
+
 class EndWatch(BaseModel):
     """The runs that ended between two looks: left the live set, or recorded an end since the last look (a run that
     started and ended between looks, or one settled late with its observed end)."""
@@ -284,8 +304,11 @@ class EndWatch(BaseModel):
     #: right after its resume). Read from the store at start, every run a cut ended (`registry.recently_cut`): one that
     #: stopped coming back while this watcher was down ends on its first look (a report already carried is never carried twice).
     held: frozenset[str] = Field(default_factory=lambda: frozenset(run.run_id for run in reg.recently_cut() if run.askers))
-    #: Ended runs whose hand-back raised: tried again at the next look, which until then is never kept (`tick`).
-    failed: frozenset[str] = frozenset()
+    #: Ended runs whose hand-back raised, each with its tries and when the next one is due (`tick`): the look is never kept
+    #: while one is held here.
+    failed: dict[str, "HandBackFailure"] = Field(default_factory=dict)
+    #: The spawn line's own look (`SpawnLine.revive`, `report_lost`) raised at the last look: said once, not at every look.
+    line_failed: bool = False
 
     def model_post_init(self, _context) -> None:
         relations.handback_since()   # from its first look on, a report its asker was at work for is carried (`_resume`)
@@ -306,19 +329,30 @@ class EndWatch(BaseModel):
         tester c7160575, a look kept before its hand-backs lost their endings for good to a re-exec or one raising between
         the two. A look replayed queues nothing twice (one message per ended turn, `_resume`)."""
         deliveries: list[messaging.Delivery] = []
-        failed: set[str] = set()
-        for run_id in sorted(set(self.ended()) | self.failed):
+        now = time.time()
+        for run_id in sorted(set(self.ended()) | {run_id for run_id, failure in self.failed.items() if failure.next_at <= now}):
             try:
                 deliveries.extend(hand_back(run_id))
-            except Exception:  # one unreadable record never stops the others; it is tried again next look
-                log.exception("handing back the reports of run %s failed", run_id[:8])
-                failed.add(run_id)
-        self.failed = frozenset(failed)
-        try:   # a spawn whose place in line was lost with its holder (`SpawnLine.report_lost`): told to the run that asked it
-            deliveries.extend(SpawnLine.here().report_lost())
-        except Exception:  # never stops the look's own hand-backs; tried again at the next look
-            log.exception("telling the spawns lost from the line failed")
-        if not failed:
+                self.failed.pop(run_id, None)
+            except Exception:  # one unreadable record never stops the others; tried again once its pause is over, reported once
+                failure = HandBackFailure.after(self.failed.get(run_id), now)
+                if failure.tries == 1:
+                    log.exception("handing back the reports of run %s failed; tried again with growing pauses", run_id[:8])
+                if failure.tries >= HAND_BACK_TRIES:
+                    log.error("handing back the reports of run %s failed %d times: given up", run_id[:8], failure.tries)
+                    self.failed.pop(run_id, None)
+                else:
+                    self.failed[run_id] = failure
+        try:   # a spawn in line whose holder went away is held again; one that could not be is told to the run that asked it (`SpawnLine`)
+            line = SpawnLine.here()
+            line.revive()
+            deliveries.extend(line.report_lost())
+            self.line_failed = False
+        except Exception:  # never stops the look's own hand-backs; tried again at the next look, reported once while it keeps failing
+            if not self.line_failed:
+                log.exception("holding or reporting the spawns in line failed; tried again at every look, reported once")
+            self.line_failed = True
+        if not self.failed:
             with reg.shared_state(_LOOKED) as (_raw, write, _keep):
                 write(repr(self.looked).encode())
         return deliveries
