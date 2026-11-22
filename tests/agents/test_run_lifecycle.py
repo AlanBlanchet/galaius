@@ -305,6 +305,7 @@ def test_a_login_status_command_runs_once_per_reuse_window_however_often_it_is_a
         return LoginStatus(signed_in=True, account="a", login="0123456789abcdef")
 
     monkeypatch.setattr(provider, "login_status", status)
+    monkeypatch.setattr(provider, "_logged_in", {})   # its confirmations stay with this test
 
     async def poll():
         return [await provider.authenticated({"CLAUDE_CONFIG_DIR": f"/logins/{n % 25}"}) for n in range(200)]
