@@ -73,6 +73,29 @@ def test_a_send_to_an_ended_run_whose_resume_raises_a_code_error_reaches_a_fresh
     assert "could not be resumed" in fresh.relaunched_from.line("tester")
 
 
+def test_a_send_replayed_after_its_fallback_never_starts_a_second_fresh_run(monkeypatch, tmp_path):
+    _stopped_run(monkeypatch, tmp_path)
+    _a_resume_raising(monkeypatch)
+    started = _fresh_runs(monkeypatch)
+    first = messaging.deliver_message("r1", "does the fix pass?", sender="operator", message_id="m-1")
+    again = messaging.deliver_message("r1", "does the fix pass?", sender="operator", message_id="m-1")   # a client's retry
+    assert len(started) == 1 and again.repeated and again.run_id == first.run_id
+
+
+def test_a_second_message_for_a_replaced_run_goes_to_its_fresh_successor_not_to_a_third_run(monkeypatch, tmp_path):
+    _stopped_run(monkeypatch, tmp_path)
+    _a_resume_raising(monkeypatch)
+    started = _fresh_runs(monkeypatch)
+    messaging.deliver_message("r1", "first question", sender="operator")
+    fresh = started[0]["run_id"]
+    sent: list[tuple[str, str]] = []
+    real = messaging._queue_message
+    monkeypatch.setattr(messaging, "_queue_message", lambda run_id, message, **rest: (
+        sent.append((run_id, message)), real(run_id, message, **rest) if run_id == fresh else (_ for _ in ()).throw(AttributeError(BUG)))[1])
+    messaging.deliver_message("r1", "second question", sender="operator")
+    assert len(started) == 1 and sent[-1] == (fresh, "second question")
+
+
 def test_an_error_that_is_no_code_fault_still_reaches_its_sender_and_starts_no_run(monkeypatch, tmp_path):
     _stopped_run(monkeypatch, tmp_path)
     started = _fresh_runs(monkeypatch)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import secrets
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from typing import Literal
 
@@ -249,22 +249,34 @@ def queue_message(
             return _queue_message(run_id, message, speaker=speaker, environment=environment, message_id=message_id, turn=turn,
                                   only_if_idle=only_if_idle, for_run=for_run, across_conversations=across_conversations)
     except Exception as error:
-        if (taken := _relaunched(run_id, message, error)) is None:
+        def resend(live: str) -> Delivery:
+            return queue_message(live, message, sender=sender, environment=environment, message_id=message_id, turn=turn,
+                                 only_if_idle=only_if_idle, for_run=for_run, across_conversations=across_conversations)
+
+        if (taken := _relaunched(run_id, message, error, resend)) is None:
             raise
         return taken
 
 
-def _relaunched(run_id: str, message: str, error: Exception) -> Delivery | None:
+def _relaunched(run_id: str, message: str, error: Exception, resend: Callable[[str], Delivery]) -> Delivery | None:
     """`message` taken by a fresh run of an ended run's role when queueing it raised a bug of this computer's own code
     (`fallback.code_fault`), the run's context and last report carried (`fallback.relaunch_fresh`): a repair that resumes
     nothing, so it never depends on the path that broke (2026-11-22: a resume read a field its model has not; four critic
     reports never reached their makers for a day). None: not such an error, no ended run, or no fresh run could start;
-    the error is then the caller's, as it was. Called with no run lock held."""
+    the error is then the caller's, as it was. Called with no run lock held. Safe under retry: a run already replaced by a fresh run
+    of its own fault carries a message sent again (`repeated`, no second run), and takes another through `resend` to the live
+    successor."""
     if not fallback.code_fault(error):
         return None
     run = reg.get_run(reg.resolve_run_id(run_id) or run_id)
     if run is None or run.kind != "process" or run.working() or run.finished_at is None:
         return None
+    fresh = reg.get_run(run.replaced_by.run_id) if run.replaced_by is not None else None
+    if fresh is not None and fresh.relaunched_from is not None and fresh.relaunched_from.cause == "fault":
+        if message in fresh.task:
+            return Delivery(state="queued", run_id=fresh.run_id, relaunched_as=fresh.run_id, repeated=True,
+                            text=f"Already carried by {fresh.name} ({fresh.run_id[:8]}), the fresh run that took {run.name} ({run.run_id[:8]})'s place.")
+        return resend(relations.live(fresh.run_id))
     logger.error("queueing a message for run %s raised %s: %s; a fresh run of its role takes it", run.run_id[:8], type(error).__name__, error,
                  exc_info=error)
     if (successor := fallback.relaunch_fresh(run, message, error)) is None:
