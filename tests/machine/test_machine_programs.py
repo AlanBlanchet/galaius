@@ -320,17 +320,21 @@ def test_a_signed_in_login_is_read_once_per_reuse_window_however_often_the_web_p
     monkeypatch.setattr(type(PROVIDERS["claude"]), "available", lambda self: True)
     monkeypatch.setattr(AgentPrograms, "installable", staticmethod(lambda: (PROVIDERS["claude"],)))
     monkeypatch.setattr(AgentPrograms, "version", lambda self, provider: "2.1.288 (Claude Code)")
-    jobs = AgentPrograms(environment={"PATH": "/usr/bin:/bin"}, log_path=tmp_path / "agent-programs.log")
+    jobs = AgentPrograms(environment={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}, log_path=tmp_path / "agent-programs.log")
     for _ in range(5):
         assert jobs.states()[0].step == "ready" and jobs.signed_in("claude", None) is True
     assert len(asked) == 1
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / ".credentials.json").write_text("{}")   # a `claude logout` / `login` in a terminal: asked at once
+    assert jobs.states()[0].step == "ready" and len(asked) == 2
+    assert jobs.states()[0].step == "ready" and len(asked) == 2
     monkeypatch.setattr(type(PROVIDERS["claude"]), "LOGIN_REUSE_SECONDS", 0.0)
     jobs.states()
-    assert len(asked) == 2
+    assert len(asked) == 3
     signed["in"] = False
-    assert jobs.states()[0].step == "signed_out" and len(asked) == 3
+    assert jobs.states()[0].step == "signed_out" and len(asked) == 4
     monkeypatch.setattr(type(PROVIDERS["claude"]), "LOGIN_REUSE_SECONDS", 300.0)
-    assert [jobs.states()[0].step for _ in range(3)] == ["signed_out"] * 3 and len(asked) == 3
+    assert [jobs.states()[0].step for _ in range(3)] == ["signed_out"] * 3 and len(asked) == 4
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="its stand-in program is a POSIX shell script")

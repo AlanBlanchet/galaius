@@ -221,8 +221,9 @@ class AgentPrograms(BaseModel):
     #: Each sign-in under way, by the same key: the program a pasted code is handed to (`paste`), and its attempt's id and
     #: own private key the code comes sealed to (`PasteSignIn.seal_key`), never written anywhere.
     _logins: dict[tuple[str, UUID | None], tuple[SignInProcess, UUID, rsa.RSAPrivateKey]] = PrivateAttr(default_factory=dict)
-    #: Each login's last status check that completed and when (monotonic), by program and environment (`_status`).
-    _answered: dict[tuple[str, frozenset[tuple[str, str]]], tuple[float, LoginStatus]] = PrivateAttr(default_factory=dict)
+    #: Each login's last status check that completed, when (monotonic) and the stamps its credential files had before it
+    #: ran (`_credentials`), by program and environment (`_status`).
+    _answered: dict[tuple[str, frozenset[tuple[str, str]]], tuple[float, LoginStatus, tuple[FileStamp | None, ...]]] = PrivateAttr(default_factory=dict)
     _lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
     #: Each executable's `--version` answer, with the stamp its file had then (`version`).
     _versions: dict[str, tuple[FileStamp, str]] = PrivateAttr(default_factory=dict)
@@ -607,10 +608,11 @@ class AgentPrograms(BaseModel):
         completed answer, however old, never « signed out » (load 60-80 read one login ready, signed out, ready in four
         reads, 2026-11-18); a login never answered is unknown (`signed_in` None)."""
         key = provider.name, frozenset(environment.items())
+        stamps = self._credentials(provider, environment)
         status = asyncio.run(provider.login_status(environment))
         with self._lock:
             if status.signed_in is not None:
-                self._answered[key] = time.monotonic(), status
+                self._answered[key] = time.monotonic(), status, stamps
             elif (last := self._answered.get(key)) is not None:
                 return last[1]
         return status
@@ -623,9 +625,18 @@ class AgentPrograms(BaseModel):
         reads (`_job`) never come here, and write what they find."""
         with self._lock:
             last = self._answered.get((provider.name, frozenset(environment.items())))
-        if last is not None and not last[1].expired and time.monotonic() - last[0] < provider.LOGIN_REUSE_SECONDS:
+        if last is not None and not last[1].expired and time.monotonic() - last[0] < provider.LOGIN_REUSE_SECONDS \
+                and last[2] == self._credentials(provider, environment):
             return last[1]
         return self._status(provider, environment)
+
+    @staticmethod
+    def _credentials(provider: Program, environment: dict[str, str]) -> tuple[FileStamp | None, ...]:
+        """What says the login changed without running its CLI: the stamps of the files it keeps its tokens in (never read).
+        A `claude login` / `logout` in a terminal rewrites them, so the next look asks the CLI at once, not up to
+        `LOGIN_REUSE_SECONDS` later; a login kept elsewhere (a keychain) stays on the window."""
+        home = provider.auth_home(environment)
+        return tuple(FileStamp.at(home / name) for name in Subscription.CREDENTIALS)
 
     def _logout(self, subscription: Subscription) -> None:
         """Its program's own sign-out inside its folder, then the folder. A sign-out that fails keeps
