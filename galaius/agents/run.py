@@ -57,7 +57,7 @@ from galaius.agents.limits.subscriptions import RunSubscription, Subscription, S
 from galaius.agents.limits.warm import WarmStart
 from galaius.agents.catalog.server_ranking import ServerRanking, ServerRankingUnavailable
 from galaius.catalog.criteria import Criteria, CriteriaError, Valued, ValueRule, Variables
-from galaius.catalog.models import live_scores
+from galaius.catalog.models import context_window_of, live_scores
 from galaius.models.registry import Model
 from galaius.models.capability import ModelCapability
 from galaius.prompts.projection import coordinator_instructions, unloaded_rules
@@ -376,7 +376,7 @@ def _context_of(model: str, candidates: Sequence[reg.LaunchCandidate]) -> int | 
     """The catalog's context window for `model` (as `_capability_of` reads it); None when it names none."""
     named = next((entry.catalog_id for entry in candidates if entry.model == model and entry.catalog_id), None)
     row = Model.named(named) if named else Model.by_id(model)
-    return None if row is None else row.context_length
+    return None if row is None else context_window_of(row.catalog_id)
 
 
 def resolve_continuable_model(

@@ -352,6 +352,18 @@ def live_scores(path: Path | None = None) -> dict[str, float]:
     return best
 
 
+def context_window_of(model_id: str) -> int | None:
+    """The context window the catalog states for `model_id` (the registry's spelling, `provider/id` or bare): the row that
+    carries that exact id, else the first row of the same model under another reseller's spelling (`bare_model_name`) that
+    states one. None when the catalog does not know the model or states no window for it: a missing fact, never an error."""
+    models = load_catalog().models
+    exact = next((info.context_length for info in models if info.id == model_id and info.context_length), None)
+    if exact is not None:
+        return exact
+    bare = bare_model_name(model_id)
+    return next((info.context_length for info in models if info.context_length and bare_model_name(info.id) == bare), None)
+
+
 def _with_scores(models: list[ModelInfo]) -> list[ModelInfo]:
     """Same models, each carrying its capability score from the model registry (None if
     nobody measured it). Registry is the one place a score lives; catalog only ferries it."""

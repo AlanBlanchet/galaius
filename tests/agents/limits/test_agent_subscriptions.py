@@ -1088,3 +1088,20 @@ def test_a_resumed_conversation_is_never_refused_while_a_model_could_answer(
     chosen = run_module.resolve_continuable_model("crit" if len(rule) > 1 else _FABLE, {}, provider=PROVIDERS["claude"], subscription=login,
                                                   current=current, context_tokens=context)[1]
     assert chosen == goes_to
+
+
+@pytest.mark.parametrize(("model", "window"), [
+    pytest.param(_HAIKU, 200_000, id="a-model-the-catalog-states-a-window-for"),
+    pytest.param("claude-unlisted-1", None, id="a-registered-model-the-catalog-lacks-is-no-window"),
+    pytest.param("claude-not-registered-1", None, id="a-model-no-registry-row-names-is-no-window"),
+])
+def test_context_of_reads_the_catalog_through_the_real_registry_model(monkeypatch: pytest.MonkeyPatch, model: str, window: int | None) -> None:
+    """2026-11-22: `_context_of` read `row.context_length` on the registry `Model`, which has none: every resume of a run holding
+    context raised. The row above fakes `_context_of` itself, so it never saw it; this one runs it on the real class."""
+    from galaius.catalog import models as catalog
+    from tests.support.models import catalog_of, model as registry_model
+
+    monkeypatch.setattr(catalog, "load_catalog", lambda **_: catalog.Catalog(
+        models=[catalog.ModelInfo(id="anthropic/claude-haiku-5.5", context_length=200_000)], source="openrouter", fetched_at=0.0))
+    with catalog_of(registry_model(_HAIKU, provider="anthropic"), registry_model("claude-unlisted-1", provider="anthropic")):
+        assert run_module._context_of(model, ()) == window

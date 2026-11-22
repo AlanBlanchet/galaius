@@ -271,3 +271,17 @@ def test_the_board_is_read_once_per_version_not_once_per_question(tmp_path, monk
     board.write_text(json.dumps({"scores": [{"name": "One", "intelligence": 42.0}]}))
     os.utime(board, (0, 0))
     assert mc.live_scores()["one"] == 42.0, "an edited board is re-read"
+
+
+@pytest.mark.parametrize(("asked", "window"), [
+    pytest.param("anthropic/claude-haiku-5.5", 200_000, id="the-exact-catalog-id"),
+    pytest.param("anthropic/claude-haiku-5-5", 200_000, id="the-registry-spelling-of-the-same-model"),
+    pytest.param("claude-haiku-5-5", 200_000, id="a-bare-id"),
+    pytest.param("claude-unlisted-1", None, id="a-model-the-catalog-never-heard-of-is-no-window-not-an-error"),
+    pytest.param("anthropic/claude-windowless-1", None, id="a-row-stating-no-window-is-none"),
+])
+def test_context_window_of_reads_the_catalog_row_and_never_raises(monkeypatch, asked, window):
+    monkeypatch.setattr(mc, "load_catalog", lambda **_: mc.Catalog(
+        models=[mc.ModelInfo(id="anthropic/claude-haiku-5.5", context_length=200_000),
+                mc.ModelInfo(id="anthropic/claude-windowless-1")], source="openrouter", fetched_at=time.time()))
+    assert mc.context_window_of(asked) == window

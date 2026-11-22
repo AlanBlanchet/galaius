@@ -855,3 +855,35 @@ def test_the_turn_end_hook_refuses_a_lone_running_close_at_most_twice_in_a_row(m
         close_hook.main()
         decisions.append(json.loads(out)["decision"] if (out := capsys.readouterr().out) else "stands")
     assert decisions == ["block", "block", "stands", "stands"]
+
+
+def test_a_hand_back_to_a_run_holding_context_resolves_its_model_against_the_real_registry(monkeypatch):
+    """2026-11-22 17:37-19:10: every hand-back and every send on a PC failed `'Model' object has no attribute 'context_length'`:
+    the resume path read the window from the registry row, which carries none, while every row above stubbed
+    `policy_for_continuation` and the rows that did reach the window faked `_context_of` itself. Here `hand_back`, the delivery,
+    the continuation policy, `resolve_continuable_model`, `_context_of` and the registry `Model` are the real ones; only the
+    ranking's candidate list, the policy file and the catalog's rows are fixed."""
+    from types import SimpleNamespace
+
+    from galaius.agents import messaging, run as run_module
+    from galaius.catalog import models as mc
+    from galaius.catalog.models import Catalog, ModelInfo
+    from tests.support.models import catalog_of, model as registry_model
+
+    monkeypatch.setattr(mc, "load_catalog", lambda **_: Catalog(
+        models=[ModelInfo(id="anthropic/claude-haiku-5.5", context_length=200_000)], source="openrouter", fetched_at=time.time()))
+    monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None, among=None: (
+        reg.LaunchCandidate(provider="claude", model="claude-haiku-5-5", rank=0, catalog_id="anthropic/claude-haiku-5-5"),))
+    monkeypatch.setattr(run_module, "resolve_model", lambda name, env, *, provider, weights="": ({}, name))
+    policy = SimpleNamespace(provider_active=lambda name: True, criterion_for=lambda agent: "crit", weights_for=lambda agent: "",
+                             effort_for=lambda agent, chosen=None: None, catalog=object(),
+                             for_launch=lambda agent, reference=None: (policy, None))
+    monkeypatch.setattr(messaging, "load_policy", lambda: policy)
+    _ended("lead", 100.0, agent="main", provider="claude", model="claude-haiku-5-5", provider_session_id="vendor-lead")
+    reg._merge_record_locked("lead", {"context_tokens": 350_000})
+    _ended("eng", 200.0, agent="backend-engineer", parent_run_id="lead")
+    _answered("eng", "DONE.")
+    with catalog_of(registry_model("claude-haiku-5-5", provider="anthropic", score=36.0)):
+        deliveries = handback.hand_back("eng")
+    assert [(d.state, d.text) for d in deliveries if d.state == "error"] == []
+    assert deliveries and deliveries[0].run_id == "lead"
