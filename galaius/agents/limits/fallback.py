@@ -101,12 +101,14 @@ def _successor(run: reg.AgentRun, task: str, relaunches: reg.Relaunch | None) ->
         with caller.bound():
             return asyncio.run(SpawnLine.here().hand_on(run, task, functools.partial(run_agent, environment=environment), relaunches=relaunches))
 
+    pool = ThreadPoolExecutor(max_workers=1)   # a thread of its own: its caller may run inside an event loop
     try:
-        with ThreadPoolExecutor(max_workers=1) as pool:   # a thread of its own: its caller may run inside an event loop
-            return pool.submit(start).result()
+        return pool.submit(start).result(timeout=SPAWN_SECONDS)
     except Exception as error:   # noqa: BLE001 — a successor that cannot start leaves the turn to its caller
         log.warning("could not hand run %s on to a successor: %s", run.run_id[:8], error)
         return None
+    finally:
+        pool.shutdown(wait=False)   # a start past `SPAWN_SECONDS` is left to end on its own, never waited for
 
 
 def hand_on(run: reg.AgentRun, message: str) -> str | None:

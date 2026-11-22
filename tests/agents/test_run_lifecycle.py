@@ -9,6 +9,7 @@ channel never depends on the broken path. One row per way it happened (2026-11-2
 import ast
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -250,6 +251,7 @@ def test_a_waiter_that_cannot_start_leaves_its_spawn_lost_and_its_asker_told(mon
         assert places[0].run_id == asked.run_id and places[0].state == "failed" and places[0].lost
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="its waiter is a POSIX process, killed with SIGKILL (the lean waiter is not exercised on Windows)")
 def test_a_queued_spawn_survives_its_waiters_death_with_a_real_waiter_process(tmp_path):
     """The real waiter (`spawn_wait`) killed as a reboot kills it: the spawn is held by a new one."""
     import signal
