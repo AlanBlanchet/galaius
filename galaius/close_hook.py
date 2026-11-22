@@ -40,7 +40,7 @@ def says_done(text: str) -> bool:
 def _git(cwd: str, *arguments: str) -> str | None:
     try:
         done = subprocess.run(["git", "-C", cwd, *arguments], capture_output=True, text=True, timeout=GIT_SECONDS, check=False)
-    except (OSError, subprocess.SubprocessError):
+    except Exception:   # noqa: BLE001 — a look at git that fails of any cause never turns a close into a crash: the close stands
         return None
     return done.stdout.strip() if done.returncode == 0 else None
 
