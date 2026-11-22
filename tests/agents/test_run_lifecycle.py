@@ -509,3 +509,44 @@ def test_a_done_close_is_judged_in_the_runs_own_folder_when_its_turn_ended_in_no
         close_hook.main()
         assert json.loads(capsys.readouterr().out)["decision"] == "block", cwd
         (records / "maker.close-refusals").unlink(missing_ok=True)
+
+
+def _slow_runner(monkeypatch, started: list[str], seconds: float) -> None:
+    async def slow(provider, task, *, run_id, **rest):
+        import asyncio
+        started.append(run_id)
+        await asyncio.sleep(seconds)
+        reg.register(run_id=run_id, pid=999998, provider="claude", name="worker", task=task, agent=rest.get("agent"))
+        return SimpleNamespace(run_id=run_id)
+
+    monkeypatch.setattr(run_module, "run_agent", slow)
+
+
+def test_a_fresh_run_that_takes_longer_than_its_bound_leaves_the_original_error_to_the_sender_and_no_lock_held(monkeypatch, tmp_path):
+    _stopped_run(monkeypatch, tmp_path)
+    _a_resume_raising(monkeypatch)
+    started: list[str] = []
+    _slow_runner(monkeypatch, started, 3.0)
+    monkeypatch.setattr(fallback, "SPAWN_SECONDS", 0.3)
+    began = time.time()
+    with pytest.raises(AttributeError):
+        messaging.deliver_message("r1", "q?", sender="operator", message_id="m-1")
+    assert time.time() - began < 2.0, "the sender is not held for the whole start"
+    assert reg.get_run("r1").replaced_by is None
+    with reg.shared_state(messaging.RELAUNCHED), reg.record_lock("r1"):   # neither lock is held by the abandoned start
+        pass
+
+
+def test_a_send_retried_after_a_start_that_ended_late_finds_that_run_and_starts_no_second(monkeypatch, tmp_path):
+    _stopped_run(monkeypatch, tmp_path)
+    _a_resume_raising(monkeypatch)
+    started: list[str] = []
+    _slow_runner(monkeypatch, started, 0.8)
+    monkeypatch.setattr(fallback, "SPAWN_SECONDS", 0.2)
+    with pytest.raises(AttributeError):
+        messaging.deliver_message("r1", "q?", sender="operator", message_id="m-1")
+    deadline = time.time() + 10
+    while time.time() < deadline and reg.get_run("r1").replaced_by is None:   # the abandoned start ends and records itself
+        time.sleep(0.1)
+    again = messaging.deliver_message("r1", "q?", sender="operator", message_id="m-1")
+    assert len(started) == 1 and again.repeated and again.run_id == started[0]
