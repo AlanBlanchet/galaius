@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 import time
@@ -253,37 +254,58 @@ def queue_message(
             return queue_message(live, message, sender=sender, environment=environment, message_id=message_id, turn=turn,
                                  only_if_idle=only_if_idle, for_run=for_run, across_conversations=across_conversations)
 
-        if (taken := _relaunched(run_id, message, error, resend)) is None:
+        if (taken := _relaunched(run_id, message, error, resend, message_id)) is None:
             raise
         return taken
 
 
-def _relaunched(run_id: str, message: str, error: Exception, resend: Callable[[str], Delivery]) -> Delivery | None:
+#: Where the fresh runs started for a message are kept, by the run and the message id (`_relaunched`): a retry of the same send, however close
+#: behind the first, finds its run there. The newest `RELAUNCHED_KEPT` are kept.
+RELAUNCHED = "fault-relaunches"
+RELAUNCHED_KEPT = 200
+
+
+def _relaunched(run_id: str, message: str, error: Exception, resend: Callable[[str], Delivery], message_id: str | None = None) -> Delivery | None:
     """`message` taken by a fresh run of an ended run's role when queueing it raised a bug of this computer's own code
     (`fallback.code_fault`), the run's context and last report carried (`fallback.relaunch_fresh`): a repair that resumes
     nothing, so it never depends on the path that broke (2026-11-22: a resume read a field its model has not; four critic
     reports never reached their makers for a day). None: not such an error, no ended run, or no fresh run could start;
-    the error is then the caller's, as it was. Called with no run lock held. Safe under retry: a run already replaced by a fresh run
-    of its own fault carries a message sent again (`repeated`, no second run), and takes another through `resend` to the live
-    successor."""
+    the error is then the caller's, as it was. Called with no run lock held. Safe under retry: the fresh run is looked up and
+    started under one lock, by the send's `message_id` (else the exact message): a send repeated, even while the first still starts,
+    reaches the same run (`repeated`), and another message for a replaced run goes to its live successor through `resend`."""
     if not fallback.code_fault(error):
         return None
     run = reg.get_run(reg.resolve_run_id(run_id) or run_id)
     if run is None or run.kind != "process" or run.working():
         return None
-    fresh = reg.get_run(run.replaced_by.run_id) if run.replaced_by is not None else None
-    if fresh is not None and fresh.relaunched_from is not None and fresh.relaunched_from.cause == "fault":
-        if fresh.task.startswith(f"{message}\n\n[Galaius: you continue run {run.run_id[:8]}"):   # its task opens on the message itself, never a part of the report
-            return Delivery(state="queued", run_id=fresh.run_id, relaunched_as=fresh.run_id, repeated=True,
-                            text=f"Already carried by {fresh.name} ({fresh.run_id[:8]}), the fresh run that took {run.name} ({run.run_id[:8]})'s place.")
-        return resend(relations.live(fresh.run_id))
-    logger.error("queueing a message for run %s raised %s: %s; a fresh run of its role takes it", run.run_id[:8], type(error).__name__, error,
-                 exc_info=error)
-    if (successor := fallback.relaunch_fresh(run, message, error)) is None:
-        return None
-    return Delivery(state="queued", run_id=successor, relaunched_as=successor,
-                    text=f"{run.name} ({run.run_id[:8]}) could not be resumed ({type(error).__name__}: {str(error)[:200]}): a fresh run of its role, "
-                         f"{successor[:8]}, carries your message and its last report.")
+    key = f"{run.run_id}:{message_id}" if message_id else None
+    carried, live = None, None
+    with reg.shared_state(RELAUNCHED) as (raw, replace, _keep):
+        try:
+            done = json.loads(raw) if raw else {}
+        except ValueError:
+            done = {}
+        fresh = reg.get_run(run.replaced_by.run_id) if run.replaced_by is not None else None
+        carried = done.get(key) if key else None
+        if carried is None and fresh is not None and fresh.relaunched_from is not None and fresh.relaunched_from.cause == "fault":
+            if fresh.task.startswith(f"{message}\n\n[Galaius: you continue run {run.run_id[:8]}"):   # its task opens on the message itself
+                carried = fresh.run_id
+            else:
+                live = relations.live(fresh.run_id)
+        if carried is None and live is None:
+            logger.error("queueing a message for run %s raised %s: %s; a fresh run of its role takes it", run.run_id[:8], type(error).__name__, error,
+                         exc_info=error)
+            if (successor := fallback.relaunch_fresh(run, message, error)) is None:
+                return None
+            if key:
+                replace(json.dumps(dict(list(done.items())[-(RELAUNCHED_KEPT - 1):]) | {key: successor}).encode())
+            return Delivery(state="queued", run_id=successor, relaunched_as=successor,
+                            text=f"{run.name} ({run.run_id[:8]}) could not be resumed ({type(error).__name__}: {str(error)[:200]}): a fresh run of its "
+                                 f"role, {successor[:8]}, carries your message and its last report.")
+    if carried is not None:
+        return Delivery(state="queued", run_id=carried, relaunched_as=carried, repeated=True,
+                        text=f"Already carried by the fresh run {carried[:8]} that took {run.name} ({run.run_id[:8]})'s place.")
+    return resend(live)
 
 
 def _queue_message(

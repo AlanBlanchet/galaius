@@ -450,3 +450,60 @@ def test_two_looks_reviving_at_once_start_one_waiter_for_a_spawn(monkeypatch):
     [thread.start() for thread in threads]
     [thread.join() for thread in threads]
     assert started == [asked.run_id] and sorted(map(len, results)) == [0, 1]
+
+
+def test_a_send_repeated_while_its_first_fresh_run_still_starts_reaches_that_run(monkeypatch, tmp_path):
+    import threading
+
+    _stopped_run(monkeypatch, tmp_path)
+    _a_resume_raising(monkeypatch)
+    started: list[str] = []
+
+    async def slow(provider, task, *, run_id, **rest):
+        import asyncio
+        started.append(run_id)
+        await asyncio.sleep(0.5)   # the first start is not on record yet when the retry arrives
+        reg.register(run_id=run_id, pid=999998, provider="claude", name="worker", task=task, agent=rest.get("agent"))
+        return SimpleNamespace(run_id=run_id)
+
+    monkeypatch.setattr(run_module, "run_agent", slow)
+    results: list[messaging.Delivery] = []
+    first = threading.Thread(target=lambda: results.append(messaging.deliver_message("r1", "q?", sender="operator", message_id="m-1")))
+    first.start()
+    time.sleep(0.1)
+    results.append(messaging.deliver_message("r1", "q?", sender="operator", message_id="m-1"))
+    first.join()
+    assert len(started) == 1 and len({delivery.run_id for delivery in results}) == 1 and any(delivery.repeated for delivery in results)
+
+
+def test_a_hold_that_raises_anything_leaves_no_spawn_claimed_without_a_waiter(monkeypatch):
+    line = _busy_line()
+    monkeypatch.setattr(SpawnLine, "_hold", lambda self, run_id, spawn, asker: None)
+    first, second = line.enter(_spawn()), line.enter(_spawn())
+    with line._places() as places:
+        places[:] = [place.model_copy(update={"holder_started": -1}) for place in places]
+    monkeypatch.setattr(SpawnLine, "_hold", lambda self, run_id, spawn, asker: (_ for _ in ()).throw(RuntimeError("boom")))
+    with pytest.raises(RuntimeError):
+        line.revive()
+    assert [(place.state, place.holder_started) for place in line._places_seen()] == [("waiting", None), ("waiting", None)]
+    held: list[str] = []
+    monkeypatch.setattr(SpawnLine, "_hold", lambda self, run_id, spawn, asker: held.append(run_id))
+    assert line.revive() == [first.run_id, second.run_id] == held, "the next look holds them"
+
+
+def test_a_done_close_is_judged_in_the_runs_own_folder_when_its_turn_ended_in_no_repository(tmp_path, monkeypatch, capsys):
+    import io
+    import sys
+
+    from galaius import close_hook
+
+    _slice(tmp_path, pushed=False, verdict="PASS: ok.")
+    records = reg.agents_dir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    for cwd in (str(elsewhere), None, str(tmp_path / "missing")):
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"last_assistant_message": DONE_CLOSE} | ({"cwd": cwd} if cwd else {}))))
+        monkeypatch.setattr(sys, "argv", ["close_hook", "maker", str(records)])
+        close_hook.main()
+        assert json.loads(capsys.readouterr().out)["decision"] == "block", cwd
+        (records / "maker.close-refusals").unlink(missing_ok=True)

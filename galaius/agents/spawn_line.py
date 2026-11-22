@@ -823,15 +823,23 @@ class SpawnLine(BaseModel):
             orphans = [(place.run_id, place.spawn) for place in places if place.state == "waiting" and place.spawn is not None and place.holder_started is None]
             places[:] = [place.model_copy(update={"holder": me, "holder_started": process_started(me)})
                          if place.state == "waiting" and place.spawn is not None and place.holder_started is None else place for place in places]
-        revived = []
-        for run_id, spawn in orphans:
-            try:
-                self._hold(run_id, spawn, me)
-            except OSError:
+        revived, pending = [], [run_id for run_id, _ in orphans]
+        try:
+            for run_id, spawn in orphans:
+                try:
+                    self._hold(run_id, spawn, me)
+                except OSError:
+                    pending.remove(run_id)
+                    with self._places() as places:
+                        places[:] = [place.model_copy(update={"lost": True}) if place.run_id == run_id and place.state == "failed" else place for place in places]
+                    continue
+                pending.remove(run_id)
+                revived.append(run_id)
+        finally:   # an error that stops the look leaves no spawn claimed by this process with no waiter: the next look holds it
+            if pending:
                 with self._places() as places:
-                    places[:] = [place.model_copy(update={"lost": True}) if place.run_id == run_id and place.state == "failed" else place for place in places]
-                continue
-            revived.append(run_id)
+                    places[:] = [place.model_copy(update={"holder": 0, "holder_started": None})
+                                 if place.run_id in pending and place.state == "waiting" and place.holder == me else place for place in places]
         return revived
 
     def report_lost(self) -> list[messaging.Delivery]:

@@ -56,6 +56,15 @@ def unpushed(cwd: str | None) -> tuple[str, float] | None:
     return None if _git(cwd, "branch", "-r", "--contains", head) else (head, float(made))
 
 
+def _run_folder(records: str, run_id: str) -> str | None:
+    """The folder run `run_id` was started in, from its record; None when unreadable."""
+    try:
+        folder = json.loads((Path(records) / f"{run_id}.json").read_text(encoding="utf-8")).get("cwd")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return folder if isinstance(folder, str) else None
+
+
 def _closing_words(event: dict) -> str:
     """The turn's last words: the event's, else the newest assistant text of its transcript."""
     if isinstance(said := event.get("last_assistant_message"), str):
@@ -84,10 +93,12 @@ def main() -> None:
     if not isinstance(event, dict):
         return
     words = _closing_words(event)
-    cwd = event["cwd"] if isinstance(event.get("cwd"), str) else None
-    if not claimed(words) and not (says_done(words) and unpushed(cwd)):
-        return
     run_id, records = sys.argv[1], sys.argv[2]
+    # A DONE close is judged where the turn ended, else where the run was started: ending the turn in another folder strips nothing.
+    where = next((cwd for cwd in (event["cwd"] if isinstance(event.get("cwd"), str) else None, _run_folder(records, run_id))
+                  if says_done(words) and unpushed(cwd)), None)
+    if not claimed(words) and where is None:
+        return
     count = Path(records) / f"{run_id}.close-refusals"
     said = count.read_text().strip() if event.get("stop_hook_active") and count.is_file() else ""
     refused = int(said) if said.isdigit() else 0
@@ -95,7 +106,7 @@ def main() -> None:
         count.unlink(missing_ok=True)
         return
     try:
-        reason = subprocess.run([sys.executable, "-P", "-m", "galaius.agents.turns.running_claim", run_id, *([cwd] if cwd else [])], input=words,
+        reason = subprocess.run([sys.executable, "-P", "-m", "galaius.agents.turns.running_claim", run_id, *([where] if where else [])], input=words,
                                 capture_output=True, text=True, timeout=TIMEOUT, check=True).stdout.strip()
     except (OSError, subprocess.SubprocessError) as error:
         raise SystemExit(f"galaius: the RUNNING close was not checked: {error}")
