@@ -8,6 +8,7 @@ machine file is read for its server address only, a journal line is masked (`red
 """
 
 import json
+import logging
 import re
 import shutil
 import subprocess
@@ -34,6 +35,9 @@ SAID_CHARS = 200
 JOURNAL_LINES = 40
 #: What a CI run on main ending in one of these is a finding (a cancelled run is a newer run's doing, never one).
 CI_BAD = frozenset({"failure", "timed_out", "startup_failure", "action_required"})
+#: A unit up for less than this that systemd has restarted this many times is in a restart loop, whatever state it shows at the instant looked at.
+LOOP_UPTIME = 300.0
+LOOP_RESTARTS = 3
 #: Shown as « agents memory » when the agents' slice holds this share of its maximum.
 MEMORY_SHARE = 0.9
 
@@ -212,27 +216,34 @@ def _core_version() -> str | None:
 # --- units -----------------------------------------------------------------------------------------------------------
 
 
-def units(run: Run) -> Check:
+def units(run: Run, monotonic: float | None = None) -> Check:
     """Each galaius user unit (machine service, run mirror, tunnel, test PC…): a unit that failed or sits in a restart loop is a finding with its last
-    journal line. A unit that is inactive and not failed (a timer's one-shot between runs) is nothing."""
+    journal line. A restart loop is read from the restart counter, never from the state at one instant (a unit crashing every 6 s is `active` in
+    its up phase): `auto-restart`, a unit coming back after a restart, or a unit up for under `LOOP_UPTIME` that systemd has restarted
+    `LOOP_RESTARTS` times or more. A unit that is inactive and not failed (a timer's one-shot between runs), or one starting for the first
+    time, is nothing. `monotonic` is the system's monotonic clock now (systemd stamps units on it)."""
     if sys.platform != "linux":
         return Check(area="units", skipped="user units are systemd's (Linux)")
     try:
-        out = run(["systemctl", "--user", "show", "galaius*.service", "-p", "Id,ActiveState,SubState,Result,NRestarts,ExecMainStatus"], PROGRAM_SECONDS, (0,))
+        out = run(["systemctl", "--user", "show", "galaius*.service", "-p", "Id,ActiveState,SubState,Result,NRestarts,ExecMainStatus,ActiveEnterTimestampMonotonic"], PROGRAM_SECONDS, (0,))
     except Unavailable as error:
         return Check(area="units", skipped=str(error))
-    check = Check(area="units")
+    check, clock_now = Check(area="units"), (time.monotonic() if monotonic is None else monotonic) * 1e6
     for block in out.strip().split("\n\n"):
         fields = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
         name, active, sub = fields.get("Id", ""), fields.get("ActiveState", ""), fields.get("SubState", "")
         if not name:
             continue
         check.facts[name.removesuffix(".service")] = f"{active} ({sub})"
-        restarts = f"{fields.get('NRestarts', '?')} restarts, last exit status {fields.get('ExecMainStatus', '?')}"
+        count = int(fields["NRestarts"]) if fields.get("NRestarts", "").isdigit() else 0
+        entered = int(fields["ActiveEnterTimestampMonotonic"]) if fields.get("ActiveEnterTimestampMonotonic", "").isdigit() else 0
+        uptime = (clock_now - entered) / 1e6 if entered else None
+        restarts = f"{count} restarts, last exit status {fields.get('ExecMainStatus', '?')}"
         if active == "failed":
             what = f"failed (result {fields.get('Result', '?')}, {restarts})"
-        elif sub.startswith("auto-restart") or active == "activating":
-            what = f"restart loop ({sub}; {restarts})"
+        elif sub.startswith("auto-restart") or (active == "activating" and count > 0) or (
+                active == "active" and count >= LOOP_RESTARTS and uptime is not None and uptime < LOOP_UPTIME):
+            what = f"restart loop ({sub}{f', up {span(uptime)}' if active == 'active' and uptime is not None else ''}; {restarts})"
         else:
             continue
         try:
@@ -297,7 +308,14 @@ def limits() -> Check:
     """Subscription logins a vendor limit holds back or this PC passes over now (each with when it ends)."""
     from galaius.agents import pc_state
 
-    check, now, logins = Check(area="limits"), time.time(), pc_state.limits()
+    # a subscription folder this PC cannot read is logged as a warning by the reader: not this look's finding, never its stderr
+    quiet = logging.getLogger("galaius.agents.limits.subscriptions")
+    before, quiet.level = quiet.level, logging.ERROR
+    try:
+        logins = pc_state.limits()
+    finally:
+        quiet.level = before
+    check, now = Check(area="limits"), time.time()
     check.facts["logins"] = len(logins)
     for login in logins:
         for pause in login.paused:

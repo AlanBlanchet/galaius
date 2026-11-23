@@ -161,6 +161,22 @@ def test_a_failed_unit_and_a_restart_loop_are_findings_with_the_units_own_last_l
     assert "pc-follow" in check.facts.keys().__str__() and "machine" in check.facts.keys().__str__()
 
 
+def unit(name: str, active: str, sub: str, restarts: int, entered_s: float) -> str:
+    return f"Id={name}\nActiveState={active}\nSubState={sub}\nResult=success\nNRestarts={restarts}\nExecMainStatus=1\nActiveEnterTimestampMonotonic={int(entered_s * 1e6)}\n"
+
+
+@linux
+def test_a_restart_loop_is_read_from_the_counter_not_from_the_state_at_one_instant() -> None:
+    """The run mirror crashes every ~6 s: looked at in its up phase it is `active (running)` (tester 3c84ef7f saw 1 finding, then 2)."""
+    shown = "\n".join([unit("galaius-up-phase.service", "active", "running", 5871, 996.0),      # up 4 s after thousands of restarts: a loop
+                       unit("galaius-old-hand.service", "active", "running", 5, 1.0),            # restarted 5 times, up for 16 min: steady
+                       unit("galaius-once.service", "active", "running", 1, 999.0),              # one restart, up 1 s: not a loop yet
+                       unit("galaius-timer-job.service", "activating", "start", 0, 0.0)])        # a one-shot starting for the first time: nothing
+    check = health.units(fake({"show": shown, "-u": "ValueError: why\n"}), monotonic=1000.0)
+    assert [finding.split(" restart loop")[0] for finding in check.findings] == ["galaius-up-phase.service"]
+    assert "up 4s" in check.findings[0] and "5871 restarts" in check.findings[0]
+
+
 @linux
 def test_a_missing_systemctl_skips_units_with_the_reason() -> None:
     assert "not installed" in health.units(fake({})).skipped
