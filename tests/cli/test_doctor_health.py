@@ -80,6 +80,22 @@ def test_the_journal_story_keeps_only_each_entrys_message() -> None:
     assert story == [(10.0, "connected to x"), (20.0, "server refused the connection: HTTP 502")]
 
 
+@linux
+def test_the_last_hello_is_the_newest_whatever_order_journalctl_prints(tmp_path: Path) -> None:
+    """2026-11-23: with `-g` and `-n` the journal printed the newest entry first, and the link line read a hello from 2 h before the real one."""
+    files = PresenceFiles(folder=tmp_path)
+    files.write(Presence(link="reconnecting"))
+    held = files.hold()
+    assert held is not None
+    entries = [(NOW - 7200, "connected to wss://app/v1/machine-channel"), (NOW - 7190, "server refused the connection: HTTP 502"), (NOW - 120, "connection closed (code 1012)"),
+               (NOW - 117, "connected to wss://app/v1/machine-channel")]
+    for ordered in (entries, entries[::-1]):
+        check = health.link(NOW, fake({"journalctl": journal(*ordered)}), tmp_path)
+        assert check.facts["last_hello_ago"] == "1m" or check.facts["last_hello_ago"] == "2m", check.facts
+        assert check.facts["last_trouble_said"] == "connection closed (code 1012)"
+        assert check.findings[0].startswith("reconnecting, last hello ") and "2h" not in check.findings[0]
+
+
 # --- the app -----------------------------------------------------------------------------------------------------------
 
 

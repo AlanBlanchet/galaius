@@ -138,7 +138,9 @@ def journal_story(unit: str, run: Run, pattern: str = _STORY, lines: int = JOURN
             continue
         if isinstance(said, str):
             story.append((at, said))
-    return story
+    # Oldest first whatever order journalctl printed them in: with `-g` and `-n` it printed the newest first (2026-11-23: the link line read a hello
+    # from 00:39 while the service had reconnected at 02:45, the oldest of the 40 entries taken for the last).
+    return sorted(story, key=lambda entry: entry[0])
 
 
 def link(now: float, run: Run, folder: Path | None = None) -> Check:
