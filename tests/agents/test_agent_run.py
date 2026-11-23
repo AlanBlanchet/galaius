@@ -244,7 +244,7 @@ async def test_codex_launcher_mesh_reaches_spawn_boundary_without_overriding_per
 
 
 @pytest.mark.parametrize("mesh", [True, False, None])
-def test_codex_resume_replays_only_recorded_mesh_opt_in(tmp_path, monkeypatch, codex_installed, mesh):
+def test_codex_resume_hands_the_mesh_to_a_role_granted_galaius_tools_whatever_its_record_says(tmp_path, monkeypatch, codex_installed, mesh):
     kwargs = {} if mesh is None else {"mesh_enabled": mesh}
     run = reg.register(run_id="fixture-run", pid=None, provider="codex", name="tester",
                        agent="tester", cwd=str(tmp_path), session_id="fixture-owner", **kwargs)
@@ -266,12 +266,35 @@ def test_codex_resume_replays_only_recorded_mesh_opt_in(tmp_path, monkeypatch, c
                                        model="fixture-model", criterion=None, reasoning="medium", raw_index=0)
     overrides = [captured[i + 1] for i, value in enumerate(captured) if value == "-c"]
     data = tomllib.loads("\n".join(overrides))
-    assert ("mcp_servers" in data) == (mesh is True)
-    if mesh is True:
-        assert data["mcp_servers"]["galaius"]["env"] == {"GALAIUS_PARENT_RUN_ID": run.run_id, GatewayServed.ROLE: "tester"}
+    assert data["mcp_servers"]["galaius"]["env"] == {"GALAIUS_PARENT_RUN_ID": run.run_id, GatewayServed.ROLE: "tester"}
     # Each turn names its scope from the role's policy, never the one the session saved.
     assert "approval_policy" not in data and data["sandbox_mode"] in {"read-only", "workspace-write"}
     assert reg.get_run(run.run_id).session_id == "fixture-owner"
+
+
+@pytest.mark.parametrize("mesh", [True, False])
+@pytest.mark.parametrize(("tools", "reached"), [
+    (None, True),                                             # unrestricted: every galaius tool is its own (the web conversation's `main`)
+    (["Read", "mcp__galaius__navigate"], True),               # names galaius's
+    (["Read", "Bash"], False),                                # names none: nothing to hand
+])
+def test_a_resumed_turn_on_a_held_login_reaches_galaius_whatever_its_record_says(tmp_path, monkeypatch, mesh, tools, reached):
+    """2026-11-20: the web conversation's `main` (record `mesh_enabled` False, no tool list) resumed on a held login, whose
+    config registers no galaius server: every turn started with `mcp_servers: []`, 27 of 243 starts. A role granted galaius's
+    tools gets its server on every turn; only one granted none, and not recorded as opted in, runs without."""
+    from galaius.agents.policy import Policy
+    held = tmp_path / "held"
+    held.mkdir()
+    (held / ".claude.json").write_text('{"projects": {}}')
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(held))
+    monkeypatch.setattr(Policy, "tools_for", lambda self, agent: tools)
+    provider = ClaudeCodeProvider()
+    run = reg.register(run_id="web-main", pid=None, provider="claude", name="main", agent="main", cwd=str(tmp_path), mesh_enabled=mesh)
+    monkeypatch.setattr(reg, "resumable", lambda provider, run, session, environment: dict(environment))
+    arguments = run_module.ResumeLaunch.of(provider, run, "web-main", model="fixture-model", criterion=None, reasoning=None,
+                                           environment={"HOME": str(tmp_path), "CLAUDE_CONFIG_DIR": str(held)}).arguments
+    assert (arguments["mcp_config"] is not None) == (reached or mesh)
 
 
 def test_image_paths_are_absolute_supported_readable_and_bounded(tmp_path):
