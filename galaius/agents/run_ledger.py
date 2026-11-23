@@ -112,7 +112,9 @@ OPERATOR = "operator"
 #: The id a message the person typed in the web app keeps end to end (`agents send --message-id`: the app's own outbox row, a hyphenated
 #: uuid); a command's own messages carry 32 hex digits. The one mark that tells his words from an agent's `agents send`.
 #: What the runtime itself sends a run under the same id shape, never his words (`registry.RESUME_BRIEF`).
-SYSTEM_MESSAGES = ("Resumed after your run was cut",)
+SYSTEM_MESSAGES = ("Resumed after your run was cut",)   # a test holds it equal to the start of `registry.RESUME_BRIEF`
+#: How far before `since` his messages are read, for the ask a message raises again (`FRUSTRATION`'s repeat rule).
+REPEAT_LOOKBACK = 14 * 86400.0
 WEB_MESSAGE_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
@@ -379,7 +381,7 @@ class RunLedger:
             return []
         for entry in entries:
             try:
-                if entry.stat().st_mtime < since:
+                if entry.stat().st_mtime < since - REPEAT_LOOKBACK:
                     continue
                 with open(entry.path, encoding="utf-8", errors="replace") as lines:
                     for line in lines:
@@ -392,8 +394,8 @@ class RunLedger:
                         if not isinstance(event, dict) or event.get("from_run") != OPERATOR:
                             continue
                         at, text, target = event.get("at"), event.get("text"), event.get("to_run")
-                        if (not WEB_MESSAGE_ID.match(str(event.get("event_id") or "")) or not isinstance(at, (int, float)) or at < since
-                                or not isinstance(text, str) or not isinstance(target, str) or text.startswith(SYSTEM_MESSAGES)):
+                        if (not WEB_MESSAGE_ID.match(str(event.get("event_id") or "")) or not isinstance(at, (int, float)) or at < since - REPEAT_LOOKBACK
+                                or not isinstance(text, str) or not isinstance(target, str) or not text.strip() or text.startswith(SYSTEM_MESSAGES)):
                             continue
                         key = self.conversation_key(target)
                         if wanted is not None and key != wanted:
@@ -407,7 +409,7 @@ class RunLedger:
         for at, key, target, role, text in sorted(found.values()):
             hit = FRUSTRATION.matched(text, said_before.get(key, ()))
             said_before.setdefault(key, []).append(text)
-            if hit or not frustrated:
+            if at >= since and (hit or not frustrated):
                 heard.append(Said(at=at, conversation=key, to_run=target, role=role, text=text, frustrated=hit or ""))
         return heard
 

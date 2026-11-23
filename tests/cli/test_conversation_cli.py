@@ -445,18 +445,18 @@ def test_the_time_a_spawned_run_waited_is_read_from_its_parent_s_spawn_call_and_
     assert queued[CHILD] == pytest.approx(120) and queued[GRAND] is None and report.total.queued_runs == 1
 
 
-def test_reading_a_transcript_from_a_time_equals_filtering_the_whole_of_it(folder: Path, monkeypatch) -> None:
-    """The byte search to the window's first line never skips a line the window holds, over a file far past its 64 KB step, even when the file
-    replays older events in the middle of it (an editor session's transcript does)."""
-    monkeypatch.setattr(run_slowness, "SEARCH_FROM_BYTES", 1000)
-    monkeypatch.setattr(run_slowness, "SEARCH_MARGIN", 200_000)
+def test_reading_a_transcript_from_a_time_equals_filtering_the_whole_of_it(folder: Path) -> None:
+    """Whatever order a transcript's lines are in (an editor session's replays older events in the middle of it), the window holds every line
+    whose time is in it, and the turn event before the window is the last one in the file before it."""
     lines = [_line("text", 1000.0 + index, text="x" * 200) for index in range(2000)]
     lines[1000:1000] = [_line("text", 1000.0 + index, text="x" * 200) for index in range(5)]   # replayed from long before
+    lines.insert(500, _line("done", 1400.0))
     _transcript(folder, CHILD, lines)
     path = folder / f"{CHILD}.jsonl"
-    whole = [event for event in read_transcript(path, 0).events]
+    whole = read_transcript(path, 0).events
     for since in (0.0, 1000.0, 1500.5, 2999.0, 3000.0, 9999.0):
         assert read_transcript(path, since).events == [event for event in whole if event[0] >= since], since
+    assert read_transcript(path, 1500.5).lead == (1400.0, "done")
 
 
 @pytest.mark.parametrize("argv, said", [(["slow", "--since", "5x"], "is no time"), (["messages", "--since", "yesterday"], "is no time"), (["slow", "--conversation", "nope"], "no conversation or run")])
@@ -489,11 +489,12 @@ def _tool(t: float, end: float | None, command: str, *, tool: str = "Bash", name
 
 @pytest.mark.parametrize("tool, command, kind", [
     ("Bash", "galaius agents wait abc --timeout 500", "agent"), ("Bash", "cd /x; timeout 580 ../galaius --python y/deploy_queue.py wait 2026-galaius-x", "deploy"),
-    ("Bash", "gh run watch 123", "ci"), ("Bash", "for i in 1 2; do sleep 10; done", "timer"), ("Bash", "until grep -q x f; do sleep 5; done", "timer"),
+    ("Bash", "gh run watch 123", "ci"), ("Bash", "nohup galaius agents wait abc", "agent"), ("Bash", "env -u X FOO=1 galaius agents wait abc", "agent"),
+    ("Bash", "$PY ../x/deploy_queue.py wait abc", "deploy"), ("Bash", "PYTHONPATH=x galaius agents wait abc", "agent"), ("Bash", "for i in 1 2; do sleep 10; done", "timer"), ("Bash", "until grep -q x f; do sleep 5; done", "timer"),
     ("AskUserQuestion", "{}", "user"), ("TaskOutput", "{}", "job"),
     # not a wait: the telltale words sit in an argument, or the call returns at once
     ("Bash", "rg \"sleep 5\" src", ""), ("Bash", "echo \"gh run view\"", ""), ("Bash", "git log --grep \"galaius agents wait\"", ""),
-    ("Bash", "deploy_queue.py enqueue --summary \"will wait\"", ""), ("Bash", "gh run view 123 --log", ""), ("Bash", "gh pr checks", ""),
+    ("Bash", "deploy_queue.py enqueue --summary \"will wait\"", ""), ("Bash", "kill 12; sleep 1; cd x && pytest", ""), ("Bash", "sed -i \"s/told=1; sleep 15/x/\" f", ""), ("Bash", "gh run view 123 --log", ""), ("Bash", "gh pr checks", ""),
     ("Read", "galaius agents wait", ""),
 ], ids=lambda value: str(value)[:28])
 def test_a_tool_call_is_a_wait_by_its_command_not_by_words_in_it(folder: Path, tool: str, command: str, kind: str) -> None:
@@ -527,3 +528,25 @@ def test_dark_time_is_counted_once_for_the_window_and_beats_a_tool_call_straddli
     assert DARK_GAP * 7 < report.dark < gap + 100
     assert by_id[CHILD].tools < 200 and by_id[CHILD].dark > DARK_GAP * 7, "the call's time inside the dark stretch is dark, not tools"
     assert all(abs(p.wall - (p.parked + p.dark + p.tools + p.model + p.idle + p.waits.total())) < 1e-6 for p in report.runs)
+
+
+def test_a_run_waiting_on_an_open_call_with_nobody_else_writing_is_waiting_not_dark(folder: Path) -> None:
+    t = time.time() - 1500
+    put(folder, CHILD, parent_run_id=ROOT, status="running", pid=os.getpid(), pid_started=None, started_at=t, finished_at=None)
+    _transcript(folder, CHILD, [_line("started", t), *_tool(t + 10, None, "galaius agents wait abc")])
+    ledger = RunLedger(folder)
+    report = slowness(ledger, ledger.rows(RunQuery(conversation=ROOT)), since=t, now=t + 1490)
+    worker = next(p for p in report.runs if p.run_id == CHILD)
+    assert worker.waits.agent == pytest.approx(1480) and worker.dark == 0 and report.dark == 0
+
+
+def test_an_ask_he_made_before_the_window_still_makes_his_repeat_in_it_frustrated_and_a_blank_or_the_resume_brief_is_no_message(folder: Path) -> None:
+    from galaius.agents import registry as reg
+    from galaius.agents.run_ledger import SYSTEM_MESSAGES
+    assert all(reg.RESUME_BRIEF.startswith(prefix) for prefix in SYSTEM_MESSAGES), "one source for the runtime's own message"
+    now = time.time()
+    first = "Please show the closed asks in the asks view, with the guard that closed each one of them"
+    said = lambda n, at, text: json.dumps({"kind": "message", "event_id": f"11111111-2222-4333-8444-55555555555{n}", "text": text, "from_run": "operator", "to_run": CHILD, "at": at}, separators=(",", ":"))  # noqa: E731
+    (folder / f"{CHILD}.messages.jsonl").write_text("\n".join([said(1, now - 3 * 86400, first), said(2, now - 600, f"again: {first}"), said(3, now - 500, "  "), said(4, now - 400, "")]))
+    found = RunLedger(folder).his_messages(since=now - 3600)
+    assert [m.text for m in found] == [f"again: {first}"] and "raised again" in found[0].frustrated

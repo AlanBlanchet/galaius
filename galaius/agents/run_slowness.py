@@ -8,8 +8,8 @@ A run's time between its start and its end (or now), over a window `[since, now]
   on a CI run (`gh run watch`), on a timer or a polling loop (`sleep`, `until ...; do sleep`), on his answer to a question
   (`AskUserQuestion`), on a background job's output; a call still open when the window ends counts to its end;
 * `tools`: any other tool call, from the call to its result (a build, a test run, a read);
-* `dark`: no run in the window wrote anything for more than `DARK_GAP` seconds (the computer off or asleep, or every agent waiting on him):
-  nobody was slow, so it is told apart from idle;
+* `dark`: no run of the rows read wrote anything for more than `DARK_GAP` seconds before a later event (the computer off or asleep, or every
+  agent waiting on him): nobody was slow, so it is told apart from idle;
 * `idle`: this run alone wrote nothing for more than `IDLE_GAP` seconds outside a tool call (a vendor limit pause, a stalled stream);
 * `model`: the rest, the model thinking and answering between its events.
 
@@ -39,8 +39,6 @@ from galaius.agents.run_ledger import AT_WORK, RunLedger, RunRow
 IDLE_GAP = 120.0
 #: A stretch in which no run of the window wrote anything for this long is `dark`.
 DARK_GAP = 900.0
-#: How far before its window a transcript is read back for the turn event that tells whether the run began it parked.
-LEAD_BYTES = 1 << 20
 #: How long before the window a parent's transcript is read for the spawn call of a child that started in it.
 SPAWN_LOOKBACK = 3600.0
 #: An ended turn counts as parked only past this many seconds (the stop hook's feedback answers within a few).
@@ -48,14 +46,17 @@ PARKED_AFTER = 5.0
 #: The events that open a turn after the previous one ended.
 TURN_OPENERS = frozenset({"message", "started", "injected"})
 
-#: Where a command starts in a tool input (`command='…'`): the input's own start, after `;` `&` `|` `(`, after `do` / `then` / `timeout N`. A telltale
-#: word inside a quoted argument (`rg 'sleep 5'`, `git log --grep 'galaius agents wait'`) is no command.
-_START = r"(?:^|command=['\"]\s*|[;&|(]\s*|\b(?:do|then)\s+|\btimeout\s+\d+\s+)"
+#: Where a command starts in a tool input (`command='…'`): the input's own start, after `;` `&` `|` `(`, after `do` / `then`; then what may sit before the
+#: program (`nohup`, `env -u X`, `VAR=x`, `$PY`, `timeout N`). A telltale word inside a quoted argument (`rg 'sleep 5'`, `git log --grep 'galaius agents wait'`)
+#: is no command.
+_START = (r"(?:^|command=['\"]\s*|[;&|(]\s*|\b(?:do|then)\s+)"
+          r"(?:(?:nohup|env(?:\s+-u\s+\S+|\s+\w+=\S+)*|\$\w+|\w+=\S+|timeout\s+\d+)\s+)*")
 _WAITS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("agent", re.compile(rf"{_START}(?:\S*/)?galaius\s+agents\s+wait\b")),
     ("deploy", re.compile(rf"{_START}(?:\S*/)?(?:python3?\s+|\S*/galaius\s+--python\s+)?(?:\S*/)?deploy_queue\.py['\"]?\s+wait\b")),
     ("ci", re.compile(rf"{_START}(?:\S*/)?gh\s+run\s+watch\b")),
-    ("timer", re.compile(rf"{_START}sleep\s+\d|\b(?:until|while)\b[^\n]*?[;&|]\s*sleep\s+\d|\b(?:until|while)\b[^\n]*\bdo\s+sleep\b")),
+    # a timer is a command that IS the sleep or a polling loop, never a call that sleeps for a second among other work (`kill x; sleep 1; pytest`)
+    ("timer", re.compile(r"^(?:command=['\"]\s*)?(?:sleep\s+\d|(?:until|while|for)\b[^\n]*\bdo\b[^\n]*\bsleep\s+\d)")),
 )
 #: Tools whose call is itself a wait, by tool name: the person's answer to a question (the time is his, not a tool's), a background job's output.
 _WAITING_TOOLS = {"AskUserQuestion": "user", "TaskOutput": "job", "BashOutput": "job"}
@@ -147,33 +148,6 @@ class Slowness(BaseModel):
 # --- reading a transcript --------------------------------------------------------------------------------------------------
 
 
-#: A transcript smaller than this is read whole: the byte search below assumes time-ordered lines, which a transcript replaying older events
-#: (an editor session's) is not; past it, the search starts this far before the line it found.
-SEARCH_FROM_BYTES = 32 << 20
-SEARCH_MARGIN = 4 << 20
-
-
-def _first_line_at(path: Path, since: float) -> int:
-    """Where to start reading `path` for the events from `since` on: 0 for a file under `SEARCH_FROM_BYTES`, else a line start `SEARCH_MARGIN`
-    before the first line whose `at` is `since` or later (a byte search within 64 KB, then back over the margin a replayed older line may sit in)."""
-    with path.open("rb") as handle:
-        size = os.fstat(handle.fileno()).st_size
-        if size < SEARCH_FROM_BYTES:
-            return 0
-        low, high = 0, size
-        while high - low > 65536:
-            middle = (low + high) // 2
-            handle.seek(middle)
-            handle.readline()   # the rest of the line the offset fell in
-            line = handle.readline()
-            at = _line_at(line.decode("utf-8", "replace")) if line else None
-            if at is None or at >= since:
-                high = middle
-            else:
-                low = handle.tell()
-        return max(0, low - SEARCH_MARGIN)
-
-
 def _line_at(line: str) -> float | None:
     index = line.rfind(_AT)
     if index < 0:
@@ -210,37 +184,15 @@ class Transcript(BaseModel):
     lead: tuple[float, str] | None = None
 
 
-def _lead(path: Path, offset: int) -> tuple[float, str] | None:
-    """The last `done` / `error` / turn-opening event of `path` before byte `offset`, looking back at most `LEAD_BYTES`."""
-    if offset <= 0:
-        return None
-    try:
-        with path.open("rb") as handle:
-            begin = max(0, offset - LEAD_BYTES)
-            handle.seek(begin)
-            chunk = handle.read(offset - begin).decode("utf-8", "replace").splitlines()
-    except OSError:
-        return None
-    for line in reversed(chunk[1:] if begin else chunk):
-        if (kind := _line_kind(line)) in TURN_OPENERS or kind in ("done", "error"):
-            at = _line_at(line)
-            return None if at is None else (at, kind)
-    return None
-
-
 def read_transcript(path: Path, since: float) -> Transcript:
     """The events of `path` from `since` on. A missing or unreadable file reads empty."""
-    offset, before = 0, None
+    before = None
     events: list[tuple[float, str]] = []
     opened: dict[str, tuple[float, str, bool]] = {}
     spans: list[tuple[float, float, str]] = []
     spawned: dict[str, float] = {}
     try:
-        offset = _first_line_at(path, since) if since > 0 else 0
         with path.open("rb") as handle:
-            handle.seek(offset)
-            if offset:
-                handle.readline()   # the offset is a byte position, not a line start
             for raw in handle:
                 line = raw.decode("utf-8", "replace")
                 at, kind = _line_at(line), _line_kind(line)
@@ -276,7 +228,7 @@ def read_transcript(path: Path, since: float) -> Transcript:
             spans.append((start, turn_marks[later] if later < len(turn_marks) else math.inf, wait))
     except OSError:
         pass
-    return Transcript(events=events, spans=spans, spawned=spawned, lead=before or _lead(path, offset))
+    return Transcript(events=events, spans=spans, spawned=spawned, lead=before)
 
 
 # --- one run's profile -----------------------------------------------------------------------------------------------------
@@ -391,8 +343,9 @@ def rollup(name: str, profiles: list[RunProfile]) -> Rollup:
 
 
 def dark_stretches(transcripts: Iterable[Transcript], *, since: float, now: float) -> list[tuple[float, float, str]]:
-    """The stretches of `[since, now]` longer than `DARK_GAP` in which none of `transcripts` has an event."""
-    marks = sorted({since, now, *(at for t in transcripts for at, _ in t.events if since <= at <= now)})
+    """The stretches of `[since, now]` longer than `DARK_GAP` in which none of `transcripts` has an event and a later event shows the computer came
+    back: the stretch up to `now` is never one (everyone may be waiting on a call, or on him, and the computer is on)."""
+    marks = sorted({since, *(at for t in transcripts for at, _ in t.events if since <= at <= now)})
     return [(a, b, "dark") for a, b in zip(marks, marks[1:]) if b - a > DARK_GAP]
 
 

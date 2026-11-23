@@ -273,12 +273,12 @@ class SlowOut(BaseModel):
     slowness: Slowness
 
 
-def _split(item) -> str:
-    """The parts of a run's, role's or window's time as one line; `dark` only where the item has it (a run: its share of the window's)."""
+def _split(item, dark: float | None = None) -> str:
+    """The parts of a run's, role's or window's time as one line; `dark` where it is a run's own."""
     waits = item.waits
-    dark = f" · dark {_span(item.dark)}" if hasattr(item, "dark") else ""
+    shown = "" if dark is None else f" · dark {_span(dark)}"
     return (f"tools {_span(item.tools)} · model {_span(item.model)} · waits {_span(waits.total())} "
-            f"(agents {_span(waits.agent)}, deploy {_span(waits.deploy)}, ci {_span(waits.ci)}, timer {_span(waits.timer)}, you {_span(waits.user)}, jobs {_span(waits.job)}) · idle {_span(item.idle)}{dark}")
+            f"(agents {_span(waits.agent)}, deploy {_span(waits.deploy)}, ci {_span(waits.ci)}, timer {_span(waits.timer)}, you {_span(waits.user)}, jobs {_span(waits.job)}) · idle {_span(item.idle)}{shown}")
 
 
 @conversation_app.command
@@ -300,7 +300,7 @@ def slow(*, conversation: Annotated[str | None, Parameter(help="A conversation i
         print(SlowOut(covers=covers, slowness=report).model_dump_json(indent=1))
         return
     total = report.total
-    print(f"{covers} · {total.runs} runs · active {_span(total.active)} (parked and dark time excluded) · dark {_span(report.dark)} of the window: no run wrote for 15 min")
+    print(f"{covers} · {total.runs} runs · active {_span(total.active)} (parked and dark time excluded) · dark {_span(report.dark)}: no run of these wrote for 15 min before a later event")
     print(f"  {_split(total)}")
     if total.queued_runs:
         print(f"  queued before start: {total.queued_runs} runs, total {_span(total.queued_total)}, median {_span(total.queued_median or 0)}, max {_span(total.queued_max or 0)}")
@@ -309,7 +309,7 @@ def slow(*, conversation: Annotated[str | None, Parameter(help="A conversation i
     print("longest (active time):")
     for profile in report.longest:
         queued = "" if profile.queued is None else f" · queued {_span(profile.queued)}"
-        print(f"  {profile.run_id[:8]} {profile.role:<20} {profile.status:<11} {_span(profile.active()):>6} · {_split(profile)}{queued}")
+        print(f"  {profile.run_id[:8]} {profile.role:<20} {profile.status:<11} {_span(profile.active()):>6} · {_split(profile, profile.dark)}{queued}")
     for title, rollups in (("by role", report.by_role), ("by conversation", report.by_conversation if every or not query.conversation else [])):
         if rollups:
             print(f"{title}:")
