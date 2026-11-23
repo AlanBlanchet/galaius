@@ -229,7 +229,7 @@ def test_doctor_diagnostics_are_clean_off_linux(monkeypatch, capsys):
     from galaius.cli.commands import doctor as cli_doctor
 
     monkeypatch.setattr("galaius.desktop.backend.desktop_supported", lambda: False)
-    cli_doctor.doctor()
+    cli_doctor.doctor(environment=True)
     out = capsys.readouterr().out
     assert "not available on" in out
     assert "/dev/uinput" not in out

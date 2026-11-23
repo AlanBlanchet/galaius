@@ -8,12 +8,14 @@ Reads local files only: no server, no run derived, no secret printed (a login sh
 import json
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Annotated
 
 from cyclopts import App, Parameter
 from pydantic import BaseModel
 
+from galaius.agents import pc_state
+from galaius.agents.pc_state import Live
 from galaius.agents.run_ledger import GONE, RunLedger, RunQuery, RunRow, Stats, own_conversation, parse_since, stats
 
 conversation_app = App(name="conversation", help="Read what ran in a conversation: recent runs, how one ended, counts and spend, limits.")
@@ -169,40 +171,6 @@ def _table(title: str, groups, rows_shown: int = 8) -> None:
         print(f"  … {len(groups) - rows_shown} more (--json for all)")
 
 
-class Live(BaseModel):
-    """This PC now: the places agents take against the limit, who waits, the agents' memory slice."""
-
-    places_taken: int | None = None
-    places_max: int | None = None
-    running: int | None = None
-    waiting: list[dict] = []
-    #: Spawns that will not start (`said` why): a line entry its holder left, a start cut off.
-    failed: list[dict] = []
-    memory_current: int | None = None
-    memory_max: int | None = None
-
-
-def _live() -> Live:
-    """Read through the registry's own line and cgroup (`SpawnLine.standing`, `ceiling.slice_cgroup`): imported only here, the
-    one place that pays for them."""
-    from galaius.agents.limits.ceiling import slice_cgroup
-    from galaius.agents.spawn_line import SpawnLine
-
-    load, queued = SpawnLine.here().standing()
-    now, live = time.time(), Live(places_taken=load.places, places_max=load.limit, running=load.runs)
-    entry = lambda place: {"run_id": place.run_id[:8], "role": place.label(), "waited_seconds": int(now - place.asked_at), "said": place.said[:120]}  # noqa: E731
-    live.waiting = [entry(place) for place in queued if place.state != "failed"]
-    live.failed = [entry(place) for place in queued if place.state == "failed"]
-    if (folder := slice_cgroup()) is not None:
-        for name, field in (("memory.current", "memory_current"), ("memory.max", "memory_max")):
-            try:
-                text = (folder / name).read_text().strip()
-                setattr(live, field, int(text) if text.isdigit() else None)
-            except OSError:
-                pass
-    return live
-
-
 class StatsOut(BaseModel):
     covers: str
     stats: Stats
@@ -219,7 +187,7 @@ def stats_command(*, conversation: Annotated[str | None, Parameter(help="A conve
     """Counts by status, role, model and login; tokens and spend; runs cut by a limit; relaunches. Spend is the record's own
     figure (a subscription's turns carry an API-equivalent price): runs with none are counted apart."""
     query, covers = _query(conversation, since, every, role, status, model, login, False, None, default_since=None)
-    done, state = stats(_rows(RunLedger(), query)), _live() if live else None
+    done, state = stats(_rows(RunLedger(), query)), pc_state.live() if live else None
     if json_out:
         print(StatsOut(covers=covers, stats=done, live=state).model_dump_json(indent=1))
         return
@@ -241,44 +209,11 @@ def stats_command(*, conversation: Annotated[str | None, Parameter(help="A conve
             print(f"  agents memory {state.memory_current / 2**30:.1f} GiB of " + (f"{state.memory_max / 2**30:.1f} GiB" if state.memory_max else "no max"))
 
 
-class Login(BaseModel):
-    provider: str
-    subscription: str
-    login: str
-    windows: list[dict] = []
-    pools: list[dict] = []
-    paused: list[dict] = []
-    blocked: list[dict] = []
-
-
-def _limits() -> list[Login]:
-    """Each subscription login here with its usage readings and what this PC remembers the vendor refusing it."""
-    from galaius.agents.limits import quota
-    from galaius.agents.limits.subscriptions import Subscription
-
-    now = time.time()
-    remembered = quota.readings(now)
-    found = []
-    for sub in Subscription.all():
-        try:
-            held, usage, pools = sub.state(), sub.usage(), sub.pools()
-        except (OSError, ValueError):
-            continue
-        memory = remembered.get(f"{sub.provider}#{sub.id}")
-        found.append(Login(
-            provider=str(sub.provider), subscription=str(sub.id)[:8], login=held.identity.login[:8],
-            windows=[{"window": w.window, "used_percent": round(w.used_percent, 1), "resets_at": w.resets_at.isoformat() if w.resets_at else None} for w in usage],
-            pools=[{"pool": p.pool, "used_percent": round(p.used_percent, 1), "resets_at": p.resets_at.isoformat() if p.resets_at else None} for p in pools],
-            paused=[{"reason": p.reason, "until": datetime.fromtimestamp(p.until, UTC).isoformat() if p.until else None, "said": p.said[:160]} for p in (memory.pauses.values() if memory else ())],
-            blocked=[{"scope": scope, "until": datetime.fromtimestamp(b.until, UTC).isoformat(), "window": b.window, "refusals": b.count} for scope, b in (memory.blocks.items() if memory else ()) if b.until > now]))
-    return found
-
-
 @conversation_app.command
 def limits(*, json_out: Annotated[bool, Parameter(name="--json", negative=(), help="A JSON list, one object per login.")] = False) -> None:
     """This PC's subscription logins: each window's usage reading and reset, the model-family pools, and what this PC passes over
     (a paused login, a blocked model) until when. Local files only; a login shows as its digest, never an account name."""
-    logins = _limits()
+    logins = pc_state.limits()
     if json_out:
         print(json.dumps([login.model_dump() for login in logins], indent=1))
         return

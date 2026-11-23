@@ -69,7 +69,7 @@ app.command(
 )
 app.command(
     "galaius.cli.commands.doctor:doctor", name="doctor",
-    help="Diagnose the environment and optionally deliver fixes.",
+    help="What is wrong with this PC and its app now (findings, exit code = their count); --environment for the install setup.",
 )
 app.command(
     "galaius.cli.commands.refresh:refresh_live_data", name="refresh",
@@ -86,6 +86,10 @@ app.command(
 app.command(
     "galaius.cli.commands.conversation:conversation_app", name="conversation",
     help="Read what ran in a conversation: recent runs, how one ended, counts and spend, limits.",
+)
+app.command(
+    "galaius.cli.commands.run:run", name="run",
+    help="Describe one run from its record: how it ended and why, its model, tree, queue, last report.",
 )
 app.command(
     "galaius.cli.commands.login:login", name="login",

@@ -190,13 +190,13 @@ class RunLedger:
         if status == "starting" and not raw.get("pid") and not isinstance(raw.get("exit_code"), int):   # launching: its process is recorded a moment after its record
             return status if time.time() - (raw.get("started_at") or 0.0) < LAUNCH_GRACE else GONE
         if kind == "conversation":
-            if status in TERMINAL or status == "waiting" or _alive(raw, strict=True):
+            if status in TERMINAL or status == "waiting" or alive(raw, strict=True):
                 return status
             return GONE if status in AT_WORK else "interrupted"
         code = raw.get("exit_code")
         if isinstance(code, int):
             return "stopped" if code == -15 else "done" if code == 0 else "failed"
-        return status if _alive(raw, strict=False) else GONE
+        return status if alive(raw, strict=False) else GONE
 
     # --- reading -------------------------------------------------------------------------------------------------
 
@@ -442,7 +442,7 @@ def _int(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
-def _alive(raw: dict, *, strict: bool) -> bool:
+def alive(raw: dict, *, strict: bool) -> bool:
     """A run's recorded process still runs and is still that process (the registry's `process_running`, from /proc, no import). With no pid
     recorded: running when not `strict` (a run still launching), else not (a conversation holds its process from its start).
     Where /proc is absent (macOS, Windows) the process is taken as running: this verb never claims a death it cannot see."""

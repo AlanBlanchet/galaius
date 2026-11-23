@@ -1,29 +1,31 @@
-"""`galaius doctor`: diagnose the environment."""
+"""`galaius doctor`: what is wrong with this PC and its app now; `--environment`: how this install is set up."""
 
 import os
 import platform as _pf
 import shutil
 from importlib.util import find_spec
-from galaius.cli.command_bootstrap import UserConfig
-from galaius.desktop import backend as desktop_backend
-from galaius.models.registry import Model
-from galaius.models.capability import ModelCapability
-from galaius.runtime import config
-from galaius.cli.health.extension import print_extension_status
-from galaius.cli.health.media import print_media_transport
-from galaius.cli.health.models import print_resolved_models
-from galaius.cli.health.ollama import print_ollama
-from galaius.cli.health.sandboxes import print_sandboxes
-from galaius.cli.health.servers import print_stale_servers
+from typing import Annotated
+
+from cyclopts import Parameter
+
+from galaius.diagnostics import health
 
 
-def doctor(*, fix: bool = False) -> None:
-    """Diagnose the environment: command, providers, Playwright, desktop capture.
+def doctor(*, environment: Annotated[bool, Parameter(negative=(), help="The install's own setup instead: command, providers, Playwright, desktop capture, model selection (about 5 s).")] = False,
+           fix: bool = False,
+           json_out: Annotated[bool, Parameter(name="--json", negative=(), help="One JSON object: `findings`, `facts`, `skipped`, `took_seconds`.")] = False) -> None:
+    """What is wrong with this PC and its app now, findings first: the link to the app (state, the app's last answer, the last trouble),
+    the app's build, galaius units that failed or loop, agent places and memory, limits in force, CI of main. Every area that could not be
+    looked at says why. The exit code is the number of findings (0: nothing wrong); `--json` for a program. Reads files, the journal and
+    one request to the app, at most 8 s.
 
     Parameters
     ----------
+    environment
+        The install's setup instead of its health (the output of earlier releases): command, providers, Playwright, desktop capture,
+        model selection.
     fix
-        Deliver this tree to what you're actually running: restart any stale `galaius mcp`
+        With `--environment`: deliver this tree to what you're actually running: restart any stale `galaius mcp`
         server (it respawns on current code from your editor), repackage + reinstall the VS Code
         extension when the installed one is older than this tree. One-step cure for "I shipped
         the fix but the bug persists" — a real failure mode here: a day's work once sat
@@ -33,6 +35,37 @@ def doctor(*, fix: bool = False) -> None:
         in your editor windows — why it never happens without --fix.
     """
 
+    if environment or fix:
+        _environment(fix=fix)
+        return
+    report = health.look()
+    if json_out:
+        print(report.model_dump_json(indent=1))
+    else:
+        print(f"galaius doctor · {len(report.findings)} finding{'s' if len(report.findings) != 1 else ''} · {report.took_seconds:g} s")
+        for finding in report.findings:
+            print(f"  ✗ {finding.area}: {finding.said}")
+        for area, facts in report.facts.items():
+            print(f"  {area:<7} " + " · ".join(f"{name} {value}" for name, value in facts.items() if value is not None))
+        for area, why in report.skipped.items():
+            print(f"  {area:<7} not looked at: {why}")
+    raise SystemExit(report.exit_code())
+
+
+def _environment(*, fix: bool) -> None:
+    """The install's own setup, as `doctor` printed it before it read health. Its imports are its own: the health look pays for none of them."""
+
+    from galaius.cli.command_bootstrap import UserConfig
+    from galaius.desktop import backend as desktop_backend
+    from galaius.models.registry import Model
+    from galaius.models.capability import ModelCapability
+    from galaius.runtime import config
+    from galaius.cli.health.extension import print_extension_status
+    from galaius.cli.health.media import print_media_transport
+    from galaius.cli.health.models import print_resolved_models
+    from galaius.cli.health.ollama import print_ollama
+    from galaius.cli.health.sandboxes import print_sandboxes
+    from galaius.cli.health.servers import print_stale_servers
 
     print("galaius doctor\n")
     print_stale_servers(fix=fix)

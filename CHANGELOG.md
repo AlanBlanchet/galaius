@@ -6,6 +6,14 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+- `galaius doctor` now answers « what is wrong with this PC and its app » in about a second of its own work: the link to the app (what the tray
+  icon shows, the app's last answer to a hello, the last trouble from the journal), the app's build and whether it answers, galaius user units
+  that failed or loop (with the unit's own last line), failed spawns and agent memory, limits in force, and CI of main through `gh`. Findings
+  first; an area that cannot be looked at says why; the exit code is the number of findings; `--json`. The earlier setup check (command,
+  providers, Playwright, desktop, model selection) is `galaius doctor --environment` (`--fix` implies it).
+- `galaius run <id>` describes one run from its record: status and process, the model it got and why (candidates, what was passed over, a
+  limit that refused it), how it was cut or stopped, parents and children, the messages its queue holds with their errors, its last report,
+  and whether a commit that report names is reachable from the build the app serves. No id: the run asking. `--json`.
 - The run machinery repairs itself when its own code breaks or the PC restarts. A message to an ended run whose resume raises a bug of
   galaius's own (an attribute missing, a wrong type) goes at once to a fresh run of its role carrying the message and the ended run's
   last report, each recording the other (`relaunched_from`, `replaced_by`); the hand-back watch tries a failing hand-back with growing

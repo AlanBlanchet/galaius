@@ -86,7 +86,7 @@ galaius install codex
 codex mcp get galaius
 
 # 4. check keys, providers, browser, desktop
-galaius doctor
+galaius doctor --environment
 ```
 
 That's it — your agent can now navigate, click, type, scroll, drag, see, hear and watch.

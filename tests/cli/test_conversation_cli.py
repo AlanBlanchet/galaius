@@ -18,7 +18,7 @@ CHILD = "22222222-0000-4000-8000-000000000000"
 GRAND = "33333333-0000-4000-8000-000000000000"
 WEB = "44444444-0000-4000-8000-000000000000"
 OTHER = "55555555-0000-4000-8000-000000000000"
-#: Liveness is read from /proc: where there is none (macOS, Windows) a process is never called gone (`run_ledger._alive`).
+#: Liveness is read from /proc: where there is none (macOS, Windows) a process is never called gone (`run_ledger.alive`).
 needs_proc = pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="no /proc: a process is never called gone here")
 DEAD_PID = 2**22 + 12345  # beyond pid_max on Linux defaults
 
