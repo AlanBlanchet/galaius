@@ -558,3 +558,9 @@ def test_a_run_ledger_that_does_not_own_its_folder_writes_no_cache_beside_the_re
     assert not (folder / ".run-ledger.cache").exists()
     RunLedger(folder).rows()
     assert (folder / ".run-ledger.cache").exists()
+
+
+@pytest.mark.parametrize("ref", ["x" * 5000, "a/b", "../x", "é" * 10, ""])
+def test_a_reference_no_run_could_have_is_an_unknown_conversation_never_a_file_error(folder: Path, ref: str) -> None:
+    with pytest.raises(LookupError, match="no conversation or run"):
+        RunLedger(folder).rows(RunQuery(conversation=ref))

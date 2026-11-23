@@ -318,6 +318,8 @@ class RunLedger:
     def resolve_conversation(self, ref: str) -> str:
         """The conversation key `ref` names: a conversation id (or its prefix, found among the runs' conversations), else the
         conversation of the run it is the id of. Refused (`LookupError`) when it names none or several."""
+        if not re.fullmatch(_ID, ref):   # not a run id nor a session id the registry could hold: no file of that name to look for
+            raise UnknownConversation(f"no conversation or run {ref[:40]!r}{'…' if len(ref) > 40 else ''} on this computer")
         if (self.root / f"{ref}.json").exists():   # a full run id: no scan of the other records
             return self.conversation_key(ref)
         keys = {self.conversation_key(run_id, raw) for run_id, raw in self._scan() if run_id.startswith(ref) or (raw.get("session_id") or "").startswith(ref)}
