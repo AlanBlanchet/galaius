@@ -1068,3 +1068,17 @@ def test_a_lent_browser_reaches_its_site_alone_and_a_lent_connection_is_its_run(
                     core._borrower()
             else:
                 assert core._borrower().run_id == expected
+
+
+@pytest.mark.parametrize("tools", [None, ["mcp__galaius__navigate"]])
+def test_a_resumed_turn_on_the_default_login_registering_galaius_is_never_handed_it_twice(tmp_path, monkeypatch, tools):
+    from galaius.agents.policy import Policy
+    (tmp_path / ".claude.json").write_text('{"mcpServers": {"galaius": {"command": "galaius"}}}')
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(Policy, "tools_for", lambda self, agent: tools)
+    run = reg.register(run_id="default-main", pid=None, provider="claude", name="main", agent="main", cwd=str(tmp_path), mesh_enabled=False)
+    monkeypatch.setattr(reg, "resumable", lambda provider, run, session, environment: dict(environment))
+    arguments = run_module.ResumeLaunch.of(ClaudeCodeProvider(), run, "default-main", model="fixture-model", criterion=None, reasoning=None,
+                                           environment={"HOME": str(tmp_path)}).arguments
+    assert arguments["mcp_config"] is None

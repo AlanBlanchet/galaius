@@ -1170,3 +1170,21 @@ def test_context_of_reads_the_catalog_through_the_real_registry_model(monkeypatc
         models=[catalog.ModelInfo(id="anthropic/claude-haiku-5.5", context_length=200_000)], source="openrouter", fetched_at=0.0))
     with catalog_of(registry_model(_HAIKU, provider="anthropic"), registry_model("claude-unlisted-1", provider="anthropic")):
         assert run_module._context_of(model, ()) == window
+
+
+def test_a_subscription_never_adopts_through_a_symlinked_notes_folder_or_file(tmp_path) -> None:
+    """A notes folder (or a note) that is a link never carries the default login's credential or a transcript into another
+    subscription's folder, even when its target lies inside the default home."""
+    home = Path.home()
+    default = home / ".claude"
+    (default / "projects" / "-p").mkdir(parents=True)
+    (default / ".credentials.json").write_text('{"token": "secret"}')
+    (default / "projects" / "-p" / "memory").symlink_to(default)
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside")
+    (default / "skills" / "synced").mkdir(parents=True)
+    (default / "skills" / "synced" / "link.md").symlink_to(outside)
+    subscription = Subscription.create(uuid4(), "claude")
+    subscription.adopt({"HOME": str(home), **subscription.overlay()})
+    copied = sorted(path.name for path in subscription.folder.rglob("*") if path.is_file())
+    assert ".credentials.json" not in copied and "link.md" not in copied

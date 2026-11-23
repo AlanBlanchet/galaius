@@ -237,7 +237,7 @@ class Subscription(BaseModel):
         """The files `AgentProvider.adopted_globs` find in `default` copied here, same place inside, with their times, where this
         folder holds none of that name or an older one (never over a newer: a run here wrote it)."""
         for source in sorted(path for glob in self.program.adopted_globs for path in default.glob(glob)):
-            if source.is_symlink() or not source.is_file() or not source.resolve().is_relative_to(default.resolve()):
+            if not source.is_file() or source.resolve() != default.resolve() / source.relative_to(default):   # a link anywhere on its path
                 continue
             target = self.folder / source.relative_to(default)
             if target.is_file() and target.stat().st_mtime >= source.stat().st_mtime:

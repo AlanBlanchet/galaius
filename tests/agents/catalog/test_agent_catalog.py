@@ -1615,3 +1615,12 @@ def test_ranking_weights_come_from_the_online_record_never_the_local_file(catalo
     assert policy.relation_for("fixture-worker") == ModelRelation(cost=6)
     assert policy.relation_for("no-such-role") == ModelRelation()
     assert "model" not in policy.defaults and policy.default_touch_intent() == "workspace_write"
+
+
+def test_a_parent_whose_role_the_catalog_lacks_still_refuses_its_children(advanced_catalogs, catalog_home):
+    from galaius.agents.run import resolve_role
+    _, current, _, _ = advanced_catalogs
+    policy = Policy.from_catalog(current)
+    reg.register(run_id="stray-parent", pid=None, provider="claude", name="main", agent="no-such-role", cwd=str(catalog_home))
+    with pytest.raises(ModelUnavailable, match="ran without a server revision"):
+        resolve_role(policy, "fixture-worker", reference=None, parent="stray-parent", delegate=None)
