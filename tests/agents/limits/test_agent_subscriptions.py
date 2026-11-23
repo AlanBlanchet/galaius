@@ -1031,6 +1031,30 @@ async def test_a_model_one_login_refuses_runs_on_his_next_login_else_the_next_ra
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("exit_code", [1, 0])
+async def test_a_first_turn_refused_for_a_limit_runs_on_the_next_model_whatever_the_exit_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exit_code: int) -> None:
+    """The vendor's refusal as recorded (`result` line, `is_error`, `api_error_status` 429) is read from the child's stream at the start, never
+    from its exit code: a fresh spawn Fable refused goes on the next ranked model."""
+    use_policy(monkeypatch, agents={"tester": "fable-fixture"}, reasoning={"tester": "medium"})
+    definition = tmp_path / "tester.md"
+    definition.write_text("---\nname: tester\n---\nTest.\n", encoding="utf-8")
+    monkeypatch.setattr(_Claude, "definition_path", lambda self, agent: definition)
+    refusal = json.dumps({"type": "result", "subtype": "success", "is_error": True, "api_error_status": 429, "session_id": "vendor",
+                          "result": "You've reached your Fable limit. Switch to another model."})
+    provider = _Claude()
+    asked: list[str | None] = []
+    ok = provider.script
+    provider.command = lambda task, *, model=None, **kwargs: (  # type: ignore[method-assign]
+        asked.append(model), [sys.executable, "-c", f"import sys; print({refusal!r}); sys.exit({exit_code})" if model == "fable-fixture" else ok])[1]
+    install_provider(monkeypatch, provider)
+    monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None, among=None: (
+        reg.LaunchCandidate(provider="claude", model="fable-fixture", rank=0), reg.LaunchCandidate(provider="claude", model="lower-model", rank=1)))
+    handle = await run_agent(None, "go", agent="tester", cwd=str(tmp_path), environment={"PATH": "/usr/bin:/bin"})
+    await asyncio.wait_for(handle.wait(), timeout=30)
+    assert asked[0] == "fable-fixture" and reg.get_run(handle.run_id).model == "lower-model", (asked, reg.get_run(handle.run_id).model)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("cooled", "runs"), [(False, "asked-model"), (True, "fable-fixture")])
 async def test_a_model_asked_for_by_name_runs_while_it_has_usage_else_its_roles_next_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
                                                                                         cooled: bool, runs: str) -> None:
