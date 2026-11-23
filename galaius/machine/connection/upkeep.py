@@ -16,6 +16,7 @@ from galaius.account.tls import server_tls
 from galaius.machine.tray.launch import TrayLauncher
 from galaius.agents.run import load_policy
 from galaius.agents import registry as reg
+from galaius.diagnostics import error_events
 from galaius.host.console_watch import ConsoleWatch
 from galaius.upgrade.release import BuildIdentity
 from galaius.machine.peer.seal import INSTANCE
@@ -215,6 +216,7 @@ class Upkeep(Runs):
             try:
                 if await asyncio.to_thread(problems.drafts().deliver, config):
                     logger.info("error report sent: its owner accepted it on this computer's page")
+                await asyncio.to_thread(error_events.install().deliver, config)
             except Exception:  # one failed look never stops the next
                 logger.exception("delivering an error report failed")
             await asyncio.sleep(self.deliver_seconds)
