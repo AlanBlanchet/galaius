@@ -19,8 +19,6 @@ from galaius.machine.connection import logs, signing
 from galaius.machine.connection.runs import Runs
 from galaius.machine.connection.files import MachineDataFiles, MachineFiles
 from galaius.desktop.screen.desk import ScreenDesk
-from galaius.machine.connection import problems
-import traceback
 
 logger = logging.getLogger(__package__)
 
@@ -178,7 +176,7 @@ class Answers(Runs):
             answer = MachineAgentAnswer(request_id=request.id, error=fitted(MachineAgentAnswer, "error", (said := said_of(error, doing="driving_agent")).said), refusal=said.refusal)
             if own_fault(error, said) and request.action:
                 logger.error("agent %s failed: %s", request.op, answer.error, exc_info=error)
-                self._report_fault(config, request.op, answer.error or "", error)
+                self._report_fault(config, f"agent {request.op}", answer.error or "", error)
             else:
                 logger.warning("agent %s refused: %s", request.op, answer.error)
         except Exception as error:  # noqa: BLE001 — the asker is never left with no answer at all
@@ -189,7 +187,7 @@ class Answers(Runs):
             answer = MachineAgentAnswer(request_id=request.id, error=fitted(MachineAgentAnswer, "error", (said := said_of(error, doing="driving_agent")).said), refusal=said.refusal)
             logger.error("agent %s failed: %s", request.op, answer.error, exc_info=error)
             if request.action:
-                self._report_fault(config, request.op, answer.error or "", error)
+                self._report_fault(config, f"agent {request.op}", answer.error or "", error)
         if request.action:
             # The whole brief / message stays HERE, in the owner's local log; the server keeps a digest.
             asked = request.model_dump(mode="json", exclude={"type", "id", "machine", "workspace_id", "expires_at", "signature"})
@@ -212,11 +210,3 @@ class Answers(Runs):
             if self._agent_answers.get(request_id) is answer:
                 del self._agent_answers[request_id]
                 self._agent_requests.pop(request_id, None)
-
-    def _report_fault(self, config: MachineConfig, op: str, said: str, error: BaseException) -> None:
-        """An agent action this computer failed by its own fault: an error report kept here, its owner asked on the PC's
-        page whether to send it (`MachineErrorReports.prepare`: nothing leaves before his yes) — this runner's recent log
-        and the traceback. Off the event loop (its question is an HTTPS call); never raises."""
-        lines = (*self._log_ring.lines, *"".join(traceback.format_exception(error)).splitlines())
-        drafts, secrets = problems.drafts(), logs.secrets(config, self._spent_tokens)
-        asyncio.get_running_loop().run_in_executor(None, lambda: drafts.prepare(config, "exception", f"agent {op} failed: {said}", lines, secrets))

@@ -3,6 +3,7 @@
 import asyncio
 import os
 import time
+import traceback
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 from galaius_core import AgentRevisionRef
@@ -14,7 +15,7 @@ from galaius.agents import registry as reg
 from galaius.isolation.fence import FenceSpec, available
 import logging
 
-from galaius.machine.connection import inventory
+from galaius.machine.connection import inventory, logs, problems
 from galaius.machine.connection.config import MachineConfig
 from galaius.machine.connection.logs import FORWARDED_EVENT_KINDS
 from galaius.machine.connection.events import Events
@@ -172,3 +173,11 @@ class Runs(Events, MachineFile):
                 logger.warning("web runs unreadable; reported not busy: %s", unreadable)
             self._runs_unreadable = unreadable
         return working
+
+    def _report_fault(self, config: MachineConfig, what: str, said: str, error: BaseException) -> None:
+        """An agent action this computer failed by its own fault: an error report kept here, its owner asked on the PC's
+        page whether to send it (`MachineErrorReports.prepare`: nothing leaves before his yes) — this runner's recent log
+        and the traceback. Off the event loop (its question is an HTTPS call); never raises."""
+        lines = (*self._log_ring.lines, *"".join(traceback.format_exception(error)).splitlines())
+        drafts, secrets = problems.drafts(), logs.secrets(config, self._spent_tokens)
+        asyncio.get_running_loop().run_in_executor(None, lambda: drafts.prepare(config, "exception", f"{what} failed: {said}", lines, secrets))

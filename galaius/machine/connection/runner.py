@@ -370,7 +370,7 @@ class MachineRunner(Answers, Commands, Upkeep, Watches):
                 # is told it failed, this PC's owner is asked about a report, and the link stays up. A dropped link read « offline » (2026-11-22).
                 logger.error("command %s raised; the link stays up", command.id, exc_info=error)
                 said = said_of(error, doing="running_step").said
-                self._report_fault(config, "command", said, error)
+                self._report_fault(config, "step", said, error)
                 try:
                     failed = MachineCommandResult(command_id=command.id, nonce=command.nonce, status="failed", error=fitted(MachineCommandResult, "error", said))
                     await socket.send(json.dumps({"type": "result", "result": failed.model_dump(mode="json")}))
