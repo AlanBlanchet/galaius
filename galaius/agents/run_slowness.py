@@ -27,7 +27,7 @@ import re
 import statistics
 import time
 from bisect import bisect_right
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -58,6 +58,15 @@ _WAITS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # a timer is a command that IS the sleep or a polling loop, never a call that sleeps for a second among other work (`kill x; sleep 1; pytest`)
     ("timer", re.compile(r"^(?:command=['\"]\s*)?(?:(?:cd\s+\S+|[A-Za-z_]\w*=(?:\"[^\"]*\"|'[^']*'|\S*))\s*(?:&&|;)\s*)*(?:timeout\s+\d+\s+(?:bash|sh)\s+-c\s+\\?['\"]\s*)?"
                          r"(?:sleep\s+\d|(?:until|while|for)\b[^\n]*\bdo\b[^\n]*\bsleep\s+\d)")),
+)
+#: A tool call that serves the process around the task, not the task: the telltale in its input, by what it is. A call is counted once, under the
+#: first label that matches; the matching is on the transcript's clipped input (~300 characters). A workspace adds its own (its notes, its hooks,
+#: its tracker) through `Config.bookkeeping_calls` (`GALAIUS_BOOKKEEPING_CALLS`: label to regular expression).
+BOOKKEEPING: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("decisions", re.compile(r"decisions\.md")),
+    ("ledger", re.compile(r"ledgers/[0-9a-f]{8}\.md")),   # a screenshot kept under ledgers/ is no note
+    ("agents list", re.compile(r"\bgalaius\s+agents\s+list\b")),
+    ("deploy wait", re.compile(r"deploy_queue\.py['\"]?\s+wait\b")),
 )
 #: Tools whose call is itself a wait, by tool name: the person's answer to a question (the time is his, not a tool's), a background job's output.
 _WAITING_TOOLS = {"AskUserQuestion": "user", "TaskOutput": "job", "BashOutput": "job"}
@@ -108,6 +117,12 @@ class RunProfile(BaseModel):
     waits: Waits
     #: Seconds from the spawn call's result to the run's start; None where the parent's transcript does not say.
     queued: float | None = None
+    #: Tool calls in the window, and how many of them were process bookkeeping (`BOOKKEEPING`), by label.
+    calls: int = 0
+    bookkeeping: dict[str, int] = {}
+
+    def bookkeeping_calls(self) -> int:
+        return sum(self.bookkeeping.values())
 
     def active(self) -> float:
         """Everything but parked and dark time: what the run spent being a run."""
@@ -130,6 +145,11 @@ class Rollup(BaseModel):
     queued_total: float
     queued_median: float | None
     queued_max: float | None
+    calls: int = 0
+    bookkeeping: int = 0
+
+    def bookkeeping_share(self) -> float:
+        return self.bookkeeping / self.calls if self.calls else 0.0
 
 
 class Slowness(BaseModel):
@@ -183,6 +203,26 @@ class Transcript(BaseModel):
     spawned: dict[str, float]
     #: The last turn event (a turn's end or its opening) before the window, which says whether the run began the window parked.
     lead: tuple[float, str] | None = None
+    #: (time, bookkeeping label or "") of each tool call from the window's start: the run's call count and its bookkeeping share.
+    calls: list[tuple[float, str]] = []
+
+
+def bookkeeping_patterns() -> tuple[tuple[str, re.Pattern[str]], ...]:
+    """`BOOKKEEPING` and the patterns this workspace's configuration adds (`Config.bookkeeping_calls`); a pattern that is no regular expression is skipped."""
+    from galaius.config.settings import Config
+
+    extra = []
+    for label, text in Config().bookkeeping_calls.items():
+        try:
+            extra.append((label, re.compile(text)))
+        except re.error:
+            continue
+    return (*BOOKKEEPING, *extra)
+
+
+def bookkeeping_label(tool_input: str, patterns: tuple[tuple[str, re.Pattern[str]], ...] = BOOKKEEPING) -> str:
+    """What process bookkeeping a tool call's input is (`patterns`), "" for a call of the task."""
+    return next((label for label, pattern in patterns if pattern.search(tool_input)), "")
 
 
 def read_transcript(path: Path, since: float) -> Transcript:
@@ -192,6 +232,8 @@ def read_transcript(path: Path, since: float) -> Transcript:
     opened: dict[str, tuple[float, str, bool]] = {}
     spans: list[tuple[float, float, str]] = []
     spawned: dict[str, float] = {}
+    calls: list[tuple[float, str]] = []
+    patterns = bookkeeping_patterns()
     try:
         with path.open("rb") as handle:
             for raw in handle:
@@ -212,6 +254,7 @@ def read_transcript(path: Path, since: float) -> Transcript:
                     name, text = str(call.get("tool") or ""), str(call.get("tool_input") or "")
                     wait = _WAITING_TOOLS.get(name) or (next((label for label, pattern in _WAITS if pattern.search(text)), "") if name in _COMMAND_TOOLS else "")
                     opened[str(call.get("tool_id") or "")] = (at, wait, _SPAWNS.search(f"{name} {text}") is not None)
+                    calls.append((at, bookkeeping_label(text, patterns)))
                 elif kind == "tool_result":
                     try:
                         result = json.loads(line)
@@ -229,7 +272,7 @@ def read_transcript(path: Path, since: float) -> Transcript:
             spans.append((start, turn_marks[later] if later < len(turn_marks) else math.inf, wait))
     except OSError:
         pass
-    return Transcript(events=events, spans=spans, spawned=spawned, lead=before)
+    return Transcript(events=events, spans=spans, spawned=spawned, lead=before, calls=calls)
 
 
 # --- one run's profile -----------------------------------------------------------------------------------------------------
@@ -327,8 +370,10 @@ def profile_run(row: RunRow, transcript: Transcript, *, since: float, now: float
             # a long silence that ends in a turn opening was the run waiting for its next turn (his message, a resume after a cut): parked
             totals["parked" if b - a > IDLE_GAP and b in openers else "idle" if b - a > IDLE_GAP else "model"] += rest
     wait = Waits(**{name: totals[name] for name in Waits.model_fields})
+    counted = [label for at, label in transcript.calls if start <= at <= end]
     return RunProfile(run_id=row.run_id, role=row.role, status=row.status, conversation=row.conversation, wall=end - start,
-                      parked=totals["parked"], tools=totals["tool"], model=totals["model"], idle=totals["idle"], dark=totals["dark"], waits=wait, queued=queued)
+                      parked=totals["parked"], tools=totals["tool"], model=totals["model"], idle=totals["idle"], dark=totals["dark"], waits=wait, queued=queued,
+                      calls=len(counted), bookkeeping=dict(Counter(label for label in counted if label)))
 
 
 # --- the window ------------------------------------------------------------------------------------------------------------
@@ -340,7 +385,8 @@ def rollup(name: str, profiles: list[RunProfile]) -> Rollup:
         name=name, runs=len(profiles), active=sum(p.active() for p in profiles), tools=sum(p.tools for p in profiles),
         model=sum(p.model for p in profiles), idle=sum(p.idle for p in profiles), waits=sum((p.waits for p in profiles), Waits()),
         queued_runs=len(queued), queued_total=sum(queued), queued_median=statistics.median(queued) if queued else None,
-        queued_max=max(queued) if queued else None)
+        queued_max=max(queued) if queued else None,
+        calls=sum(p.calls for p in profiles), bookkeeping=sum(p.bookkeeping_calls() for p in profiles))
 
 
 def dark_stretches(transcripts: Iterable[Transcript], *, since: float, now: float) -> list[tuple[float, float, str]]:

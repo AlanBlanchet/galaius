@@ -6,6 +6,12 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+- Agent efficiency: `galaius conversation slow` adds, per run and per role, the share of tool calls spent on process bookkeeping and whether the run
+  started with less than its role's normal (tools, MCP servers, skills, memory notes, read from its `system init` line against the role's runs of
+  the last 14 days; no verdict with fewer than 3 peers), a run ended by a vendor error, and a model or effort below the role's rule. `galaius doctor`
+  gains an `efficiency` area (start below the role's normal, over 20% bookkeeping, a wait over 15 min for an agent place, a vendor-error end) and a
+  finding for spawns waiting over 15 min for a place. `galaius conversation check [--post]` is the same read over the last 6 h; `--post` sends what
+  broke to the run his latest web message reached, once per window, and nothing when nothing broke. Thresholds: `EfficiencyLimits`.
 - `galaius conversation messages` lists what he typed in the web app lately (time, conversation, the run it reached, his words; `!` and
   `--frustrated` for what reads as frustration: his wording, several « ! », an ask he already made), and `galaius conversation slow` says where the time of each run
   went, from its transcript: parked between turns, waiting (on agents, deploys, CI, timers), tools, model, idle, `dark` (no run wrote for

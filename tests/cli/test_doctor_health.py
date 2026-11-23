@@ -237,7 +237,7 @@ def test_ci_with_no_gh_or_no_repository_is_skipped_with_the_reason() -> None:
 
 def test_the_look_bounds_a_slow_area_and_turns_a_crashed_one_into_a_finding(monkeypatch) -> None:
     quiet = lambda *_a, **_k: Check(area="x")  # noqa: E731
-    for name in ("app", "units", "agents", "ci"):
+    for name in ("app", "units", "agents", "ci", "efficiency"):
         monkeypatch.setattr(health, name, quiet)
     monkeypatch.setattr(health, "limits", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
     monkeypatch.setattr(health, "link", lambda *_a: time.sleep(2) or Check(area="link"))
