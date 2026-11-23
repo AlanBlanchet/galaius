@@ -171,9 +171,9 @@ def test_the_relay_lock_lets_one_process_at_a_time_through(tmp_path):
     """`mcp_relay.locked`, the relay's own stdlib-only lock (it runs under `python -I -S`: no pydantic, no pywin32,
     so `galaius.host.file_lock` cannot serve it). Here: a held lock makes the next taker wait."""
     path = str(tmp_path / "endpoint.lock")
-    program = f"import sys; sys.path.insert(0, {str(Path(importlib.import_module('galaius').__file__).parents[1])!r});\nfrom galaius.mcp_relay import locked\nimport time\nwith locked({path!r}):\n    time.sleep(1.5)\n"
-    holder = subprocess.Popen([sys.executable, "-c", program])
-    time.sleep(0.4)
+    program = f"import sys; sys.path.insert(0, {str(Path(importlib.import_module('galaius').__file__).parents[1])!r});\nfrom galaius.mcp_relay import locked\nimport time\nwith locked({path!r}):\n    print('held', flush=True)\n    time.sleep(1.5)\n"
+    holder = subprocess.Popen([sys.executable, "-c", program], stdout=subprocess.PIPE, text=True)
+    assert holder.stdout.readline().strip() == "held"   # the holder says it holds the lock: a sleep of 0.4 s was gone before a loaded computer started it (load 53, 2026-11-24)
     started = time.monotonic()
     with locked(path):
         waited = time.monotonic() - started
