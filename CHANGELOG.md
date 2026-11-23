@@ -6,6 +6,7 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+- A fenced run shows the libraries its PC preloads (`LD_PRELOAD`, read-only at their own path): no shell it opens begins with the loader's « cannot be preloaded » line. A run listing (`galaius conversation`, `galaius run`) reads `done` for a run whose process ended cleanly and `starting` for one coming back for a held message, in the minutes before the registry settles it; `gone` stays for one whose process vanished with no clean ending.
 - `galaius conversation messages` lists what he typed in the web app lately (time, conversation, the run it reached, his words; `!` and
   `--frustrated` for what reads as frustration: his wording, several « ! », an ask he already made), and `galaius conversation slow` says where the time of each run
   went, from its transcript: parked between turns, waiting (on agents, deploys, CI, timers), tools, model, idle, `dark` (no run wrote for

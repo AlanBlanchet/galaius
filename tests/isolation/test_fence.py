@@ -760,6 +760,24 @@ def test_a_turn_whose_cli_is_installed_nowhere_is_refused_naming_it(home: Path, 
 
 
 @bubblewrap
+def test_a_library_this_pc_preloads_is_seen_inside_so_no_program_prints_the_loader_s_warning(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The owner's `LD_PRELOAD` (a guard library under his home) reaches every fenced program: its file shown read-only at its own
+    path, so no shell opened by a run opens with « cannot be preloaded » (2026-11-23); a name that is no file is left to the loader."""
+    library = home / ".local/lib/libguard.so"
+    library.parent.mkdir(parents=True)
+    shutil.copy(next(Path(found) for found in ("/usr/lib/x86_64-linux-gnu/libz.so.1", "/usr/lib/aarch64-linux-gnu/libz.so.1", "/usr/lib/libz.so.1") if Path(found).is_file()), library)
+    monkeypatch.setenv("LD_PRELOAD", f"{library}:{tmp_path}/absent.so:relative.so:/usr/lib/libc.so.6")
+    spec = FenceSpec.reading((PROVIDERS["claude"],), home / "docs", scratch=tmp_path / "scratch", state=tmp_path / "state")
+    assert fence.preloaded() == [library]
+    assert FenceBind(source=library, target=library, writable=False) in spec.build().binds
+    if not available()[0]:
+        pytest.skip(f"no fence on this PC to start it in: {available()[1]}")
+    done = subprocess.run(fenced(["/bin/sh", "-c", "echo ok"], spec, _Installed("claude", Path(sys.executable))), cwd=spec.start, capture_output=True, text=True, timeout=60,
+                          env={**os.environ, "LD_PRELOAD": str(library)})
+    assert (done.returncode, done.stdout.strip()) == (0, "ok") and "cannot be preloaded" not in done.stderr, done.stderr
+
+
+@bubblewrap
 @pytest.mark.parametrize("named", [False, True])
 def test_a_read_only_run_launches_the_browsers_this_pc_installed(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, named: bool) -> None:
     """A read-only run's galaius server finds Playwright's browsers inside its fence, read-only and named where they are:

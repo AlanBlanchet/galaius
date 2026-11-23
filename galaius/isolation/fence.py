@@ -421,6 +421,7 @@ class FenceSpec(BaseModel):
         # Read-only: a run's galaius server launches the browsers this PC installed, never installs one (no egress, no write).
         if (browsers := playwright_browsers()) is not None and browsers.is_dir():
             binds.append(FenceBind(source=browsers, target=browsers, writable=False))
+        binds += [FenceBind(source=found, target=found, writable=False) for found in preloaded() if not any(bind.target == found for bind in binds)]
         programs = tuple(dict.fromkeys((*programs, *filter(None, map(_interpreter, programs)))))
         reached, roots = list(programs), [_install_root(program.resolve()) for program in programs]
         for python in _interpreters():
@@ -544,6 +545,14 @@ def playwright_browsers() -> Path | None:
     if named == "0":
         return None
     return Path(named).expanduser() if named else Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "ms-playwright"
+
+
+def preloaded() -> list[Path]:
+    """The libraries this PC's own environment preloads (`LD_PRELOAD`: the owner's guards, e.g. one refusing a signal to his desktop session)
+    that the view would not show: each file a program inside starts with, read-only at its own path. Unseen, the loader printed
+    « cannot be preloaded » in front of every program's output. Only a file that exists and lies outside the folders already bound."""
+    named = os.environ.get("LD_PRELOAD", "").replace(":", " ").split()
+    return [found for name in dict.fromkeys(named) if (found := Path(name)).is_absolute() and found.is_file() and not any(found.is_relative_to(folder) for folder in SYSTEM)]
 
 
 def inside_environment() -> dict[str, str]:

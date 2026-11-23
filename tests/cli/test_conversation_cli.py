@@ -97,6 +97,23 @@ def test_a_record_at_work_whose_process_is_gone_reads_gone_and_one_alive_reads_r
     assert {row.run_id for row in RunLedger(folder).rows(RunQuery(statuses=frozenset({"gone"})))} == {CHILD}
 
 
+@needs_proc
+def test_a_run_whose_process_ended_cleanly_or_is_coming_back_for_a_held_message_never_reads_gone(folder: Path) -> None:
+    """The registry settles the first as `done` and reads the second `starting` (`_derive`, `_resuming`): the listing says the same
+    in the minutes before it settles (2026-11-23: two runs between a finished turn and the resume of a handed-back report read « gone »)."""
+    finished, waiting, cut = CHILD, GRAND, WEB
+    dead = {"status": "running", "pid": DEAD_PID, "pid_started": 1, "session_id": None, "exit_code": None}
+    put(folder, finished, parent_run_id=ROOT, **dead, stream_digest={"source": "x", "ending": "done", "ending_text": "report"})
+    put(folder, waiting, parent_run_id=ROOT, **dead, stream_digest={"source": "x", "ending": "done"})
+    put(folder, cut, parent_run_id=ROOT, **dead, stream_digest={"source": "x", "ending": "error"})
+    stat = Path(f"/proc/{os.getpid()}/stat").read_text().rsplit(")", 1)[1].split()
+    (folder / f"{waiting}.queue.json").write_text(json.dumps({"items": [{"state": "pending"}], "dispatcher_pid": os.getpid(), "dispatcher_token": "t", "dispatcher_started": int(stat[19])}))
+    status = {row.run_id: row.status for row in RunLedger(folder).rows(RunQuery(conversation=ROOT))}
+    assert (status[finished], status[waiting], status[cut]) == ("done", "starting", "gone")
+    (folder / f"{waiting}.queue.json").write_text(json.dumps({"items": [{"state": "pending"}], "dispatcher_pid": DEAD_PID, "dispatcher_token": "t", "dispatcher_started": 1}))
+    assert {row.run_id: row.status for row in RunLedger(folder).rows(RunQuery(conversation=ROOT))}[waiting] == "done", "no live dispatcher: not coming back, its own ending says done"
+
+
 def test_a_cut_is_a_filter_and_a_count(folder: Path) -> None:
     cut = RunLedger(folder).rows(RunQuery(cut=True))
     assert [(row.run_id, row.cut) for row in cut] == [(GRAND, "usage_limit")]

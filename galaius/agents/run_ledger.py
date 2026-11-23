@@ -45,7 +45,7 @@ GONE = "gone"
 SAID_CHARS = 240
 #: The cache of trimmed records, beside the registry's files: a dot name, which the registry's own listings skip.
 CACHE = ".run-ledger.cache"
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 #: What the engine reads of a record, by type; everything else (prompts, candidate lists, lifecycle tokens) never enters the cache.
 _TEXT = ("run_id", "name", "agent", "status", "kind", "provider", "model", "login", "subscription_id", "parent_run_id", "root_run_id", "session_id",
          "project", "last")
@@ -221,11 +221,36 @@ class RunLedger:
         if kind == "conversation":
             if status in TERMINAL or alive(raw, strict=True):
                 return status
-            return GONE if status in AT_WORK else "interrupted"
+            return self._unsettled(raw, status) if status in AT_WORK else "interrupted"
         code = raw.get("exit_code")
         if isinstance(code, int):
             return "stopped" if code == -15 else "done" if code == 0 else "failed"
-        return status if alive(raw, strict=False) else GONE
+        return status if alive(raw, strict=False) else self._unsettled(raw, status)
+
+    def _unsettled(self, raw: dict, status: str) -> str:
+        """What a record at work reads when its process is gone and no ending was recorded, as the registry reads it (`registry._status_for`,
+        `_derive`): `starting` while this PC brings it back for a message it holds (its queue holds an active item and the dispatcher that
+        drains it lives), `done` when its own stream's last ending was a clean one (the registry settles it a minute later), else `gone`."""
+        if self._coming_back(str(raw.get("run_id") or "")):
+            return "starting"
+        digest = raw.get("stream_digest")
+        return "done" if isinstance(digest, dict) and digest.get("ending") == "done" else GONE
+
+    def _coming_back(self, run_id: str) -> bool:
+        """`agent_queue.resuming`: an item of the run's queue is `pending` or `running` and its dispatcher is still that very process."""
+        try:
+            state = json.loads((self.root / f"{run_id}.queue.json").read_text(encoding="utf-8"))
+            items = state["items"]
+            if not any(isinstance(item, dict) and item.get("state") in ("pending", "running") for item in items):
+                return False
+            pid, started = state.get("dispatcher_pid"), state.get("dispatcher_started")
+            if not isinstance(pid, int) or not state.get("dispatcher_token") or started is None:
+                return False
+            if not Path(f"/proc/{pid}/stat").parent.parent.exists():
+                return True   # no /proc (macOS, Windows): this verb never claims a death it cannot see
+            return int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]) == started
+        except (OSError, ValueError, KeyError, IndexError, TypeError):
+            return False
 
     # --- reading -------------------------------------------------------------------------------------------------
 
@@ -492,7 +517,7 @@ def _trim(raw: dict) -> dict:
     if usage := _counts(raw.get("usage")):
         trimmed["usage"] = usage
     if isinstance(digest := raw.get("stream_digest"), dict):
-        kept: dict = {name: digest[name][:600 if name == "ending_text" else 300] for name in ("ending_text", "last", "cut") if isinstance(digest.get(name), str)}
+        kept: dict = {name: digest[name][:600 if name == "ending_text" else 300] for name in ("ending_text", "last", "cut", "ending") if isinstance(digest.get(name), str)}
         if (cost := _number(digest.get("cost_usd"))) is not None:
             kept["cost_usd"] = cost
         if usage := _counts(digest.get("usage")):
