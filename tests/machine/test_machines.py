@@ -1390,6 +1390,10 @@ async def test_an_error_inside_the_pc_never_closes_its_link(tmp_path, monkeypatc
     async with websockets.serve(server, "127.0.0.1", 0) as endpoint:
         monkeypatch.setattr(transport, "channel_url", lambda _: f"ws://127.0.0.1:{endpoint.sockets[0].getsockname()[1]}")
         connection = asyncio.create_task(runner.connect(config))
+        for _ in range(400):       # a cold runner's start (a Windows CI worker's first test) is not what is judged: the 2.5 s after its link opened are
+            if opened or connection.done():
+                break
+            await asyncio.sleep(0.05)
         await asyncio.sleep(2.5)
         ended = connection.done()
         connection.cancel()
