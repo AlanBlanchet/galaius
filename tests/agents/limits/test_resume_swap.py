@@ -3,6 +3,7 @@ subscription login (the session carried, the same model), else to the next ranke
 quota (unknown model, a full context) holds nothing (owner 2026-11-20 « The harness should never dissalow if i have any form
 of usage »)."""
 
+import sys
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -213,3 +214,35 @@ def test_a_hand_on_starts_a_successor_through_the_ranked_walk_and_takes_over_the
     successor = asyncio.run(SpawnLine.here().hand_on(reg.get_run("r1"), "go on please", runner))
     assert started["provider"] is None and started.get("model") is None and "go on please" in started["task"]
     assert reg.get_run("r1").successor == successor
+
+
+_REFUSAL = ("import json,sys; print(json.dumps({'type':'result','is_error':True,'session_id':'vendor','result':%r})); sys.exit(1)" % FABLE_POOL)
+
+
+def test_a_limit_refusal_mid_turn_resends_the_same_turn_on_the_next_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The vendor refuses the resumed turn on Fable's pool («Switch to another model»): that message goes out again at once on the next model,
+    never a failed turn left for him (owner 2026-11-20 23:0x « We should NEVER stop the user request and instead use a fallback »)."""
+    provider, logins, _ = _stopped_run(monkeypatch, tmp_path)
+    ok = provider.script
+    provider.resume_command = lambda session_id, message, **kwargs: (  # type: ignore[method-assign]
+        provider.models.append(kwargs.get("model")), provider.messages.append(str(message)), [sys.executable, "-c", _REFUSAL if kwargs.get("model") == "fable-fixture" else ok])[2]
+    messaging.deliver_message("r1", "go on", sender="operator")
+    agent_queue.dispatch("r1")
+    deadline = time.time() + 15   # the refusal is read when the child ends: the re-send follows it
+    while time.time() < deadline and provider.models[-1:] != ["lower-model"]:
+        agent_queue.dispatch("r1")
+        time.sleep(0.2)
+    final = reg.get_run("r1")
+    assert provider.models[0] == "fable-fixture" and provider.models[-1] == "lower-model", provider.models
+    assert final.status == "done" and final.model == "lower-model", (final.status, final.model, final.last)
+    assert set(provider.messages) == {"go on"} or all("go on" in m for m in provider.messages)
+
+
+@pytest.mark.xfail(strict=True, reason="GAP: open_logins offers only subscription logins; a run pinned to a lost subscription never returns to the PC's own login")
+def test_a_resume_never_lands_on_a_login_that_is_not_signed_in_while_the_pcs_own_login_has_usage(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Both subscription logins lost (`login_lost`): the turn goes to the PC's own login (no subscription pin), never to a lost one."""
+    provider, logins, _ = _stopped_run(monkeypatch, tmp_path)
+    for login in logins.values():
+        quota.pause_login("claude", "login_lost", subscription=login.id, said="Not logged in · Please run /login")
+    _, pinned = _resume()
+    assert pinned not in {login.id for login in logins.values()}, f"resumed on a lost login {pinned}"
