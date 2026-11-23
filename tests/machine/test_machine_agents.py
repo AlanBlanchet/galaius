@@ -844,7 +844,7 @@ def test_editor_conversations_need_their_own_opt_in(base: Path, tmp_path: Path) 
 def test_an_approval_answer_must_match_what_is_waiting(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     agents = _agents(base, tmp_path, answer_approvals=True).model_copy(update={"sessions": MachineSessions(base)})
     run_id = str(uuid4())
-    reg.save_run(reg.AgentRun(run_id=run_id, kind="conversation", provider="codex", name="s", cwd=str(base / "project"), started_at=1.0, status="waiting"))
+    reg.save_run(reg.AgentRun(run_id=run_id, kind="conversation", provider="codex", name="s", cwd=str(base / "project"), started_at=1.0, status="waiting", pid=os.getpid()))
     agents.runs.add(WebRun(run_id=run_id, root="project", kind="session"))
     asked = {"id": "i1", "kind": "file_change_approval", "title": "Apply?", "fields": [{"key": "decision", "kind": "choice", "label": "Allow?", "options": ["accept", "decline"]}], "disclosure": ["edit a.py"]}
     reg.events_path(run_id).write_text(json.dumps({"kind": "interaction", "at": 1, "event_id": "i1", "interaction": asked}) + "\n")
@@ -1356,7 +1356,7 @@ def test_a_conversation_he_uses_stays_listed(base: Path, tmp_path: Path, launche
     conversation, last, other = str(uuid4()), str(uuid4()), str(uuid4())
     reg.save_run(reg.AgentRun(run_id=other, provider="claude", name="main", cwd=str(base / "project"), started_at=5.0, finished_at=1e8, exit_code=0))
     agents.runs.add(WebRun(run_id=UUID(other), root="project"))
-    state = {"status": "waiting"} if now == "waiting" else {"finished_at": 2.0, "exit_code": 0}
+    state = {"status": "waiting", "pid": os.getpid()} if now == "waiting" else {"finished_at": 2.0, "exit_code": 0}
     reg.save_run(reg.AgentRun(run_id=conversation, kind="conversation", provider="claude", name="main", cwd=str(base / "project"), started_at=1.0, **state))
     agents.runs.add(WebRun(run_id=UUID(conversation), root="project"))
     ended = {"pid": os.getpid()} if now == "working" else {"finished_at": 1e9 if now == "idle" else 4.0, "exit_code": 0}

@@ -219,7 +219,7 @@ class RunLedger:
         if status == "starting" and not raw.get("pid") and not isinstance(raw.get("exit_code"), int):   # launching: its process is recorded a moment after its record
             return status if time.time() - (raw.get("started_at") or 0.0) < LAUNCH_GRACE else GONE
         if kind == "conversation":
-            if status in TERMINAL or status == "waiting" or alive(raw, strict=True):
+            if status in TERMINAL or alive(raw, strict=True):
                 return status
             return GONE if status in AT_WORK else "interrupted"
         code = raw.get("exit_code")

@@ -2948,9 +2948,10 @@ def _status_for(run: AgentRun, *, depth: int = 0) -> RunStatus:
             return run.status
         return run.status if _status_for(host, depth=depth + 1) in ("starting", "running", "waiting") else "interrupted"
     if run.kind == "conversation":
-        if run.status in TERMINAL_STATUSES or run.status == "waiting":
-            return run.status
-        if run.process_running():
+        # A conversation resting between turns (`waiting`) holds its process like one at work: with the process gone nothing
+        # reads its next message but a resume, so it is cut off like any run (2026-11-21: 12 finished probe runs read `waiting`
+        # for good, each counted live by the close gates and `agents list`).
+        if run.status in TERMINAL_STATUSES or run.process_running():
             return run.status
         return "interrupted"
     if run.exit_code is not None:
@@ -3004,7 +3005,8 @@ def _derive(run: AgentRun) -> AgentRun:
     ending = digest.ending if run.exit_code is None and run.status != "starting" else None  # its previous turn's ending is no longer how it stands
     if ending is not None:
         run.status = (
-            "waiting" if run.kind == "conversation" and ending == "done"
+            # A conversation whose turn ended rests `waiting` only while its process lives; once gone it is `done`, never revived.
+            "waiting" if run.kind == "conversation" and ending == "done" and run.process_running()
             else "done" if ending == "done"
             # A try that ended on an error while its message is still in flight is that try's, not the run's: this PC
             # may try again (`agent_queue.settle`), and the CLI writes that line before it exits.
@@ -3197,7 +3199,7 @@ def settle_gone() -> list[AgentRun]:
     « running » for long. Reads only records that moved, like `running_runs`. Returns the runs it changed."""
     settled = []
     for run in _stored_records():
-        if run.status not in ("starting", "running"):
+        if run.status not in ("starting", "running") and not (run.kind == "conversation" and run.status == "waiting"):
             continue
         if _status_for(run) == run.status:
             if run.unit is None and run.pid and (unit := _run_unit(run.pid, run.run_id)) is not None:

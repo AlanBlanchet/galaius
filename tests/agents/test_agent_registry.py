@@ -1654,6 +1654,33 @@ def test_status_is_derived_from_how_the_raw_vendor_stream_ended(
     assert [r for r in reg.list_runs() if r.run_id == "r1"][0].status == expected_status
 
 
+@pytest.mark.parametrize("stored, process_alive, ended, expected", [
+    ("waiting", False, True, "done"),          # 2026-11-21: finished probe runs read `waiting` for good, counted live by the gates
+    ("done", False, True, "done"),             # a settled record is never revived to `waiting` by a reader
+    ("waiting", False, False, "interrupted"),  # cut off while it rested or asked: only a resume reads its next message
+    ("waiting", True, True, "waiting"),        # resting between turns with its process: the one case `waiting` is true
+    ("waiting", True, False, "waiting"),
+], ids=["ended-dead", "terminal-dead", "no-ending-dead", "ended-alive", "no-ending-alive"])
+def test_a_conversation_reads_waiting_only_while_its_process_lives(stored, process_alive, ended, expected):
+    pid = os.getpid() if process_alive else 999_999
+    reg.save_run(reg.AgentRun(run_id="c1", kind="conversation", provider="codex", name="conversation", cwd=str(Path.cwd()),
+                              root_run_id="c1", provider_session_id="c1", connection="local_session", started_at=1, pid=pid))
+    if ended:
+        reg.append_event("c1", AgentEvent(kind="done", status="completed", at=10))
+    reg._update_fields("c1", {"status": stored, "finished_at": 10 if ended else None})
+    assert [run for run in reg.list_runs() if run.run_id == "c1"][0].status == expected
+    assert reg.get_run("c1").status == expected, "the record is settled on disk, not only in the listing"
+
+
+def test_the_daemons_sweep_settles_a_conversation_left_waiting_with_no_process():
+    for run_id, pid in (("gone", 999_999), ("alive", os.getpid())):
+        reg.save_run(reg.AgentRun(run_id=run_id, kind="conversation", provider="codex", name="conversation", cwd=str(Path.cwd()),
+                                  root_run_id=run_id, provider_session_id=run_id, connection="local_session", started_at=1, pid=pid,
+                                  status="waiting"))
+    assert {run.run_id: run.status for run in reg.settle_gone()} == {"gone": "interrupted"}
+    assert (reg.get_run("gone").status, reg.get_run("alive").status) == ("interrupted", "waiting")
+
+
 # --- Someone else's sessions belong to a project too ------------------------------------------
 #
 # "i have agents in the 'sheets' folder elsewhere, and i can't change and see how they work."

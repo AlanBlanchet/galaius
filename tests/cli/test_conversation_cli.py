@@ -225,11 +225,12 @@ def test_a_run_at_work_is_never_dropped_by_since_however_long_ago_it_started(fol
 
 @pytest.mark.parametrize("fields, status", [
     ({"kind": "conversation", "status": "running", "pid": None}, "gone"),                     # a conversation holds its process from its start
-    ({"kind": "conversation", "status": "waiting", "pid": None}, "waiting"),
+    ({"kind": "conversation", "status": "waiting", "pid": None}, "gone"),                    # resting between turns holds its process too
+    ({"kind": "conversation", "status": "waiting", "pid": os.getpid(), "pid_started": None}, "waiting"),
     ({"kind": "process", "status": "running", "pid": os.getpid(), "exit_code": 0}, "done"),   # an exit the record never turned into a status
     ({"kind": "process", "status": "running", "pid": os.getpid(), "exit_code": -15}, "stopped"),
     ({"kind": "process", "status": "starting", "pid": None}, "starting"),                      # still launching: no pid yet
-], ids=["conversation-no-process", "conversation-waiting", "exit-zero", "terminated", "launching"])
+], ids=["conversation-no-process", "conversation-waiting-no-process", "conversation-waiting", "exit-zero", "terminated", "launching"])
 def test_a_status_reads_as_the_registry_lists_it(folder: Path, fields: dict, status: str) -> None:
     put(folder, CHILD, parent_run_id=ROOT, **fields)
     assert {row.run_id: row.status for row in RunLedger(folder).rows()}[CHILD] == status
@@ -287,7 +288,7 @@ def test_agents_list_every_session_goes_through_the_ledger_and_an_unknown_harnes
 
 def test_a_run_at_work_survives_since_even_when_its_file_is_old_and_a_finished_old_one_does_not(folder: Path) -> None:
     """A backfill rewrites every file, and a run at work may write nothing for hours: no file time decides, only the record's own."""
-    put(folder, CHILD, parent_run_id=ROOT, status="waiting", kind="conversation", age=3 * 86400, started_at=time.time() - 5 * 86400, finished_at=None)
+    put(folder, CHILD, parent_run_id=ROOT, status="waiting", kind="conversation", pid=os.getpid(), pid_started=None, age=3 * 86400, started_at=time.time() - 5 * 86400, finished_at=None)
     put(folder, GRAND, parent_run_id=CHILD, status="done", age=0, started_at=time.time() - 5 * 86400, finished_at=time.time() - 4 * 86400)  # file new, run old
     found = {row.run_id for row in RunLedger(folder).rows(RunQuery(conversation=ROOT, since=parse_since("24h")))}
     assert CHILD in found and GRAND not in found
