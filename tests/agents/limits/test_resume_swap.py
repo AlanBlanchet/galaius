@@ -74,7 +74,9 @@ OWN = SimpleNamespace(id=None)
 
 
 def _hold(kind: str, login: Subscription | SimpleNamespace) -> None:
-    if kind == "pool" or (kind == "stop" and login.id is None):   # the own login keeps no pool reading of its stop: only the refusal
+    if kind == "overload":   # the vendor's API overloaded twice in a row for the model on this login (`registry._remember_vendor_refusal`)
+        quota.record_refusal("claude", "fable-fixture", subscription=login.id, bench=600.0)
+    elif kind == "pool" or (kind == "stop" and login.id is None):   # the own login keeps no pool reading of its stop: only the refusal
         quota.record_refusal("claude", "fable-fixture", said=FABLE_POOL, subscription=login.id)
     elif kind == "stop":
         login.observe_pools((quota.ModelPool(pool="fable", used_percent=97, resets_at=datetime.now(UTC) + timedelta(days=2), observed_at=datetime.now(UTC)),))
@@ -94,6 +96,8 @@ def _resume() -> tuple[str | None, object]:
     ("window", ("a",), "b", "fable-fixture"),      # (b) the first login's whole usage window shut: his second takes it, a login-wide hold is no wait
     ("pool", ("a", "b", "own"), "a", "lower-model"),      # (c) the Fable pool shut on every login: the next ranked model on its own login, never a wait for the pool's reset
     ("stop", ("a", "b", "own"), "a", "lower-model"),
+    ("overload", ("a",), "b", "fable-fixture"),    # (e) overloaded twice on his first login: the same model on his second, never the overloaded one again
+    ("overload", ("a", "b", "own"), "a", "lower-model"),   # (f) overloaded on every login: the next ranked model, never a wait
     ("pool", ("a", "b"), None, "fable-fixture"),   # (d) shut on both subscription logins, open on the PC's own: the same model there, the session carried
 ])
 def test_a_resumed_conversation_goes_to_his_other_login_else_to_the_next_ranked_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,

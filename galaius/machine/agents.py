@@ -111,6 +111,7 @@ _RESUMED_AFTER: dict[reg.CutCause, tuple[str, str]] = {
     "usage_limit": (reg.LIMIT_RESUME_SENDER, "the usage limit"),
     "login_lost": (reg.LOGIN_RESUME_SENDER, "signing in again"),
     "network_lost": (reg.CUT_RESUME_SENDER, "its provider's API could not be reached"),
+    "overloaded": (reg.CUT_RESUME_SENDER, "its provider's API was overloaded"),
     "process_gone": (reg.CUT_RESUME_SENDER, "its process went away"),
     "killed": (reg.CUT_RESUME_SENDER, "its process was killed"),
 }

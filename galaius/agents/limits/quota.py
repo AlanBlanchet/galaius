@@ -629,8 +629,10 @@ def on_probation(provider: str, model: str | None, *, subscription: UUID | None 
     return block is not None and block.until <= moment
 
 
-def record_refusal(provider: str, model: str | None, *, said: str = "", subscription: UUID | None = None, now: float | None = None) -> float:
-    """Remember that this model refused; returns when it may be tried again.
+def record_refusal(provider: str, model: str | None, *, said: str = "", subscription: UUID | None = None, now: float | None = None,
+                   bench: float | None = None) -> float:
+    """Remember that this model refused; returns when it may be tried again. `bench`: how long to pass it over when the
+    vendor named no reset (an overload: seconds, not the earned hour).
 
     `said` is whatever the vendor wrote — the child's raw stream, an exception message, one
     event's text. A reset it STATES holds the block until then; without one the length is earned by refusals in a row
@@ -654,7 +656,7 @@ def record_refusal(provider: str, model: str | None, *, said: str = "", subscrip
             count = previous.count
         else:
             count = previous.count + 1
-        until = moment + Block.length(count)
+        until = moment + (Block.length(count) if bench is None else bench)
         latest = refusal.latest(now=moment) if refusal is not None else None
         if refusal is not None and refusal.reopens_at is not None and latest is not None:
             # The vendor STATED when it reopens: the block lasts until then, never a shorter default window (owner 2026-11-20:

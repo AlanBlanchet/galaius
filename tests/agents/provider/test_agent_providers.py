@@ -1356,6 +1356,14 @@ def test_a_codex_turn_whose_login_could_not_be_refreshed_is_cut_for_its_login(sa
     (None, "connect ECONNREFUSED 160.79.104.10:443", "network_lost"),
     (None, "getaddrinfo EAI_AGAIN api.anthropic.com", "network_lost"),
     (None, "You've hit your session limit · resets 5:20pm (Europe/Paris)\nENOTFOUND", "usage_limit"),  # answered: its window spoke
+    # Its API answered that it could not take the turn (the vendor never ran it): cut, not failed (`RunCut.overloaded`). The first two are
+    # Claude Code's result line verbatim (2026-11-23, `api_error_status` 529 after its own 7 retries).
+    (529, "API Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a moment.", "overloaded"),
+    (None, "API Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a moment.", "overloaded"),
+    (503, "upstream connect error", "overloaded"),
+    (500, "Internal server error", "overloaded"),
+    (None, '{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}', "overloaded"),
+    (400, "Bad request: the prompt is malformed", None),  # a refusal of the request itself is the turn's own failure
     (None, "Request timed out after 600s", None),  # a slow or unanswered request may have reached the model: its own failure
     (None, "Error: the build failed", None),
 ])

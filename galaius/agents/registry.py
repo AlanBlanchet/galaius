@@ -85,7 +85,7 @@ TERMINAL_STATUSES: frozenset[str] = frozenset(
 RunKind = Literal["process", "conversation", "provider_child"]
 #: What cut a run from outside its work (`cut_cause`): its program's word (`RunCut`), its process gone with no word of
 #: its own, or a signal nobody it answers to sent.
-CutCause = Literal["login_lost", "usage_limit", "network_lost", "process_gone", "killed"]
+CutCause = Literal["login_lost", "usage_limit", "network_lost", "overloaded", "process_gone", "killed"]
 #: How a cut run comes back (`cut_resume`): `itself` with no one's action, `sign_in` once its login is signed in again.
 CutResumes = Literal["itself", "sign_in", "relaunch"]
 ConnectionMode = Literal["local_session", "api"]
@@ -1520,6 +1520,10 @@ def _remember_vendor_refusal(run: AgentRun, said: str, *, cut: RunCut | None = N
     # again (`admission`): every run resumed meanwhile would be cut the same way (2026-10-18: 8 at once).
     if cut is RunCut.login_lost:
         quota.pause_login(run.provider, "login_lost", subscription=run.subscription_id, said=said, now=now)
+    # The vendor's API overloaded twice in a row for this model on this login (the first one only waits): it is passed over there for
+    # a while, so the next resume takes his other login or the next ranked model (`swap_login`, `resolve_continuable_model`).
+    elif cut is RunCut.overloaded and run.resumed_cut == "overloaded" and run.model:
+        quota.record_refusal(run.provider, run.model, subscription=run.subscription_id, now=now, bench=OVERLOAD_BENCH)
 
 
 def finish(
@@ -3223,10 +3227,16 @@ AUTO_RESUMES_PER_CUT = 2
 #: further per resume already made: a DNS or connect failure of seconds is waited out and costs one turn, one that
 #: outlasts the whole backoff is no blip and the run is left to a person. Its length bounds the retries.
 NETWORK_RESUME_BACKOFF: tuple[float, ...] = (5.0, 20.0, 60.0, 180.0)
+#: The same for a run its provider's API refused as overloaded (`overload_resume_at`): longer steps, for a vendor that needs minutes,
+#: and more of them since the second overload in a row moves the run to another login or model (`OVERLOAD_BENCH`).
+OVERLOAD_RESUME_BACKOFF: tuple[float, ...] = (15.0, 45.0, 120.0, 240.0, 480.0)
+#: How long a model overloaded twice in a row is passed over on its login (`_remember_vendor_refusal`): the resumes in between go to
+#: another login or the next ranked model, and the vendor's own recovery returns it (`quota.served` clears it at its first answer).
+OVERLOAD_BENCH = 600.0
 #: The cuts that time their own automatic resume and count their own retries (`limit_resume_at`, `network_resume_at`):
 #: the shared loop guards (`RESUME_GRACE`, `AUTO_RESUMES_PER_CUT`) would read their backoff as a resume that did not
 #: come back, since each is EXPECTED to be heard again within it while the cause lasts.
-SELF_TIMED_CUTS: frozenset[CutCause] = frozenset({"usage_limit", "network_lost"})
+SELF_TIMED_CUTS: frozenset[CutCause] = frozenset({"usage_limit", "network_lost", "overloaded"})
 #: Exit codes of a signal sent from outside the program (SIGHUP, SIGKILL, SIGTERM; `-N` as the launcher records them,
 #: `128 + N` through a shell): a kill. Any other (SIGABRT, SIGSEGV…) is the program's own crash, never resumed by itself.
 _KILLED_EXITS = frozenset(code for sig in platform_signals("SIGHUP", "SIGKILL", "SIGTERM") for code in (-sig, 128 + sig))
@@ -3302,6 +3312,16 @@ def network_resume_at(run: AgentRun, *, now: float | None = None) -> float | Non
         return None
     made = run.resumed_cuts if run.resumed_cut == "network_lost" else 0
     return None if made >= len(NETWORK_RESUME_BACKOFF) else run.finished_at + NETWORK_RESUME_BACKOFF[made]
+
+
+def overload_resume_at(run: AgentRun, *, now: float | None = None) -> float | None:
+    """When `run`, whose last turn its provider's API ended as overloaded (`RunCut.overloaded`), is resumed by itself:
+    `OVERLOAD_RESUME_BACKOFF` after that end, one step further per automatic resume already made for that cut. None past the
+    last step. `now` is unread, as in `network_resume_at`."""
+    if run.finished_at is None:
+        return None
+    made = run.resumed_cuts if run.resumed_cut == "overloaded" else 0
+    return None if made >= len(OVERLOAD_RESUME_BACKOFF) else run.finished_at + OVERLOAD_RESUME_BACKOFF[made]
 
 
 def cut_cause(run: AgentRun) -> CutCause | None:
@@ -3385,7 +3405,7 @@ def cut_resume(run: AgentRun, *, now: float | None = None) -> CutOwed | None:
     if cause == "login_lost":
         return CutOwed(cause, "sign_in", None)
     if cause in SELF_TIMED_CUTS:
-        at = limit_resume_at(run, now=now) if cause == "usage_limit" else network_resume_at(run, now=now)
+        at = {"usage_limit": limit_resume_at, "network_lost": network_resume_at, "overloaded": overload_resume_at}[cause](run, now=now)
         return None if at is None else CutOwed(cause, "itself", at)
     return CutOwed(cause, "itself", run.finished_at)
 
