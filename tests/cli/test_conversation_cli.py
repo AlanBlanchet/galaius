@@ -550,3 +550,10 @@ def test_an_ask_he_made_before_the_window_still_makes_his_repeat_in_it_frustrate
     (folder / f"{CHILD}.messages.jsonl").write_text("\n".join([said(1, now - 3 * 86400, first), said(2, now - 600, f"again: {first}"), said(3, now - 500, "  "), said(4, now - 400, "")]))
     found = RunLedger(folder).his_messages(since=now - 3600)
     assert [m.text for m in found] == [f"again: {first}"] and "raised again" in found[0].frustrated
+
+
+def test_a_run_ledger_that_does_not_own_its_folder_writes_no_cache_beside_the_records(folder: Path) -> None:
+    RunLedger(folder, cache=False).rows()
+    assert not (folder / ".run-ledger.cache").exists()
+    RunLedger(folder).rows()
+    assert (folder / ".run-ledger.cache").exists()

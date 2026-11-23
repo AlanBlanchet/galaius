@@ -56,7 +56,8 @@ _WAITS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("deploy", re.compile(rf"{_START}(?:\S*/)?(?:python3?\s+|\S*/galaius\s+--python\s+)?(?:\S*/)?deploy_queue\.py['\"]?\s+wait\b")),
     ("ci", re.compile(rf"{_START}(?:\S*/)?gh\s+run\s+watch\b")),
     # a timer is a command that IS the sleep or a polling loop, never a call that sleeps for a second among other work (`kill x; sleep 1; pytest`)
-    ("timer", re.compile(r"^(?:command=['\"]\s*)?(?:sleep\s+\d|(?:until|while|for)\b[^\n]*\bdo\b[^\n]*\bsleep\s+\d)")),
+    ("timer", re.compile(r"^(?:command=['\"]\s*)?(?:(?:cd\s+\S+|[A-Za-z_]\w*=(?:\"[^\"]*\"|'[^']*'|\S*))\s*(?:&&|;)\s*)*(?:timeout\s+\d+\s+(?:bash|sh)\s+-c\s+\\?['\"]\s*)?"
+                         r"(?:sleep\s+\d|(?:until|while|for)\b[^\n]*\bdo\b[^\n]*\bsleep\s+\d)")),
 )
 #: Tools whose call is itself a wait, by tool name: the person's answer to a question (the time is his, not a tool's), a background job's output.
 _WAITING_TOOLS = {"AskUserQuestion": "user", "TaskOutput": "job", "BashOutput": "job"}
