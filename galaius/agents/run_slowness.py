@@ -5,7 +5,8 @@ A run's time between its start and its end (or now), over a window `[since, now]
 * `parked`: the run ended a turn and nobody had started the next (a coordinator waiting for his next message, a reused agent
   between two briefs), or it was silent for over `IDLE_GAP` before a turn opened (a resume after a cut): neither work nor delay;
 * `waits`: a tool call that only waits: on an agent it commissioned (`galaius agents wait`), on a deploy (`deploy_queue.py wait`),
-  on a CI run (`gh run watch`), on a timer or a polling loop (`sleep`, `until ...; do sleep`);
+  on a CI run (`gh run watch`), on a timer or a polling loop (`sleep`, `until ...; do sleep`), on his answer to a question
+  (`AskUserQuestion`), on a background job's output; a call still open when the window ends counts to its end;
 * `tools`: any other tool call, from the call to its result (a build, a test run, a read);
 * `dark`: no run in the window wrote anything for more than `DARK_GAP` seconds (the computer off or asleep, or every agent waiting on him):
   nobody was slow, so it is told apart from idle;
@@ -20,6 +21,7 @@ The transcript clips a tool call's input to ~300 characters: a wait whose tellta
 Stdlib JSON and regexes over the files, a byte search to the window's first line: no registry import, no server."""
 
 import json
+import math
 import os
 import re
 import statistics
@@ -46,12 +48,19 @@ PARKED_AFTER = 5.0
 #: The events that open a turn after the previous one ended.
 TURN_OPENERS = frozenset({"message", "started", "injected"})
 
+#: Where a command starts in a tool input (`command='…'`): the input's own start, after `;` `&` `|` `(`, after `do` / `then` / `timeout N`. A telltale
+#: word inside a quoted argument (`rg 'sleep 5'`, `git log --grep 'galaius agents wait'`) is no command.
+_START = r"(?:^|command=['\"]\s*|[;&|(]\s*|\b(?:do|then)\s+|\btimeout\s+\d+\s+)"
 _WAITS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("agent", re.compile(r"\bgalaius\s+agents\s+wait\b|\bagent_wait\b")),
-    ("deploy", re.compile(r"deploy_queue\.py['\"]?\s+wait\b|\bdeploy_queue\b[^\n]{0,80}\bwait\b")),
-    ("ci", re.compile(r"\bgh\s+run\s+(?:watch|view)\b|\bgh\s+pr\s+checks\b")),
-    ("timer", re.compile(r"(?:^|[;&|({]\s*|\b(?:then|do)\s+|['\"=]\s*)sleep\s+\d|\buntil\b[^\n]*\bsleep\b|\bwhile\b[^\n]*\bsleep\b")),
+    ("agent", re.compile(rf"{_START}(?:\S*/)?galaius\s+agents\s+wait\b")),
+    ("deploy", re.compile(rf"{_START}(?:\S*/)?(?:python3?\s+|\S*/galaius\s+--python\s+)?(?:\S*/)?deploy_queue\.py['\"]?\s+wait\b")),
+    ("ci", re.compile(rf"{_START}(?:\S*/)?gh\s+run\s+watch\b")),
+    ("timer", re.compile(rf"{_START}sleep\s+\d|\b(?:until|while)\b[^\n]*?[;&|]\s*sleep\s+\d|\b(?:until|while)\b[^\n]*\bdo\s+sleep\b")),
 )
+#: Tools whose call is itself a wait, by tool name: the person's answer to a question (the time is his, not a tool's), a background job's output.
+_WAITING_TOOLS = {"AskUserQuestion": "user", "TaskOutput": "job", "BashOutput": "job"}
+#: Tools whose input is a command line `_WAITS` reads.
+_COMMAND_TOOLS = frozenset({"Bash", "Monitor"})
 _UUID = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
 _SPAWNS = re.compile(r"\bgalaius\s+agents\s+spawn\b|\bagent_spawn\b")
 _KIND = '"kind":"'
@@ -67,9 +76,13 @@ class Waits(BaseModel):
     deploy: float = 0.0
     ci: float = 0.0
     timer: float = 0.0
+    #: Waiting for him to answer a question (`AskUserQuestion`).
+    user: float = 0.0
+    #: Waiting for a background job's output.
+    job: float = 0.0
 
     def total(self) -> float:
-        return self.agent + self.deploy + self.ci + self.timer
+        return self.agent + self.deploy + self.ci + self.timer + self.user + self.job
 
     def __add__(self, other: "Waits") -> "Waits":
         return Waits(**{name: getattr(self, name) + getattr(other, name) for name in type(self).model_fields})
@@ -110,7 +123,6 @@ class Rollup(BaseModel):
     tools: float
     model: float
     idle: float
-    dark: float
     waits: Waits
     queued_runs: int
     queued_total: float
@@ -128,16 +140,27 @@ class Slowness(BaseModel):
     by_role: list[Rollup]
     by_conversation: list[Rollup]
     total: Rollup
+    #: Seconds of the window in which no run wrote anything for over `DARK_GAP` (counted once, not per run).
+    dark: float = 0.0
 
 
 # --- reading a transcript --------------------------------------------------------------------------------------------------
 
 
+#: A transcript smaller than this is read whole: the byte search below assumes time-ordered lines, which a transcript replaying older events
+#: (an editor session's) is not; past it, the search starts this far before the line it found.
+SEARCH_FROM_BYTES = 32 << 20
+SEARCH_MARGIN = 4 << 20
+
+
 def _first_line_at(path: Path, since: float) -> int:
-    """A line start at or before the first line whose `at` is `since` or later (the file is time ordered), within 64 KB of it: a byte
-    search that only ever moves past a line it has read to be older than `since`."""
+    """Where to start reading `path` for the events from `since` on: 0 for a file under `SEARCH_FROM_BYTES`, else a line start `SEARCH_MARGIN`
+    before the first line whose `at` is `since` or later (a byte search within 64 KB, then back over the margin a replayed older line may sit in)."""
     with path.open("rb") as handle:
-        low, high = 0, os.fstat(handle.fileno()).st_size
+        size = os.fstat(handle.fileno()).st_size
+        if size < SEARCH_FROM_BYTES:
+            return 0
+        low, high = 0, size
         while high - low > 65536:
             middle = (low + high) // 2
             handle.seek(middle)
@@ -148,7 +171,7 @@ def _first_line_at(path: Path, since: float) -> int:
                 high = middle
             else:
                 low = handle.tell()
-        return low
+        return max(0, low - SEARCH_MARGIN)
 
 
 def _line_at(line: str) -> float | None:
@@ -179,7 +202,7 @@ class Transcript(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     events: list[tuple[float, str]]
-    #: (start, end, wait kind or "") of each tool call with a result.
+    #: (start, end, wait kind or "") of each tool call; `end` is infinite for one with no result yet.
     spans: list[tuple[float, float, str]]
     #: Child run id -> when the spawn call that named it returned.
     spawned: dict[str, float]
@@ -207,7 +230,7 @@ def _lead(path: Path, offset: int) -> tuple[float, str] | None:
 
 def read_transcript(path: Path, since: float) -> Transcript:
     """The events of `path` from `since` on. A missing or unreadable file reads empty."""
-    offset = 0
+    offset, before = 0, None
     events: list[tuple[float, str]] = []
     opened: dict[str, tuple[float, str, bool]] = {}
     spans: list[tuple[float, float, str]] = []
@@ -216,12 +239,16 @@ def read_transcript(path: Path, since: float) -> Transcript:
         offset = _first_line_at(path, since) if since > 0 else 0
         with path.open("rb") as handle:
             handle.seek(offset)
+            if offset:
+                handle.readline()   # the offset is a byte position, not a line start
             for raw in handle:
                 line = raw.decode("utf-8", "replace")
                 at, kind = _line_at(line), _line_kind(line)
                 if at is None or not kind:
                     continue
                 if at < since:
+                    if kind in TURN_OPENERS or kind in ("done", "error"):
+                        before = (at, kind)   # the last turn event before the window, in file order
                     continue
                 events.append((at, kind))
                 if kind == "tool":
@@ -229,9 +256,9 @@ def read_transcript(path: Path, since: float) -> Transcript:
                         call = json.loads(line)
                     except ValueError:
                         continue
-                    text = f"{call.get('tool') or ''} {call.get('tool_input') or ''}"
-                    wait = next((name for name, pattern in _WAITS if pattern.search(text)), "")
-                    opened[str(call.get("tool_id") or "")] = (at, wait, _SPAWNS.search(text) is not None)
+                    name, text = str(call.get("tool") or ""), str(call.get("tool_input") or "")
+                    wait = _WAITING_TOOLS.get(name) or (next((label for label, pattern in _WAITS if pattern.search(text)), "") if name in _COMMAND_TOOLS else "")
+                    opened[str(call.get("tool_id") or "")] = (at, wait, _SPAWNS.search(f"{name} {text}") is not None)
                 elif kind == "tool_result":
                     try:
                         result = json.loads(line)
@@ -242,9 +269,14 @@ def read_transcript(path: Path, since: float) -> Transcript:
                         if call[2]:
                             for child in _UUID.findall(str(result.get("text") or "")):
                                 spawned.setdefault(child, at)
+        # A call with no result yet is open until its turn ends (the next turn event) or, in the last turn, the run's end or now.
+        turn_marks = sorted(at for at, kind in events if kind in TURN_OPENERS or kind in ("done", "error"))
+        for start, wait, _ in opened.values():
+            later = bisect_right(turn_marks, start)
+            spans.append((start, turn_marks[later] if later < len(turn_marks) else math.inf, wait))
     except OSError:
         pass
-    return Transcript(events=events, spans=spans, spawned=spawned, lead=_lead(path, offset))
+    return Transcript(events=events, spans=spans, spawned=spawned, lead=before or _lead(path, offset))
 
 
 # --- one run's profile -----------------------------------------------------------------------------------------------------
@@ -261,6 +293,28 @@ def _disjoint(spans: Iterable[tuple[float, float, str]]) -> list[tuple[float, fl
         if end > start:
             merged.append((start, end, kind))
     return merged
+
+
+def _minus(spans: list[tuple[float, float, str]], holes: list[tuple[float, float, str]]) -> list[tuple[float, float, str]]:
+    """The disjoint, sorted `spans` with every part inside the disjoint, sorted `holes` taken out."""
+    kept: list[tuple[float, float, str]] = []
+    ends = [hole[1] for hole in holes]
+    for start, end, kind in spans:
+        for hole_start, hole_end, _ in holes[bisect_right(ends, start):]:
+            if hole_start >= end:
+                break
+            if hole_start > start:
+                kept.append((start, hole_start, kind))
+            start = max(start, hole_end)
+            if start >= end:
+                break
+        if start < end:
+            kept.append((start, end, kind))
+    return kept
+
+
+def _within(spans: list[tuple[float, float, str]], low: float, high: float) -> list[tuple[float, float, str]]:
+    return [(max(a, low), min(b, high), kind) for a, b, kind in spans if b > low and a < high]
 
 
 def _parked(events: list[tuple[float, str]], end: float) -> list[tuple[float, float, str]]:
@@ -280,7 +334,10 @@ def _parked(events: list[tuple[float, str]], end: float) -> list[tuple[float, fl
 
 def profile_run(row: RunRow, transcript: Transcript, *, since: float, now: float, queued: float | None,
                 dark: list[tuple[float, float, str]] = ()) -> RunProfile:
-    """`row`'s time in `[since, now]` split as the module doc says; `dark` the stretches no run wrote in (`dark_stretches`)."""
+    """`row`'s time in `[since, now]` split as the module doc says; `dark` the stretches no run wrote in (`dark_stretches`).
+
+    Four sets of disjoint intervals, each taking from the ones before it: parked, dark, tool calls (by what they wait on); what none of them
+    covers is the model's own time, or idle where its gap between two events is over `IDLE_GAP`."""
     start = max(row.started_at, since)
     end = now if row.status in AT_WORK or not row.finished_at else min(row.finished_at, now)
     end = max(end, start)
@@ -289,46 +346,31 @@ def profile_run(row: RunRow, transcript: Transcript, *, since: float, now: float
     events = [(max(at, start), kind) for at, kind in transcript.events if at <= end]
     if transcript.lead is not None and transcript.lead[0] < start:
         events.insert(0, (start, transcript.lead[1]))   # the window opens inside the turn that event began or ended
-    marks = sorted({start, end, *(at for at, _ in events)})
-    blocked = _disjoint([*((max(a, start), min(b, end), kind or "tool") for a, b, kind in transcript.spans if b > start and a < end)])
+    last = max((at for at, _ in events), default=start)
     stretches = _parked(events, end)
-    if row.status == "waiting" and end - max((at for at, _ in events), default=start) > PARKED_AFTER:   # waiting for its next message, by its own record
-        stretches.append((max((at for at, _ in events), default=start), end, "parked"))
-    parked = _disjoint(stretches)
+    if row.status == "waiting" and end - last > PARKED_AFTER:   # waiting for its next message, by its own record
+        stretches.append((last, end, "parked"))
+    parked = _within(_disjoint(stretches), start, end)
+    dark_set = _minus(_within(list(dark), start, end), parked)
+    tools = _minus(_minus(_within(_disjoint(transcript.spans), start, end), parked), dark_set)
     totals: dict[str, float] = defaultdict(float)
+    for kind, spans in (("parked", parked), ("dark", dark_set)):
+        totals[kind] = sum(b - a for a, b, _ in spans)
+    for a, b, kind in tools:
+        totals[kind or "tool"] += b - a
+    covered = _disjoint([*parked, *dark_set, *tools])
+    starts = [c[0] for c in covered]
     openers = {at for at, kind in events if kind in TURN_OPENERS}
-    starts_blocked, starts_parked, starts_dark = [b[0] for b in blocked], [p[0] for p in parked], [d[0] for d in dark]
-
-    def overlap(a: float, b: float, intervals: list[tuple[float, float, str]], starts: list[float]) -> list[tuple[float, float, str]]:
-        found, index = [], max(0, bisect_right(starts, a) - 1)
-        while index < len(intervals) and intervals[index][0] < b:
-            s, e, kind = intervals[index]
-            if e > a:
-                found.append((max(a, s), min(b, e), kind))
-            index += 1
-        return found
-
+    marks = sorted({start, end, *(at for at, _ in events)})
     for a, b in zip(marks, marks[1:]):
         if b <= a:
             continue
-        taken = 0.0
-        for s, e, kind in overlap(a, b, parked, starts_parked):
-            totals["parked"] += e - s
-            taken += e - s
-        for s, e, kind in overlap(a, b, blocked, starts_blocked):
-            length = e - s
-            # a tool call inside a parked stretch is the parked stretch's (nothing waits there)
-            inside = sum(min(e, pe) - max(s, ps) for ps, pe, _ in overlap(s, e, parked, starts_parked))
-            length -= max(0.0, inside)
-            if length > 0:
-                totals[kind] += length
-                taken += length
+        taken, index = 0.0, max(0, bisect_right(starts, a) - 1)
+        while index < len(covered) and covered[index][0] < b:
+            taken += max(0.0, min(b, covered[index][1]) - max(a, covered[index][0]))
+            index += 1
         rest = (b - a) - taken
-        if rest > 0:
-            for s, e, kind in overlap(a, b, dark, starts_dark):
-                totals["dark"] += min(e - s, rest)
-                rest -= min(e - s, rest)
-        if rest > 0:
+        if rest > 1e-9:
             # a long silence that ends in a turn opening was the run waiting for its next turn (his message, a resume after a cut): parked
             totals["parked" if b - a > IDLE_GAP and b in openers else "idle" if b - a > IDLE_GAP else "model"] += rest
     wait = Waits(**{name: totals[name] for name in Waits.model_fields})
@@ -343,7 +385,7 @@ def rollup(name: str, profiles: list[RunProfile]) -> Rollup:
     queued = [p.queued for p in profiles if p.queued is not None]
     return Rollup(
         name=name, runs=len(profiles), active=sum(p.active() for p in profiles), tools=sum(p.tools for p in profiles),
-        model=sum(p.model for p in profiles), idle=sum(p.idle for p in profiles), dark=sum(p.dark for p in profiles), waits=sum((p.waits for p in profiles), Waits()),
+        model=sum(p.model for p in profiles), idle=sum(p.idle for p in profiles), waits=sum((p.waits for p in profiles), Waits()),
         queued_runs=len(queued), queued_total=sum(queued), queued_median=statistics.median(queued) if queued else None,
         queued_max=max(queued) if queued else None)
 
@@ -381,4 +423,5 @@ def slowness(ledger: RunLedger, rows: list[RunRow], *, since: float, now: float 
         chats[profile.conversation].append(profile)
     ranked = lambda table: sorted((rollup(name, group) for name, group in table.items()), key=lambda item: -item.active)  # noqa: E731
     return Slowness(since=since, until=moment, runs=profiles, longest=sorted(profiles, key=lambda p: -p.active())[:top],
-                    by_role=ranked(groups), by_conversation=ranked(chats), total=rollup("all", profiles))
+                    by_role=ranked(groups), by_conversation=ranked(chats), total=rollup("all", profiles),
+                    dark=sum(b - a for a, b, _ in dark))

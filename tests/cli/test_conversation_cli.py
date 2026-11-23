@@ -9,7 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from galaius.agents.run_ledger import RunLedger, RunQuery, own_conversation, parse_since, stats
+from galaius.agents import run_slowness
+from galaius.agents.run_ledger import RunLedger, RunQuery, RunRow, own_conversation, parse_since, stats
+from galaius.agents.run_slowness import DARK_GAP, IDLE_GAP, profile_run, read_transcript, slowness
 from galaius.cli.commands.debug import conversation as cli
 from galaius.cli.commands.agents import runs as agents_runs
 
@@ -353,7 +355,6 @@ def test_a_run_named_as_the_registry_allows_is_read_and_a_json_file_that_is_no_r
 
 # --- his messages and why it is slow ---------------------------------------------------------------------------------------
 
-from galaius.agents.run_slowness import DARK_GAP, IDLE_GAP, profile_run, read_transcript, slowness  # noqa: E402
 
 WEB_ID = "36d7fb13-f1cb-4b45-b7cc-cc2416631156"
 
@@ -368,23 +369,34 @@ def _transcript(folder: Path, run_id: str, lines: list[str]) -> None:
 
 
 def _row(run_id: str = CHILD, *, status: str = "done", started: float, finished: float | None):
-    from galaius.agents.run_ledger import RunRow
     return RunRow(run_id=run_id, role="builder", status=status, conversation=ROOT, started_at=started, finished_at=finished)
 
 
-def test_a_message_is_his_when_the_web_gave_it_its_id_and_each_shows_once_with_his_frustration_wording(folder: Path) -> None:
+def test_a_message_is_his_when_the_web_gave_it_its_id_and_each_shows_once_with_what_reads_as_frustration(folder: Path) -> None:
     now = time.time()
     said = lambda event_id, at, text, to=CHILD: json.dumps({"kind": "message", "event_id": event_id, "text": text, "from_run": "operator", "to_run": to, "at": at}, separators=(",", ":"))  # noqa: E731
-    lines = [said(WEB_ID, now - 60, "I already asked this twice"), said("a" * 32, now - 50, "Resumed after your run was cut"), said(WEB_ID, now - 60, "I already asked this twice", GRAND),
-             said("11111111-2222-4333-8444-555555555555", now - 30, "fine, thanks", WEB)]
+    resumed = "11111111-2222-4333-8444-555555555556"   # the runtime's own resume brief carries a web-shaped id too
+    lines = [said(WEB_ID, now - 60, "toujours pas, wtf"), said("a" * 32, now - 50, "an agent's own agents send"), said(resumed, now - 55, "Resumed after your run was cut (usage limit)"),
+             said(WEB_ID, now - 60, "toujours pas, wtf", GRAND), said("11111111-2222-4333-8444-555555555555", now - 30, "fine, thanks", WEB),
+             said("11111111-2222-4333-8444-555555555557", now - 20, "Get working !!!!", WEB)]
     (folder / f"{CHILD}.messages.jsonl").write_text("\n".join(lines))
-    (folder / f"{GRAND}.messages.jsonl").write_text(lines[2])
+    (folder / f"{GRAND}.messages.jsonl").write_text(lines[3])
     ledger = RunLedger(folder)
     found = ledger.his_messages(since=now - 3600)
-    assert [(m.text, bool(m.frustrated), m.conversation) for m in found] == [("I already asked this twice", True, ROOT), ("fine, thanks", False, "web-abc")]
-    assert [m.text for m in ledger.his_messages(since=now - 3600, frustrated=True)] == ["I already asked this twice"]
-    assert [m.text for m in ledger.his_messages(since=now - 3600, conversation=ROOT)] == ["I already asked this twice"]
-    assert ledger.his_messages(since=now - 20) == [], "since cuts by the message's own time"
+    assert [(m.text, bool(m.frustrated), m.conversation) for m in found] == [("toujours pas, wtf", True, ROOT), ("fine, thanks", False, "web-abc"), ("Get working !!!!", True, "web-abc")]
+    assert [m.text for m in ledger.his_messages(since=now - 3600, frustrated=True)] == ["toujours pas, wtf", "Get working !!!!"]
+    assert [m.text for m in ledger.his_messages(since=now - 3600, conversation=ROOT)] == ["toujours pas, wtf"]
+    assert ledger.his_messages(since=now - 25)[0].text == "Get working !!!!" and len(ledger.his_messages(since=now - 25)) == 1, "since cuts by the message's own time"
+
+
+def test_an_ask_he_made_earlier_in_the_conversation_reads_as_frustration(folder: Path) -> None:
+    now = time.time()
+    first = "Please show the closed asks in the asks view, with the guard that closed each one of them"
+    lines = [json.dumps({"kind": "message", "event_id": f"11111111-2222-4333-8444-55555555555{index}", "text": text, "from_run": "operator", "to_run": CHILD, "at": now - 100 + index})
+             for index, text in enumerate([first, "ok", f"again: {first}"])]
+    (folder / f"{CHILD}.messages.jsonl").write_text("\n".join(lines))
+    found = RunLedger(folder).his_messages(since=now - 3600)
+    assert [bool(m.frustrated) for m in found] == [False, False, True] and "raised again" in found[2].frustrated
 
 
 def test_every_second_of_a_run_lands_in_one_part_and_each_part_is_told_from_the_others(folder: Path) -> None:
@@ -433,12 +445,16 @@ def test_the_time_a_spawned_run_waited_is_read_from_its_parent_s_spawn_call_and_
     assert queued[CHILD] == pytest.approx(120) and queued[GRAND] is None and report.total.queued_runs == 1
 
 
-def test_reading_a_transcript_from_a_time_equals_filtering_the_whole_of_it(folder: Path) -> None:
-    """The byte search to the window's first line never skips a line the window holds, over a file far past its 64 KB step."""
+def test_reading_a_transcript_from_a_time_equals_filtering_the_whole_of_it(folder: Path, monkeypatch) -> None:
+    """The byte search to the window's first line never skips a line the window holds, over a file far past its 64 KB step, even when the file
+    replays older events in the middle of it (an editor session's transcript does)."""
+    monkeypatch.setattr(run_slowness, "SEARCH_FROM_BYTES", 1000)
+    monkeypatch.setattr(run_slowness, "SEARCH_MARGIN", 200_000)
     lines = [_line("text", 1000.0 + index, text="x" * 200) for index in range(2000)]
+    lines[1000:1000] = [_line("text", 1000.0 + index, text="x" * 200) for index in range(5)]   # replayed from long before
     _transcript(folder, CHILD, lines)
     path = folder / f"{CHILD}.jsonl"
-    whole = read_transcript(path, 0).events
+    whole = [event for event in read_transcript(path, 0).events]
     for since in (0.0, 1000.0, 1500.5, 2999.0, 3000.0, 9999.0):
         assert read_transcript(path, since).events == [event for event in whole if event[0] >= since], since
 
@@ -463,4 +479,51 @@ def test_slow_and_messages_print_the_same_numbers_as_json(folder: Path, monkeypa
     assert "timer 30s" in capsys.readouterr().out
     (folder / f"{CHILD}.messages.jsonl").write_text(json.dumps({"kind": "message", "event_id": WEB_ID, "text": "toujours pas", "from_run": "operator", "to_run": CHILD, "at": now - 10}))
     cli.messages(since="1h", json_out=True)
-    assert json.loads(capsys.readouterr().out)["messages"][0]["frustrated"] == "toujours pas"
+    assert json.loads(capsys.readouterr().out)["messages"][0]["frustrated"] == "« toujours pas »"
+
+
+def _tool(t: float, end: float | None, command: str, *, tool: str = "Bash", name: str = "x") -> list[str]:
+    lines = [_line("tool", t, tool=tool, tool_input=f"command='{command}'" if tool in ("Bash", "Monitor") else command, tool_id=name)]
+    return lines + ([] if end is None else [_line("tool_result", end, tool_id=name, text="ok")])
+
+
+@pytest.mark.parametrize("tool, command, kind", [
+    ("Bash", "galaius agents wait abc --timeout 500", "agent"), ("Bash", "cd /x; timeout 580 ../galaius --python y/deploy_queue.py wait 2026-galaius-x", "deploy"),
+    ("Bash", "gh run watch 123", "ci"), ("Bash", "for i in 1 2; do sleep 10; done", "timer"), ("Bash", "until grep -q x f; do sleep 5; done", "timer"),
+    ("AskUserQuestion", "{}", "user"), ("TaskOutput", "{}", "job"),
+    # not a wait: the telltale words sit in an argument, or the call returns at once
+    ("Bash", "rg \"sleep 5\" src", ""), ("Bash", "echo \"gh run view\"", ""), ("Bash", "git log --grep \"galaius agents wait\"", ""),
+    ("Bash", "deploy_queue.py enqueue --summary \"will wait\"", ""), ("Bash", "gh run view 123 --log", ""), ("Bash", "gh pr checks", ""),
+    ("Read", "galaius agents wait", ""),
+], ids=lambda value: str(value)[:28])
+def test_a_tool_call_is_a_wait_by_its_command_not_by_words_in_it(folder: Path, tool: str, command: str, kind: str) -> None:
+    t = 1_000_000.0
+    _transcript(folder, CHILD, [_line("started", t), *_tool(t + 5, t + 105, command, tool=tool), _line("done", t + 110)])
+    profile = profile_run(_row(started=t, finished=t + 110), read_transcript(folder / f"{CHILD}.jsonl", 0), since=t, now=t + 200, queued=None)
+    assert (getattr(profile.waits, kind) if kind else profile.tools) == pytest.approx(100), profile
+
+
+def test_a_call_still_open_counts_to_now_and_a_call_cut_off_by_a_new_turn_ends_with_that_turn(folder: Path) -> None:
+    t = 1_000_000.0
+    _transcript(folder, CHILD, [_line("started", t), *_tool(t + 10, None, "galaius agents wait abc")])
+    open_now = profile_run(_row(status="running", started=t, finished=None), read_transcript(folder / f"{CHILD}.jsonl", 0), since=t, now=t + 1000, queued=None)
+    assert open_now.waits.agent == pytest.approx(990) and open_now.idle == 0
+    _transcript(folder, CHILD, [_line("started", t), *_tool(t + 10, None, "galaius agents wait abc"), _line("done", t + 100), _line("message", t + 300), _line("done", t + 310)])
+    cut = profile_run(_row(started=t, finished=t + 310), read_transcript(folder / f"{CHILD}.jsonl", 0), since=t, now=t + 1000, queued=None)
+    assert cut.waits.agent == pytest.approx(90) and cut.parked == pytest.approx(200)
+
+
+def test_dark_time_is_counted_once_for_the_window_and_beats_a_tool_call_straddling_it(folder: Path) -> None:
+    t = time.time() - 36000
+    gap = DARK_GAP * 8
+    for run_id, parent in ((CHILD, ROOT), (GRAND, ROOT)):
+        put(folder, run_id, parent_run_id=parent, started_at=t, finished_at=t + 200 + gap + 50)
+    _transcript(folder, CHILD, [_line("started", t), *_tool(t + 100, t + 200 + gap, "make test"), _line("done", t + 200 + gap + 50)])   # a call open across the dark stretch
+    _transcript(folder, GRAND, [_line("started", t), _line("text", t + 150), _line("text", t + 200 + gap + 20), _line("done", t + 200 + gap + 50)])
+    put(folder, ROOT, started_at=t, finished_at=t + 200 + gap + 50)
+    ledger = RunLedger(folder)
+    report = slowness(ledger, ledger.rows(RunQuery(conversation=ROOT)), since=t, now=t + 200 + gap + 60)
+    by_id = {p.run_id: p for p in report.runs}
+    assert DARK_GAP * 7 < report.dark < gap + 100
+    assert by_id[CHILD].tools < 200 and by_id[CHILD].dark > DARK_GAP * 7, "the call's time inside the dark stretch is dark, not tools"
+    assert all(abs(p.wall - (p.parked + p.dark + p.tools + p.model + p.idle + p.waits.total())) < 1e-6 for p in report.runs)

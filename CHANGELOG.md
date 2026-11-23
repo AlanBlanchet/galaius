@@ -7,10 +7,10 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 ## Unreleased
 
 - `galaius conversation messages` lists what he typed in the web app lately (time, conversation, the run it reached, his words; `!` and
-  `--frustrated` for the wording the coordinator's close gate arms on), and `galaius conversation slow` says where the time of each run
+  `--frustrated` for what reads as frustration: his wording, several « ! », an ask he already made), and `galaius conversation slow` says where the time of each run
   went, from its transcript: parked between turns, waiting (on agents, deploys, CI, timers), tools, model, idle, `dark` (no run wrote for
   15 min: the computer off, or everyone waiting on him) and the time a spawned run was queued before it started, per run, role and
-  conversation, with the longest runs first. Same engine, same filters, `--json`.
+  conversation, with the longest runs first; a tool call still open counts to now, and what is waiting on him (a question he has not answered) is told apart. Same engine, same filters, `--json`.
 - `galaius doctor` now answers « what is wrong with this PC and its app » in about a second of its own work: the link to the app (what the tray
   icon shows, the app's last answer to a hello, the last trouble from the journal), the app's build and whether it answers, galaius user units
   that failed or loop (with the unit's own last line), failed spawns and agent memory, limits in force, and CI of main through `gh`. Findings

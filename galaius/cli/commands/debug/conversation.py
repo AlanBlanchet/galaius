@@ -247,11 +247,11 @@ class MessagesOut(BaseModel):
 @conversation_app.command
 def messages(*, conversation: Annotated[str | None, Parameter(help="A conversation id or prefix, or any run id of it. Default: every conversation.")] = None,
              since: Annotated[str, Parameter(help="6h, 30m, 2d, a date or datetime, or `all`. Default 24h.")] = "24h",
-             frustrated: Annotated[bool, Parameter(negative=(), help="Only messages holding his frustration wording (the coordinator's gate pattern).")] = False,
+             frustrated: Annotated[bool, Parameter(negative=(), help="Only messages that read as frustration: his wording, several « ! », an ask he already made earlier.")] = False,
              chars: Annotated[int, Parameter(help="Clip each message to this many characters; 0 = whole.")] = 240,
              json_out: Annotated[bool, Parameter(name="--json", negative=(), help="One JSON object: `covers`, `messages`.")] = False) -> None:
     """The messages he typed in the web app lately, oldest first: time, conversation, the run it reached, his words. `!` marks his
-    frustration wording. What he types in an editor or terminal session is in that CLI's own transcript (`galaius agents search`)."""
+    frustration. What he types in an editor or terminal session is in that CLI's own transcript (`galaius agents search`)."""
     try:
         moment = None if since == "all" else parse_since(since)
         found = RunLedger().his_messages(since=moment or 0.0, conversation=conversation, frustrated=frustrated)
@@ -273,10 +273,12 @@ class SlowOut(BaseModel):
     slowness: Slowness
 
 
-def _split(profile) -> str:
-    waits = profile.waits
-    return (f"tools {_span(profile.tools)} · model {_span(profile.model)} · waits {_span(waits.total())} "
-            f"(agents {_span(waits.agent)}, deploy {_span(waits.deploy)}, ci {_span(waits.ci)}, timer {_span(waits.timer)}) · idle {_span(profile.idle)} · dark {_span(profile.dark)}")
+def _split(item) -> str:
+    """The parts of a run's, role's or window's time as one line; `dark` only where the item has it (a run: its share of the window's)."""
+    waits = item.waits
+    dark = f" · dark {_span(item.dark)}" if hasattr(item, "dark") else ""
+    return (f"tools {_span(item.tools)} · model {_span(item.model)} · waits {_span(waits.total())} "
+            f"(agents {_span(waits.agent)}, deploy {_span(waits.deploy)}, ci {_span(waits.ci)}, timer {_span(waits.timer)}, you {_span(waits.user)}, jobs {_span(waits.job)}) · idle {_span(item.idle)}{dark}")
 
 
 @conversation_app.command
@@ -298,8 +300,8 @@ def slow(*, conversation: Annotated[str | None, Parameter(help="A conversation i
         print(SlowOut(covers=covers, slowness=report).model_dump_json(indent=1))
         return
     total = report.total
-    print(f"{covers} · {total.runs} runs · active {_span(total.active)} (parked and dark time excluded)")
-    print(f"  {_split_rollup(total)}")
+    print(f"{covers} · {total.runs} runs · active {_span(total.active)} (parked and dark time excluded) · dark {_span(report.dark)} of the window: no run wrote for 15 min")
+    print(f"  {_split(total)}")
     if total.queued_runs:
         print(f"  queued before start: {total.queued_runs} runs, total {_span(total.queued_total)}, median {_span(total.queued_median or 0)}, max {_span(total.queued_max or 0)}")
     else:
@@ -312,11 +314,5 @@ def slow(*, conversation: Annotated[str | None, Parameter(help="A conversation i
         if rollups:
             print(f"{title}:")
             for item in rollups[:8]:
-                print(f"  {item.name[:22]:<22} {item.runs:>4} runs · active {_span(item.active):>6} · {_split_rollup(item)}"
+                print(f"  {item.name[:22]:<22} {item.runs:>4} runs · active {_span(item.active):>6} · {_split(item)}"
                       + (f" · queued median {_span(item.queued_median)}" if item.queued_median is not None else ""))
-
-
-def _split_rollup(item) -> str:
-    waits = item.waits
-    return (f"tools {_span(item.tools)} · model {_span(item.model)} · waits {_span(waits.total())} "
-            f"(agents {_span(waits.agent)}, deploy {_span(waits.deploy)}, ci {_span(waits.ci)}, timer {_span(waits.timer)}) · idle {_span(item.idle)} · dark {_span(item.dark)}")

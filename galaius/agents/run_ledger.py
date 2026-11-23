@@ -24,6 +24,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from galaius.config.settings import FRUSTRATION
 from galaius.host.paths import UserPaths
 
 #: A run record's file name: its full id. Locks, streams, queues and the registry's other files share the folder.
@@ -106,14 +107,12 @@ class RunRow(BaseModel):
         return max(0.0, (self.finished_at or now) - self.started_at) if self.started_at else 0.0
 
 
-#: His own frustration wording, the one the coordinator's close gate arms on (kept equal to it by hand: the gate lives outside this repository).
-FRUSTRATED = re.compile(r"you'?re kidd?in|are you kidd?in|literally (?:asked|said|told)|(?:i|I) (?:already|just) (?:asked|said|told)"
-                        r"|how many times|j'?(?:t')?(?:l')?ai d[ée]j[àa] (?:dit|demand)|combien de fois|tu (?:te )?fous|s[ée]rieux \?"
-                        r"|\bwtf\b|still (?:not|broken|wrong)|toujours pas", re.IGNORECASE)
 #: Who a message in a run's `.messages.jsonl` names as its sender when no run sent it: the person, or a command an agent ran without a run's identity.
 OPERATOR = "operator"
 #: The id a message the person typed in the web app keeps end to end (`agents send --message-id`: the app's own outbox row, a hyphenated
 #: uuid); a command's own messages carry 32 hex digits. The one mark that tells his words from an agent's `agents send`.
+#: What the runtime itself sends a run under the same id shape, never his words (`registry.RESUME_BRIEF`).
+SYSTEM_MESSAGES = ("Resumed after your run was cut",)
 WEB_MESSAGE_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
@@ -127,7 +126,8 @@ class Said(BaseModel):
     to_run: str
     role: str
     text: str
-    #: The wording of `FRUSTRATED` the text holds, "" for none.
+    #: What in the text reads as frustration (`settings.FRUSTRATION`: his wording, several « ! », an ask he already made earlier in the
+    #: conversation), quoted; "" for none.
     frustrated: str = ""
 
 
@@ -190,8 +190,10 @@ def own_conversation(environment: Mapping[str, str] | None = None, root: Path | 
 class RunLedger:
     """The records in one folder, read on demand. One instance per command: its parent cache never outlives it."""
 
-    def __init__(self, root: Path | None = None) -> None:
+    def __init__(self, root: Path | None = None, *, cache: bool = True) -> None:
+        """`cache=False` reads and writes no `.run-ledger.cache`: a folder this process does not own (the app host's mirror of a PC's records)."""
         self.root = UserPaths.agents() if root is None else root
+        self._use_cache = cache
         self._raw: dict[str, dict | None] = {}
         self._keys: dict[str, str] = {}
         self._cache: dict[str, list] | None = None
@@ -228,6 +230,8 @@ class RunLedger:
     def _cached(self) -> dict[str, list]:
         """The trimmed records kept from earlier reads: file name -> its file's stamp (`_stamp`) and the trimmed record. A record is parsed again only when its
         file moved; a missing or unreadable cache is no cache (5,000 records parse in ~1 s, from the cache in ~0.2 s)."""
+        if self._cache is None and not self._use_cache:
+            self._cache = {}
         if self._cache is None:
             try:
                 loaded = json.loads((self.root / CACHE).read_text(encoding="utf-8"))
@@ -261,7 +265,7 @@ class RunLedger:
 
     def keep_cache(self) -> None:
         """Write what this instance read afresh, if anything, for the next command: one rename, a failed write loses only the speed-up."""
-        if self._cache is None:
+        if self._cache is None or not self._use_cache:
             return
         target = self.root / CACHE
         if self._listed is not None and (gone := self._cache.keys() - self._listed):   # a run forgotten since leaves nothing of its words behind
@@ -368,7 +372,7 @@ class RunLedger:
         A run's `.messages.jsonl` is append only, so a file older than `since` holds none. What he types in an editor or terminal
         session of an agent CLI is in that CLI's own transcript (`galaius agents search`), not here."""
         wanted = None if conversation is None else self.resolve_conversation(conversation)
-        found: dict[str, Said] = {}
+        found: dict[str, tuple[float, str, str, str, str]] = {}
         try:
             entries = [entry for entry in os.scandir(self.root) if entry.name.endswith(".messages.jsonl") and not entry.name.startswith(".")]
         except OSError:
@@ -388,19 +392,24 @@ class RunLedger:
                         if not isinstance(event, dict) or event.get("from_run") != OPERATOR:
                             continue
                         at, text, target = event.get("at"), event.get("text"), event.get("to_run")
-                        if not WEB_MESSAGE_ID.match(str(event.get("event_id") or "")) or not isinstance(at, (int, float)) or at < since or not isinstance(text, str) or not isinstance(target, str):
+                        if (not WEB_MESSAGE_ID.match(str(event.get("event_id") or "")) or not isinstance(at, (int, float)) or at < since
+                                or not isinstance(text, str) or not isinstance(target, str) or text.startswith(SYSTEM_MESSAGES)):
                             continue
-                        key = conversation_id = self.conversation_key(target)
+                        key = self.conversation_key(target)
                         if wanted is not None and key != wanted:
                             continue
                         raw = self._record(target) or {}
-                        hit = FRUSTRATED.search(text)
-                        said = Said(at=float(at), conversation=conversation_id, to_run=target, role=str(raw.get("agent") or raw.get("name") or "?"),
-                                    text=text, frustrated=hit.group(0) if hit else "")
-                        found.setdefault(str(event.get("event_id") or f"{target}:{at}"), said)
+                        found.setdefault(str(event["event_id"]), (float(at), key, target, str(raw.get("agent") or raw.get("name") or "?"), text))
             except OSError:
                 continue
-        return sorted((said for said in found.values() if said.frustrated or not frustrated), key=lambda said: said.at)
+        said_before: dict[str, list[str]] = {}
+        heard = []
+        for at, key, target, role, text in sorted(found.values()):
+            hit = FRUSTRATION.matched(text, said_before.get(key, ()))
+            said_before.setdefault(key, []).append(text)
+            if hit or not frustrated:
+                heard.append(Said(at=at, conversation=key, to_run=target, role=role, text=text, frustrated=hit or ""))
+        return heard
 
     def last_words(self, run_id: str, *, text_chars: int | None = None) -> "Ending":
         """How run `run_id` ended and what it said last: its last `done` / `error` event (the report an asker reads), else, for a
