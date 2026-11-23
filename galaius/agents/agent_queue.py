@@ -879,6 +879,31 @@ def _serve_once(token: str, working: dict[str, threading.Thread], idle_since: fl
     return time.monotonic() if handed or working else idle_since
 
 
+def revive_orphans() -> list[str]:
+    """Hand to a dispatcher again every run whose queue holds a message pending or in flight and whose dispatcher is gone: a
+    power-off or a crash took it, and until the next message to that run nothing delivered what waited (2026-11-23: a tester's report
+    to 3ef08f32 pending 7 h while the run read `done`, the owner's own message too). The run reads `starting` meanwhile
+    (`begin_resume_locked`) like any run coming back for a message. The run ids revived; a queue that cannot be read is left alone."""
+    revived: list[str] = []
+    for queue_file in sorted(reg.agents_dir().glob(f"*{reg.QUEUE_SUFFIX}")):
+        payload = reg._read_private(queue_file)
+        if payload is None or (PENDING_MARK.encode() not in payload and b'"running"' not in payload):
+            continue
+        run_id = queue_file.name.removesuffix(reg.QUEUE_SUFFIX)
+        try:
+            with reg.record_lock(run_id):
+                state = _state(run_id)
+                run = reg.get_run(run_id)
+                if run is None or _dispatcher_matches(state) or not any(item.state in ACTIVE for item in _items(state)):
+                    continue
+                reg.begin_resume_locked(run_id)
+                ensure_dispatcher_locked(run_id, cwd=run.cwd or ".")
+            revived.append(run_id)
+        except (OSError, RuntimeError, ValueError, CorruptQueueStateError):
+            log.warning("agent queue %s: could not hand its waiting message to a dispatcher", queue_file, exc_info=True)
+    return revived
+
+
 def ensure_dispatcher(run_id: str, *, cwd: str = ".") -> int:
     with reg.record_lock(run_id):
         return ensure_dispatcher_locked(run_id, cwd=cwd)

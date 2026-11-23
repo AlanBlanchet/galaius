@@ -309,6 +309,7 @@ class EndWatch(BaseModel):
     failed: dict[str, "HandBackFailure"] = Field(default_factory=dict)
     #: The spawn line's own look (`SpawnLine.revive`, `report_lost`) raised at the last look: said once, not at every look.
     line_failed: bool = False
+    queues_failed: bool = False
 
     def model_post_init(self, _context) -> None:
         relations.handback_since()   # from its first look on, a report its asker was at work for is carried (`_resume`)
@@ -352,6 +353,13 @@ class EndWatch(BaseModel):
             if not self.line_failed:
                 log.exception("holding or reporting the spawns in line failed; tried again at every look, reported once")
             self.line_failed = True
+        try:   # a message pending in a queue whose dispatcher a power-off took is handed to one again (`agent_queue.revive_orphans`)
+            agent_queue.revive_orphans()
+            self.queues_failed = False
+        except Exception:
+            if not self.queues_failed:
+                log.exception("handing the waiting messages to a dispatcher failed; tried again at every look, reported once while it keeps failing")
+            self.queues_failed = True
         if not self.failed:
             with reg.shared_state(_LOOKED) as (_raw, write, _keep):
                 write(repr(self.looked).encode())

@@ -976,3 +976,18 @@ def _wrapped(cause: Exception) -> Exception:
 ], ids=["policy-no", "access-refused", "catalog-5xx", "os"])
 def test_only_a_refusal_waiting_cannot_change_is_never_tried_again(error, permanent):
     assert agent_queue._permanent(error) is permanent
+
+
+def test_a_message_pending_after_a_power_off_is_handed_to_a_dispatcher_again(monkeypatch):
+    """2026-11-23: a tester's report to a run sat pending 7 h behind a dispatcher the power-off took, the run reading `done`."""
+    setup_queue(monkeypatch)
+    handed: list[str] = []
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda run_id, **rest: handed.append(run_id) or 1)
+    message_id = reg.record_message_event(from_run="operator", to_run="r1", text="waiting for a dispatcher")
+    assert message_id and agent_queue.enqueue("r1", message_id=message_id, sender="operator")
+    handed.clear()   # the enqueue's own hand-over is not what is tested
+    assert agent_queue.revive_orphans() == ["r1"] and handed == ["r1"]
+    assert reg.get_run("r1").status == "starting"   # every reader, the web's mirror included, sees it coming back
+    # a queue whose dispatcher lives, or holding nothing active, is left alone
+    monkeypatch.setattr(agent_queue, "_dispatcher_matches", lambda state: True)
+    assert agent_queue.revive_orphans() == []
