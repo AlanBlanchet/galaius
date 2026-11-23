@@ -2345,11 +2345,12 @@ _MODEL_LIMIT = "You've reached your Opus limit. Switch to another model, or mana
     # now (`spawn_line.Spawn.relaunching`), once; a relaunch that could not start leaves it to its reset, if it names one.
     (_SESSION_LIMIT, False, 60, "relaunch", "itself"),
     (_MODEL_LIMIT, False, 60, "relaunch", None),
+    ("You've reached your Fable limit. Switch to another model.", False, 60, "relaunch", None),   # as recorded (result line, 429): a late refusal past the spawn probe's window
     # It worked first: it is the pause's, resumed at the reset (never relaunched: its work would start over).
     (_SESSION_LIMIT, True, 60, "itself", "itself"),
     # Refused long ago: nobody is there to use a relaunch now.
     (_SESSION_LIMIT, False, 2 * 3600, "itself", "itself"),
-], ids=["session-limit-first-turn", "model-limit-first-turn", "worked-first", "refused-hours-ago"])
+], ids=["session-limit-first-turn", "model-limit-first-turn", "fable-pool-first-turn", "worked-first", "refused-hours-ago"])
 def test_a_run_its_limit_refused_before_it_did_anything_is_relaunched_once(resuming, said, worked, ended_ago, first, then):
     _ended_on("relaunch-me", said, pid=441, worked=worked)
     moment = time.time()
