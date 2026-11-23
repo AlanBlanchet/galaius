@@ -14,7 +14,8 @@ from pathlib import Path
 from uuid import UUID
 import websockets
 from pydantic import SecretStr, ValidationError
-from galaius_core import PcFeature, PcFeatures, AGENT_IMAGES_WIRE, PROJECTS_ROOT, MachineCommand, MachineTokenSwap
+from galaius_core import PcFeature, PcFeatures, AGENT_IMAGES_WIRE, PROJECTS_ROOT, MachineCommand, MachineCommandResult, MachineTokenSwap
+from galaius_core.wire import fitted
 from galaius.agents.limits.subscription_watch import SubscriptionWatch
 from galaius.host.processes import share_malloc_arenas, shell_path
 from galaius.account.address import ServerAddress
@@ -35,16 +36,16 @@ from galaius.upgrade.store import RuntimeStore
 from galaius.isolation.fence import available
 from galaius.machine.peer.broker import PeerBroker
 from galaius.machine.peer.link import PeerLink
-from galaius.machine.peer.seal import PeerSeal
+from galaius.machine.peer.seal import INSTANCE, PeerSeal
 from galaius.machine.peer.switch import PeerSwitch
 from galaius.machine.places.levels import BrowseBudget
 from galaius.machine.places.place_reviews import PlaceReviews
 
-from galaius.machine.connection import inventory, logs, problems, transport
+from galaius.machine.connection import inventory, logs, problems, signing, transport
 from galaius.machine.connection.answers import Answers
 from galaius.machine.connection.commands import Commands
 from galaius.machine.connection.config import MachineConfig
-from galaius.machine.connection.faults import EnrollmentChanged, Paused, TokenSwapped, Woke
+from galaius.machine.connection.faults import EnrollmentChanged, Paused, TokenSwapped, Woke, said_of
 from galaius.machine.connection.logs import JsonLines
 
 from galaius.machine.connection.script import ScriptRuntime
@@ -73,6 +74,8 @@ class MachineRunner(Answers, Commands, Upkeep, Watches):
         #: What the last failed channel try met, and the last crash its page was told of (each said once).
         self._last_failure = ""
         self._reported_crash = ""
+        #: The last beat that raised (said once per cause, `_beat_said`).
+        self._beat_fault = ""
         self._sequences = {}
         self._workers = {}
         #: File queries being answered (held so the loop does not drop them mid-answer).
@@ -234,9 +237,9 @@ class MachineRunner(Answers, Commands, Upkeep, Watches):
                     if self._server_restarted:
                         self._server_restarted = False
                         RuntimeStore.default().request_check()
-                    can_fence = (await asyncio.to_thread(available))[0]       # `available()` is (ready, why): the server reads a bool
-                    await socket.send(json.dumps({"type": "hello", "features": self.features(), "peer": self.peer_seal.hello(), "peer_can_fence": can_fence,
-                                                  **await asyncio.to_thread(self._beat, config)}))
+                    # Said at once, from what is already in memory: the server counts this PC from its hello, and every probe below (a bwrap trial run,
+                    # nvidia-smi, the CLIs' versions) can take tens of seconds under load. Their answers follow as heartbeats on the live link.
+                    await socket.send(json.dumps({"type": "hello", "features": self.features(), "peer": self.peer_seal.hello()}))
                     if await self._serve(socket, config):
                         self.presence.link = "refused"
                         return
@@ -319,6 +322,7 @@ class MachineRunner(Answers, Commands, Upkeep, Watches):
         upgrade = asyncio.create_task(self._leave_when_quiet(commands))
         prompts = asyncio.create_task(self._sync_prompts())
         policy = asyncio.create_task(self._renew_policy())
+        fence = asyncio.create_task(self._tell_fence(socket))
         try:
             done, _ = await asyncio.wait((receiver, worker, heartbeat, usage, upgrade), return_when=asyncio.FIRST_COMPLETED)
             for task in done:
@@ -333,21 +337,47 @@ class MachineRunner(Answers, Commands, Upkeep, Watches):
             upgrade.cancel()
             prompts.cancel()
             policy.cancel()
+            fence.cancel()
             while not commands.empty():
                 commands.get_nowait()
             commands.put_nowait(None)
             for query in self._queries:
                 query.cancel()
-            await asyncio.gather(receiver, heartbeat, usage, asked, upgrade, prompts, policy, *self._queries, return_exceptions=True)
+            await asyncio.gather(receiver, heartbeat, usage, asked, upgrade, prompts, policy, fence, *self._queries, return_exceptions=True)
             if self._screen_desk is not None:  # its frames rode this connection: the viewer opens it again
                 await self._screen_desk.close_all(ScreenEnd("link_lost", "the link to the server dropped"))
             await asyncio.shield(worker)
+
+    async def _tell_fence(self, socket) -> None:
+        """Whether this PC's agent fence can run (`available()`, a trial run that takes up to 20 s), said once as a heartbeat when it is known:
+        it was in the hello, which waited for it. A trial that fails says nothing; the next connection asks again."""
+        try:
+            can_fence = (await asyncio.to_thread(available))[0]      # `available()` is (ready, why): the server reads a bool
+        except Exception:
+            logger.warning("agent fence trial failed", exc_info=True)
+            return
+        await socket.send(json.dumps({"type": "heartbeat", "peer": {"instance": str(INSTANCE)}, "peer_can_fence": can_fence}))
 
     async def _command_worker(self, socket, config: MachineConfig, commands: asyncio.Queue[MachineCommand | None]) -> None:
         while (command := await commands.get()) is not None:
             self._executing += 1
             try:
                 await self._execute(socket, config, command)
+            except (websockets.ConnectionClosed, EnrollmentChanged):
+                raise                       # the link ended, or this PC's enrollment changed: its reconnect is `_connect`'s
+            except Exception as error:
+                # What a step raises outside its own failure path (a refused command, a send into a run that cannot resume) is that step's: the server
+                # is told it failed, this PC's owner is asked about a report, and the link stays up. A dropped link read « offline » (2026-11-22).
+                logger.error("command %s raised; the link stays up", command.id, exc_info=error)
+                said = said_of(error, doing="running_step").said
+                self._report_fault(config, "command", said, error)
+                try:
+                    failed = MachineCommandResult(command_id=command.id, nonce=command.nonce, status="failed", error=fitted(MachineCommandResult, "error", said))
+                    await socket.send(json.dumps({"type": "result", "result": failed.model_dump(mode="json")}))
+                except websockets.ConnectionClosed:
+                    raise
+                except Exception:
+                    logger.warning("failed result of command %s not sent", command.id, exc_info=True)
             finally:
                 self._executing -= 1
 
@@ -409,7 +439,7 @@ class MachineRunner(Answers, Commands, Upkeep, Watches):
         Saved under the machine file's lock while that file still holds the current token, then
         `TokenSwapped`. A swap for another machine or not signed so stops the runner
         (`PermissionError`), its token unchanged."""
-        if swap.machine.id != config.machine_id or not hmac.compare_digest(self.signature(config.token.get_secret_value(), swap), swap.signature):
+        if swap.machine.id != config.machine_id or not hmac.compare_digest(signing.signature(config.token.get_secret_value(), swap), swap.signature):
             raise PermissionError("the server's token swap is invalid; the token is unchanged")
         token = swap.token
 

@@ -689,6 +689,7 @@ def test_a_send_asked_again_while_the_first_is_under_way_is_answered_once(base: 
     (PermissionError("agents are off on this computer"), False),
     (AgentRefused("folder_closed", "aino/src does not exist"), False),
     (KeyError("token"), True),                                        # nothing here words it: a fault
+    (AttributeError("'Model' object has no attribute 'context_length'"), True),   # 2026-11-22: a send into a run whose resume path raised
 ])
 def test_a_start_this_computer_failed_asks_its_owner_to_send_a_report(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raised, reported) -> None:
     """A start this PC failed by its own fault is answered with its words AND keeps an error report its owner is asked

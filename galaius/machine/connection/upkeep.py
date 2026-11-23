@@ -24,7 +24,7 @@ import logging
 
 from galaius.machine.connection import inventory, problems
 from galaius.machine.connection.config import MachineConfig
-from galaius.machine.connection.faults import Paused, Woke
+from galaius.machine.connection.faults import EnrollmentChanged, Paused, Woke
 from galaius.machine.connection.runs import Runs
 
 logger = logging.getLogger(__package__)
@@ -104,18 +104,38 @@ class Upkeep(Runs):
                 logger.warning(notice)
 
     async def _heartbeat(self, socket, config: MachineConfig) -> None:
-        """A beat every `heartbeat_seconds`, each followed by a ping whose answer is what the tray icon calls
-        connected (`PresenceWatch.hear`); leaves the connection when the computer slept (`Woke`) or the owner
-        paused it (`Paused`)."""
+        """A beat every `heartbeat_seconds`, the first one at once (the hello carries none of the probes), each followed by a ping whose
+        answer is what the tray icon calls connected (`PresenceWatch.hear`); leaves the connection when the computer slept (`Woke`) or the
+        owner paused it (`Paused`). A beat that cannot be made is that failure's to show (`_beat_said`): the link stays up."""
+        first = True
         while True:
-            monotonic_from, wall_from = time.monotonic(), time.time()
-            await asyncio.sleep(self.heartbeat_seconds)
-            if self.slept(monotonic_from, wall_from, self.heartbeat_seconds):
-                raise Woke(f"this computer slept about {time.time() - wall_from:.0f} s")
-            if self.presence.files.paused:
-                raise Paused
-            await socket.send(json.dumps({"type": "heartbeat", "peer": {"instance": str(INSTANCE)}, **await asyncio.to_thread(self._beat, config)}))
+            if not first:
+                monotonic_from, wall_from = time.monotonic(), time.time()
+                await asyncio.sleep(self.heartbeat_seconds)
+                if self.slept(monotonic_from, wall_from, self.heartbeat_seconds):
+                    raise Woke(f"this computer slept about {time.time() - wall_from:.0f} s")
+                if self.presence.files.paused:
+                    raise Paused
+            first = False
+            await socket.send(json.dumps({"type": "heartbeat", "peer": {"instance": str(INSTANCE)}, **await self._beat_said(config)}))
             (await socket.ping()).add_done_callback(self._ponged)
+
+    async def _beat_said(self, config: MachineConfig) -> dict[str, object]:
+        """What a beat says (`_beat`), or nothing when it raised: the heartbeat then only proves the link, the server keeps what this PC
+        said last. The fault is logged and its owner asked about a report once per cause, never once per beat."""
+        try:
+            beat = await asyncio.to_thread(self._beat, config)
+        except EnrollmentChanged:
+            raise                           # the machine file names another enrollment: `_connect` reconnects as it
+        except Exception as error:
+            said = f"{type(error).__name__}: {error}"
+            if said != self._beat_fault:
+                self._beat_fault = said
+                logger.error("heartbeat could not be made; the link stays up", exc_info=error)
+                self._report_fault(config, "heartbeat", said, error)
+            return {}
+        self._beat_fault = ""
+        return beat
 
     def _ponged(self, answer: asyncio.Future) -> None:
         if not answer.cancelled() and answer.exception() is None:
@@ -177,7 +197,7 @@ class Upkeep(Runs):
             return before
 
     def _beat(self, connected: MachineConfig) -> dict[str, object]:
-        """What every hello and heartbeat says: this PC's runtimes, resources, its file roots and
+        """What every heartbeat says (the hello leaves before it): this PC's runtimes, resources, its file roots and
         agent settings as its machine file says NOW (a change made here reaches the server with the
         next beat), whether work of its own is going on (`busy`), the build it runs (`build`: none
         from a source checkout), so its server knows which release each PC is on, and the console windows

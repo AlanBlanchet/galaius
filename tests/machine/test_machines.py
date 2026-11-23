@@ -1298,3 +1298,117 @@ def test_a_sign_in_ending_signed_in_asks_every_logins_usage_at_once(tmp_path: Pa
         return listener
     listener = asyncio.run(scenario())
     listener()  # its loop closed: nothing raised into the sign-in
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("slow", ["none", "fence", "runtimes", "accelerators", "resources"])
+async def test_a_pc_whose_link_opened_says_hello_at_once_though_a_probe_it_reports_is_slow(tmp_path, monkeypatch, slow):
+    """Alan 2026-11-22 « says this pc is offline in galaius » (raised 3x; link start to connected took 99 s on 11-21, 29 s on 11-22):
+    the server reads a PC online from its `hello` (`ready_machines`), so a probe the hello waits on (a fence trial run, a CLI look,
+    `nvidia-smi`) under load keeps an open link reading offline. The hello goes out within seconds whatever a probe takes."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    runner = MachineRunner()
+    runner.heartbeat_seconds = 3600
+    release = __import__("threading").Event()
+
+    def stuck(*_):
+        release.wait(20)
+        return [] if slow != "fence" else (False, "")
+
+    for name in ("runtimes", "accelerators", "functions"):
+        monkeypatch.setattr(inventory, name, (stuck if slow == name else lambda *_: []))
+    monkeypatch.setattr(inventory, "resources", stuck if slow == "resources" else (lambda _: {}))
+    monkeypatch.setattr("galaius.machine.connection.runner.available", stuck if slow == "fence" else (lambda: (False, "")))
+    config = _config(tmp_path, "full_access")
+    runner.save(config)
+    said = asyncio.get_running_loop().create_future()
+
+    async def server(socket):
+        try:
+            said.set_result(json.loads(await asyncio.wait_for(socket.recv(), 3))["type"])
+        except BaseException as error:
+            said.set_exception(error)
+        finally:
+            release.set()
+
+    async with websockets.serve(server, "127.0.0.1", 0) as endpoint:
+        monkeypatch.setattr(transport, "channel_url", lambda _: f"ws://127.0.0.1:{endpoint.sockets[0].getsockname()[1]}")
+        connection = asyncio.create_task(runner.connect(config))
+        try:
+            assert await asyncio.wait_for(asyncio.shield(said), 8) == "hello"
+        finally:
+            release.set()
+            connection.cancel()
+            await asyncio.gather(connection, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raises_in", ["command", "heartbeat_beat"])
+async def test_an_error_inside_the_pc_never_closes_its_link(tmp_path, monkeypatch, raises_in):
+    """Alan 2026-11-22 « says this pc is offline in galaius »: a send / command / beat whose code raises is that failure's
+    to show; the link stays up (one connection, no reconnect), since a dropped link reads « offline » for the 12 s window."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    runner = MachineRunner()
+    runner.heartbeat_seconds = 0.2
+    for name in ("runtimes", "accelerators", "functions"):
+        monkeypatch.setattr(inventory, name, lambda *_: [])
+    monkeypatch.setattr(inventory, "resources", lambda _: {})
+    monkeypatch.setattr("galaius.machine.connection.runner.available", lambda: (False, ""))
+    config = _config(tmp_path, "full_access")
+    runner.save(config)
+    command = _signed(config, _script_command(config.machine_id, "python", "print(1)\n").model_copy(update={"workspace_id": config.workspace_id, "expires_at": datetime.now(UTC) + timedelta(seconds=30)}))
+    beats = []
+    original = MachineRunner._beat
+
+    def beat(self, connected):
+        beats.append(1)
+        if raises_in == "heartbeat_beat" and len(beats) > 1:
+            raise AttributeError("'Model' object has no attribute 'context_length'")
+        return original(self, connected)
+
+    async def execute(self, socket, config, command):
+        raise AttributeError("'Model' object has no attribute 'context_length'")
+
+    monkeypatch.setattr(MachineRunner, "_beat", beat)
+    if raises_in == "command":
+        monkeypatch.setattr(MachineRunner, "_execute", execute)
+    opened = []
+
+    async def server(socket):
+        opened.append(1)
+        await socket.recv()
+        if raises_in == "command":
+            await socket.send(json.dumps({"type": "command", "command": command.model_dump(mode="json")}))
+        try:
+            async for _ in socket:
+                pass
+        except websockets.ConnectionClosed:
+            pass
+
+    async with websockets.serve(server, "127.0.0.1", 0) as endpoint:
+        monkeypatch.setattr(transport, "channel_url", lambda _: f"ws://127.0.0.1:{endpoint.sockets[0].getsockname()[1]}")
+        connection = asyncio.create_task(runner.connect(config))
+        await asyncio.sleep(2.5)
+        ended = connection.done()
+        connection.cancel()
+        await asyncio.gather(connection, return_exceptions=True)
+    assert opened == [1] and not ended
+
+
+def test_a_signed_token_swap_is_taken_and_one_not_signed_by_the_current_token_is_refused(tmp_path, monkeypatch):
+    """The cloud bootstrap path: `take_token_swap` named a method the connection split moved out (2026-11-22, found by the server's cloud test)."""
+    from galaius.machine.connection.faults import TokenSwapped
+    from galaius_core import MachineTokenSwap
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    runner = MachineRunner()
+    config = _config(tmp_path, "full_access")
+    runner.save(config)
+    fresh = "iwm_" + "y" * 48
+    unsigned = MachineTokenSwap(machine=MachineRef(id=config.machine_id, name="pc"), token=fresh, signature="0" * 64)
+    with pytest.raises(PermissionError):
+        runner.take_token_swap(config, unsigned)
+    with pytest.raises(TokenSwapped):
+        runner.take_token_swap(config, _signed(config, unsigned))
+    assert runner.load().token.get_secret_value() == fresh
