@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from galaius.cli.commands import doctor as doctor_cli
+from galaius.cli.commands.debug import doctor as doctor_cli
 from galaius.diagnostics import health
 from galaius.diagnostics.health import Check, Health, Unavailable
 from galaius.machine.presence import Presence, PresenceFiles

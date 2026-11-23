@@ -68,7 +68,7 @@ app.command(
     help="Report a problem or idea about galaius.",
 )
 app.command(
-    "galaius.cli.commands.doctor:doctor", name="doctor",
+    "galaius.cli.commands.debug.doctor:doctor", name="doctor",
     help="What is wrong with this PC and its app now (findings, exit code = their count); --environment for the install setup.",
 )
 app.command(
@@ -84,11 +84,11 @@ app.command(
     help="Spawn and supervise agent runs across providers.",
 )
 app.command(
-    "galaius.cli.commands.conversation:conversation_app", name="conversation",
+    "galaius.cli.commands.debug.conversation:conversation_app", name="conversation",
     help="Read what ran in a conversation: recent runs, how one ended, counts and spend, limits.",
 )
 app.command(
-    "galaius.cli.commands.run:run", name="run",
+    "galaius.cli.commands.debug.run:run", name="run",
     help="Describe one run from its record: how it ended and why, its model, tree, queue, last report.",
 )
 app.command(

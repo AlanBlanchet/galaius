@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from galaius.agents.run_ledger import RunLedger, RunQuery, own_conversation, parse_since, stats
-from galaius.cli.commands import conversation as cli
+from galaius.cli.commands.debug import conversation as cli
 from galaius.cli.commands.agents import runs as agents_runs
 
 ROOT = "11111111-0000-4000-8000-000000000000"

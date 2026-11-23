@@ -226,7 +226,7 @@ def test_doctor_diagnostics_are_clean_off_linux(monkeypatch, capsys):
     # A Mac/Windows colleague running `galaius doctor` must not see Linux-only advice
     # (`apt install maim`, `/dev/uinput … udev rule`) — that reads as "broken" when browser
     # automation is actually ready. Report N/A cleanly instead.
-    from galaius.cli.commands import doctor as cli_doctor
+    from galaius.cli.commands.debug import doctor as cli_doctor
 
     monkeypatch.setattr("galaius.desktop.backend.desktop_supported", lambda: False)
     cli_doctor.doctor(environment=True)

@@ -11,7 +11,7 @@ import pytest
 from galaius.agents import run_describe
 from galaius.agents.run_describe import describe, slices_of
 from galaius.agents.run_ledger import RunLedger
-from galaius.cli.commands import run as cli
+from galaius.cli.commands.debug import run as cli
 
 ROOT = "11111111-0000-4000-8000-000000000000"
 CHILD = "22222222-0000-4000-8000-000000000000"
