@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Literal
@@ -1408,8 +1409,10 @@ async def test_resumed_conversation_asks_the_vendor_when_every_candidate_is_cool
     await _event(process, "cancelled")
     await _stop_console(process)
 
-    quota.record_refusal("codex", "openai/cheap-example")
-    quota.record_refusal("codex", "openai/expensive-example")
+    # Explicit moments: two back-to-back `time.time()` reads tie on Windows (~15 ms clock tick) and a tie picks the first-listed model.
+    moment = time.time()
+    quota.record_refusal("codex", "openai/cheap-example", now=moment - 1)
+    quota.record_refusal("codex", "openai/expensive-example", now=moment)
 
     resumed_process = await _open_console(workspace)
     try:
