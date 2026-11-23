@@ -359,12 +359,13 @@ def test_a_folder_with_a_broken_state_file_still_has_its_token_masked_and_is_sai
     token = "sk-ant-oat01-" + "k" * 48
     (subscription.folder / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {"accessToken": token}}))
     subscription.state_path.write_text("{not json")
-    with caplog.at_level("WARNING", logger="galaius.agents.limits.subscriptions"):
+    with caplog.at_level("DEBUG", logger="galaius.agents.limits.subscriptions"):
         assert Subscription.all() == () and Subscription.all() == () and token in Subscription.tokens()
         subscription.state_path.unlink()
         assert Subscription.all() == () and Subscription.all() == ()
-    said = [record.getMessage() for record in caplog.records if "no readable state" in record.getMessage()]
-    assert len(said) == 2 and "not signed in" in said[1]
+    said = [(record.levelname, record.getMessage()) for record in caplog.records if "no readable state" in record.getMessage()]
+    # a broken file is a warning; a folder never signed in here is only an unfinished sign-in: no warning in every shell (2026-11-23)
+    assert [level for level, _ in said] == ["WARNING", "DEBUG"] and "not signed in" in said[1][1]
 
 
 def test_a_subscription_takes_the_owners_hooks_permissions_and_instructions_and_nothing_else() -> None:
