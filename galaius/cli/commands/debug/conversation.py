@@ -16,7 +16,8 @@ from pydantic import BaseModel
 
 from galaius.agents import pc_state
 from galaius.agents.pc_state import Live
-from galaius.agents.run_ledger import GONE, RunLedger, RunQuery, RunRow, Stats, own_conversation, parse_since, stats
+from galaius.agents.run_ledger import GONE, RunLedger, RunQuery, RunRow, Said, Stats, own_conversation, parse_since, stats
+from galaius.agents.run_slowness import Slowness, slowness
 
 conversation_app = App(name="conversation", help="Read what ran in a conversation: recent runs, how one ended, counts and spend, limits.")
 
@@ -236,3 +237,86 @@ def limits(*, json_out: Annotated[bool, Parameter(name="--json", negative=(), he
 
 def _stamp(iso: str | None) -> str:
     return "-" if not iso else _when(datetime.fromisoformat(iso).timestamp())
+
+
+class MessagesOut(BaseModel):
+    covers: str
+    messages: list[Said]
+
+
+@conversation_app.command
+def messages(*, conversation: Annotated[str | None, Parameter(help="A conversation id or prefix, or any run id of it. Default: every conversation.")] = None,
+             since: Annotated[str, Parameter(help="6h, 30m, 2d, a date or datetime, or `all`. Default 24h.")] = "24h",
+             frustrated: Annotated[bool, Parameter(negative=(), help="Only messages holding his frustration wording (the coordinator's gate pattern).")] = False,
+             chars: Annotated[int, Parameter(help="Clip each message to this many characters; 0 = whole.")] = 240,
+             json_out: Annotated[bool, Parameter(name="--json", negative=(), help="One JSON object: `covers`, `messages`.")] = False) -> None:
+    """The messages he typed in the web app lately, oldest first: time, conversation, the run it reached, his words. `!` marks his
+    frustration wording. What he types in an editor or terminal session is in that CLI's own transcript (`galaius agents search`)."""
+    try:
+        moment = None if since == "all" else parse_since(since)
+        found = RunLedger().his_messages(since=moment or 0.0, conversation=conversation, frustrated=frustrated)
+    except (ValueError, LookupError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        raise SystemExit(2) from None
+    covers = (f"conversation {conversation[:12]}" if conversation else "every conversation") + (f", since {_when(moment)}" if moment else ", all time")
+    if json_out:
+        print(MessagesOut(covers=covers, messages=found).model_dump_json(indent=1))
+        return
+    print(f"{covers} · {len(found)} messages" + (f" · {sum(bool(said.frustrated) for said in found)} frustrated" if found else ""))
+    for said in found:
+        text = " ".join(said.text.split())
+        print(f"{_when(said.at):>11} {said.conversation[:12]:<12} → {said.role:<18} {'!' if said.frustrated else ' '} {text if not chars else text[:chars]}")
+
+
+class SlowOut(BaseModel):
+    covers: str
+    slowness: Slowness
+
+
+def _split(profile) -> str:
+    waits = profile.waits
+    return (f"tools {_span(profile.tools)} · model {_span(profile.model)} · waits {_span(waits.total())} "
+            f"(agents {_span(waits.agent)}, deploy {_span(waits.deploy)}, ci {_span(waits.ci)}, timer {_span(waits.timer)}) · idle {_span(profile.idle)} · dark {_span(profile.dark)}")
+
+
+@conversation_app.command
+def slow(*, conversation: Annotated[str | None, Parameter(help="A conversation id or prefix, or any run id of it. Default: this process's own.")] = None,
+         since: Annotated[str | None, Parameter(help="6h, 30m, 2d, a date or datetime. Default 24h.")] = None,
+         every: Annotated[bool, Parameter(name="--all", negative=(), help="Every conversation on this computer.")] = False,
+         role: _Roles = None, status: _Statuses = None, model: _Models = None, login: _Logins = None,
+         top: Annotated[int, Parameter(help="How many of the longest runs to list.")] = 8,
+         json_out: Annotated[bool, Parameter(name="--json", negative=(), help="One JSON object: `covers`, `slowness`.")] = False) -> None:
+    """Why it is slow: where the time of each run in the window went, from its transcript. Per run, role and conversation:
+    parked (between turns), waiting (on agents, deploys, CI, timers), tools, model, idle (this run silent > 2 min outside a tool call),
+    dark (no run wrote for 15 min: the computer off, or everyone waiting on him), and the time a spawned run was queued before it started."""
+    query, covers = _query(conversation, since, every, role, status, model, login, False, None, default_since="24h")
+    ledger = RunLedger()
+    rows = _rows(ledger, query)
+    start = query.since or 0.0
+    report = slowness(ledger, rows, since=start, top=max(1, top))
+    if json_out:
+        print(SlowOut(covers=covers, slowness=report).model_dump_json(indent=1))
+        return
+    total = report.total
+    print(f"{covers} · {total.runs} runs · active {_span(total.active)} (parked and dark time excluded)")
+    print(f"  {_split_rollup(total)}")
+    if total.queued_runs:
+        print(f"  queued before start: {total.queued_runs} runs, total {_span(total.queued_total)}, median {_span(total.queued_median or 0)}, max {_span(total.queued_max or 0)}")
+    else:
+        print("  queued before start: no spawn call found for these runs in their parents' transcripts")
+    print("longest (active time):")
+    for profile in report.longest:
+        queued = "" if profile.queued is None else f" · queued {_span(profile.queued)}"
+        print(f"  {profile.run_id[:8]} {profile.role:<20} {profile.status:<11} {_span(profile.active()):>6} · {_split(profile)}{queued}")
+    for title, rollups in (("by role", report.by_role), ("by conversation", report.by_conversation if every or not query.conversation else [])):
+        if rollups:
+            print(f"{title}:")
+            for item in rollups[:8]:
+                print(f"  {item.name[:22]:<22} {item.runs:>4} runs · active {_span(item.active):>6} · {_split_rollup(item)}"
+                      + (f" · queued median {_span(item.queued_median)}" if item.queued_median is not None else ""))
+
+
+def _split_rollup(item) -> str:
+    waits = item.waits
+    return (f"tools {_span(item.tools)} · model {_span(item.model)} · waits {_span(waits.total())} "
+            f"(agents {_span(waits.agent)}, deploy {_span(waits.deploy)}, ci {_span(waits.ci)}, timer {_span(waits.timer)}) · idle {_span(item.idle)} · dark {_span(item.dark)}")

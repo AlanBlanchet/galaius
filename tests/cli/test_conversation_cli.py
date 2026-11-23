@@ -349,3 +349,118 @@ def test_a_run_named_as_the_registry_allows_is_read_and_a_json_file_that_is_no_r
     ledger = RunLedger(folder)
     assert {row.run_id for row in ledger.rows(RunQuery(conversation="conversation-a"))} == {"visible-a"}
     assert {row.run_id for row in ledger.rows()} == {ROOT, CHILD, GRAND, WEB, OTHER, "visible-a"}
+
+
+# --- his messages and why it is slow ---------------------------------------------------------------------------------------
+
+from galaius.agents.run_slowness import DARK_GAP, IDLE_GAP, profile_run, read_transcript, slowness  # noqa: E402
+
+WEB_ID = "36d7fb13-f1cb-4b45-b7cc-cc2416631156"
+
+
+def _line(kind: str, at: float, **fields) -> str:
+    """One transcript line as the registry writes it: compact, `kind` first, `at` last."""
+    return json.dumps({"kind": kind, **fields, "at": at}, separators=(",", ":"))
+
+
+def _transcript(folder: Path, run_id: str, lines: list[str]) -> None:
+    (folder / f"{run_id}.jsonl").write_text("\n".join(lines) + "\n")
+
+
+def _row(run_id: str = CHILD, *, status: str = "done", started: float, finished: float | None):
+    from galaius.agents.run_ledger import RunRow
+    return RunRow(run_id=run_id, role="builder", status=status, conversation=ROOT, started_at=started, finished_at=finished)
+
+
+def test_a_message_is_his_when_the_web_gave_it_its_id_and_each_shows_once_with_his_frustration_wording(folder: Path) -> None:
+    now = time.time()
+    said = lambda event_id, at, text, to=CHILD: json.dumps({"kind": "message", "event_id": event_id, "text": text, "from_run": "operator", "to_run": to, "at": at}, separators=(",", ":"))  # noqa: E731
+    lines = [said(WEB_ID, now - 60, "I already asked this twice"), said("a" * 32, now - 50, "Resumed after your run was cut"), said(WEB_ID, now - 60, "I already asked this twice", GRAND),
+             said("11111111-2222-4333-8444-555555555555", now - 30, "fine, thanks", WEB)]
+    (folder / f"{CHILD}.messages.jsonl").write_text("\n".join(lines))
+    (folder / f"{GRAND}.messages.jsonl").write_text(lines[2])
+    ledger = RunLedger(folder)
+    found = ledger.his_messages(since=now - 3600)
+    assert [(m.text, bool(m.frustrated), m.conversation) for m in found] == [("I already asked this twice", True, ROOT), ("fine, thanks", False, "web-abc")]
+    assert [m.text for m in ledger.his_messages(since=now - 3600, frustrated=True)] == ["I already asked this twice"]
+    assert [m.text for m in ledger.his_messages(since=now - 3600, conversation=ROOT)] == ["I already asked this twice"]
+    assert ledger.his_messages(since=now - 20) == [], "since cuts by the message's own time"
+
+
+def test_every_second_of_a_run_lands_in_one_part_and_each_part_is_told_from_the_others(folder: Path) -> None:
+    t = 1_000_000.0
+    lines = [_line("started", t), _line("thinking", t + 10),
+             _line("tool", t + 20, tool="Bash", tool_input="command='galaius agents wait abc'", tool_id="w"), _line("tool_result", t + 320, tool_id="w", text="ok"),
+             _line("tool", t + 330, tool="Bash", tool_input="command='make test'", tool_id="b"), _line("tool_result", t + 430, tool_id="b", text="ok"),
+             _line("tool", t + 440, tool="Bash", tool_input="command='cd x; deploy_queue.py wait abc'", tool_id="d"), _line("tool_result", t + 500, tool_id="d", text="ok"),
+             _line("text", t + 510),
+             _line("text", t + 510 + IDLE_GAP + 200),          # this run alone silent past IDLE_GAP: idle
+             _line("done", t + 900),
+             _line("message", t + 2000),                         # ended, then his next message: the gap is parked
+             _line("done", t + 2100)]
+    _transcript(folder, CHILD, lines)
+    transcript = read_transcript(folder / f"{CHILD}.jsonl", 0)
+    profile = profile_run(_row(started=t, finished=t + 2100), transcript, since=t, now=t + 3000, queued=None)
+    assert profile.wall == pytest.approx(2100)
+    assert profile.waits.agent == pytest.approx(300) and profile.waits.deploy == pytest.approx(60) and profile.tools == pytest.approx(100)
+    assert profile.parked == pytest.approx(2000 - 900) and profile.idle == pytest.approx(IDLE_GAP + 200)
+    assert profile.wall == pytest.approx(profile.parked + profile.dark + profile.tools + profile.model + profile.idle + profile.waits.total())
+
+
+def test_a_stretch_in_which_no_run_wrote_anything_is_dark_and_nobody_s_idle_time(folder: Path) -> None:
+    t = time.time() - 86400
+    _transcript(folder, CHILD, [_line("started", t), _line("text", t + 60), _line("text", t + 60 + DARK_GAP * 4)])
+    _transcript(folder, GRAND, [_line("started", t), _line("text", t + 90), _line("text", t + 60 + DARK_GAP * 4 + 30)])
+    put(folder, CHILD, parent_run_id=ROOT, started_at=t, finished_at=t + 60 + DARK_GAP * 4)
+    put(folder, GRAND, parent_run_id=CHILD, started_at=t, finished_at=t + 60 + DARK_GAP * 4 + 30)
+    ledger = RunLedger(folder)
+    report = slowness(ledger, ledger.rows(RunQuery(conversation=ROOT)), since=t, now=t + 60 + DARK_GAP * 4 + 40)
+    by_id = {p.run_id: p for p in report.runs}
+    assert by_id[CHILD].dark > DARK_GAP * 3 and by_id[CHILD].idle <= 30 and by_id[GRAND].dark > DARK_GAP * 3
+    assert by_id[CHILD].active() == pytest.approx(by_id[CHILD].wall - by_id[CHILD].dark)
+
+
+def test_the_time_a_spawned_run_waited_is_read_from_its_parent_s_spawn_call_and_none_when_the_parent_names_no_such_run(folder: Path) -> None:
+    t = time.time() - 3600
+    _transcript(folder, ROOT, [_line("started", t), _line("tool", t + 10, tool="Bash", tool_input="command='galaius agents spawn --delegate x go'", tool_id="s"),
+                               _line("tool_result", t + 11, tool_id="s", text=f"started\n{CHILD}\n"), _line("done", t + 20)])
+    put(folder, ROOT, started_at=t, finished_at=t + 20)
+    put(folder, CHILD, parent_run_id=ROOT, started_at=t + 131, finished_at=t + 400)       # started 120 s after the call returned: queued
+    put(folder, GRAND, parent_run_id=ROOT, started_at=t + 140, finished_at=t + 400)       # no spawn call names it
+    ledger = RunLedger(folder)
+    report = slowness(ledger, ledger.rows(RunQuery(conversation=ROOT)), since=t - 10, now=t + 500)
+    queued = {p.run_id: p.queued for p in report.runs}
+    assert queued[CHILD] == pytest.approx(120) and queued[GRAND] is None and report.total.queued_runs == 1
+
+
+def test_reading_a_transcript_from_a_time_equals_filtering_the_whole_of_it(folder: Path) -> None:
+    """The byte search to the window's first line never skips a line the window holds, over a file far past its 64 KB step."""
+    lines = [_line("text", 1000.0 + index, text="x" * 200) for index in range(2000)]
+    _transcript(folder, CHILD, lines)
+    path = folder / f"{CHILD}.jsonl"
+    whole = read_transcript(path, 0).events
+    for since in (0.0, 1000.0, 1500.5, 2999.0, 3000.0, 9999.0):
+        assert read_transcript(path, since).events == [event for event in whole if event[0] >= since], since
+
+
+@pytest.mark.parametrize("argv, said", [(["slow", "--since", "5x"], "is no time"), (["messages", "--since", "yesterday"], "is no time"), (["slow", "--conversation", "nope"], "no conversation or run")])
+def test_the_new_verbs_refuse_what_they_cannot_read_in_one_error_line(folder: Path, monkeypatch, capsys, argv: list[str], said: str) -> None:
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(folder))
+    with pytest.raises(SystemExit) as stopped:
+        cli.conversation_app(argv, exit_on_error=False)
+    assert stopped.value.code == 2 and said in capsys.readouterr().err
+
+
+def test_slow_and_messages_print_the_same_numbers_as_json(folder: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(folder))
+    now = time.time()
+    _transcript(folder, CHILD, [_line("started", now - 600), _line("tool", now - 590, tool="Bash", tool_input="command='sleep 30'", tool_id="s"), _line("tool_result", now - 560, tool_id="s", text=""), _line("done", now - 500)])
+    put(folder, CHILD, parent_run_id=ROOT, started_at=now - 600, finished_at=now - 500)
+    cli.slow(conversation=ROOT, since="1h", json_out=True)
+    report = json.loads(capsys.readouterr().out)
+    assert report["slowness"]["total"]["waits"]["timer"] == pytest.approx(30) and "conversation 11111111" in report["covers"]
+    cli.slow(conversation=ROOT, since="1h")
+    assert "timer 30s" in capsys.readouterr().out
+    (folder / f"{CHILD}.messages.jsonl").write_text(json.dumps({"kind": "message", "event_id": WEB_ID, "text": "toujours pas", "from_run": "operator", "to_run": CHILD, "at": now - 10}))
+    cli.messages(since="1h", json_out=True)
+    assert json.loads(capsys.readouterr().out)["messages"][0]["frustrated"] == "toujours pas"

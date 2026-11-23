@@ -106,6 +106,31 @@ class RunRow(BaseModel):
         return max(0.0, (self.finished_at or now) - self.started_at) if self.started_at else 0.0
 
 
+#: His own frustration wording, the one the coordinator's close gate arms on (kept equal to it by hand: the gate lives outside this repository).
+FRUSTRATED = re.compile(r"you'?re kidd?in|are you kidd?in|literally (?:asked|said|told)|(?:i|I) (?:already|just) (?:asked|said|told)"
+                        r"|how many times|j'?(?:t')?(?:l')?ai d[ée]j[àa] (?:dit|demand)|combien de fois|tu (?:te )?fous|s[ée]rieux \?"
+                        r"|\bwtf\b|still (?:not|broken|wrong)|toujours pas", re.IGNORECASE)
+#: Who a message in a run's `.messages.jsonl` names as its sender when no run sent it: the person, or a command an agent ran without a run's identity.
+OPERATOR = "operator"
+#: The id a message the person typed in the web app keeps end to end (`agents send --message-id`: the app's own outbox row, a hyphenated
+#: uuid); a command's own messages carry 32 hex digits. The one mark that tells his words from an agent's `agents send`.
+WEB_MESSAGE_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+class Said(BaseModel):
+    """One message the person sent a run: when, to which conversation and run, his words, and the frustration wording they hold."""
+
+    model_config = ConfigDict(frozen=True)
+
+    at: float
+    conversation: str
+    to_run: str
+    role: str
+    text: str
+    #: The wording of `FRUSTRATED` the text holds, "" for none.
+    frustrated: str = ""
+
+
 class RunQuery(BaseModel):
     """Every filter the verbs share. None / empty = no filter on that axis."""
 
@@ -337,6 +362,45 @@ class RunLedger:
         found.sort(key=lambda row: (row.started_at, row.run_id))
         self.keep_cache()
         return found if query.limit is None else found[-query.limit:]
+
+    def his_messages(self, *, since: float, conversation: str | None = None, frustrated: bool = False) -> list[Said]:
+        """The messages the person typed in the web app since `since`, oldest first, each once (a message in two runs' files shows once).
+        A run's `.messages.jsonl` is append only, so a file older than `since` holds none. What he types in an editor or terminal
+        session of an agent CLI is in that CLI's own transcript (`galaius agents search`), not here."""
+        wanted = None if conversation is None else self.resolve_conversation(conversation)
+        found: dict[str, Said] = {}
+        try:
+            entries = [entry for entry in os.scandir(self.root) if entry.name.endswith(".messages.jsonl") and not entry.name.startswith(".")]
+        except OSError:
+            return []
+        for entry in entries:
+            try:
+                if entry.stat().st_mtime < since:
+                    continue
+                with open(entry.path, encoding="utf-8", errors="replace") as lines:
+                    for line in lines:
+                        if OPERATOR not in line:
+                            continue
+                        try:
+                            event = json.loads(line)
+                        except ValueError:
+                            continue
+                        if not isinstance(event, dict) or event.get("from_run") != OPERATOR:
+                            continue
+                        at, text, target = event.get("at"), event.get("text"), event.get("to_run")
+                        if not WEB_MESSAGE_ID.match(str(event.get("event_id") or "")) or not isinstance(at, (int, float)) or at < since or not isinstance(text, str) or not isinstance(target, str):
+                            continue
+                        key = conversation_id = self.conversation_key(target)
+                        if wanted is not None and key != wanted:
+                            continue
+                        raw = self._record(target) or {}
+                        hit = FRUSTRATED.search(text)
+                        said = Said(at=float(at), conversation=conversation_id, to_run=target, role=str(raw.get("agent") or raw.get("name") or "?"),
+                                    text=text, frustrated=hit.group(0) if hit else "")
+                        found.setdefault(str(event.get("event_id") or f"{target}:{at}"), said)
+            except OSError:
+                continue
+        return sorted((said for said in found.values() if said.frustrated or not frustrated), key=lambda said: said.at)
 
     def last_words(self, run_id: str, *, text_chars: int | None = None) -> "Ending":
         """How run `run_id` ended and what it said last: its last `done` / `error` event (the report an asker reads), else, for a
