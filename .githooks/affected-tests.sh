@@ -14,14 +14,20 @@ set -uo pipefail
 BATCH="${PREPUSH_TEST_BATCH:-8}" MEMORY="${PREPUSH_TEST_MEMORY:-4G}"
 # shellcheck disable=SC2068
 changed="$(git log --name-only --diff-filter=d --format= $@ -- '*.py' | sort -u)"
-[ -n "$changed" ] || exit 0
+[ -n "$(git log --name-only --format= $@ | sort -u)" ] || exit 0
+# The repository's own rules (folder size, file and module names, source text, topology) are checked by GitHub on every push whatever it changes: a push that
+# adds a file past a folder's limit changes no module a test names, and went red there (2026-11-23: galaius/agents held 21 files). They run here every
+# time, but test_workplace_motion (a browser, ~100 s), which stays an affected test.
+repo_rules="$(ls tests/repo/test_*.py 2>/dev/null | grep -v '/test_workplace_motion\.py$' || true)"
 picked="$(printf '%s\n' "$changed" | grep -E '^tests/.*test_[^/]*\.py$' || true)"
+picked+=$'\n'"$repo_rules"
 for path in $(printf '%s\n' "$changed" | grep -E '^galaius/.*\.py$'); do
   module="${path%.py}"; module="${module%/__init__}"; module="${module//\//.}"
   parent="${module%.*}" leaf="${module##*.}"
   picked+=$'\n'"$(grep -rlE --include='test_*.py' "\\b${module//./\\.}\\b|from ${parent//./\\.} import [^#]*\\b${leaf}\\b" tests 2>/dev/null)"
 done
 mapfile -t files < <(printf '%s\n' "$picked" | grep -v '^$' | sort -u | while read -r file; do [ -f "$file" ] && echo "$file"; done)
+[ -z "${PREPUSH_LIST_ONLY:-}" ] || { printf '%s\n' "${files[@]}"; exit 0; }   # what a push would run, for tests/repo/test_prepush_scan.py
 [ "${#files[@]}" -gt 0 ] || exit 0
 echo "pre-push: ${#files[@]} test file(s) touched by this push, run here first (Linux, batches of ${BATCH}):" >&2
 
