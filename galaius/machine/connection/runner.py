@@ -53,6 +53,8 @@ from galaius.machine.connection.upkeep import Upkeep
 from galaius.machine.connection.watches import Watches
 
 logger = logging.getLogger(__package__)
+#: Seconds this PC's loop may answer nothing before it is said (`Runner._watch_loop_lag`): under the 20 s after which the server drops the link.
+LOOP_LAG_SECONDS = 5.0
 
 
 class MachineRunner(Answers, Commands, Upkeep, Watches):
@@ -144,6 +146,7 @@ class MachineRunner(Answers, Commands, Upkeep, Watches):
         watched = asyncio.create_task(self._watch_subscriptions(config))
         presenting = asyncio.create_task(self._present(config))
         brokering = asyncio.create_task(self.peer_broker.serve())
+        lagging = asyncio.create_task(self._watch_loop_lag())
         swapped = False
         try:
             await self._connect(config)
@@ -170,7 +173,8 @@ class MachineRunner(Answers, Commands, Upkeep, Watches):
             reviewing.cancel()
             presenting.cancel()
             brokering.cancel()
-            await asyncio.gather(settler, handing, silences, reviewing, reports, followed, resumed, watched, presenting, brokering, return_exceptions=True)
+            lagging.cancel()
+            await asyncio.gather(settler, handing, silences, reviewing, reports, followed, resumed, watched, presenting, brokering, lagging, return_exceptions=True)
             for ahead in (self.warm, self.followups):  # a child started ahead never outlives its runner; ended on the loop it lives on
                 AgentSpawns.loop().call_soon_threadsafe(ahead.close)
         if swapped:
@@ -204,6 +208,18 @@ class MachineRunner(Answers, Commands, Upkeep, Watches):
             logger.warning("could not write %s back to the machine file", public.server, extra={"machine_id": config.machine_id})
             return connecting
 
+
+    async def _watch_loop_lag(self) -> None:
+        """Says when this loop answered nothing for `LOOP_LAG_SECONDS`: the server drops a link whose pings go unanswered for 20 s (code 1011,
+        « keepalive ping timeout »), and its log was silent 7 min before one on 2026-11-23 10:36 UTC: a blocked loop (a synchronous call, a
+        loaded PC) and a stalled uplink read alike from the server's side, and only this line tells them apart."""
+        while True:
+            before = time.monotonic()
+            await asyncio.sleep(1.0)
+            late = time.monotonic() - before - 1.0
+            if late >= LOOP_LAG_SECONDS:
+                load = os.getloadavg()[0] if hasattr(os, "getloadavg") else None
+                logger.warning("this PC's loop answered nothing for %.0f s (load average %s): the link's pings wait on it", late, f"{load:.0f}" if load is not None else "unknown")
 
     async def _connect(self, config: MachineConfig) -> None:
         delay_index, restarting_since = 0, None
