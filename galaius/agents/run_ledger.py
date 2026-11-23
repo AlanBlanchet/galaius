@@ -17,13 +17,14 @@ import os
 import re
 import time
 from collections import Counter
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from galaius.agents.editor_words import Typed
 from galaius.config.settings import FRUSTRATION
 from galaius.host.paths import UserPaths
 
@@ -128,6 +129,10 @@ class Said(BaseModel):
     to_run: str
     role: str
     text: str
+    #: Where he typed it: `web` (the app), or the CLI whose session it was said in (`claude`, `codex`: an editor or a terminal).
+    source: str = "web"
+    #: The project's name (its folder's), "" when unknown.
+    project: str = ""
     #: What in the text reads as frustration (`settings.FRUSTRATION`: his wording, several « ! », an ask he already made earlier in the
     #: conversation), quoted; "" for none.
     frustrated: str = ""
@@ -396,12 +401,14 @@ class RunLedger:
         self.keep_cache()
         return found if query.limit is None else found[-query.limit:]
 
-    def his_messages(self, *, since: float, conversation: str | None = None, frustrated: bool = False) -> list[Said]:
-        """The messages the person typed in the web app since `since`, oldest first, each once (a message in two runs' files shows once).
-        A run's `.messages.jsonl` is append only, so a file older than `since` holds none. What he types in an editor or terminal
-        session of an agent CLI is in that CLI's own transcript (`galaius agents search`), not here."""
+    def his_messages(self, *, since: float, conversation: str | None = None, frustrated: bool = False, extra: Sequence[Typed] = ()) -> list[Said]:
+        """The messages the person typed in the web app since `since`, oldest first, each once (a message in two runs' files shows once), with
+        `extra` (what he typed in editor and terminal sessions: `editor_words.read`) among them, each frustration read over the whole conversation's
+        earlier messages. A run's `.messages.jsonl` is append only, so a file older than `since` holds none."""
         wanted = None if conversation is None else self.resolve_conversation(conversation)
-        found: dict[str, tuple[float, str, str, str, str]] = {}
+        if wanted is not None:
+            extra = [typed for typed in extra if typed.conversation == wanted]
+        found: dict[str, Typed] = {}
         try:
             entries = [entry for entry in os.scandir(self.root) if entry.name.endswith(".messages.jsonl") and not entry.name.startswith(".")]
         except OSError:
@@ -428,16 +435,18 @@ class RunLedger:
                         if wanted is not None and key != wanted:
                             continue
                         raw = self._record(target) or {}
-                        found.setdefault(str(event["event_id"]), (float(at), key, target, str(raw.get("agent") or raw.get("name") or "?"), text))
+                        found.setdefault(str(event["event_id"]), Typed(float(at), key, target, str(raw.get("agent") or raw.get("name") or "?"), text, "web",
+                                                                       str(raw.get("project") or "")))
             except OSError:
                 continue
         said_before: dict[str, list[str]] = {}
         heard = []
-        for at, key, target, role, text in sorted(found.values()):
-            hit = FRUSTRATION.matched(text, said_before.get(key, ()))
-            said_before.setdefault(key, []).append(text)
-            if at >= since and (hit or not frustrated):
-                heard.append(Said(at=at, conversation=key, to_run=target, role=role, text=text, frustrated=hit or ""))
+        for typed in sorted((*found.values(), *extra)):
+            hit = FRUSTRATION.matched(typed.text, said_before.get(typed.conversation, ()))
+            said_before.setdefault(typed.conversation, []).append(typed.text)
+            if typed.at >= since and (hit or not frustrated):
+                heard.append(Said(at=typed.at, conversation=typed.conversation, to_run=typed.to_run, role=typed.role, text=typed.text, source=typed.source,
+                                  project=typed.project, frustrated=hit or ""))
         return heard
 
     def last_words(self, run_id: str, *, text_chars: int | None = None) -> "Ending":

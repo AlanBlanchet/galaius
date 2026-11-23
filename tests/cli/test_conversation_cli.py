@@ -5,6 +5,7 @@ import json
 import os
 import threading
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -581,3 +582,62 @@ def test_a_run_ledger_that_does_not_own_its_folder_writes_no_cache_beside_the_re
 def test_a_reference_no_run_could_have_is_an_unknown_conversation_never_a_file_error(folder: Path, ref: str) -> None:
     with pytest.raises(LookupError, match="no conversation or run"):
         RunLedger(folder).rows(RunQuery(conversation=ref))
+
+
+# --- what he typed in editor and terminal sessions --------------------------------------------------------------------------
+
+
+def _claude_session(home: Path, project: str, session: str, turns: list[tuple[str, str, str]], *, entrypoint: str) -> None:
+    """A Claude Code saved session: `(iso time, role, text)` turns, as the CLI writes them under its login folder."""
+    folder = home / "projects" / project
+    folder.mkdir(parents=True, exist_ok=True)
+    lines = [json.dumps({"type": "user" if role == "user" else "assistant", "timestamp": at, "sessionId": session, "cwd": f"/work/{project.strip('-')}", "entrypoint": entrypoint,
+                         "message": {"role": role, "content": text if role == "user" else [{"type": "text", "text": text}]}}) for at, role, text in turns]
+    (folder / f"{session}.jsonl").write_text("\n".join(lines) + "\n")
+
+
+def _iso(seconds_ago: float) -> str:
+    return datetime.fromtimestamp(time.time() - seconds_ago, UTC).isoformat().replace("+00:00", "Z")
+
+
+def test_what_he_typed_in_an_editor_or_a_terminal_session_is_read_from_the_index_marked_and_counted_per_day_and_project(folder: Path, monkeypatch, capsys) -> None:
+    home = folder.parent / "claude-home"
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(folder))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
+    editor, terminal, agent = "aaaaaaaa-0000-4000-8000-000000000001", "bbbbbbbb-0000-4000-8000-000000000002", "cccccccc-0000-4000-8000-000000000003"
+    _claude_session(home, "-work-galaius", editor, [(_iso(900), "user", "still not working, wtf"), (_iso(850), "assistant", "I will look. wtf is in my words too, never his"),
+                                                    (_iso(800), "user", "thanks, now add the stats"), (_iso(700), "user", "<task-notification> done </task-notification>")], entrypoint="claude-vscode")
+    _claude_session(home, "-work-aino", terminal, [(_iso(600), "user", "Get working !!!!")], entrypoint="cli")
+    _claude_session(home, "-tmp", agent, [(_iso(500), "user", "toujours pas, wtf (an agent's own script)")], entrypoint="sdk-cli")   # a headless run: an agent's
+    web = json.dumps({"kind": "message", "event_id": WEB_ID, "text": "wtf, the web too", "from_run": "operator", "to_run": CHILD, "at": time.time() - 100}, separators=(",", ":"))
+    (folder / f"{CHILD}.messages.jsonl").write_text(web)
+    cli.messages(since="2h", json_out=True)
+    out = json.loads(capsys.readouterr().out)
+    said = [(m["source"], m["project"], m["text"], bool(m["frustrated"])) for m in out["messages"]]
+    assert said == [("claude", "work-galaius", "still not working, wtf", True), ("claude", "work-galaius", "thanks, now add the stats", False),
+                    ("claude", "work-aino", "Get working !!!!", True), ("web", "", "wtf, the web too", True)], said
+    assert not any("assistant" in m["text"] or "agent's own" in m["text"] or "task-notification" in m["text"] for m in out["messages"]), "his words only"
+    assert sum(day["messages"] for day in out["by_day"]) == 4 and sum(day["frustrated"] for day in out["by_day"]) == 3
+    assert {tally["name"]: (tally["messages"], tally["frustrated"]) for tally in out["by_project"]} == {"work-galaius": (2, 1), "work-aino": (1, 1), "-": (1, 1)}
+    assert out["index"]["found"] is True and out["index"]["pending"] == 0
+    cli.messages(since="2h", source="web", json_out=True)
+    assert [m["source"] for m in json.loads(capsys.readouterr().out)["messages"]] == ["web"]
+    cli.messages(since="2h", source="editor", frustrated=True)
+    text = capsys.readouterr().out
+    assert "wtf, the web too" not in text and "still not working" in text and "Get working" in text and "thanks, now add" not in text and "per day:" in text
+
+
+def test_the_editor_source_says_so_when_no_index_exists_and_reads_nothing(folder: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(folder))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(folder.parent / "nothing"))
+    cli.messages(since="1h", source="editor", no_refresh=True)
+    out = capsys.readouterr().out
+    assert "0 messages" in out and "no conversation index here yet" in out
+    with pytest.raises(SystemExit) as stopped:
+        cli.messages(source="phone")
+    assert stopped.value.code == 2
+
+
+def test_the_index_tier_this_reads_is_the_one_the_index_gives_a_persons_prompt() -> None:
+    from galaius.agents import conversations, editor_words
+    assert editor_words.TYPED == conversations.TYPED

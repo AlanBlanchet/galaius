@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from galaius.agents import pc_state
 from galaius.agents.pc_state import Live
+from galaius.agents import run_ledger
 from galaius.agents.run_ledger import GONE, RunLedger, RunQuery, RunRow, Said, Stats, own_conversation, parse_since, stats
 from galaius.agents.run_slowness import Slowness, slowness
 
@@ -239,33 +240,89 @@ def _stamp(iso: str | None) -> str:
     return "-" if not iso else _when(datetime.fromisoformat(iso).timestamp())
 
 
+class Tally(BaseModel):
+    """How many of his messages fell on one day or in one project, and how many read as frustration."""
+
+    name: str
+    messages: int
+    frustrated: int
+
+
 class MessagesOut(BaseModel):
     covers: str
     messages: list[Said]
+    by_day: list[Tally] = []
+    by_project: list[Tally] = []
+    #: What the editor / terminal source could say: the sessions indexed and the files not yet read (None: another process reads); None: not asked.
+    index: dict | None = None
+
+
+#: How long `messages` brings the conversation index up to date before it reads it (`--no-refresh` skips it).
+REFRESH_SECONDS = 20.0
+
+
+def _tally(found: list[Said], key) -> list[Tally]:
+    counts: dict[str, list[int]] = {}
+    for said in found:
+        counted = counts.setdefault(key(said), [0, 0])
+        counted[0] += 1
+        counted[1] += bool(said.frustrated)
+    return [Tally(name=name, messages=messages, frustrated=frustrated) for name, (messages, frustrated) in sorted(counts.items())]
 
 
 @conversation_app.command
 def messages(*, conversation: Annotated[str | None, Parameter(help="A conversation id or prefix, or any run id of it. Default: every conversation.")] = None,
              since: Annotated[str, Parameter(help="6h, 30m, 2d, a date or datetime, or `all`. Default 24h.")] = "24h",
+             source: Annotated[str, Parameter(help="`all` (default), `web` (typed in the app) or `editor` (typed in an editor or terminal session of Claude Code / Codex).")] = "all",
+             project: Annotated[str | None, Parameter(help="Only messages of this project (its folder's name).")] = None,
              frustrated: Annotated[bool, Parameter(negative=(), help="Only messages that read as frustration: his wording, several « ! », an ask he already made earlier.")] = False,
              chars: Annotated[int, Parameter(help="Clip each message to this many characters; 0 = whole.")] = 240,
-             json_out: Annotated[bool, Parameter(name="--json", negative=(), help="One JSON object: `covers`, `messages`.")] = False) -> None:
-    """The messages he typed in the web app lately, oldest first: time, conversation, the run it reached, his words. `!` marks his
-    frustration. What he types in an editor or terminal session is in that CLI's own transcript (`galaius agents search`)."""
+             no_refresh: Annotated[bool, Parameter(name="--no-refresh", negative=(), help="Read the conversation index as it stands, without bringing it up to date first.")] = False,
+             json_out: Annotated[bool, Parameter(name="--json", negative=(), help="One JSON object: `covers`, `messages`, `by_day`, `by_project`, `index`.")] = False) -> None:
+    """What he typed lately, oldest first: when, which conversation, where (`web`, or the CLI of an editor / terminal session), his words, and `!`
+    for what reads as frustration. Then per day and per project: how many, how many frustrated. Editor and terminal messages are read from the
+    conversation index of `galaius agents search` (masked, his prompts only, never an agent's text), brought up to date for up to 20 s first."""
+    from galaius.agents import editor_words
+    from galaius.host.paths import UserPaths
+
+    if source not in ("all", "web", "editor"):
+        print(f"ERROR: --source takes all, web or editor, not {source!r}", file=sys.stderr)
+        raise SystemExit(2)
     try:
         moment = None if since == "all" else parse_since(since)
-        found = RunLedger().his_messages(since=moment or 0.0, conversation=conversation, frustrated=frustrated)
+        ledger, coverage, extra = RunLedger(), None, []
+        if source != "web":
+            folder = UserPaths.agents()
+            coverage = None if no_refresh else editor_words.refresh_index(folder, REFRESH_SECONDS)
+            extra = editor_words.read(folder, max(0.0, (moment or 0.0) - run_ledger.REPEAT_LOOKBACK))
+        found = ledger.his_messages(since=moment or 0.0, conversation=conversation, frustrated=frustrated, extra=extra)
+        if source == "editor":
+            found = [said for said in found if said.source != "web"]
+        if project:
+            found = [said for said in found if said.project == project]
     except (ValueError, LookupError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         raise SystemExit(2) from None
     covers = (f"conversation {conversation[:12]}" if conversation else "every conversation") + (f", since {_when(moment)}" if moment else ", all time")
+    covers += "" if source == "all" else f", {source} only"
+    days, projects = _tally(found, lambda said: datetime.fromtimestamp(said.at).strftime("%Y-%m-%d")), _tally(found, lambda said: said.project or "-")
+    index = None if source == "web" else {"asked": not no_refresh, "conversations": coverage.conversations if coverage else None, "pending": coverage.pending if coverage else None,
+                                          "found": editor_words.index_path(UserPaths.agents()) is not None}
     if json_out:
-        print(MessagesOut(covers=covers, messages=found).model_dump_json(indent=1))
+        print(MessagesOut(covers=covers, messages=found, by_day=days, by_project=projects, index=index).model_dump_json(indent=1))
         return
     print(f"{covers} · {len(found)} messages" + (f" · {sum(bool(said.frustrated) for said in found)} frustrated" if found else ""))
     for said in found:
         text = " ".join(said.text.split())
-        print(f"{_when(said.at):>11} {said.conversation[:12]:<12} → {said.role:<18} {'!' if said.frustrated else ' '} {text if not chars else text[:chars]}")
+        print(f"{_when(said.at):>11} {said.source:<6} {said.conversation[:12]:<12} {said.project[:14] or '-':<14} {'!' if said.frustrated else ' '} {text if not chars else text[:chars]}")
+    for title, rows in (("per day", days), ("per project", projects)):
+        if rows:
+            print(f"{title}: " + " · ".join(f"{row.name} {row.messages}" + (f" ({row.frustrated} !)" if row.frustrated else "") for row in rows))
+    if index is not None:
+        if not index["found"]:
+            print("editor / terminal sessions: no conversation index here yet (run `galaius agents search` once)")
+        elif index["pending"]:
+            print(f"editor / terminal sessions: the index is {index['pending']} files behind (re-run, or `galaius agents search`)")
 
 
 class SlowOut(BaseModel):
