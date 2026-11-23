@@ -1495,16 +1495,24 @@ def resolve_role(policy: Policy, agent: str | None, *, reference: AgentRevisionR
     two facts is missing; a launch naming a `delegate` capability resolves it from the catalog itself
     (`CatalogSnapshot.delegated`), so an unreadable parent record never costs a run its critic."""
     parent_run = reg.get_run(parent) if parent is not None else None
+    parent_ref = parent_run.agent_ref if parent_run is not None else None
+    if parent_ref is None and parent_run is not None and parent_run.agent and policy.catalog is not None:
+        # A conversation begun before its role was pinned (the editor's, forked into the app) runs the role's latest revision
+        # at each turn (`ResumeLaunch.of`): its children resolve from that one, never from nothing.
+        try:
+            latest = policy.catalog.snapshot.role(parent_run.agent)
+            parent_ref = AgentRevisionRef(id=latest.id, revision=latest.revision)
+        except RoleAbsent:
+            pass
     if policy.catalog is not None and parent is not None and delegate is None:
         if parent_run is None:
             raise ModelUnavailable(
                 sentence=f"Parent run {parent} is not among this computer's run records ({reg.agents_dir()}); "
                 "launch with `--delegate ask_<role>` (agent_spawn: `delegate=ask_<role>`), which needs no parent record")
-        if parent_run.agent_ref is None:
+        if parent_ref is None:
             raise ModelUnavailable(sentence=f"Parent run {parent} ran without a server revision, so a role cannot resolve from it; "
                 "launch with `--delegate ask_<role>` (agent_spawn: `delegate=ask_<role>`), which needs none")
-    policy, role = policy.for_launch(agent, reference=reference, parent=parent_run.agent_ref if parent_run is not None else None,
-                                     capability=delegate)
+    policy, role = policy.for_launch(agent, reference=reference, parent=parent_ref, capability=delegate)
     if not role:
         raise ModelUnavailable(sentence="Choose a named agent role; anonymous delegation bypasses role criteria")
     if policy.catalog is None:

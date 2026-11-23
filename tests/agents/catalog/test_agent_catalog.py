@@ -899,6 +899,21 @@ async def test_missing_parent_revision_cannot_silently_use_latest_policy(advance
         await run_agent(CodexProvider(), "Bounded task", agent="fixture-worker", parent_run_id="fixture-parent", cwd=str(catalog_home))
 
 
+def test_a_coordinator_begun_before_its_role_was_pinned_still_resolves_its_children_roles(advanced_catalogs, catalog_home):
+    """The web conversation's coordinator (begun in the editor, forked into the app, record with a role and no revision) ran every
+    turn on its role's latest revision yet its role spawns were refused « ran without a server revision » (2026-11-23): its
+    children resolve from that latest revision, as it runs. A record with no role still resolves from nothing."""
+    from galaius.agents.run import resolve_role
+    _, current, _, _ = advanced_catalogs
+    policy = Policy.from_catalog(current)
+    reg.register(run_id="forked-parent", pid=None, provider="claude", name="main", agent="fixture-lead", cwd=str(catalog_home))
+    reg.register(run_id="nameless-parent", pid=None, provider="claude", name="main", cwd=str(catalog_home))
+    _, role, ref = resolve_role(policy, "fixture-worker", reference=None, parent="forked-parent", delegate=None)
+    assert role == "fixture-worker" and ref is not None
+    with pytest.raises(ModelUnavailable, match="ran without a server revision"):
+        resolve_role(policy, "fixture-worker", reference=None, parent="nameless-parent", delegate=None)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("parent", ["pins nobody", "not recorded here"])
 async def test_a_child_delegates_through_the_capability_its_catalog_declares(advanced_catalogs, historical_http, catalog_home, monkeypatch, parent):

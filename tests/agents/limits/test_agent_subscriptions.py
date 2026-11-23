@@ -411,6 +411,42 @@ def test_a_subscription_takes_the_owners_hooks_permissions_and_instructions_and_
     assert (tree(home / ".claude"), tree(home / ".codex")) == before
 
 
+def test_a_subscription_takes_the_owners_memory_notes_and_synced_skills_never_over_a_newer_one_never_a_session() -> None:
+    """2026-11-23: the web conversation's folder held no memory note and no synced skill (13 of its 60 skills) while the editor's
+    default login held them: every app turn started without. Notes and skills only; a transcript beside them never moves
+    (`NEVER_ADOPTED`). The guard counts what each side holds, never one name."""
+    home = Path.home()
+    notes = home / ".claude" / "projects" / "-work-project" / "memory"
+    notes.mkdir(parents=True)
+    (notes / "MEMORY.md").write_text("- [deploy](deploy.md)\n")
+    (notes / "deploy.md").write_text("deploy every slice\n")
+    (notes / "topic").mkdir()
+    (notes / "topic" / "deep.md").write_text("nested\n")
+    (notes.parent / "session.jsonl").write_text("{}\n")
+    synced = home / ".claude" / "skills" / "synced" / "org_account"
+    (synced / "docx").mkdir(parents=True)
+    (synced / "docx" / "SKILL.md").write_text("docx skill\n")
+    (synced / "manifest.json").write_text("{}\n")
+    subscription = Subscription.create(uuid4(), "claude")
+    kept = subscription.folder / "projects" / "-work-project" / "memory"
+    kept.mkdir(parents=True)
+    (kept / "deploy.md").write_text("written by a run here\n")
+    os.utime(kept / "deploy.md", (time.time() + 60,) * 2)
+    subscription.adopt({"HOME": str(home), **subscription.overlay()})
+    assert (kept / "MEMORY.md").read_text() == "- [deploy](deploy.md)\n" and (kept / "topic" / "deep.md").read_text() == "nested\n"
+    assert (kept / "deploy.md").read_text() == "written by a run here\n"
+    assert not (kept.parent / "session.jsonl").exists()
+    held = lambda root: sorted(path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file() and ("memory" in path.parts or "synced" in path.parts))
+    assert len(held(subscription.folder)) == len(held(home / ".claude")) == 5   # 3 notes + docx skill + manifest, the one rewritten note counted once
+    (notes / "MEMORY.md").write_text("- [deploy](deploy.md)\n- [more](more.md)\n")
+    os.utime(notes / "MEMORY.md", (time.time() + 120,) * 2)
+    subscription.adopt({"HOME": str(home), **subscription.overlay()})
+    assert "more.md" in (kept / "MEMORY.md").read_text()
+    codex = Subscription.create(uuid4(), "codex")
+    codex.adopt({"HOME": str(home), **codex.overlay()})
+    assert not (codex.folder / "projects").exists()
+
+
 def test_continuing_on_another_subscription_carries_the_session_never_a_credential_and_pins_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
     """Contract A9: his « Continuer sur Claude pro » after a usage limit copies that session's transcript from A's folder
     to B's (nothing else, never a credential), pins the run to B; a Codex login is never a target of a Claude session; a

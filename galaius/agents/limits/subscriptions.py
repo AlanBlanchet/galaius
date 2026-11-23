@@ -216,7 +216,9 @@ class Subscription(BaseModel):
         folder before a launch: the user-level instructions file, and of the settings file only
         `ADOPTED_SETTINGS` (the folder's other keys kept), every path into a CLI's default folder
         rehomed here with the scripts there it names (`_rehome`). Nothing else of the default homes is
-        read (no credential, `.claude.json`, session or history) and nothing is ever written there."""
+        read (no credential, `.claude.json`, session or history) and nothing is ever written there. Besides those, its
+        memory notes and synced skills (`AgentProvider.adopted_globs`), each only where this folder's has none or an older
+        one: a note a run here wrote since is kept."""
         default = self.default_home(self.program, environment)
         login = {name: str(default) for name in self.program.auth_home_env}
         if (instructions := self.program.user_instructions({**environment, **login})) is not None and instructions.is_file() \
@@ -229,6 +231,20 @@ class Subscription(BaseModel):
             adopted = self._rehome({key: owner[key] for key in self.ADOPTED_SETTINGS if key in owner}, environment)
             kept = {key: value for key, value in kept.items() if key not in self.ADOPTED_SETTINGS}
             self._replace(mine, (json.dumps({**kept, **adopted}, indent=2) + "\n").encode())
+        self._adopt_informing(default)
+
+    def _adopt_informing(self, default: Path) -> None:
+        """The files `AgentProvider.adopted_globs` find in `default` copied here, same place inside, with their times, where this
+        folder holds none of that name or an older one (never over a newer: a run here wrote it)."""
+        for source in sorted(path for glob in self.program.adopted_globs for path in default.glob(glob)):
+            if source.is_symlink() or not source.is_file() or not source.resolve().is_relative_to(default.resolve()):
+                continue
+            target = self.folder / source.relative_to(default)
+            if target.is_file() and target.stat().st_mtime >= source.stat().st_mtime:
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            self._replace(target, source.read_bytes())
+            os.utime(target, (source.stat().st_atime, source.stat().st_mtime))
 
     def _projected(self, path: Path) -> bool:
         """The prompt install lists `path` as its own: it refreshes it with every install, so a copy of the default login's would

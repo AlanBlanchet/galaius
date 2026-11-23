@@ -343,6 +343,10 @@ class AgentProvider(ABC):
     #: Its user config below the home folder that can register galaius as an MCP server already (`meshed`); None: a
     #: run's mesh is always its own (Codex lays it over its entry as `-c mcp_servers.galaius.*`).
     mcp_config: ClassVar[str | None] = None
+    #: Globs, inside a login folder, of what this CLI keeps there that informs a run beyond its config: the notes it remembers of a
+    #: folder it worked in, the skills its account syncs. `Subscription.adopt` takes the owner's default login's into a subscription's,
+    #: so a run there starts as informed as one on the default login.
+    adopted_globs: ClassVar[tuple[str, ...]] = ()
     #: The records in a login's sessions folder it writes a session's usage windows to, `{session}` its id
     #: (`usage_record`); None: it writes none there.
     usage_records: ClassVar[str | None] = None
@@ -1141,6 +1145,7 @@ class ClaudeCodeProvider(AgentProvider):
     confines_tools = True
     vocabulary = CLAUDE_VOCABULARY
     mcp_config = ".claude.json"
+    adopted_globs = ("projects/*/memory/**/*", "skills/synced/**/*", "plugins/synced/**/*")
     folder_settings_off = ("--setting-sources", "user")
     reads_mid_turn = True
     takes_turn_settings = True
