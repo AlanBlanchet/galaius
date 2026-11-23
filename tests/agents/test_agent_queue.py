@@ -285,7 +285,9 @@ def test_separate_process_enqueue_calls_are_serialized(monkeypatch, tmp_path):
     assert {item.message_id for item in agent_queue.items("r1")} == {"message-a", "message-b"}
 
 
-def test_killed_provider_turn_becomes_uncertain_without_automatic_replay(monkeypatch):
+def _cut_mid_delivery(monkeypatch, raw_lines: list[dict]):
+    """Two messages queued, the first claimed (its turn started), the PC's process cut before any end was recorded: the queue's
+    state after a power-off. `raw_lines`: what the vendor's stream held of that turn by then."""
     provider = setup_queue(monkeypatch)
     first_id = reg.record_message_event(from_run="operator", to_run="r1", text="send once")
     second_id = reg.record_message_event(from_run="operator", to_run="r1", text="send twice")
@@ -295,7 +297,8 @@ def test_killed_provider_turn_becomes_uncertain_without_automatic_replay(monkeyp
     with reg.record_lock("r1"):
         item = agent_queue.claim_next_locked("r1")
     assert item is not None and item.raw_index is not None and item.attempt_token
-
+    if raw_lines:
+        reg.raw_events_path("r1").write_text("\n".join(json.dumps(line) for line in raw_lines) + "\n")
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
         assert reg.begin_turn("r1", pid=child.pid) is not None
@@ -306,11 +309,23 @@ def test_killed_provider_turn_becomes_uncertain_without_automatic_replay(monkeyp
         if child.poll() is None:
             child.kill()
             child.wait(timeout=10)
+    return provider
 
-    item = agent_queue.items("r1")[0]
-    assert item.state == "uncertain"
-    assert "resend explicitly" in item.error
-    assert agent_queue.items("r1")[1].state == "replied"
+
+def test_a_turn_cut_before_it_answered_or_acted_is_sent_again_once(monkeypatch):
+    """Owner 2026-11-23: messages cut by a power-off read « uncertain … resend explicitly » and were never tried again: delivered once
+    or reported, never left."""
+    provider = _cut_mid_delivery(monkeypatch, [])
+    assert sorted(provider.messages) == ["send once", "send twice"]   # each reached its agent exactly once
+    assert [item.state for item in agent_queue.items("r1")] == ["replied", "replied"]
+
+
+def test_a_turn_cut_after_it_acted_is_never_replayed(monkeypatch):
+    """Its tool calls would run twice: it was taken (replied), the run's own resume continues it."""
+    provider = _cut_mid_delivery(monkeypatch, [
+        {"type": "assistant", "session_id": "vendor", "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}]}}])
+    first = agent_queue.items("r1")[0]
+    assert first.state == "replied" and "resume continues it" in first.error
     assert provider.messages == ["send twice"]
 
 

@@ -1073,6 +1073,19 @@ def _fall_back_locked(run_id: str, item: QueueItem, run: "reg.AgentRun | None", 
     return True
 
 
+def _uncertain_locked(run_id: str, item: QueueItem, events: list[AgentEvent], error: str) -> tuple[AttemptState | None, str]:
+    """What becomes of a turn whose dispatcher went away (a power-off) with no end recorded, while the caller owns the run lock:
+    delivered once or reported, never left « uncertain » for someone to notice (owner 2026-11-23: 7 + 6 + 1 messages of three
+    runs stayed so). One that answered or acted (`settle`'s own test: its tool calls would run twice) was taken: it is `replied`,
+    the run's own resume continues it. One that did neither is sent again by the same tries as any turn that died saying nothing
+    (`_again_locked`: state None, the item is pending again); once those are spent it `failed`, which its sender reads."""
+    if any(item.turn.accepts(event) or event.kind == "tool" for event in events):
+        return "replied", "its turn was cut after it began; the run's own resume continues it"
+    if _again_locked(run_id, item, "its turn was cut before it answered or acted"):
+        return None, ""
+    return "failed", f"{error.removesuffix('; resend explicitly')}; sent again {len(RESUME_BACKOFF)} times without an answer"
+
+
 def settle(run_id: str, item: QueueItem, code: int) -> None:
     """Record how the attempt `item` ended once its provider child exited with `code`: replied, failed or uncertain.
     One whose CLI exited non-zero is replied when its turn answered all the same; tried again (`_again_locked`) when it
@@ -1261,15 +1274,20 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                 continue
             if recover is not None:
                 recovered_item, _ = recover
-                attempt_state, attempt_error = _classify_attempt(recovered_item, _attempt_events(run_id, recovered_item))
+                recovered_events = _attempt_events(run_id, recovered_item)
+                attempt_state, attempt_error = _classify_attempt(recovered_item, recovered_events)
                 with reg.record_lock(run_id):
                     current = item_locked(run_id, recovered_item.id)
                     if current is not None and current.state == "running":
-                        _replace_item_locked(
-                            run_id, current.id, state=attempt_state,
-                            finished_at=time.time(), error=attempt_error,
-                        )
-                    reg.end_resume_locked(run_id)
+                        if attempt_state == "uncertain":
+                            attempt_state, attempt_error = _uncertain_locked(run_id, current, recovered_events, attempt_error)
+                        if attempt_state is not None:
+                            _replace_item_locked(
+                                run_id, current.id, state=attempt_state,
+                                finished_at=time.time(), error=attempt_error,
+                            )
+                    if attempt_state is not None:
+                        reg.end_resume_locked(run_id)
                 continue
             if item is None:
                 time.sleep(pause)
