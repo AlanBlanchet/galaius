@@ -15,7 +15,13 @@ TYPED = 0
 #: The CLIs whose saved sessions he types in; `galaius` is the registry's own runs, whose messages `RunLedger.his_messages` reads once.
 SOURCES = ("claude", "codex")
 #: What is no word of his though a CLI saved it as a user turn: the index marks a machine-written line `(quoted) `, a harness writes these.
-NOT_HIS = ("(quoted) ", "<task-notification>", "<command-", "<local-command", "Stop hook feedback", "Caveat: The messages below")
+NOT_HIS = ("(quoted) ", "<task-notification>", "<command-", "<local-command", "Stop hook feedback", "Caveat: The messages below", "[Request interrupted by user")
+#: Codex's IDE extension prefixes a turn with the editor's state (open tabs, pasted workspace text); his words follow this heading.
+IDE_CONTEXT = "# Context from my IDE setup:"
+IDE_REQUEST = "## My request"
+#: A text this long said again word for word is the same turn replayed (a forked or resumed session copies its history), counted once; a short one
+#: (`continue`, `ok`) is said again for real.
+REPLAY_FROM = 20
 
 
 class Typed(NamedTuple):
@@ -37,12 +43,31 @@ def index_path(folder: Path) -> Path | None:
     return found[-1] if found else None
 
 
-def read(folder: Path, since: float) -> list[Typed]:
-    """His messages of editor and terminal sessions from `since` on, oldest first. An index that is absent, locked or of a shape this build does not know
-    reads as none: the caller says so (`index_path`)."""
+class Reading(NamedTuple):
+    """`read`'s answer: his messages, and why the index could not be read ("" when it could, or none exists: `index_path` says that)."""
+
+    messages: list[Typed]
+    problem: str = ""
+
+
+def his_words(text: str) -> str:
+    """What of a saved user turn is his: all of it, except a Codex turn that opens with the editor's state, where it is what follows `## My request`
+    ("" when nothing does)."""
+    if not text.lstrip().startswith(IDE_CONTEXT):
+        return text
+    _, found, after = text.partition(IDE_REQUEST)
+    if not found:
+        return ""
+    heading, _, request = after.partition("\n")   # `## My request for Codex:` is a heading line; his words follow it (or sit after its colon)
+    return (request or heading.partition(":")[2]).strip()
+
+
+def read(folder: Path, since: float) -> Reading:
+    """His messages of editor and terminal sessions from `since` on, oldest first, a long text said again word for word only once (its first
+    time). An index that cannot be read says why (`Reading.problem`); one never built reads as none (`index_path`)."""
     path = index_path(folder)
     if path is None:
-        return []
+        return Reading([])
     try:
         db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
         try:
@@ -52,10 +77,16 @@ def read(folder: Path, since: float) -> list[Typed]:
                 (since, *SOURCES)).fetchall()
         finally:
             db.close()
-    except sqlite3.Error:
-        return []
-    return [Typed(at=float(at), conversation=str(conversation), to_run="", role="you", text=text, source=str(source), project=str(project or ""))
-            for at, conversation, text, source, project in rows if isinstance(text, str) and text.strip() and not text.lstrip().startswith(NOT_HIS)]
+    except sqlite3.Error as error:
+        return Reading([], f"{path.name} cannot be read ({error}): run `galaius agents search` once to rebuild it")
+    found: dict[tuple[str, str], Typed] = {}
+    for at, conversation, raw, source, project in rows:
+        if not isinstance(raw, str) or raw.lstrip().startswith(NOT_HIS) or not (text := his_words(raw)).strip():
+            continue
+        typed = Typed(at=float(at), conversation=str(conversation), to_run="", role="you", text=text, source=str(source), project=str(project or ""))
+        key = (typed.source, " ".join(text.split()) if len(text) >= REPLAY_FROM else f"{typed.conversation}:{typed.at}:{text}")
+        found.setdefault(key, typed)
+    return Reading(sorted(found.values()))
 
 
 class Coverage(NamedTuple):

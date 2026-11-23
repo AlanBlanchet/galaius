@@ -282,7 +282,7 @@ def messages(*, conversation: Annotated[str | None, Parameter(help="A conversati
     """What he typed lately, oldest first: when, which conversation, where (`web`, or the CLI of an editor / terminal session), his words, and `!`
     for what reads as frustration. Then per day and per project: how many, how many frustrated. Editor and terminal messages are read from the
     conversation index of `galaius agents search` (masked, his prompts only, never an agent's text), brought up to date for up to 20 s first."""
-    from galaius.agents import editor_words
+    from galaius.agents.history import editor_words
     from galaius.host.paths import UserPaths
 
     if source not in ("all", "web", "editor"):
@@ -290,11 +290,12 @@ def messages(*, conversation: Annotated[str | None, Parameter(help="A conversati
         raise SystemExit(2)
     try:
         moment = None if since == "all" else parse_since(since)
-        ledger, coverage, extra = RunLedger(), None, []
+        ledger, coverage, extra, problem = RunLedger(), None, [], ""
         if source != "web":
             folder = UserPaths.agents()
             coverage = None if no_refresh else editor_words.refresh_index(folder, REFRESH_SECONDS)
-            extra = editor_words.read(folder, max(0.0, (moment or 0.0) - run_ledger.REPEAT_LOOKBACK))
+            reading = editor_words.read(folder, max(0.0, (moment or 0.0) - run_ledger.REPEAT_LOOKBACK))
+            extra, problem = reading.messages, reading.problem
         found = ledger.his_messages(since=moment or 0.0, conversation=conversation, frustrated=frustrated, extra=extra)
         if source == "editor":
             found = [said for said in found if said.source != "web"]
@@ -307,7 +308,7 @@ def messages(*, conversation: Annotated[str | None, Parameter(help="A conversati
     covers += "" if source == "all" else f", {source} only"
     days, projects = _tally(found, lambda said: datetime.fromtimestamp(said.at).strftime("%Y-%m-%d")), _tally(found, lambda said: said.project or "-")
     index = None if source == "web" else {"asked": not no_refresh, "conversations": coverage.conversations if coverage else None, "pending": coverage.pending if coverage else None,
-                                          "found": editor_words.index_path(UserPaths.agents()) is not None}
+                                          "found": editor_words.index_path(UserPaths.agents()) is not None, "problem": problem}
     if json_out:
         print(MessagesOut(covers=covers, messages=found, by_day=days, by_project=projects, index=index).model_dump_json(indent=1))
         return
@@ -319,7 +320,9 @@ def messages(*, conversation: Annotated[str | None, Parameter(help="A conversati
         if rows:
             print(f"{title}: " + " · ".join(f"{row.name} {row.messages}" + (f" ({row.frustrated} !)" if row.frustrated else "") for row in rows))
     if index is not None:
-        if not index["found"]:
+        if index["problem"]:
+            print(f"editor / terminal sessions: {index['problem']}")
+        elif not index["found"]:
             print("editor / terminal sessions: no conversation index here yet (run `galaius agents search` once)")
         elif index["pending"]:
             print(f"editor / terminal sessions: the index is {index['pending']} files behind (re-run, or `galaius agents search`)")

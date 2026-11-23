@@ -1882,6 +1882,10 @@ class ClaudeCodeProvider(AgentProvider):
     def transcript_origin(self, raw: dict) -> str:
         return str(raw.get("entrypoint") or "")
 
+    def transcript_typed(self, raw: dict) -> bool | None:
+        """A turn inside a subagent's own thread (`isSidechain`) is the agent's prompt to it, never the person's, whatever the session's origin."""
+        return False if raw.get("isSidechain") else super().transcript_typed(raw)
+
     def event(self, raw: dict, ledger: UsageLedger) -> AgentEvent | None:
         """One decoded stream line (or saved-session record) as an event."""
         kind = raw.get("type", "")

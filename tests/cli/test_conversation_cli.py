@@ -639,5 +639,49 @@ def test_the_editor_source_says_so_when_no_index_exists_and_reads_nothing(folder
 
 
 def test_the_index_tier_this_reads_is_the_one_the_index_gives_a_persons_prompt() -> None:
-    from galaius.agents import conversations, editor_words
+    from galaius.agents import conversations
+    from galaius.agents.history import editor_words
     assert editor_words.TYPED == conversations.TYPED
+
+
+def test_a_turn_replayed_by_a_fork_counts_once_the_editor_s_state_is_not_his_words_and_an_interruption_notice_is_none(folder: Path, monkeypatch, capsys) -> None:
+    home = folder.parent / "claude-home"
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(folder))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
+    long = "Please show the closed asks in the asks view, with the guard that closed each one"
+    _claude_session(home, "-work-galaius", "aaaaaaaa-0000-4000-8000-000000000011", [(_iso(900), "user", long), (_iso(800), "user", "continue"),
+                                                                                 (_iso(700), "user", "[Request interrupted by user for tool use]")], entrypoint="claude-vscode")
+    _claude_session(home, "-work-galaius", "bbbbbbbb-0000-4000-8000-000000000012", [(_iso(300), "user", long), (_iso(200), "user", "continue")], entrypoint="claude-vscode")   # a fork replaying
+    cli.messages(since="2h", source="editor", json_out=True)
+    texts = [m["text"] for m in json.loads(capsys.readouterr().out)["messages"]]
+    assert texts == [long, "continue", "continue"], "a long text said again word for word is one turn, a short one is said again for real; no interruption notice"
+
+
+def test_a_codex_turn_that_opens_with_the_editors_state_keeps_only_his_request() -> None:
+    from galaius.agents.history.editor_words import his_words
+    pasted = "# Context from my IDE setup:\n## Active file: x.py\n## Open tabs: a, b\n## My request for Codex:\nwhy is it slow?"
+    assert his_words(pasted) == "why is it slow?" and his_words("# Context from my IDE setup:\n## Open tabs: a") == "" and his_words("plain words") == "plain words"
+
+
+def test_a_subagent_thread_inside_a_session_file_is_never_his(folder: Path, monkeypatch, capsys) -> None:
+    home = folder.parent / "claude-home"
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(folder))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
+    session = home / "projects" / "-work-galaius"
+    session.mkdir(parents=True)
+    lines = [{"type": "user", "timestamp": _iso(500), "sessionId": "x", "cwd": "/work/galaius", "entrypoint": "claude-vscode", "message": {"role": "user", "content": "his own words"}},
+             {"type": "user", "timestamp": _iso(400), "sessionId": "x", "cwd": "/work/galaius", "entrypoint": "claude-vscode", "isSidechain": True,
+              "message": {"role": "user", "content": "the parent agent's prompt to its subagent"}}]
+    (session / "cccccccc-0000-4000-8000-000000000013.jsonl").write_text("\n".join(json.dumps(line) for line in lines))
+    cli.messages(since="2h", source="editor", json_out=True)
+    assert [m["text"] for m in json.loads(capsys.readouterr().out)["messages"]] == ["his own words"]
+
+
+def test_an_index_that_cannot_be_read_is_said_never_read_as_no_messages(folder: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(folder))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(folder.parent / "nothing"))
+    (folder / "conversations.v9.sqlite3").write_bytes(b"this is not a database")
+    cli.messages(since="1h", source="editor", no_refresh=True)
+    assert "cannot be read" in capsys.readouterr().out
+    cli.messages(since="1h", source="editor", no_refresh=True, json_out=True)
+    assert "cannot be read" in json.loads(capsys.readouterr().out)["index"]["problem"]

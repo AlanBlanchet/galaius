@@ -24,7 +24,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from galaius.agents.editor_words import Typed
+from galaius.agents.history.editor_words import Typed
 from galaius.config.settings import FRUSTRATION
 from galaius.host.paths import UserPaths
 
