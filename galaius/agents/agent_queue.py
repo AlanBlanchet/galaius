@@ -1080,10 +1080,13 @@ def settle(run_id: str, item: QueueItem, code: int) -> None:
     the next model (`_fall_back_locked`), failed only once none answers; else failed, and a child that died saying nothing fails the run's turn."""
     events = _attempt_events(run_id, item)
     attempt_state, attempt_error = _classify_attempt(item, events)
-    if code and attempt_state != "replied":
+    # A limit is the vendor's word on the result line, whatever the exit code (the CLI's recorded refusals all exit 1; a wrapper or a
+    # CLI version that exits 0 on one must not leave it as the turn's reply).
+    said = events[-1] if events else None
+    limited = said is not None and said.kind == "error" and quota.classify(said.text) is not None
+    if (code or limited) and attempt_state != "replied":
         # The provider's own last word in this attempt (a quota refusal, a vendor error, a compaction that failed)
         # outranks the exit code; a child that died saying nothing gets the exit code and its stderr as the run's last line.
-        said = events[-1] if events else None
         error = f"resumed provider exited {code}"
         if words := _said_line(said):
             error += f": {words}"
@@ -1095,7 +1098,6 @@ def settle(run_id: str, item: QueueItem, code: int) -> None:
         # (The provider's own refusal, a synthetic text or a `done` carrying it, is no answer.)
         answered = any((item.turn.accepts(event) and not (event.text and quota.classify(event.text) is not None)) or event.kind == "tool"
                        for event in events)
-        limited = said is not None and said.kind == "error" and quota.classify(said.text) is not None
         with reg.record_lock(run_id):
             current = item_locked(run_id, item.id)
             if current is None or current.state != "running":

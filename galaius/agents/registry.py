@@ -1873,11 +1873,12 @@ def _shut(provider: str, login: UUID | None, model: str | None) -> bool:
     return quota.login_pause(provider, subscription=login) is not None or (model is not None and quota.blocked_until(provider, model, subscription=login) is not None)
 
 
-def open_logins(run: AgentRun) -> tuple[RunSubscription, ...]:
-    """The subscription logins of this PC, each as the pin `carry` takes, that can take the next turn of stopped `run` while its own
-    login cannot (`_shut`: its usage window shut, its sign-in lost, or its model refused there, a family's pool included) and
-    that are under their caps. None: its login takes the turn, no other does, it is a member's lent run, a run of no process or of a
-    CLI no login runs, or the owner already holds a move for it (`pending_move`)."""
+def open_logins(run: AgentRun) -> tuple[RunSubscription | None, ...]:
+    """The logins of this PC, each as the pin `carry` takes (None: this PC's own login), that can take the next turn of stopped
+    `run` while its own login cannot (`_shut`: its usage window shut, its sign-in lost, or its model refused there, a family's pool
+    included) and that are under their caps: the subscription logins first, this PC's own login last (a run pinned to a lost
+    subscription never waits while the PC's own login has usage). None: its login takes the turn, no other does, it is a member's
+    lent run, a run of no process or of a CLI no login runs, or the owner already holds a move for it (`pending_move`)."""
     if run.pending_move is not None or run.kind != "process" or run.foreign or (run.subscription is not None and run.subscription.lent):
         return ()
     if (program := PROVIDERS.get(run.provider)) is None or not program.auth_home_env or not _shut(run.provider, run.subscription_id, run.model):
@@ -1892,6 +1893,8 @@ def open_logins(run: AgentRun) -> tuple[RunSubscription, ...]:
         except SubscriptionRefused:
             continue
         options.append(option)
+    if run.subscription_id is not None and not _shut(run.provider, None, run.model):
+        options.append(None)
     return tuple(options)
 
 
@@ -1905,10 +1908,10 @@ def swap_login(run: AgentRun) -> AgentRun:
         try:
             moved = carry(run, option)
         except (SubscriptionRefused, PermissionError, OSError) as error:
-            log.warning("run %s could not move to subscription %s: %s", run.run_id[:8], str(option.subscription_id)[:8], error)
+            log.warning("run %s could not move to %s: %s", run.run_id[:8], option.subscription_id if option else "the PC's own login", error)
             continue
-        log.warning("run %s moved from %s to subscription %s: its login cannot take %s now", run.run_id[:8], run.subscription_id or "the PC's own login",
-                    option.subscription_id, run.model or "a turn")
+        log.warning("run %s moved from %s to %s: its login cannot take %s now", run.run_id[:8], run.subscription_id or "the PC's own login",
+                    option.subscription_id if option else "the PC's own login", run.model or "a turn")
         return moved
     return run
 

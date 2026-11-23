@@ -372,6 +372,17 @@ def _noted_until(provider: str, model: str, logins: Sequence[UUID | None]) -> fl
     return None if not untils or any(until is None for until in untils) else min(until for until in untils if until is not None)
 
 
+def _own_login_takes(provider: AgentProvider, model: str, options: Sequence[RunSubscription]) -> bool:
+    """Whether a start offered only logins of `provider` that take no turn (every one held at its usage limit or signed out,
+    `quota.login_pause`) runs on this PC's own login instead: a CLI login that answers (no hold, no refusal of `model` there).
+    A login at a cap he set, one not signed in on this PC or of another program is no pause: none is walked round. Owner
+    2026-11-20 « The harness should never dissalow if i have any form of usage »: a start never waits or fails while a login of
+    his has usage."""
+    return (bool(options) and not _keyed(provider) and bool(provider.auth_home_env)
+            and all(quota.login_pause(provider.name, subscription=option.subscription_id) is not None for option in options)
+            and quota.login_pause(provider.name) is None and quota.blocked_until(provider.name, model) is None)
+
+
 def _context_of(model: str, candidates: Sequence[reg.LaunchCandidate]) -> int | None:
     """The catalog's context window for `model` (as `_capability_of` reads it); None when it names none."""
     named = next((entry.catalog_id for entry in candidates if entry.model == model and entry.catalog_id), None)
@@ -1779,22 +1790,27 @@ async def run_agent(
             continue
         candidate_provider = by_name[candidate.provider]
         candidate_pin, candidate_env = pinned, environment
+        own_login = False   # runs on this PC's own login though logins were offered (`_own_login_takes`)
         if candidate.provider in offered:
             options = offered[candidate.provider]
             if _keyed(candidate_provider):  # each key runs only an id its own vendor list names
                 options = [option for option in options if option.subscription_id is None or (known := Subscription.of(option.subscription_id).vendor_models()) is None
                            or candidate_provider.model_name(candidate.model) in known]
-            candidate_pin, candidate_env, passed = RunSubscription.first_under_cap(options, environment, candidate.provider, candidate.model)
-            if (hold := _reopening(candidate.provider, passed.held)) is not None:
-                waits[index] = hold  # waited on should this candidate not start on another of his logins
-            if candidate_pin is None:
-                caps.extend(passed.caps)
-                skipped.append(_skip_record(candidate, _skip("quota_exceeded", hold.line()), until=hold.until) if hold is not None and not passed.said
-                               else _skip_record(candidate, _skip("subscription_capped" if passed.caps else "subscription_missing", passed.said)))
-                continue
+            own_login = _own_login_takes(candidate_provider, candidate.model, options)
+            if own_login:   # every login he offered is held or signed out, this PC's own answers
+                log.warning("run %s: every %s login offered is held or signed out: %s runs on this PC's own login", (run_id or "-")[:8], candidate.provider, candidate.model)
+            else:
+                candidate_pin, candidate_env, passed = RunSubscription.first_under_cap(options, environment, candidate.provider, candidate.model)
+                if (hold := _reopening(candidate.provider, passed.held)) is not None:
+                    waits[index] = hold  # waited on should this candidate not start on another of his logins
+                if candidate_pin is None:
+                    caps.extend(passed.caps)
+                    skipped.append(_skip_record(candidate, _skip("quota_exceeded", hold.line()), until=hold.until) if hold is not None and not passed.said
+                                   else _skip_record(candidate, _skip("subscription_capped" if passed.caps else "subscription_missing", passed.said)))
+                    continue
         candidate_pin_id = candidate_pin.subscription_id if candidate_pin is not None else None
         candidate_fence = fence if fence is None or not offered else \
-            fence.model_copy(update={"homes": candidate_pin.homes() if candidate_pin is not None else RunSubscription.closed(offered)})
+            fence.model_copy(update={"homes": candidate_pin.homes() if candidate_pin is not None else RunSubscription.closed(name for name in offered if name != candidate.provider or not own_login)})
         # Named once per role, per provider (`accepts_coarse_tool_policy`) — a provider that can
         # only enforce a SANDBOX, not this role's specific tool names, runs it anyway only when
         # the operator recorded that tradeoff for THIS role; never a default, never widened by

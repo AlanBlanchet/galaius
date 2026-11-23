@@ -199,16 +199,19 @@ async def test_each_candidate_runs_on_its_own_providers_subscription_and_the_run
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("first", "second", "runs_on"), [
-    ("usage", None, "second"),         # his first account at its weekly limit: the start runs on his second (2026-10-31)
-    ("lost", None, "second"),          # a lost first login is asked again after the spare, never ahead of it
-    ("usage", "usage", "first"),       # both held: it waits for the one reopening first (the first, at +600 s)
-    ("usage", "capped", "first"),      # the spare at his cap: it waits for the held one, never refused for it
-    ("refuses", None, "second"),       # his first refuses the start naming its reopening: the same model on his second
+@pytest.mark.parametrize(("first", "second", "runs_on", "own"), [
+    ("usage", None, "second", "open"),         # his first account at its weekly limit: the start runs on his second (2026-10-31)
+    ("lost", None, "second", "open"),          # a lost first login is asked again after the spare, never ahead of it
+    ("usage", "usage", "first", "usage"),      # both held and the PC's own login too: it waits for the one reopening first (the first, at +600 s)
+    ("usage", "capped", "first", "open"),      # the spare at his cap: it waits for the held one, never refused for it, never run on the PC's login
+    ("refuses", None, "second", "open"),       # his first refuses the start naming its reopening: the same model on his second
+    ("usage", "usage", "own", "open"),         # both held, the PC's own login has usage: it runs there, never waits (owner 2026-11-20 « never dissalow if i have any form of usage »)
+    ("lost", "lost", "own", "open"),           # both signed out, the PC's own login answers: it runs there, never on a login that is not signed in
+    ("lost", "usage", "own", "open"),
 ])
-async def test_a_held_login_never_hides_his_next_subscription(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first: str, second: str | None, runs_on: str) -> None:
-    """A provider offered several of his logins runs on the first one able to start; all held, the start waits in line
-    for the earliest reopening (`admission.Paused`) instead of being refused."""
+async def test_a_held_login_never_hides_his_next_subscription(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first: str, second: str | None, runs_on: str, own: str) -> None:
+    """A provider offered several of his logins runs on the first one able to start; all held, it runs on this PC's own login
+    while that has usage, else the start waits in line for the earliest reopening (`admission.Paused`) instead of being refused."""
     use_policy(monkeypatch, agents={"tester": "fixture-model"}, reasoning={"tester": "medium"})
     definition = tmp_path / "tester.md"
     definition.write_text("---\nname: tester\n---\nTest.\n", encoding="utf-8")
@@ -230,13 +233,15 @@ async def test_a_held_login_never_hides_his_next_subscription(tmp_path: Path, mo
         elif state == "capped":
             logins[name].observe((UsageWindow(window="weekly", used_percent=85, observed_at=datetime.now(UTC)),))
             limits[name] = SubscriptionLimits(weekly_percent=80)
+    if own == "usage":
+        quota.pause_login("claude", "usage_limit", until=time.time() + 7200)
     choices = SubscriptionChoices(subscriptions=tuple(SubscriptionChoice(provider="claude", subscription_id=logins[name].id, limits=limits[name]) for name in ("first", "second")))
     launch = run_agent(None, "go", agent="tester", cwd=str(tmp_path), environment={"PATH": "/usr/bin:/bin"}, choices=choices)
-    if first != "usage" or second is None:
+    if runs_on != "first" or first != "usage" or second is None:   # "first" is the held one it waits for
         handle = await launch
         await asyncio.wait_for(handle.wait(), timeout=30)
         record = reg.get_run(handle.run_id)
-        assert (record.subscription_id, record.model) == (logins[runs_on].id, "fixture-model")
+        assert (record.subscription_id, record.model) == (logins[runs_on].id if runs_on != "own" else None, "fixture-model")
         return
     with pytest.raises(admission.Paused) as paused:
         await launch

@@ -5,6 +5,7 @@ of usage »)."""
 
 import sys
 import time
+from types import SimpleNamespace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -68,8 +69,12 @@ def _stopped_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, model: str = "
     return provider, logins, session
 
 
-def _hold(kind: str, login: Subscription) -> None:
-    if kind == "pool":
+#: This PC's own login as a hold target (`id` None: no subscription): another rung of the walk, open unless a row shuts it too.
+OWN = SimpleNamespace(id=None)
+
+
+def _hold(kind: str, login: Subscription | SimpleNamespace) -> None:
+    if kind == "pool" or (kind == "stop" and login.id is None):   # the own login keeps no pool reading of its stop: only the refusal
         quota.record_refusal("claude", "fable-fixture", said=FABLE_POOL, subscription=login.id)
     elif kind == "stop":
         login.observe_pools((quota.ModelPool(pool="fable", used_percent=97, resets_at=datetime.now(UTC) + timedelta(days=2), observed_at=datetime.now(UTC)),))
@@ -87,18 +92,19 @@ def _resume() -> tuple[str | None, object]:
     ("pool", ("a",), "b", "fable-fixture"),        # (a) Fable refused on his first login, his second open: the same model on the second, the session carried
     ("stop", ("a",), "b", "fable-fixture"),        # (a) the pool read at his stop, no refusal yet
     ("window", ("a",), "b", "fable-fixture"),      # (b) the first login's whole usage window shut: his second takes it, a login-wide hold is no wait
-    ("pool", ("a", "b"), "a", "lower-model"),      # (c) the Fable pool shut on both: the next ranked model on its own login, never a wait for the pool's reset
-    ("stop", ("a", "b"), "a", "lower-model"),
+    ("pool", ("a", "b", "own"), "a", "lower-model"),      # (c) the Fable pool shut on every login: the next ranked model on its own login, never a wait for the pool's reset
+    ("stop", ("a", "b", "own"), "a", "lower-model"),
+    ("pool", ("a", "b"), None, "fable-fixture"),   # (d) shut on both subscription logins, open on the PC's own: the same model there, the session carried
 ])
 def test_a_resumed_conversation_goes_to_his_other_login_else_to_the_next_ranked_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
                                                                                     held_by: str, shut_on: tuple[str, ...], runs_on: str, model: str) -> None:
     provider, logins, session = _stopped_run(monkeypatch, tmp_path)
     for name in shut_on:
-        _hold(held_by, logins[name])
+        _hold(held_by, {**logins, "own": OWN}[name])
     if held_by == "window":
         assert quota.login_pause("claude", subscription=logins["a"].id) is not None
     resumed_model, login = _resume()
-    assert (login, resumed_model) == (logins[runs_on].id, model)
+    assert (login, resumed_model) == (logins[runs_on].id if runs_on in logins else None, model)
     assert provider.messages == ["go on"]
     if runs_on == "b":
         assert (logins["b"].folder / f"{session}.jsonl").is_file(), "its session was carried to the login that took the turn"
@@ -138,8 +144,8 @@ def test_a_turn_cut_by_one_logins_window_resumes_at_once_on_his_other_login_else
     provider, logins, _ = _stopped_run(monkeypatch, tmp_path)
     monkeypatch.setattr(fallback, "PROVIDERS", {"claude": provider})   # no other provider installed here: only the login rung
     line = _week_line()
-    for name in ("a", *(() if other_open else ("b",))):
-        quota.record_refusal("claude", "fable-fixture", said=line, subscription=logins[name].id)
+    for name in ("a", *(() if other_open else ("b", "own"))):
+        quota.record_refusal("claude", "fable-fixture", said=line, subscription=({**logins, "own": OWN}[name]).id)
     run = reg.get_run("r1")
     digest = reg.StreamDigest(source="x", ending="error", ending_text=line, cut=RunCut.usage_limit, usage=CountedTokens())
     failed = run.model_copy(update={"status": "failed", "finished_at": time.time(), "stream_digest": digest})
@@ -180,7 +186,7 @@ def test_an_exhausted_providers_waiting_message_goes_to_a_successor_on_another_p
     monkeypatch.setattr(fallback, "PROVIDERS", {"claude": provider, "other": _Other()})
     monkeypatch.setattr(fallback, "_active", lambda name: True)
     monkeypatch.setattr(agent_queue, "_HANDOFF_REFUSED", set())
-    for login in logins.values():
+    for login in (*logins.values(), OWN):
         for model in ("fable-fixture", "lower-model"):
             quota.record_refusal("claude", model, said="You've hit your weekly limit", subscription=login.id)
     monkeypatch.setattr(fallback, "candidates", lambda run: ("fable-fixture", "lower-model"))
@@ -216,16 +222,18 @@ def test_a_hand_on_starts_a_successor_through_the_ranked_walk_and_takes_over_the
     assert reg.get_run("r1").successor == successor
 
 
-_REFUSAL = ("import json,sys; print(json.dumps({'type':'result','is_error':True,'session_id':'vendor','result':%r})); sys.exit(1)" % FABLE_POOL)
+#: What the vendor CLI really prints on a limit (read from recorded runs: the result line `is_error` true, `api_error_status` 429, the process exit 1).
+_REFUSAL = ("import json,sys; print(json.dumps({'type':'result','subtype':'success','is_error':True,'api_error_status':429,'session_id':'vendor','result':%r})); sys.exit(%%d)" % FABLE_POOL)
 
 
-def test_a_limit_refusal_mid_turn_resends_the_same_turn_on_the_next_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("exit_code", [1, 0])
+def test_a_limit_refusal_mid_turn_resends_the_same_turn_on_the_next_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, exit_code: int) -> None:
     """The vendor refuses the resumed turn on Fable's pool («Switch to another model»): that message goes out again at once on the next model,
     never a failed turn left for him (owner 2026-11-20 23:0x « We should NEVER stop the user request and instead use a fallback »)."""
     provider, logins, _ = _stopped_run(monkeypatch, tmp_path)
     ok = provider.script
     provider.resume_command = lambda session_id, message, **kwargs: (  # type: ignore[method-assign]
-        provider.models.append(kwargs.get("model")), provider.messages.append(str(message)), [sys.executable, "-c", _REFUSAL if kwargs.get("model") == "fable-fixture" else ok])[2]
+        provider.models.append(kwargs.get("model")), provider.messages.append(str(message)), [sys.executable, "-c", _REFUSAL % exit_code if kwargs.get("model") == "fable-fixture" else ok])[2]
     messaging.deliver_message("r1", "go on", sender="operator")
     agent_queue.dispatch("r1")
     deadline = time.time() + 15   # the refusal is read when the child ends: the re-send follows it
@@ -238,11 +246,10 @@ def test_a_limit_refusal_mid_turn_resends_the_same_turn_on_the_next_model(monkey
     assert set(provider.messages) == {"go on"} or all("go on" in m for m in provider.messages)
 
 
-@pytest.mark.xfail(strict=True, reason="GAP: open_logins offers only subscription logins; a run pinned to a lost subscription never returns to the PC's own login")
 def test_a_resume_never_lands_on_a_login_that_is_not_signed_in_while_the_pcs_own_login_has_usage(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Both subscription logins lost (`login_lost`): the turn goes to the PC's own login (no subscription pin), never to a lost one."""
     provider, logins, _ = _stopped_run(monkeypatch, tmp_path)
     for login in logins.values():
         quota.pause_login("claude", "login_lost", subscription=login.id, said="Not logged in · Please run /login")
     _, pinned = _resume()
-    assert pinned not in {login.id for login in logins.values()}, f"resumed on a lost login {pinned}"
+    assert pinned is None, f"resumed on {pinned}, not on the PC's own login"
