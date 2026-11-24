@@ -114,6 +114,8 @@ def test_stopping_a_run_a_message_woke_before_any_turn_hands_nothing_back(monkey
     assert reg.stop("woken", by=by) is True
     run = reg.get_run("woken")
     assert run.finished_at == ended and run.woken_from is None
+    assert run.status == "done", "it ends as it had ended, never `stopped` over its old end date"
+    assert (run.held_at is not None) is (by == HIM), "a person's stop still holds it"
     assert run.finished_at < relations_since(), "an end older than the watch's start is no end to hand back"
 
 

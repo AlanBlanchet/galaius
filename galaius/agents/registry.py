@@ -1779,12 +1779,20 @@ def stop(run_id: str, *, by: StopActor | None, expected_lifecycle_token: str | N
             return False
         if stored.process_running():
             _terminate(stored.pid)
-        # A run a message woke and no turn began on (`woken_from`) ends as it had ended: nothing new happened to hand back.
+        # A run a message woke and no turn began on (`woken_from`) ends as it had ended, whoever stops it: nothing new happened, so
+        # nothing is dated now and nothing is handed back; a person's stop still holds it (`held_at`). Its status is read again from
+        # its kept ending (`_derive`), never `stopped` over an old end date.
         unstarted = stored.status == "starting" and stored.woken_from is not None and not stored.process_running()
+        held = {"held_at": time.time()} if holds(by) and not waiting else {}
+        if unstarted:
+            updated = _merge_record_locked(run_id, {**held, "woken_from": None, "finished_at": stored.woken_from})
+            if updated is not None:
+                _derive(updated)
+            return updated is not None
         updated = _merge_record_locked(run_id, {
-            **({"held_at": time.time()} if holds(by) and not waiting else {}),
+            **held,
             "woken_from": None,
-            "finished_at": stored.finished_at if idle and stored.finished_at else (stored.woken_from if unstarted else time.time()),
+            "finished_at": stored.finished_at if idle and stored.finished_at else time.time(),
             "exit_code": 0 if idle else -signal.SIGTERM,
             "status": "done" if idle else "stopped",
             "stopped_by": None if idle or by is None else by.model_dump(mode="json"),
