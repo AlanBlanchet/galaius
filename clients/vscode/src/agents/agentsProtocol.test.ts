@@ -159,6 +159,40 @@ for (const mode of ["torn", "rotation", "crash-replay"] as const) test(
   },
 );
 
+for (const [name, partials] of [["short", 5], ["past the cold tail", 150]] as const) test(
+  `an answer being written reads as nothing in the panel's readers (${name}): its partial lines never fill a window`, (t) => {
+  if (!fs.existsSync(built)) return t.skip("run npm run compile first");
+  delete require_.cache[require_.resolve(built)];
+  const reader = require_(built);
+  const root = path.join(TEST_OUT, `agents-partial-${process.pid}-${Date.now()}`);
+  const directory = path.join(root, ".galaius", "out", "agents");
+  fs.mkdirSync(directory, { recursive: true });
+  const previousHome = process.env.HOME;
+  process.env.HOME = root;
+  const file = path.join(directory, "root.jsonl");
+  const line = (event: object) => `${JSON.stringify(event)}\n`;
+  try {
+    // His words 2026-11-23: the answer shows as it is written (galaius `partial`); the panel keeps reading each answer once.
+    fs.writeFileSync(file, line({ kind: "tool", event_id: "call", tool: "Bash", tool_input: "ls" }));
+    for (let step = 1; step <= partials; step += 1) {
+      fs.appendFileSync(file, line({ kind: "partial", provider_cursor: "m1:0", text: "word ".repeat(Math.min(step * 40, 400)) }));
+    }
+    const activity = reader.createAgentActivityReader({ eventLimit: 40, transcriptLimit: 300 });
+    const kinds = (read: { events: { kind: string }[] }) => read.events.map((event) => event.kind);
+    assert.deepEqual(kinds(activity.read("root")), ["tool"], "a cold read holds the call, no partial");
+    fs.appendFileSync(file, line({ kind: "partial", provider_cursor: "m1:0", text: "word ".repeat(9999) }));
+    assert.deepEqual(kinds(activity.read("root")), ["tool"], "a warm read of a growing block adds nothing");
+    fs.appendFileSync(file, line({ kind: "text", provider_cursor: "m1:0", text: "the answer" }));
+    assert.deepEqual(kinds(activity.read("root")), ["tool", "text"], "its closing text is the one answer");
+    assert.deepEqual(reader.readAgentActivity("root", 40).map((event: { kind: string }) => event.kind), ["tool", "text"]);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    fs.rmSync(root, { recursive: true });
+  }
+  },
+);
+
 test("generated runtime decoders reject malformed nested wire fields", (t) => {
   // Declarations are erased at runtime; this proves Python generation also owns hostile JSON.
   const generated = path.join(

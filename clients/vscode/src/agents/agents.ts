@@ -135,6 +135,15 @@ function decodeActivity(line: string): AgentActivity | null {
   }
 }
 
+/** Whether a mirror line holds the words so far of a text block still being written (galaius `partial`: several per answer, the
+ *  closing `text` line holds the whole). Dropped before any window of lines is cut: they would fill it, and the panel reads the answer once. */
+const PARTIAL_LINE = '"kind":"partial"';
+const isPartialLine = (line: string): boolean => line.includes(PARTIAL_LINE);
+
+/** The bytes the first read of a run's mirror takes from its end, then the wider one when those hold no line the panel reads
+ *  (an answer being written fills the first). */
+const COLD_TAIL_BYTES = [127_000, 4_000_000];
+
 /** A run's recent activity, oldest last. Bounded by limit because a long run's transcript is
  *  unbounded and the panel only ever shows a tail — reading it all to display ten lines would
  *  make every refresh scale with the longest-running agent. */
@@ -149,7 +158,7 @@ export function readAgentActivity(runId: string, limit = 40): AgentActivity[] {
   }
   const out: AgentActivity[] = [];
   for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
+    if (!line.trim() || isPartialLine(line)) continue;
     try {
       const event = decodeActivity(line);
       if (event) out.push(event);
@@ -199,15 +208,23 @@ class AgentActivityReader {
           continued = anchorBytes === prior.anchor.length && anchor.equals(prior.anchor);
         }
       }
-      const start = continued ? prior!.offset : Math.max(0, size - 127_000);
-      const buffer = Buffer.alloc(size - start);
-      const bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, start);
-      const text = buffer.subarray(0, bytesRead).toString("utf8");
-      const lastNewline = text.lastIndexOf("\n");
-      const complete = lastNewline < 0 ? "" : text.slice(0, lastNewline);
-      let rawLines = complete.split("\n");
-      if (start > 0 && !continued) rawLines = rawLines.slice(1);
-      const lines = rawLines.filter((line) => line.trim()).slice(-this.eventLimit);
+      let start = 0;
+      let bytesRead = 0;
+      let text = "";
+      let lastNewline = -1;
+      let lines: string[] = [];
+      for (const tail of continued ? [0] : COLD_TAIL_BYTES) {
+        start = continued ? prior!.offset : Math.max(0, size - tail);
+        const buffer = Buffer.alloc(size - start);
+        bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, start);
+        text = buffer.subarray(0, bytesRead).toString("utf8");
+        lastNewline = text.lastIndexOf("\n");
+        const complete = lastNewline < 0 ? "" : text.slice(0, lastNewline);
+        let rawLines = complete.split("\n");
+        if (start > 0 && !continued) rawLines = rawLines.slice(1);
+        lines = rawLines.filter((line) => line.trim() && !isPartialLine(line)).slice(-this.eventLimit);
+        if (lines.length > 0 || start === 0) break;
+      }
       const parsed: AgentActivity[] = [];
       for (const line of lines) {
         const event = decodeActivity(line);
