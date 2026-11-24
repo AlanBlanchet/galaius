@@ -67,8 +67,14 @@ from galaius.host.paths import UserPaths
 #: account."), an account without access to a model. Not a quota: a fact about the LOGIN, remembered
 #: against that login (`record_unsupported`) for `UNSUPPORTED_RECHECK`, and never retried as a last
 #: resort the way a model under a quota block is.
+#: Claude Code's line for a model id its vendor no longer serves this account: « There's an issue with the selected model
+#: (claude-opus-4-7-20260416). It may not exist or you may not have access to it. » It is also an `UNSUPPORTED` refusal
+#: (read before: a start answered by it was no refusal at all and ran dead, 2026-09-22), and beyond the login's day it
+#: takes the model out of every ranking until its catalogue entry changes (`withdraw`).
+WITHDRAWN = re.compile(r"issue with the selected model\b[^\n]{0,120}?\bmay not exist", re.IGNORECASE)
 UNSUPPORTED = re.compile(
-    r"model is not supported when using"
+    rf"{WITHDRAWN.pattern}"
+    r"|model is not supported when using"
     r"|not supported when using .{0,60}account"
     r"|does not have access to (?:the )?model"
     r"|model_not_found"
@@ -737,6 +743,8 @@ def remember(kind: RefusalKind, provider: str, model: str | None, *, login: str,
     (`record_unsupported`), NOTHING for a conversation too long for its own window (`context_exhausted`:
     its only durable fact is the hold on the login, `hold_named_window`)."""
     if kind == "model_capability_unsupported":
+        if model and WITHDRAWN.search(said):
+            withdraw(provider, model, said=said, now=now)
         return record_unsupported(provider, model, login=login, now=now)
     if kind == "context_exhausted":
         # No model to remember it against: every other one has the same window or a smaller one.
@@ -752,12 +760,65 @@ def unsupported_until(provider: str, model: str | None, *, login: str, now: floa
     return block.until if block is not None and block.until > moment else None
 
 
+def _withdrawn_path() -> Path:
+    return UserPaths.agents() / "quota-withdrawn.json"
+
+
+def _entry_of(model: str) -> str:
+    """The digest of `model`'s catalogue entry as this galaius reads it now (`Model.entry_digest`; "" for an id no entry
+    names). Imported here: the catalogue sits above this leaf module, which only asks it one question."""
+    from galaius.models.registry import Model
+
+    return Model.entry_digest(model)
+
+
+def withdraw(provider: str, model: str, *, said: str = "", now: float | None = None) -> None:
+    """The vendor says `model` may not exist: it stays out of every ranking (`withdrawn`) until its catalogue entry changes
+    (price, capabilities or id spelling; a new board score alone does not) — the entry's digest is what is remembered, so a
+    catalogue that still carries the id unchanged keeps it out and any change to the entry asks the vendor again. Not
+    per login (a ranking knows none): `served` lifts it when the model answers."""
+    moment = time.time() if now is None else now
+    path = _withdrawn_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with exclusive(os.open(path.with_name("#quota-withdrawn.lock"), os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)):
+        entries = _read_withdrawn()
+        entries[f"{provider}/{model}"] = {"entry": _entry_of(model), "at": moment, "said": " ".join(said.split())[:200]}
+        _write_json(path, entries)
+
+
+def _read_withdrawn() -> dict[str, dict[str, Any]]:
+    with suppress(Exception):
+        raw = json.loads(_withdrawn_path().read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            return {str(key): value for key, value in raw.items() if isinstance(value, dict) and isinstance(value.get("entry"), str)}
+    return {}
+
+
+def withdrawn() -> frozenset[tuple[str, str]]:
+    """Every (provider, model) the vendor said may not exist whose catalogue entry is still the one it said it of."""
+    return frozenset(tuple(key.split("/", 1)) for key, found in _read_withdrawn().items()  # type: ignore[misc]
+                     if "/" in key and found["entry"] == _entry_of(key.split("/", 1)[1]))
+
+
+def _unwithdraw(provider: str, model: str | None, *, at: float) -> None:
+    """An answer from `model` at `at` ends a withdrawal heard before it; one heard after it stands."""
+    found = _read_withdrawn().get(f"{provider}/{model}") if model else None
+    if found is None or found.get("at", 0.0) > at:   # every answer asks: the lock only when there is something remembered
+        return
+    path = _withdrawn_path()
+    with exclusive(os.open(path.with_name("#quota-withdrawn.lock"), os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)):
+        entries = _read_withdrawn()
+        if entries.pop(f"{provider}/{model}", None) is not None:
+            _write_json(path, entries)
+
+
 def served(provider: str, model: str | None, *, subscription: UUID | None = None, at: float | None = None) -> None:
     """This model answered (a turn it wrote, a run that finishes) at `at` (default now): whatever
     was remembered against it BEFORE that is over, and its login answered past every refusal
     remembered under it then (`lifted_after`). Writes only when there was something to forget or a
     lift to note; a refusal heard after the answer stands."""
     moment = time.time() if at is None else at
+    _unwithdraw(provider, model, at=moment)
     login_back(provider, subscription=subscription, at=moment)
     login = _login(provider, subscription)
     if login not in _read(time.time()):   # every answer asks: the lock only when there is something remembered
@@ -971,5 +1032,6 @@ def forget(provider: str | None = None, model: str | None = None) -> None:
         with _usage(time.time()) as entries:
             for usage in entries.values():
                 usage.blocks.clear()
+        _write_json(_withdrawn_path(), {})
         return
     served(provider, model)
