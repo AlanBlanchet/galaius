@@ -223,7 +223,7 @@ export function turnClass(kind: string): string {
 /** Events that are about the RUN, not the conversation. A "five_hour limit: allowed" rendered
  *  between a tool call and its own result broke the one sequence a reader needs unbroken, so
  *  infrastructure is kept out of the turn stream entirely — it belongs in the header. */
-const NOT_A_TURN = new Set(["rate_limit", "started", "done", "other"]);
+const NOT_A_TURN = new Set(["rate_limit", "started", "done", "other", "partial"]);
 
 /** How much of a long block is shown before it folds. The rest is one click away, not gone.
  *

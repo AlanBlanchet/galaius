@@ -1609,6 +1609,7 @@ class ClaudeCodeProvider(AgentProvider):
             self.binary, "-p",
             "--output-format", "stream-json",
             "--verbose",  # mandatory companion to stream-json
+            "--include-partial-messages",  # a text block's words as they are written (`PartialBlocks`), as the editor extension asks
             # Our run id IS the vendor's session id, so `claude --resume <run_id>` works and no
             # mapping table can go stale.
             "--session-id", run_id,
@@ -1816,6 +1817,7 @@ class ClaudeCodeProvider(AgentProvider):
             *(["--fork-session", "--session-id", fork_to] if fork_to else []),
             "--output-format", "stream-json",
             "--verbose",
+            "--include-partial-messages",
         ] + (["--model", model] if model else []) + self._permission_flag(permission_mode, fence_decides, allowed_tools) + self._setting_sources() + (turn.arguments() if turn else []) + self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools) + self._mcp_arguments(mcp_config, allowed_tools, strict=fence_decides)
 
     #: Claude's two usage dialects: ``message.usage`` / ``result.usage`` and ``result.modelUsage[model]``. Each reports
@@ -1929,13 +1931,19 @@ class ClaudeCodeProvider(AgentProvider):
             return AgentEvent(kind="started", session_id=sid, raw_type=kind, available_tools=tuple(tools),
                               text=f"session up in {raw.get('cwd', '?')} ({len(tools)} tools)")
 
+        if kind == "stream_event":
+            return self._partial(raw, ledger)
+
         if kind == "assistant":
             msg = raw.get("message") or {}
             texts, thinking, tool, tool_input, tool_id = [], [], None, "", ""
+            block_key = ""
             for block in msg.get("content") or []:
                 btype = block.get("type")
                 if btype == "text":
                     texts.append(block.get("text", ""))
+                    if isinstance(msg.get("id"), str):
+                        block_key = ledger.blocks.close(msg["id"])
                 elif btype == "thinking":
                     thinking.append(block.get("thinking", ""))
                 elif btype == "tool_use":
@@ -1958,7 +1966,7 @@ class ClaudeCodeProvider(AgentProvider):
             if thinking and not any(t.strip() for t in texts):
                 return AgentEvent(kind="thinking", text=_clip("".join(thinking)),
                                   session_id=sid, raw_type=kind, **live)
-            return AgentEvent(kind="text", text="".join(texts), session_id=sid, raw_type=kind,
+            return AgentEvent(kind="text", text="".join(texts), session_id=sid, raw_type=kind, provider_cursor=block_key,
                               **live)
 
         if kind == "user":
@@ -2040,6 +2048,18 @@ class ClaudeCodeProvider(AgentProvider):
             )
 
         return AgentEvent(kind="other", session_id=sid, raw_type=kind)
+
+    def _partial(self, raw: dict, ledger: UsageLedger) -> AgentEvent | None:
+        """A text block of the main thread still being written (`--include-partial-messages`): its `partial` event when
+        its text so far is due (`PartialBlocks.delta`). Every other delta (thinking, a tool's input, a sub-agent's text) and
+        the block and message boundaries tell a reader nothing the lines they frame do not: no event."""
+        event, message = raw.get("event") or {}, raw.get("api_message_id")
+        delta = event.get("delta") or {}
+        if event.get("type") != "content_block_delta" or delta.get("type") != "text_delta" or raw.get("parent_tool_use_id") is not None \
+                or not isinstance(message, str) or not isinstance(event.get("index"), int):
+            return None
+        due = ledger.blocks.delta(message, event["index"], str(delta.get("text") or ""))
+        return None if due is None else AgentEvent(kind="partial", text=due[1], provider_cursor=due[0], session_id=raw.get("session_id"), raw_type="stream_event")
 
     def discover(self) -> list[dict]:
         """`claude agents --json` lists every live Claude session — including the user's own
