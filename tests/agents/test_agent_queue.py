@@ -993,6 +993,14 @@ def test_a_message_pending_after_a_power_off_is_handed_to_a_dispatcher_again(mon
     assert agent_queue.revive_orphans() == []
 
 
+@pytest.fixture
+def at_work_process():
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    yield child
+    child.kill()
+    child.wait()
+
+
 def test_a_run_a_person_stopped_is_not_handed_a_dispatcher_by_the_sweep(monkeypatch):
     """What waits for a held run goes once he releases it (`dispatch`), never by the sweep after a power-off."""
     setup_queue(monkeypatch)
@@ -1004,6 +1012,19 @@ def test_a_run_a_person_stopped_is_not_handed_a_dispatcher_by_the_sweep(monkeypa
         reg._merge_record_locked("r1", {"held_at": time.time()})
     handed.clear()
     assert agent_queue.revive_orphans() == [] and handed == []
+
+
+def test_a_stopped_run_whose_process_still_runs_is_not_handed_a_dispatcher_either(monkeypatch, at_work_process):
+    """Tester c59ce571: a held run with a live process (its stop still ending) is skipped too, not only an ended one."""
+    setup_queue(monkeypatch)
+    handed: list[str] = []
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda run_id, **rest: handed.append(run_id) or 1)
+    message_id = reg.record_message_event(from_run="operator", to_run="r1", text="held, process alive")
+    assert message_id and agent_queue.enqueue("r1", message_id=message_id, sender="operator")
+    with reg.record_lock("r1"):
+        reg._merge_record_locked("r1", {"held_at": time.time(), "pid": at_work_process.pid, "status": "running"})
+    handed.clear()
+    assert reg.get_run("r1").working() and agent_queue.revive_orphans() == [] and handed == []
 
 
 def test_the_sweep_for_orphaned_queues_runs_at_the_first_look_then_every_few_minutes(monkeypatch):
