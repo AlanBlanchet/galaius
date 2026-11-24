@@ -140,8 +140,8 @@ function decodeActivity(line: string): AgentActivity | null {
 const PARTIAL_LINE = '"kind":"partial"';
 const isPartialLine = (line: string): boolean => line.includes(PARTIAL_LINE);
 
-/** The bytes the first read of a run's mirror takes from its end, then the wider one when those hold no line the panel reads
- *  (an answer being written fills the first). */
+/** The bytes the first read of a run's mirror takes from its end, then the wider one when partial lines in those may be hiding
+ *  lines the panel reads (an answer being written, or a long one just closed, fills the first). */
 const COLD_TAIL_BYTES = [127_000, 4_000_000];
 
 /** A run's recent activity, oldest last. Bounded by limit because a long run's transcript is
@@ -223,7 +223,8 @@ class AgentActivityReader {
         let rawLines = complete.split("\n");
         if (start > 0 && !continued) rawLines = rawLines.slice(1);
         lines = rawLines.filter((line) => line.trim() && !isPartialLine(line)).slice(-this.eventLimit);
-        if (lines.length > 0 || start === 0) break;
+        // Wider only while partial lines may be hiding lines the window would hold (a tail with none is read once).
+        if (lines.length >= this.eventLimit || start === 0 || !rawLines.some(isPartialLine)) break;
       }
       const parsed: AgentActivity[] = [];
       for (const line of lines) {
