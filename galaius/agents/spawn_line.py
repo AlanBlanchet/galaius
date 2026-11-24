@@ -887,14 +887,14 @@ class SpawnLine(BaseModel):
         """Tell the run that asked each run held in line past `Config.agent_pause_notice_minutes` that it waits and why, once:
         the line `agents list` shows (« en pause : mémoire des agents à 103 % de leur plafond (dont … : 2.9 Go, hors agents) »),
         so who holds what is named where the asker reads, not only on a screen (2026-11-24: 3 spawns held 2.1 h and 4 resumed
-        runs « en pause », nothing reached their parents). Recipient and delivery as `report_lost`; `warned` written once it went through."""
+        runs « en pause », nothing reached their parents). Recipient and delivery as `report_lost`, a working asker only (`_asker_of`); `warned` written once it went through."""
         minutes = Config().agent_pause_notice_minutes
         moment = time.time() if now is None else now
         deliveries, sent = [], []
         for place in self._places_seen():
             if place.state != "waiting" or not place.said or place.warned or moment - place.asked_at < minutes * 60:
                 continue
-            recipient = self._asker_of(place)
+            recipient = self._asker_of(place, only_working=True)
             if recipient is None:
                 continue
             delivery = messaging.deliver_message(
@@ -916,13 +916,18 @@ class SpawnLine(BaseModel):
                 "It starts by itself once that clears; whoever holds the memory named there can free it sooner.")
 
     @staticmethod
-    def _asker_of(place: Place) -> str | None:
-        """The run `place`'s loss is told to: its parent while at work, else the top of its tree (its coordinator), else the
-        parent when only its record is left; None when it has none."""
+    def _asker_of(place: Place, *, only_working: bool = False) -> str | None:
+        """The run `place`'s loss or delay is told to: its parent while at work, else the top of its tree (its coordinator), else
+        the parent when only its record is left; None when it has none. `only_working`: the note is a courtesy that never starts
+        an ended run (`deliver_message` wakes one), so an asker not at work is none: nothing is written and the place stays untold
+        until one works again (`handback.SilenceWatch` keeps the same rule). A spawn LOST is told to an ended asker all the same: it
+        reads that the work it waited on will not come, on resuming."""
         if place.parent_run_id is None:
             return None
         chain = reg.ancestors(place.parent_run_id)
         runs = [run for run_id in dict.fromkeys((place.parent_run_id, chain[-1])) if (run := reg.get_run(run_id)) is not None]
+        if only_working:
+            return next((run.run_id for run in runs if run.working()), None)
         return next((run.run_id for run in runs if run.working()), runs[-1].run_id if runs else None)
 
     @staticmethod

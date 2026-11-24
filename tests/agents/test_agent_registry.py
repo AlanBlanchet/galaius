@@ -2445,9 +2445,10 @@ def test_a_run_a_person_stopped_never_comes_back_by_itself_nor_at_the_next_sign_
 def test_a_run_its_lost_login_stopped_is_claimed_once_and_a_second_loss_at_once_is_left_to_continuer(resuming, monkeypatch):
     run = _ended_on("login2", _LOGIN_EXPIRED, pid=413)
     assert reg.claim_resume("login2", now=run.finished_at + 60) is None, "resumed while its login is still lost"
-    claimed = reg.claim_resume("login2", signed_in=True, now=run.finished_at + 3 * 86400)  # signed in again days later
-    assert claimed is not None and claimed.resumed_at == run.finished_at + 3 * 86400
-    assert reg.claim_resume("login2", signed_in=True, now=run.finished_at + 3 * 86400 + 1) is None, "a second runner resumed it again"
+    assert reg.claim_resume("login2", signed_in=True, now=run.finished_at + 3 * 86400) is None, "signed in after a long weekend: his « Continuer » resumes it"
+    claimed = reg.claim_resume("login2", signed_in=True, now=run.finished_at + 5 * 3600)  # signed in again hours later
+    assert claimed is not None and claimed.resumed_at == run.finished_at + 5 * 3600
+    assert reg.claim_resume("login2", signed_in=True, now=run.finished_at + 5 * 3600 + 1) is None, "a second runner resumed it again"
     resumed = reg.begin_turn("login2", pid=414, model="claude-opus-5-5")
     with reg.raw_events_path("login2").open("a") as stream:
         stream.write(_claude_error_stream(_LOGIN_EXPIRED))
@@ -2660,3 +2661,57 @@ def test_a_mirror_is_current_only_when_written_after_its_stream(raw_after_mirror
     at = reg.events_path("m").stat().st_mtime_ns + raw_after_mirror_ns
     os.utime(reg.raw_events_path("m"), ns=(at, at))
     assert reg.mirror_is_current("m") is current
+
+
+@pytest.mark.parametrize("cause", ["usage_limit", "login_lost"])
+@pytest.mark.parametrize(("hours", "owed"), [(1, True), (23, True), (25, False), (24 * 6, False)], ids=["1h", "23h", "25h", "six-days"])
+def test_a_resume_due_at_once_is_owed_only_within_a_day_of_the_cut(resuming, monkeypatch, cause, hours, owed):
+    """A pool refusal with another login open (`limit_resume_at` due at its end) and a lost login (`sign_in`) had no age test: a
+    PC off for a week woke every such run at its next boot, as the process cuts did before `CUT_RESUME_WINDOW`. A longer weekend
+    resumes by his « Continuer »."""
+    register_run(run_id="due")
+    ended = time.time() - hours * 3600
+    with reg.record_lock("due"):
+        reg._merge_record_locked("due", {"status": "failed", "finished_at": ended})
+    run = reg.get_run("due")
+    monkeypatch.setattr(reg, "cut_cause", lambda candidate: cause)
+    monkeypatch.setattr(reg, "limit_resume_at", lambda candidate, **rest: candidate.finished_at)   # the pool / another login: due at its end
+    cut = reg.cut_resume(run, now=ended + hours * 3600)
+    assert (cut is not None) is owed
+
+
+def test_a_usage_limit_whose_reset_is_a_day_away_resumes_at_it_and_a_reset_nobody_took_for_a_day_does_not(resuming, monkeypatch):
+    register_run(run_id="ahead")
+    ended = time.time() - 30 * 3600
+    with reg.record_lock("ahead"):
+        reg._merge_record_locked("ahead", {"status": "failed", "finished_at": ended})
+    monkeypatch.setattr(reg, "cut_cause", lambda candidate: "usage_limit")
+    monkeypatch.setattr(reg, "limit_resume_at", lambda candidate, **rest: candidate.finished_at + 26 * 3600)   # a reset named a day away
+    run = reg.get_run("ahead")
+    assert reg.cut_resume(run, now=ended + 26 * 3600).resumes == "itself"
+    assert reg.cut_resume(run, now=ended + 26 * 3600 + reg.CUT_RESUME_WINDOW + 1) is None
+
+
+def test_a_cut_an_older_runtime_cannot_read_is_written_as_the_nearest_it_reads_and_read_back_as_its_own(tmp_path):
+    """Rolling back must not make a run vanish from its list: the record's `resumed_cut` and `stream_digest.cut` read in the
+    build before `overloaded` (their literals), the exact word beside, restored here."""
+    from typing import Literal, get_args
+
+    from pydantic import TypeAdapter
+
+    from galaius.agents.transport.events import RunCut
+
+    older = TypeAdapter(Literal[tuple(word for word in get_args(reg.CutCause) if word != "overloaded")])
+    register_run(run_id="ov")
+    digest = reg.StreamDigest(source="s", ending="error", cut=RunCut.overloaded, usage=reg.CountedTokens()).model_dump(mode="json")
+    with reg.record_lock("ov"):
+        reg._merge_record_locked("ov", {"resumed_cut": "overloaded", "resumed_cuts": 1, "stream_digest": digest})
+    on_disk = json.loads(reg._record_path("ov").read_text())
+    assert older.validate_python(on_disk["resumed_cut"]) == "network_lost" and on_disk["resumed_cut_exact"] == "overloaded"
+    assert on_disk["stream_digest"]["cut"] == "network_lost" and on_disk["stream_digest"]["cut_exact"] == "overloaded"
+    run = reg.get_run("ov")
+    assert run.resumed_cut == "overloaded" and run.stream_digest.cut is RunCut.overloaded
+    with reg.record_lock("ov"):   # another cut replaces it: no stale exact word survives
+        reg._merge_record_locked("ov", {"resumed_cut": "killed"})
+    assert "resumed_cut_exact" not in json.loads(reg._record_path("ov").read_text()) and reg.get_run("ov").resumed_cut == "killed"
+

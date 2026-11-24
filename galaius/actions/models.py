@@ -915,20 +915,22 @@ class PressAction(_CoordinateTargetMixin):
                      "buttons": 2 if kind == "mousePressed" else 0, "clickCount": 1},
                 )
 
-        long_pressed = finished = False
-        await touch("touchStart", x, y)
+        long_pressed = finished = down = False
         try:
+            await touch("touchStart", x, y)
+            down = True
             long_pressed = await self._hold_timeline(
                 lambda tx, ty: touch("touchMove", tx, ty), x, y, page,
                 on_threshold=context_menu if self.long_press else None,
             )
             finished = True
         finally:
-            # Always lift the finger, also when the batch is cancelled: a touch left down would
-            # swallow every later tap. A long press ends cancelled (no click), as on a phone; so
-            # does a hold cut short, which must not tap its target.
+            # Always lift the finger, also when the batch is cancelled: a touch left down would swallow every later tap, and the
+            # session is released whatever failed first. A long press ends cancelled (no click), as on a phone; so does a hold cut
+            # short, which must not tap its target.
             try:
-                await touch("touchCancel" if long_pressed or not finished else "touchEnd")
+                if down:
+                    await touch("touchCancel" if long_pressed or not finished else "touchEnd")
             finally:
                 await cdp.detach()
         return "long press: contextmenu sent, touch cancelled" if long_pressed else None

@@ -106,7 +106,7 @@ class Hold(BaseModel):
             at = _moment(datetime.fromtimestamp(self.until)) if self.until is not None else "sa réouverture"
             return f"en pause : limite d'usage {self.provider} jusqu'à {at}" + (", reprise sans clic" if promise else "")
         if self.reason == "login_lost":
-            return f"en pause : connexion {self.provider} perdue" + (", reprise sans clic une fois reconnectée sur ce PC" if promise else "")
+            return f"en pause : connexion {self.provider} perdue" + (", reprise sans clic une fois reconnectée sur ce PC (dans les 24 h : au-delà, « Continuer »)" if promise else "")
         memory = self.cause
         assert isinstance(memory, MemoryReading)
         if memory.pc_stall_percent is not None and memory.pc_stall_release_percent is not None:

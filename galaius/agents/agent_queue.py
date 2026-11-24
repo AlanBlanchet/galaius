@@ -32,6 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from galaius.agents.limits import fallback, quota
 from galaius.agents.catalog.connection import CatalogAuthenticationError, CatalogConnectionError, CatalogOffline
 from galaius.agents import registry as reg
+from galaius.config.settings import Config
 from galaius.account.caller import RUN_VARIABLES, Caller
 from galaius.agents.transport.events import AgentEvent, MessageFields
 from galaius.agents.providers import AgentProvider, _safe_process_detail, provider_for
@@ -880,17 +881,38 @@ def _serve_once(token: str, working: dict[str, threading.Thread], idle_since: fl
 
 
 EXPIRED_ERROR = "expired: not delivered within {hours:g} h, its run's dispatcher was gone; an ended run is not woken for an old message, send it again if it still holds"
+#: What an in-flight message reads past `reg.CUT_RESUME_WINDOW` once its turn is found to have begun: its run's own resume no longer comes.
+TOO_OLD_TO_RESUME = "its turn was cut after it began, and it is too old for its run to resume by itself: « Continuer » continues it"
 
 
 def _expire_old_locked(run_id: str, now: float, bound: float) -> None:
-    """Every message of `run_id` pending or in flight for more than `bound` seconds (its last start, else its queueing) is
-    `failed` with `EXPIRED_ERROR`, while the caller owns the run lock: his own reads it as not delivered (`failed_items`) and a
-    caller still waiting on it reads the failure (`messaging`). An agent sender is not messaged: that would wake its own ended run."""
+    """Every message of `run_id` still pending after `bound` seconds (its queueing) is `failed` with `EXPIRED_ERROR`, while the
+    caller owns the run lock: his own reads it as not delivered (`failed_items`) and a caller still waiting on it reads the
+    failure (`messaging`). A person's is also logged and put in the run's transcript, where the CLI and the editor read it
+    (`reg.note_error_locked`); an agent sender is not messaged: that would wake its own ended run.
+
+    A message already in flight (`running`) is not this bound's: its run was cut with its process and comes back with the
+    cut resume, inside `reg.CUT_RESUME_WINDOW`, which continues it (`dispatch` classifies what its turn did first, so what it
+    acted on is not done twice). Past that window the run does not come back by itself: the attempt's events say whether the
+    turn began (`replied`, said so) or not (`failed`, expired)."""
     hours = bound / 3600
     for item in _items(_state(run_id)):
-        if item.state in ACTIVE and now - (item.started_at or item.enqueued_at) > bound:
-            _replace_item_locked(run_id, item.id, state="failed", finished_at=now, waiting=None, waiting_since=None, attempt_token=None,
-                                 error=EXPIRED_ERROR.format(hours=hours))
+        age = now - (item.started_at or item.enqueued_at)
+        if item.state == "pending" and age > bound:
+            error = EXPIRED_ERROR.format(hours=hours)
+        elif item.state == "running" and age > reg.CUT_RESUME_WINDOW:
+            events = _attempt_events(run_id, item)
+            if any(item.turn.accepts(event) or event.kind == "tool" for event in events):
+                _replace_item_locked(run_id, item.id, state="replied", finished_at=now, waiting=None, waiting_since=None, attempt_token=None,
+                                     error=TOO_OLD_TO_RESUME)
+                continue
+            error = EXPIRED_ERROR.format(hours=reg.CUT_RESUME_WINDOW / 3600)
+        else:
+            continue
+        _replace_item_locked(run_id, item.id, state="failed", finished_at=now, waiting=None, waiting_since=None, attempt_token=None, error=error)
+        if item.sender == reg.PERSON_SENDER:
+            log.warning("agent queue: message %s to run %s not delivered, expired after %.1f h (%s)", item.message_id, run_id, age / 3600, item.state)
+            reg.note_error_locked(run_id, f"Your message was not delivered: it waited {age / 3600:.1f} h with no running dispatcher. Send it again if it still holds.", now=now)
 
 
 def revive_orphans() -> list[str]:
@@ -900,12 +922,11 @@ def revive_orphans() -> list[str]:
     `Config.agent_message_expiry_hours`: an older one expires (`_expire_old_locked`), since an ended run never starts by itself
     (2026-11-24: the first sweep woke 11 runs for messages pending since 10-26). The run reads `starting` meanwhile
     (`begin_resume_locked`) like any run coming back for a message. The run ids revived; a queue that cannot be read is left alone."""
-    from galaius.config.settings import Config   # at the sweep, not at import: the detached dispatcher imports this module for nothing else
     bound = Config().agent_message_expiry_hours * 3600
     revived: list[str] = []
     for queue_file in sorted(reg.agents_dir().glob(f"*{reg.QUEUE_SUFFIX}")):
         payload = reg._read_private(queue_file)
-        if payload is None or (PENDING_MARK.encode() not in payload and b'"running"' not in payload):
+        if payload is None or not any(f'"{state}"'.encode() in payload for state in ACTIVE):
             continue
         run_id = queue_file.name.removesuffix(reg.QUEUE_SUFFIX)
         try:

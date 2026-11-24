@@ -1089,3 +1089,50 @@ def test_the_sweep_for_orphaned_queues_runs_at_the_first_look_then_every_few_min
     watch.queues_swept -= handback.QUEUES_SWEPT_SECONDS
     watch.tick()
     assert len(swept) == 2
+
+
+def _in_flight(monkeypatch, *, hours: float, acted: bool, sender: str = "operator") -> str:
+    """Run `r1` with one message its turn took `hours` ago (`running`), its dispatcher gone; `acted`: its attempt shows a tool call."""
+    from galaius.agents.transport.events import AgentEvent
+
+    setup_queue(monkeypatch)
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda run_id, **rest: 1)
+    message_id = reg.record_message_event(from_run=sender, to_run="r1", text="in flight")
+    assert message_id and agent_queue.enqueue("r1", message_id=message_id, sender=sender)
+    taken = time.time() - hours * 3600
+    with reg.record_lock("r1"):
+        reg._merge_record_locked("r1", {"status": "done", "finished_at": taken + 300})
+        agent_queue._replace_item_locked("r1", agent_queue.items("r1")[0].id, state="running", enqueued_at=taken, started_at=taken, raw_index=0)
+    monkeypatch.setattr(agent_queue, "_attempt_events", lambda run_id, item: [AgentEvent(kind="tool", text="Bash")] if acted else [])
+    return message_id
+
+
+def test_a_message_in_flight_when_the_pc_went_off_is_not_told_undelivered_inside_the_cut_resume_window(monkeypatch):
+    """17:00 a message starts a turn, 17:05 the power goes, 20:30 the PC is back: its run's own cut resume continues it (inside
+    `CUT_RESUME_WINDOW`), so the message is never reported « not delivered » there (a second send acts twice)."""
+    _in_flight(monkeypatch, hours=3.5, acted=True)
+    agent_queue.revive_orphans()
+    (item,) = agent_queue.items("r1")
+    assert item.state == "running", "its turn is classified by its dispatcher (`replied` when it acted), never expired by the 2 h bound"
+    assert not agent_queue.failed_items("r1")
+
+
+@pytest.mark.parametrize(("acted", "state"), [(True, "replied"), (False, "failed")])
+def test_a_message_in_flight_past_the_window_is_settled_by_what_its_turn_did(monkeypatch, acted, state):
+    _in_flight(monkeypatch, hours=reg.CUT_RESUME_WINDOW / 3600 + 1, acted=acted)
+    agent_queue.revive_orphans()
+    (item,) = agent_queue.items("r1")
+    assert item.state == state and (state == "replied") == (item.error == agent_queue.TOO_OLD_TO_RESUME)
+
+
+def test_a_persons_expired_message_is_logged_and_shown_in_the_runs_transcript_with_its_status_kept(monkeypatch, caplog):
+    """Sent from the CLI or the editor, it has no web row to say « not delivered »: the transcript and the log do."""
+    message_id = _in_flight(monkeypatch, hours=0.1, acted=False)
+    with reg.record_lock("r1"):
+        agent_queue._replace_item_locked("r1", agent_queue.items("r1")[0].id, state="pending", enqueued_at=time.time() - 5 * 3600, started_at=None, raw_index=None)
+    with caplog.at_level("WARNING"):
+        agent_queue.revive_orphans()
+    assert agent_queue.items("r1")[0].state == "failed"
+    assert any("r1" in record.getMessage() and message_id in record.getMessage() and "5.0 h" in record.getMessage() for record in caplog.records)
+    told = [event for event in reg.read_messages("r1") if event.kind == "error" and "not delivered" in (event.text or "")]
+    assert len(told) == 1 and reg.get_run("r1").status == "done"

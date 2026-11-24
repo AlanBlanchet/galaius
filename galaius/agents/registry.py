@@ -35,7 +35,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, BinaryIO, ClassVar, Literal, NamedTuple, Self, Unpack
+from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, Literal, NamedTuple, Self, Unpack
 from uuid import UUID
 
 from pydantic import ConfigDict, BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
@@ -87,6 +87,14 @@ RunKind = Literal["process", "conversation", "provider_child"]
 #: What cut a run from outside its work (`cut_cause`): its program's word (`RunCut`), its process gone with no word of
 #: its own, or a signal nobody it answers to sent.
 CutCause = Literal["login_lost", "usage_limit", "network_lost", "overloaded", "process_gone", "killed"]
+#: A cut the build before it cannot read, written as the nearest cut that build reads, its own word kept beside in `<field>_exact`
+#: (`AgentRun.written`, read back by `AgentRun._older`): a rolled-back runtime still lists, stops and resumes a run cut by an
+#: overloaded API instead of dropping its record as unreadable. Goes with `OlderTokens` once no PC runs the older build.
+OLDER_READER_CUT: dict[str, str] = {"overloaded": "network_lost"}
+#: Where a record holds a cut: the field, and the nested record it sits in (None: the run's own).
+CUT_FIELDS: tuple[tuple[str | None, str], ...] = (None, "resumed_cut"), ("stream_digest", "cut")
+#: The suffix of the field beside a cut written as an older word.
+EXACT = "_exact"
 #: How a cut run comes back (`cut_resume`): `itself` with no one's action, `sign_in` once its login is signed in again.
 CutResumes = Literal["itself", "sign_in", "relaunch"]
 ConnectionMode = Literal["local_session", "api"]
@@ -605,6 +613,38 @@ class AgentRun(OlderTokens, ContextGauge):
     def settled_word(cls, value: object) -> object:
         """One word for "gone without saying how it ended", whatever a record on disk spells."""
         return "interrupted" if value == _LEGACY_INTERRUPTED else value
+
+    @classmethod
+    def _older(cls, data: dict[str, Any]) -> dict[str, Any]:
+        """A cut written as an older word with its own beside it (`OLDER_READER_CUT`) read as its own."""
+        data = dict(data)
+        for holder, field in CUT_FIELDS:
+            target = data if holder is None else data.get(holder)
+            if isinstance(target, dict) and f"{field}{EXACT}" in target:
+                target = dict(target)
+                target[field] = target.pop(f"{field}{EXACT}")
+                if holder is None:
+                    data = target
+                else:
+                    data[holder] = target
+        return data
+
+    @classmethod
+    def written(cls, data: dict[str, Any]) -> dict[str, Any]:
+        """`data` as it is written back: tokens in the one spelling, a cut the older build cannot read as the nearest it can."""
+        data = dict(super().written(data))
+        for holder, field in CUT_FIELDS:
+            target = data if holder is None else data.get(holder)
+            if not isinstance(target, dict):
+                continue
+            target = {key: value for key, value in target.items() if key != f"{field}{EXACT}"}
+            if target.get(field) in OLDER_READER_CUT:
+                target[f"{field}{EXACT}"], target[field] = target[field], OLDER_READER_CUT[target[field]]
+            if holder is None:
+                data = target
+            else:
+                data[holder] = target
+        return data
     #: API-equivalent value of observed usage. The actual account impact is represented separately
     #: by ``charge_path`` and ``cost_certainty`` and remains unknown without provider evidence.
     cost_usd: float | None = None
@@ -1648,6 +1688,18 @@ def fail_turn_locked(
     })
 
 
+def note_error_locked(run_id: str, text: str, *, now: float | None = None) -> None:
+    """An `error` line in `run_id`'s transcript (its messages file, anchored at the end of the stream) that leaves the run's status
+    as it is: what a reader of the transcript (the CLI, the editor panel) sees of something that went wrong around an ended run, such
+    as a message of the person's that was not delivered. While the caller owns ``record_lock(run_id)``."""
+    if _read_record(run_id) is None:
+        return
+    event = AgentEvent(kind="error", event_id=secrets.token_hex(16), text=text, at=time.time() if now is None else now,
+                       raw_index=raw_line_count(run_id))
+    _append_private(messages_path(run_id), (event.model_dump_json() + "\n").encode())
+    _merge_record_locked(run_id, {"last": event.summary(viewer=run_id)})
+
+
 def fail_turn(run_id: str, reason: str, *, exit_code: int = 1, now: float | None = None) -> AgentRun | None:
     """:func:`fail_turn_locked` for a caller not holding the run's lock."""
     with record_lock(run_id):
@@ -1998,7 +2050,7 @@ def _merge_record_locked(run_id: str, updates: dict) -> AgentRun | None:
         raw = json.loads(payload)
         if not isinstance(raw, dict) or raw.get("run_id") != run_id:
             return None
-        merged = AgentRun.written({**raw, **updates})  # an older record is written back in the one spelling
+        merged = AgentRun.written({**AgentRun._older(raw), **updates})  # an older record is written back in the one spelling; a stored cut as its own word first, so the update replaces it
         validated = AgentRun.model_validate(merged)
     except (TypeError, ValueError, json.JSONDecodeError):
         return None
@@ -2111,7 +2163,7 @@ def _write(run: AgentRun) -> None:
             raw = json.loads(payload)
         except (TypeError, ValueError, json.JSONDecodeError):
             raw = {}
-        merged = AgentRun.written({**raw, **run.model_dump(mode="json")})
+        merged = AgentRun.written({**AgentRun._older(raw), **run.model_dump(mode="json")})
         _replace_private(_record_path(run.run_id), json.dumps(merged, ensure_ascii=False).encode())
 
 
@@ -3261,7 +3313,8 @@ def settle_gone() -> list[AgentRun]:
 RESUME_GRACE = 300.0
 #: How long after its end a run cut with its process or by a back-off (`WINDOWED_CUTS`) still comes back by itself: a few hours of a
 #: restarted PC, never weeks. A record older than that is abandoned work: resuming it re-runs a stale brief against a repository
-#: that moved on (2026-11-24: 37 old runs woke at once). Left to a person: « Continuer » still resumes it.
+#: that moved on (2026-11-24: 37 old runs woke at once). Left to a person: « Continuer » still resumes it. A lost login and a
+#: usage limit already due are bound by it too (`cut_resume`).
 CUT_RESUME_WINDOW = 24 * 3600.0
 #: The cuts that resume the moment they are seen, with nothing external to wait for (a limit's reset, a sign-in): the ones the
 #: window above bounds, with the cuts that wait only minutes (an overloaded API, a lost network: a runner looking days late
@@ -3438,12 +3491,14 @@ def cut_resume(run: AgentRun, *, now: float | None = None) -> CutOwed | None:
     cut (`cut_cause`) that ended since this PC resumes cuts (`cut_resume_since`), once per cut, whatever time since —
     a process cut at once, a usage limit at its reset (`limit_resume_at`), a network failure after a bounded backoff
     (`network_resume_at`), a lost login once signed in again. None when nothing resumes it but a person: no cut,
-    resumed for it already, a process or back-off cut (`WINDOWED_CUTS`) more than `CUT_RESUME_WINDOW` ago, or cut again by the same
+    resumed for it already, a process or back-off cut (`WINDOWED_CUTS`), a lost login, or a usage limit whose resume fell due more than `CUT_RESUME_WINDOW` ago (a weekend longer than that resumes by his « Continuer »), or cut again by the same
     cause within `RESUME_GRACE` of its last automatic resume (it did not come back) — a cut that times its own resume (`SELF_TIMED_CUTS`) counts its own retries instead."""
     cause = cut_cause(run)
     if cause is None or run.finished_at is None or run.finished_at < _cut_since():
         return None
-    if cause in WINDOWED_CUTS and (time.time() if now is None else now) - run.finished_at > CUT_RESUME_WINDOW:
+    moment = time.time() if now is None else now
+    aged = moment - run.finished_at > CUT_RESUME_WINDOW
+    if aged and cause in WINDOWED_CUTS:
         return None
     if relaunch_owed(run, now=now):
         return CutOwed(cause, "relaunch", run.finished_at)
@@ -3453,10 +3508,12 @@ def cut_resume(run: AgentRun, *, now: float | None = None) -> CutOwed | None:
     if cause not in SELF_TIMED_CUTS and run.resumed_cut == cause and run.resumed_cuts >= AUTO_RESUMES_PER_CUT:
         return None
     if cause == "login_lost":
-        return CutOwed(cause, "sign_in", None)
+        return None if aged else CutOwed(cause, "sign_in", None)
     if cause in SELF_TIMED_CUTS:
         at = {"usage_limit": limit_resume_at, "network_lost": network_resume_at, "overloaded": overload_resume_at}[cause](run, now=now)
-        return None if at is None else CutOwed(cause, "itself", at)
+        # A resume nobody took within `CUT_RESUME_WINDOW` of falling due is as stale as a process cut: the pool refusal or another
+        # login open is due at the cut itself, a named reset at that instant (a reset a day away still resumes on time).
+        return None if at is None or moment - at > CUT_RESUME_WINDOW else CutOwed(cause, "itself", at)
     return CutOwed(cause, "itself", run.finished_at)
 
 

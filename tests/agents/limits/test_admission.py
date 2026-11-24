@@ -84,7 +84,7 @@ def test_a_lost_login_holds_resumed_turns_until_it_is_signed_in_again(clock):
     reg._remember_vendor_refusal(lost, "Failed to authenticate: OAuth token revoked. Please log in again", cut=RunCut.login_lost, now=NOW)
     with line.resuming(lost) as admitted:
         assert not admitted
-    assert line.waiting_said()["lost"] == "en pause : connexion claude perdue, reprise sans clic une fois reconnectée sur ce PC"
+    assert line.waiting_said()["lost"] == "en pause : connexion claude perdue, reprise sans clic une fois reconnectée sur ce PC (dans les 24 h : au-delà, « Continuer »)"
     assert quota.lost_logins() == [("claude", None)]   # the runner asks whether it is signed in again
     agent_queue.enqueue("lost", message_id="m-lost", sender=reg.PERSON_SENDER)
     with line.resuming(lost) as admitted:   # his own message asks again (a PC without the runner): alone

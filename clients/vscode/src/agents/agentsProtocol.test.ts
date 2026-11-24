@@ -173,7 +173,7 @@ for (const [name, partials, before] of [["short", 5, 0], ["past the cold tail", 
   const file = path.join(directory, "root.jsonl");
   const line = (event: object) => `${JSON.stringify(event)}\n`;
   try {
-    // His words 2026-11-23: the answer shows as it is written (galaius `partial`); the panel keeps reading each answer once.
+    // The answer shows as it is written (galaius `partial`); the panel keeps reading each answer once.
     const lead = Array.from({ length: before }, (_, index) => line({ kind: "text", text: `earlier ${index}` })).join("");
     fs.writeFileSync(file, lead + line({ kind: "tool", event_id: "call", tool: "Bash", tool_input: "ls" }));
     for (let step = 1; step <= partials; step += 1) {

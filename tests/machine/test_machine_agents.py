@@ -1672,7 +1672,7 @@ def test_a_run_its_login_lost_resumes_on_any_login_of_its_account_signed_in_here
     run_id, cwd = "cut-login", base / "project"
     reg.register(run_id=run_id, pid=431, provider="claude", name="w", agent="app-engineer", model="claude-opus-5-5", cwd=str(cwd), login=ACCOUNT,
                  subscription=RunSubscription(subscription_id=dead.id, limits=SubscriptionLimits(weekly_percent=80)))
-    _cut(run_id, "login_lost", pid=431, at=time.time() - 86400)
+    _cut(run_id, "login_lost", pid=431, at=time.time() - 5 * 3600)
     session = ClaudeCodeProvider().session_files(dead.folder, cwd, reg.get_run(run_id).provider_session_id or run_id)[0]
     session.parent.mkdir(parents=True)
     session.write_text('{"type": "user"}\n')

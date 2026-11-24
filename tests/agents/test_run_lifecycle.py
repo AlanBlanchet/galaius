@@ -574,3 +574,29 @@ def test_the_asker_of_a_run_held_past_ten_minutes_is_told_once_with_the_holders_
     assert [run_id for run_id, _ in sent] == told
     if told:
         assert "critic-venue-limit-tap44.service : 2.9 Go" in sent[0][1] and f"waited {waited_minutes} min" in sent[0][1]
+
+
+def test_an_ended_asker_is_never_woken_by_the_note_on_a_slow_spawn_and_is_told_once_it_works_again(monkeypatch):
+    """A coordinator that spawned runs and ended, its memory group full: each waiting spawn's note once started a turn on it
+    (`deliver_message` wakes an ended run). Nothing is sent and nothing marked told until it works; then it is told once."""
+    sent: list[str] = []
+    monkeypatch.setattr(spawn_line.messaging, "deliver_message", lambda run_id, message, **rest: (
+        sent.append(run_id), spawn_line.messaging.Delivery(state="queued", text="q", run_id=run_id))[1])
+    register_run("lead", pid=999999)
+    reg.finish("lead", exit_code=0, first=0)
+    assert not reg.get_run("lead").working()
+    line = SpawnLine(limit=1, waiting_flag_minutes=5, waiting_gap_seconds=60)
+    me, now = os.getpid(), time.time()
+    spawn = Spawn(task="review the fix", cwd=".", agent="code-reviewer", parent_run_id="lead", session_id="s1")
+    with line._places() as places:
+        places.append(spawn_line.Place(run_id="held-run", asked_at=now - 3600, state="waiting", holder=me,
+                                       holder_started=spawn_line.process_started(me), parent_run_id="lead", spawn=spawn,
+                                       said="en pause : mémoire des agents à 103 % de leur plafond"))
+    line.report_slow(now=now)
+    line.report_slow(now=now + 30)
+    assert sent == [] and not any(place.warned for place in line._places_seen())
+
+    monkeypatch.setattr(reg.AgentRun, "working", lambda self: self.run_id == "lead")   # it works again
+    line.report_slow(now=now + 60)
+    line.report_slow(now=now + 90)
+    assert sent == ["lead"]

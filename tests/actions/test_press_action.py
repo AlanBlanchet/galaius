@@ -274,3 +274,17 @@ async def test_a_touch_has_no_buttons():
     page.evaluate = AsyncMock(return_value=True)
     with pytest.raises(ValueError, match="no buttons"):
         await PressAction(x=5, y=5, button="right").execute(page)
+
+
+@pytest.mark.asyncio
+async def test_a_touch_that_cannot_start_still_releases_its_cdp_session_and_lifts_nothing():
+    cdp = MagicMock()
+    cdp.send = AsyncMock(side_effect=PlaywrightError("target closed"))
+    cdp.detach = AsyncMock()
+    page = MagicMock()
+    page.evaluate = AsyncMock(return_value=True)
+    page.context.new_cdp_session = AsyncMock(return_value=cdp)
+    with pytest.raises(PlaywrightError, match="target closed"):
+        await PressAction(x=5, y=5).execute(page)
+    cdp.detach.assert_awaited_once()
+    assert [call.args[1]["type"] for call in cdp.send.await_args_list] == ["touchStart"]   # no lift of a touch never down

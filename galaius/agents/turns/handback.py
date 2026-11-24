@@ -361,8 +361,8 @@ class EndWatch(BaseModel):
             self.line_failed = True
         try:   # a message pending in a queue whose dispatcher a power-off took is handed to one again (`agent_queue.revive_orphans`)
             if now - self.queues_swept >= QUEUES_SWEPT_SECONDS:
-                self.queues_swept = now
                 agent_queue.revive_orphans()
+                self.queues_swept = now   # after it went through: one that raised is tried again at every look, as said below
             self.queues_failed = False
         except Exception:
             if not self.queues_failed:

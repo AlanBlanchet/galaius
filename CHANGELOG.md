@@ -14,8 +14,8 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
   finding for spawns waiting over 15 min for a place. `galaius conversation check [--post]` is the same read over the last 6 h; `--post` sends what
   broke to the run his latest web message reached, once per window, and nothing when nothing broke. Thresholds: `EfficiencyLimits`.
 - What reads as his frustration (`settings.FRUSTRATION`, used by `galaius conversation messages` and by the turn reviews) knows more of how he writes it: curses beyond the first
-  few, « fed up », « sick / tired of », « I'm scared / sad / worried », « big / major problem », « no further errors would be tolerated », « should never be able to … », a slow feel
-  (« laggy »), « please just … », and the French « j'en ai marre », « inadmissible », « pas normal ». On the last 14 days of his messages: 13 of 128 read frustrated before, 30 now.
+  few, « fed up », « sick / tired of », « I'm scared / sad / worried », « big / major problem », « no further errors », « should never be able to … », a slow feel
+  (« laggy »), « please just … », and the French « j'en ai marre », « inadmissible », « pas normal ».
   `galaius conversation messages` also counts his answers to Claude Code's question cards (marked `/card`), read from the sessions' own files.
 - `galaius conversation messages` reads what he typed in editor and terminal sessions of Claude Code and Codex too, from the conversation index `galaius agents
   search` builds (his prompts only, credentials masked, a headless agent session never his), marked by where he typed it (`web`, `claude`, `codex`), with
