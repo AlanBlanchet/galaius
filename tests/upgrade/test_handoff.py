@@ -130,3 +130,17 @@ def test_a_runtime_another_store_installed_never_takes_the_place_of_the_active_o
     monkeypatch.setattr(BuildIdentity, "installed", classmethod(lambda cls: stranger.order()))
     target = Handoff(store=store).target(("agents", "list"), long_lived=False)
     assert target is not None and target.path == active.path and store.pointer().active == active.path
+    assert not _processes_running_from(stranger.path), "a test install leaves no process of its own behind (the 19:15 tray and queue dispatchers ran from /tmp for hours)"
+
+
+def _processes_running_from(folder: Path) -> list[str]:
+    """The command lines of the processes whose program or arguments sit under `folder` (Linux /proc; none elsewhere)."""
+    found = []
+    for entry in Path("/proc").glob("[0-9]*/cmdline") if sys.platform == "linux" else ():
+        try:
+            line = entry.read_bytes().replace(b"\0", b" ").decode(errors="replace")
+        except OSError:
+            continue
+        if str(folder) in line:
+            found.append(line)
+    return found
