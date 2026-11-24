@@ -2444,6 +2444,22 @@ def test_a_cut_comes_back_by_itself_only_once_a_runner_here_resumes_cuts_and_onl
     assert not reg.self_resuming(before) and reg.self_resuming(reg.get_run("cut-after")) and after.run_id == "cut-after"
 
 
+@pytest.mark.parametrize("hours, resumes", [(1, True), (23, True), (25, False), (24 * 21, False)], ids=["1h", "23h", "25h", "three-weeks"])
+@pytest.mark.parametrize("how", ["killed", "process_gone"])
+def test_a_process_cut_comes_back_by_itself_only_within_a_day_of_its_end(resuming, how, hours, resumes):
+    """2026-11-24: 37 runs cut up to a month before woke at once and re-ran their stale briefs. A record whose process went
+    away more than `CUT_RESUME_WINDOW` ago stays as it is for a person; one cut an hour ago still comes back."""
+    reg.register(run_id="old-cut", pid=431, provider="claude", name="w", agent="app-engineer", model="claude-opus-5-5")
+    if how == "killed":
+        assert reg.finish("old-cut", exit_code=-9, first=0, expected_pid=431, expected_lifecycle_token=reg.get_run("old-cut").lifecycle_token)
+    else:
+        reg._merge_record_locked("old-cut", {"status": "interrupted", "finished_at": time.time()})
+    ended = reg.get_run("old-cut").finished_at
+    written = reg.schedule_resumes(now=ended + hours * 3600)
+    assert [(r.run_id, cut.resumes) for r, cut in written] == ([("old-cut", "itself")] if resumes else [])
+    assert (reg.get_run("old-cut").resumes == "itself") == resumes
+
+
 @pytest.mark.parametrize("exit_code, cause", [(-9, "killed"), (137, "killed"), (129, "killed"), (134, None), (139, None), (2, None)],
                          ids=["sigkill", "sigkill-shell", "sighup-shell", "its-own-abort", "its-own-segfault", "its-own-error"])
 def test_only_a_signal_sent_from_outside_reads_as_a_kill_its_pc_resumes(resuming, exit_code, cause):

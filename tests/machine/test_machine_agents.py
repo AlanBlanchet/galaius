@@ -1614,12 +1614,12 @@ def _cut(run_id: str, kind: str, *, pid: int, at: float) -> None:
 def test_a_tree_any_cut_stopped_resumes_whole_by_itself_deepest_first_once(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
                                                                            kind: str, resumes: str, sender: str) -> None:
     """Owner 2026-10-19 « I'm having to click on the continue the 4 stopped agents manually », 2026-10-20 « Shouldn't things
-    continue on their own ? »: a 3-level tree any cut stopped (a day ago: no window lapses) resumes by itself, each agent
+    continue on their own ? »: a 3-level tree any cut stopped (five hours ago, inside `CUT_RESUME_WINDOW`: no window lapses) resumes by itself, each agent
     before its launcher, the launcher's brief naming its agents; a lost login waits for its sign-in alone. Its sibling
     that failed on its own error, the one he stopped, and a cut from before this PC resumed cuts stay as they are; a
     second cut by the same cause right after the resume is left to him."""
     reg.cut_resume_since(now=1000.0)
-    day_ago = time.time() - 86400
+    day_ago = time.time() - 5 * 3600
     tree = (("tree-main", None, kind), ("tree-lead", "tree-main", kind), ("tree-maker", "tree-lead", kind),
             ("tree-broken", "tree-lead", "error"), ("tree-his", "tree-lead", "stopped"), ("tree-old", "tree-lead", "process_gone"))
     for pid, (run_id, parent, cut) in enumerate(tree, start=431):
