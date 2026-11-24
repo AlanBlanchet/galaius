@@ -111,13 +111,20 @@ async def run_actions(
 
     Each action needs a 'type' key to select the action model.
 
-    Mutating: click, double_click, type_text, scroll, drag, navigate, evaluate_js, upload_file, key_press, click_element, resize
+    Mutating: click, double_click, type_text, scroll, drag, navigate, evaluate_js, upload_file, key_press, click_element, resize, press
       - type_text with NO ref/selector types into whatever is focused — after a click on a field,
         just type; you don't need to name the field twice.
-      - press (browser): mousedown, HOLD for `hold` seconds, mouseup — the only way to observe a
-        `:active` depth cue, since a click's down+up is instantaneous and a JS-dispatched
-        PointerEvent is untrusted so Chromium ignores it. Pair with record/screenshot to capture
-        the held frame; read the effect via computed style (`matches(':active')` under-reports).
+      - press (browser): HOLD the pointer on a target for `hold` seconds (<= 30), then release — the
+        only way to observe a `:active` depth cue or a long-press, since a click's down+up is
+        instantaneous and a JS-dispatched PointerEvent is untrusted. On a touch context
+        (emulate_device phone profile) it is a real finger (Chromium only; Firefox / WebKit only
+        tap, so it errors): touchstart / touchend, and at 0.5 s without moving > 10 px the
+        trusted right-button `contextmenu` a phone raises there, the touch ending cancelled (no
+        click) — `long_press=false` keeps the bare touch sequence. On a mouse context: mousedown,
+        wait, mouseup. `move_to` [x, y] (+ `move_at` s into the hold) drags while held or cancels
+        the long press; `capture` (+ `path`, `query`) takes a frame at the end of the hold, before
+        the release. Desktop (native window) targets do not support it. Read a pressed effect via
+        computed style (`matches(':active')` under-reports).
       - `wait` accepts a duration on ANY action ("3", "8s", "1500ms", "1m"), a load state
         ("networkidle"/"load"/"domcontentloaded"), or a CSS selector to wait for.
       - click: `button` picks which mouse button — "left" (default), "right", or "middle". A

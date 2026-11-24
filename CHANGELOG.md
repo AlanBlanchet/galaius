@@ -6,6 +6,7 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
+- Browser tool: `press` is accepted in `run_actions` (the schema refused it) and holds a finger on a touch context: trusted touchstart / touchmove / touchend through CDP (Chromium; Firefox / WebKit contexts only tap and say so), and at 0.5 s without a move the trusted `contextmenu` a phone raises on a long press, the touch ending cancelled so no click follows (`long_press=false` keeps the bare touch sequence). `move_to` / `move_at` drag or cancel while held, `capture` (+ `path`, `query`) returns a frame taken before the release, a cut-short hold lifts the touch without a tap. A test walks every action class against the schema union, the announcement and the `run_actions` description. Native windows do not take `press`.
 - Agent efficiency: `galaius conversation slow` adds, per run and per role, the share of tool calls spent on process bookkeeping and whether the run
   started with less than its role's normal (tools, MCP servers, skills, memory notes, read from its `system init` line against the role's runs of
   the last 14 days; no verdict with fewer than 3 peers), a run ended by a vendor error, and a model or effort below the role's rule. `galaius doctor`
