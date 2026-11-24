@@ -662,7 +662,7 @@ class AgentProvider(ABC):
     #: The cut each HTTP status of its provider's API names when a turn fails on it (`cut_of`): 401, the login
     #: was refused (expired, revoked, switched to another account). A 429 is no cut by itself: only a refusal naming its
     #: window (`quota.REFUSAL`) is a usage limit, a short rate limit is the turn's own failure.
-    CUT_STATUS: ClassVar[Mapping[int, RunCut]] = {401: RunCut.login_lost}
+    CUT_STATUS: ClassVar[Mapping[int, RunCut]] = {401: RunCut.login_lost, **dict.fromkeys((500, 502, 503, 529), RunCut.overloaded)}
     #: What a 401 says when an API key was refused, not a login (`cut_of`): its words decide then (« Invalid API key ·
     #: Please run /login » is a login to sign in again).
     KEY_REFUSED: ClassVar[re.Pattern[str]] = re.compile(r"\bAPI[ _-]?key\b", re.IGNORECASE)
@@ -677,9 +677,14 @@ class AgentProvider(ABC):
         r"|\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|ENETDOWN)\b"
         r"|getaddrinfo|\bdns (?:failure|lookup failed)\b|\bfetch failed\b",
         re.IGNORECASE)
+    #: What a turn says when its provider's API answered that it could not take it (`RunCut.overloaded`), as a status-less line
+    #: gives it: the CLI's own sentence (Claude Code, recorded 2026-11-23: « API Error: 529 Overloaded. This is a server-side
+    #: issue, usually temporary ») or the vendor's error type. Never the bare word « overloaded »: a tool's or a worker pool's own
+    #: failure says it too, and is no answer from the vendor's API; a status the program gave decides first (`CUT_STATUS`).
+    OVERLOADED: ClassVar[re.Pattern[str]] = re.compile(r"\bAPI Error: (?:500|502|503|529)\b|\boverloaded_error\b", re.IGNORECASE)
     #: The words a failed turn says each cut in when its program gives no status (`cut_of`), checked in order: a usage
     #: refusal first — one is answered by the vendor's own server, so it reached it.
-    cut_words: ClassVar[Mapping[RunCut, re.Pattern[str]]] = {RunCut.usage_limit: REFUSAL, RunCut.network_lost: NETWORK_LOST}
+    cut_words: ClassVar[Mapping[RunCut, re.Pattern[str]]] = {RunCut.usage_limit: REFUSAL, RunCut.network_lost: NETWORK_LOST, RunCut.overloaded: OVERLOADED}
 
     @classmethod
     def cut_of(cls, text: str, status: object = None) -> RunCut | None:

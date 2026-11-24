@@ -56,6 +56,10 @@ class RunCut(StrEnum):
     #: Its program could not reach its provider's API at all (DNS, connect, the connection dropped): the vendor said
     #: nothing about the turn, so this is no answer — back after a bounded backoff (`registry.network_resume_at`).
     network_lost = "network_lost"
+    #: Its provider's API answered that it could not take the turn now (529 overloaded, 500, 502, 503: Claude Code ends on
+    #: « API Error: 529 Overloaded » after its own retries): the vendor never ran the turn, so this is no answer. Back after
+    #: a bounded backoff (`registry.overload_resume_at`), on another login or model once one overloaded twice in a row.
+    overloaded = "overloaded"
 
 
 #: Kinds that say nothing about what the AGENT did — the harness's own bookkeeping, kept in the

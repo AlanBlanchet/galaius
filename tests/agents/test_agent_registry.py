@@ -2345,11 +2345,12 @@ _MODEL_LIMIT = "You've reached your Opus limit. Switch to another model, or mana
     # now (`spawn_line.Spawn.relaunching`), once; a relaunch that could not start leaves it to its reset, if it names one.
     (_SESSION_LIMIT, False, 60, "relaunch", "itself"),
     (_MODEL_LIMIT, False, 60, "relaunch", None),
+    ("You've reached your Fable limit. Switch to another model.", False, 60, "relaunch", None),   # as recorded (result line, 429): a late refusal past the spawn probe's window
     # It worked first: it is the pause's, resumed at the reset (never relaunched: its work would start over).
     (_SESSION_LIMIT, True, 60, "itself", "itself"),
     # Refused long ago: nobody is there to use a relaunch now.
     (_SESSION_LIMIT, False, 2 * 3600, "itself", "itself"),
-], ids=["session-limit-first-turn", "model-limit-first-turn", "worked-first", "refused-hours-ago"])
+], ids=["session-limit-first-turn", "model-limit-first-turn", "fable-pool-first-turn", "worked-first", "refused-hours-ago"])
 def test_a_run_its_limit_refused_before_it_did_anything_is_relaunched_once(resuming, said, worked, ended_ago, first, then):
     _ended_on("relaunch-me", said, pid=441, worked=worked)
     moment = time.time()
@@ -2519,6 +2520,42 @@ def test_a_run_a_network_failure_cut_comes_back_by_itself_until_its_backoff_runs
     assert reg.schedule_resumes(now=ended_at + 1) == [], "a failure longer than the whole backoff is left to a person"
     assert reg.get_run("net1").resume_at is None and reg.claim_resume("net1", now=ended_at + 10**4) is None
     assert reg.get_run("net1").resumed_cuts == len(reg.NETWORK_RESUME_BACKOFF)
+
+
+#: What Claude Code ends a turn on when the vendor's API is overloaded, verbatim from the runs of 2026-11-23 (result line `is_error`, `api_error_status` 529,
+#: `terminal_reason` api_error, after the CLI's own 7 retries): three runs died on it, one 20 minutes into its work.
+_OVERLOADED = "API Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a moment. If it persists, check https://status.claude.com."
+
+
+def test_a_run_an_overload_cut_comes_back_by_itself_until_its_backoff_runs_out(resuming):
+    """A vendor 529 / 5xx never answered the turn: the run is CUT, not failed, and comes back by itself after a short backoff, each
+    try further from its end (owner 2026-11-23 « We should NEVER stop the user request and instead use a fallback »)."""
+    run = _ended_on("ovl1", _OVERLOADED, pid=511)
+    assert reg.cut_cause(run) == "overloaded"
+    ended_at = run.finished_at
+    for pause in reg.OVERLOAD_RESUME_BACKOFF:
+        written = reg.schedule_resumes(now=ended_at + 1)
+        assert [(value.run_id, value.resumes, value.resume_at) for value, _ in written] == [("ovl1", "itself", ended_at + pause)]
+        assert reg.claim_resume("ovl1", now=ended_at + pause - 1) is None, "never before its pause has passed"
+        assert reg.claim_resume("ovl1", now=ended_at + pause) is not None
+        ended_at += pause + 2   # its resumed turn is overloaded too
+        reg._update_fields("ovl1", {"finished_at": ended_at})
+    assert reg.schedule_resumes(now=ended_at + 1) == [], "an overload longer than the whole backoff is left to a person"
+    assert reg.get_run("ovl1").resume_at is None and reg.get_run("ovl1").resumed_cuts == len(reg.OVERLOAD_RESUME_BACKOFF)
+
+
+@pytest.mark.parametrize(("resumed_cut", "benched"), [(None, False), ("network_lost", False), ("overloaded", True)])
+def test_a_model_overloaded_twice_in_a_row_is_passed_over_on_that_login_so_the_next_resume_goes_elsewhere(resuming, resumed_cut, benched):
+    """The first overload waits and asks the same model again; the same cut heard again right after an automatic resume for it benches the model on
+    this login (`quota.blocked_until`), so the resume that follows runs on his other login or the next ranked model, as after a limit refusal."""
+    from galaius.agents.limits import quota
+    from galaius.agents.transport.events import RunCut
+
+    reg.register(run_id="ovl2", pid=512, provider="claude", name="w", agent="app-engineer", model="claude-opus-5-5")
+    reg._update_fields("ovl2", {"resumed_cut": resumed_cut})
+    reg._remember_vendor_refusal(reg.get_run("ovl2"), _OVERLOADED, cut=RunCut.overloaded)
+    assert (quota.blocked_until("claude", "claude-opus-5-5") is not None) is benched
+    assert quota.login_pause("claude") is None, "an overloaded vendor is no login's usage window: nothing else is held"
 
 
 def test_one_run_is_read_along_its_own_launch_links_as_the_forest_lists_it():
