@@ -116,3 +116,17 @@ def test_an_install_newer_than_the_active_runtime_takes_its_place(store: Runtime
     target = Handoff(store=store).target(("agents", "list"), long_lived=False)
     assert (target is None) is runs_here
     assert (store.pointer().active == Runtime.own().path) is runs_here
+
+
+def test_a_runtime_another_store_installed_never_takes_the_place_of_the_active_one(store: RuntimeStore, tmp_path: Path, monkeypatch) -> None:
+    """2026-11-24: a test build installed in its own store dir ran one command without GALAIUS_RUNTIMES; it was newer than the real
+    store's active runtime, so it activated itself there and the PC's machine moved onto a /tmp folder. Only an install no store made
+    (the install line run again) takes the pointer by running."""
+    from galaius.upgrade.handoff import Handoff
+    active = fake(store, "0.9.0", 3)
+    store.activate(active)
+    stranger = fake(RuntimeStore(root=tmp_path / "other"), "0.9.0", 9)
+    monkeypatch.setattr(Runtime, "own", classmethod(lambda cls: stranger))
+    monkeypatch.setattr(BuildIdentity, "installed", classmethod(lambda cls: stranger.order()))
+    target = Handoff(store=store).target(("agents", "list"), long_lived=False)
+    assert target is not None and target.path == active.path and store.pointer().active == active.path

@@ -8,6 +8,7 @@ the newest-ever floor stays meaningful; an older build is still activated (your 
 """
 
 import argparse
+import os
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +25,10 @@ def main() -> None:
     parser.add_argument('--python', default=None, help='interpreter version for the runtime (default: this one)')
     args = parser.parse_args()
     public, core = args.public_wheel.resolve(strict=True), args.core_wheel.resolve(strict=True)
+    git_dir, common_dir = (Path(subprocess.check_output(["git", "-C", str(args.checkout), "rev-parse", flag], text=True).strip()) for flag in ("--absolute-git-dir", "--git-common-dir"))
+    if git_dir != (common_dir if common_dir.is_absolute() else args.checkout / common_dir).resolve() and not os.environ.get("GALAIUS_RUNTIMES"):
+        # A linked worktree is a slice's scratch checkout: activating its build moves every process of this computer onto it (2026-11-24).
+        raise SystemExit("refused: this checkout is a linked git worktree; install its build into a store of its own (GALAIUS_RUNTIMES=<folder>)")
     commit, moment = subprocess.check_output(['git', '-C', str(args.checkout), 'log', '-1', '--format=%H %cI'], text=True).split()
     build = BuildIdentity(version=ReleaseFile.of(public).version, released_at=datetime.fromisoformat(moment), commit=commit)
     store = RuntimeStore.default()

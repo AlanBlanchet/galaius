@@ -436,6 +436,9 @@ class AgentRun(OlderTokens, ContextGauge):
     tools: list[str] = Field(default_factory=list)
     started_at: float = 0.0
     finished_at: float | None = None
+    #: When the run had ended, while a message wakes it (`begin_resume_locked`) and no turn has started yet: a stop then puts this
+    #: back as its end (`stop`), so a run that never worked again hands nothing back to its askers. Cleared as a turn begins.
+    woken_from: float | None = None
     exit_code: int | None = None
     #: How this PC's runner resumes it by itself, a cut having stopped it (`cut_resume`): `itself` from `resume_at` on,
     #: `sign_in` once its login is signed in again here. Written and cleared by the runner only (`schedule_resumes`,
@@ -1711,9 +1714,12 @@ def stop(run_id: str, *, by: StopActor | None, expected_lifecycle_token: str | N
             return False
         if stored.process_running():
             _terminate(stored.pid)
+        # A run a message woke and no turn began on (`woken_from`) ends as it had ended: nothing new happened to hand back.
+        unstarted = stored.status == "starting" and stored.woken_from is not None and not stored.process_running()
         updated = _merge_record_locked(run_id, {
             **({"held_at": time.time()} if holds(by) and not waiting else {}),
-            "finished_at": stored.finished_at if idle and stored.finished_at else time.time(),
+            "woken_from": None,
+            "finished_at": stored.finished_at if idle and stored.finished_at else (stored.woken_from if unstarted else time.time()),
             "exit_code": 0 if idle else -signal.SIGTERM,
             "status": "done" if idle else "stopped",
             "stopped_by": None if idle or by is None else by.model_dump(mode="json"),
@@ -2104,7 +2110,7 @@ def save_run(run: AgentRun) -> None:
 #: Record fields that describe how the run's PREVIOUS turn ended, cleared when it starts another
 #: one: a cause and hour kept from an earlier cut were read as this turn's, so a run cut off today
 #: was shown as cut off yesterday, and the one that ended cleanly after it inherited that cause.
-PREVIOUS_ENDING: dict[str, None] = dict.fromkeys(("exit_code", "finished_at", "stopped_by", "held_at", "replaced_by", "interruption", "resumes", "resume_at"))
+PREVIOUS_ENDING: dict[str, None] = dict.fromkeys(("exit_code", "finished_at", "woken_from", "stopped_by", "held_at", "replaced_by", "interruption", "resumes", "resume_at"))
 
 
 def begin_turn(
@@ -2908,7 +2914,7 @@ def begin_resume_locked(run_id: str) -> AgentRun | None:
     run = _read_record(run_id)
     if run is None or run.kind != "process" or run.process_running():
         return run
-    return run if run.status == "starting" else _merge_record_locked(run_id, {"status": "starting", "finished_at": None})
+    return run if run.status == "starting" else _merge_record_locked(run_id, {"status": "starting", "finished_at": None, "woken_from": run.finished_at})
 
 
 def note_fell_back_locked(run_id: str, refused: FellBack) -> None:
@@ -3240,13 +3246,14 @@ def settle_gone() -> list[AgentRun]:
 #: How soon after an automatic resume the same cut means it did not come back (`cut_resume`'s loop guard): the run is
 #: then left to a person; a usage refusal heard this soon after its resume means the window did not reopen.
 RESUME_GRACE = 300.0
-#: How long after its end a run cut with its process (`IMMEDIATE_CUTS`) still comes back by itself: a few hours of a restarted
-#: PC, never weeks. A record older than that whose process is gone is abandoned work: resuming it re-runs a stale brief against
-#: a repository that moved on (2026-11-24: 37 old runs woke at once). Left to a person: « Continuer » still resumes it.
+#: How long after its end a run cut with its process or by a back-off (`WINDOWED_CUTS`) still comes back by itself: a few hours of a
+#: restarted PC, never weeks. A record older than that is abandoned work: resuming it re-runs a stale brief against a repository
+#: that moved on (2026-11-24: 37 old runs woke at once). Left to a person: « Continuer » still resumes it.
 CUT_RESUME_WINDOW = 24 * 3600.0
 #: The cuts that resume the moment they are seen, with nothing external to wait for (a limit's reset, a sign-in): the ones the
-#: window above bounds.
-IMMEDIATE_CUTS: frozenset[CutCause] = frozenset({"process_gone", "killed"})
+#: window above bounds, with the cuts that wait only minutes (an overloaded API, a lost network: a runner looking days late
+#: would find them already due).
+WINDOWED_CUTS: frozenset[CutCause] = frozenset({"process_gone", "killed", "overloaded", "network_lost"})
 #: How many times in a row a run cut by the same cause (its usage limit apart: each reset is a new window) is resumed by
 #: itself before it is left to a person (`cut_resume`): a cut that comes back later than `RESUME_GRACE` each time (an
 #: OOM at the same peak, a time limit) never loops paid turns.
@@ -3418,12 +3425,12 @@ def cut_resume(run: AgentRun, *, now: float | None = None) -> CutOwed | None:
     cut (`cut_cause`) that ended since this PC resumes cuts (`cut_resume_since`), once per cut, whatever time since —
     a process cut at once, a usage limit at its reset (`limit_resume_at`), a network failure after a bounded backoff
     (`network_resume_at`), a lost login once signed in again. None when nothing resumes it but a person: no cut,
-    resumed for it already, a process cut (`IMMEDIATE_CUTS`) more than `CUT_RESUME_WINDOW` ago, or cut again by the same
+    resumed for it already, a process or back-off cut (`WINDOWED_CUTS`) more than `CUT_RESUME_WINDOW` ago, or cut again by the same
     cause within `RESUME_GRACE` of its last automatic resume (it did not come back) — a cut that times its own resume (`SELF_TIMED_CUTS`) counts its own retries instead."""
     cause = cut_cause(run)
     if cause is None or run.finished_at is None or run.finished_at < _cut_since():
         return None
-    if cause in IMMEDIATE_CUTS and (time.time() if now is None else now) - run.finished_at > CUT_RESUME_WINDOW:
+    if cause in WINDOWED_CUTS and (time.time() if now is None else now) - run.finished_at > CUT_RESUME_WINDOW:
         return None
     if relaunch_owed(run, now=now):
         return CutOwed(cause, "relaunch", run.finished_at)

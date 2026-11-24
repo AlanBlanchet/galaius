@@ -2543,6 +2543,15 @@ def test_a_run_a_network_failure_cut_comes_back_by_itself_until_its_backoff_runs
 _OVERLOADED = "API Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a moment. If it persists, check https://status.claude.com."
 
 
+@pytest.mark.parametrize("hours, resumes", [(0.01, True), (23, True), (25, False), (24 * 21, False)], ids=["minutes", "23h", "25h", "three-weeks"])
+def test_a_run_ended_on_an_overload_is_woken_only_within_a_day_of_its_end(resuming, hours, resumes):
+    """A back-off cut is due at once for a runner looking late (`overload_resume_at` is its end plus seconds): an install arriving weeks
+    after it woke the run all the same. Past `CUT_RESUME_WINDOW` it stays as it is, for a person."""
+    run = _ended_on("ovl-old", _OVERLOADED, pid=512)
+    written = reg.schedule_resumes(now=run.finished_at + hours * 3600)
+    assert [value.run_id for value, _ in written] == (["ovl-old"] if resumes else [])
+
+
 def test_a_run_an_overload_cut_comes_back_by_itself_until_its_backoff_runs_out(resuming):
     """A vendor 529 / 5xx never answered the turn: the run is CUT, not failed, and comes back by itself after a short backoff, each
     try further from its end (owner 2026-11-23 « We should NEVER stop the user request and instead use a fallback »)."""

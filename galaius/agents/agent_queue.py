@@ -879,11 +879,29 @@ def _serve_once(token: str, working: dict[str, threading.Thread], idle_since: fl
     return time.monotonic() if handed or working else idle_since
 
 
+EXPIRED_ERROR = "expired: not delivered within {hours:g} h, its run's dispatcher was gone; an ended run is not woken for an old message, send it again if it still holds"
+
+
+def _expire_old_locked(run_id: str, now: float, bound: float) -> None:
+    """Every message of `run_id` pending or in flight for more than `bound` seconds (its last start, else its queueing) is
+    `failed` with `EXPIRED_ERROR`, while the caller owns the run lock: his own reads it as not delivered (`failed_items`) and a
+    caller still waiting on it reads the failure (`messaging`). An agent sender is not messaged: that would wake its own ended run."""
+    hours = bound / 3600
+    for item in _items(_state(run_id)):
+        if item.state in ACTIVE and now - (item.started_at or item.enqueued_at) > bound:
+            _replace_item_locked(run_id, item.id, state="failed", finished_at=now, waiting=None, waiting_since=None, attempt_token=None,
+                                 error=EXPIRED_ERROR.format(hours=hours))
+
+
 def revive_orphans() -> list[str]:
     """Hand to a dispatcher again every run whose queue holds a message pending or in flight and whose dispatcher is gone: a
     power-off or a crash took it, and until the next message to that run nothing delivered what waited (2026-11-23: a tester's report
-    to 3ef08f32 pending 7 h while the run read `done`, the owner's own message too). The run reads `starting` meanwhile
+    to 3ef08f32 pending 7 h while the run read `done`, the owner's own message too). Only a message younger than
+    `Config.agent_message_expiry_hours`: an older one expires (`_expire_old_locked`), since an ended run never starts by itself
+    (2026-11-24: the first sweep woke 11 runs for messages pending since 10-26). The run reads `starting` meanwhile
     (`begin_resume_locked`) like any run coming back for a message. The run ids revived; a queue that cannot be read is left alone."""
+    from galaius.config.settings import Config   # at the sweep, not at import: the detached dispatcher imports this module for nothing else
+    bound = Config().agent_message_expiry_hours * 3600
     revived: list[str] = []
     for queue_file in sorted(reg.agents_dir().glob(f"*{reg.QUEUE_SUFFIX}")):
         payload = reg._read_private(queue_file)
@@ -897,6 +915,9 @@ def revive_orphans() -> list[str]:
                 if run is None or _dispatcher_matches(state) or not any(item.state in ACTIVE for item in _items(state)):
                     continue
                 if run.held_at is not None:   # a person's stop holds it (its process may still end): what waits goes once he releases it (`dispatch`)
+                    continue
+                _expire_old_locked(run_id, time.time(), bound)
+                if not any(item.state in ACTIVE for item in _items(_state(run_id))):
                     continue
                 reg.begin_resume_locked(run_id)
                 ensure_dispatcher_locked(run_id, cwd=run.cwd or ".")

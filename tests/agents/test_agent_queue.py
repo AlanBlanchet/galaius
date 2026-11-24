@@ -1042,6 +1042,41 @@ def test_a_stopped_run_whose_process_still_runs_is_not_handed_a_dispatcher_eithe
     assert reg.get_run("r1").working() and agent_queue.revive_orphans() == [] and handed == []
 
 
+def test_the_sweep_never_wakes_a_run_for_a_message_older_than_its_bound(monkeypatch):
+    """2026-11-24: the first sweep of a PC woke 11 runs ended since 10-26 to 11-23 for messages still pending. An ended run
+    never starts by itself: a message older than `agent_message_expiry_hours` is told expired (`failed`, its reason), whatever the
+    run reads (`done`, or `running` with its dispatcher gone) and wherever the sweep runs (the first look at boot included); a young one is still handed on."""
+    from galaius.config.settings import Config
+
+    provider = setup_queue(monkeypatch)
+    handed: list[str] = []
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda run_id, **rest: handed.append(run_id) or 1)
+    bound = Config().agent_message_expiry_hours * 3600
+    for run_id in ("old-done", "old-running", "young"):
+        reg.register(run_id=run_id, pid=999999, provider=provider.name, name=run_id, task="t", agent="tester", provider_session_id=f"vendor-{run_id}")
+    items: dict[str, str] = {}
+    for run_id in ("old-done", "old-running", "young"):
+        message_id = reg.record_message_event(from_run="operator", to_run=run_id, text=f"for {run_id}")
+        assert message_id and agent_queue.enqueue(run_id, message_id=message_id, sender="operator")
+        items[run_id] = agent_queue.items(run_id)[0].id
+    with reg.record_lock("old-done"):
+        reg._merge_record_locked("old-done", {"status": "done", "finished_at": time.time() - 10 * 86400})
+        agent_queue._replace_item_locked("old-done", items["old-done"], enqueued_at=time.time() - 10 * 86400)
+    with reg.record_lock("old-running"):
+        agent_queue._replace_item_locked("old-running", items["old-running"], state="running", enqueued_at=time.time() - 20 * 86400,
+                                         started_at=time.time() - 20 * 86400)
+    with reg.record_lock("young"):
+        agent_queue._replace_item_locked("young", items["young"], enqueued_at=time.time() - bound / 2)
+    handed.clear()
+    assert agent_queue.revive_orphans() == ["young"] and handed == ["young"]
+    for run_id in ("old-done", "old-running"):
+        (item,) = agent_queue.items(run_id)
+        assert item.state == "failed" and "expired" in item.error and item.finished_at is not None
+    assert reg.get_run("old-done").status == "done" and agent_queue.items("young")[0].state == "pending"
+    handed.clear()
+    assert agent_queue.revive_orphans() == ["young"] and handed == ["young"], "an expired message is not swept twice"
+
+
 def test_the_sweep_for_orphaned_queues_runs_at_the_first_look_then_every_few_minutes(monkeypatch):
     """Reading every queue file costs 3-4 s at 5,000 runs: never at each look."""
     from galaius.agents.turns import handback
