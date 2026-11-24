@@ -12,8 +12,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
-
-from galaius.host.private_files import PRIVATE_FILES
+from collections.abc import Callable
 
 
 def _identity() -> tuple[str, str]:
@@ -24,12 +23,19 @@ def _identity() -> tuple[str, str]:
 
 def _hang(args: list[str]) -> None:
     child = subprocess.Popen([sys.executable, __file__, "sleep-child"])
-    Path(args[1]).write_text(str(child.pid))
+    marker = Path(args[1])
+    pending = marker.with_name(marker.name + ".tmp")
+    pending.write_text(str(child.pid))
+    os.replace(pending, marker)  # whole or absent: a reader that sees the marker reads the pid
     time.sleep(30)
 
 
 def _private(path: Path) -> bool:
     """What the vendor CLI is handed is private to this user, as galaius defines it per system."""
+    # Imported here, not at module top: pydantic (behind it) costs ~0.25 s CPU per start (over 1 s under load), and only the modes that
+    # echo the invocation need it; auth / version / hang / timeout starts stay a bare interpreter start.
+    from galaius.host.private_files import PRIVATE_FILES
+
     try:
         PRIVATE_FILES.check(path)
     except PermissionError:
@@ -65,10 +71,10 @@ def _payload(args: list[str], prompt_stdin: str) -> str:
     )
 
 
-def _claude(mode: str, payload: str) -> None:
+def _claude(mode: str, payload: Callable[[], str]) -> None:
     if mode == "parsed_then_exit":
         print(json.dumps({"type": "assistant", "session_id": "session-parsed", "message": {
-            "content": [{"type": "text", "text": "RAW_SECRET_PROMPT " + payload}],
+            "content": [{"type": "text", "text": "RAW_SECRET_PROMPT " + payload()}],
             "usage": {"input_tokens": 17, "output_tokens": 9}}}))
         print("bounded failure", file=sys.stderr)
         raise SystemExit(9)
@@ -101,14 +107,14 @@ def _claude(mode: str, payload: str) -> None:
                           "usage": {"input_tokens": 4, "output_tokens": 2}}))
     else:
         print(json.dumps({"type": "assistant", "message": {
-            "content": [{"type": "text", "text": payload}],
+            "content": [{"type": "text", "text": payload()}],
             "usage": {"input_tokens": 11, "output_tokens": 7}}}))
         print(json.dumps({"type": "result", "is_error": False, "total_cost_usd": 0.002,
                           "usage": {"input_tokens": 11, "output_tokens": 7}}))
 
 
-def _codex(mode: str, payload: str) -> None:
-    text = json.dumps({"kind": "text", "text": "yes"}) if mode == "schema_valid" else payload
+def _codex(mode: str, payload: Callable[[], str]) -> None:
+    text = json.dumps({"kind": "text", "text": "yes"}) if mode == "schema_valid" else payload()
     print(json.dumps({"type": "item.completed", "item": {
         "type": "agent_message", "text": text}}))
     print(json.dumps({"type": "turn.completed", "usage": {
@@ -158,7 +164,8 @@ def main() -> None:
     if mode == "timeout":
         time.sleep(30)
         return
-    payload = _payload(args, sys.stdin.read())
+    prompt_stdin = sys.stdin.read()
+    payload = lambda: _payload(args, prompt_stdin)  # noqa: E731 — read only by the modes that echo the invocation
     _claude(mode, payload) if provider == "claude" else _codex(mode, payload)
 
 

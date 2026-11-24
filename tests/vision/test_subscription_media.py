@@ -762,8 +762,16 @@ async def test_failed_session_attempt_is_usage_logged_without_claiming_zero_cost
         media_backend="session",
         media_billing="session_only",
         media_provider_order=("claude",),
-        media_timeout=1 if failure_mode == "timeout" else 5,
+        media_timeout=60,
     )
+    if failure_mode == "timeout":
+        # The request deadline covers the preflight spawns too, so a short `media_timeout` is spent by a loaded PC before the media
+        # process starts. The preflight keeps the generous budget; only the media run is bounded, to one second the fake always outlasts.
+        remaining = vision_session._remaining_timeout
+        monkeypatch.setattr(
+            vision_session, "_remaining_timeout",
+            lambda deadline, phase: min(1.0, remaining(deadline, phase)) if phase == "subscription media analysis" else remaining(deadline, phase),
+        )
 
     with pytest.raises(RuntimeError):
         await analyze_media(
@@ -989,15 +997,16 @@ async def test_media_stop_kills_provider_descendants(
             [str(binary), "hang", str(marker)],
             cwd=tmp_path,
             env=ClaudeCodeProvider().subscription_env(),
-            timeout=0.5 if stop_kind == "timeout" else 30,
+            timeout=5 if stop_kind == "timeout" else 60,
         )
     )
-    for _ in range(80):
-        if marker.exists():
-            break
-        await asyncio.sleep(0.025)
-    assert marker.exists(), "fixture child never started"
     if stop_kind == "cancel":
+        # Cancel only once the fixture has spawned its child: a loaded PC takes seconds to start two interpreters.
+        for _ in range(1200):
+            if marker.exists():
+                break
+            await asyncio.sleep(0.05)
+        assert marker.exists(), "fixture child never started"
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -1006,8 +1015,9 @@ async def test_media_stop_kills_provider_descendants(
             TimeoutError, match=rf"{provider_name} media session timed out"
         ):
             await task
+    assert marker.exists(), "fixture child never started before the timeout"
     child_pid = int(marker.read_text())
-    for _ in range(40):
+    for _ in range(400):
         if _process_stopped(child_pid):
             break
         await asyncio.sleep(0.05)
