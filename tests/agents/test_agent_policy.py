@@ -641,6 +641,19 @@ def test_a_different_version_is_never_passed_off_as_the_one_asked_for(capsys, mo
     assert not asked["sonnet"].get("approximate"), "no version asked for, so nothing was substituted"
 
 
+class _VendorOf:
+    """A CLI that runs one catalogue provider's models: the pool a criterion is ranked over is what the CLIs here can run."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def can_run(self, model, env):
+        return model.provider == self.name
+
+    def model_id_for(self, model):
+        return model.id
+
+
 def test_a_criterion_can_be_asked_what_it_picks_today(capsys, monkeypatch, tmp_path):
     """His words: "we shouldn't write a model, but resolve a model from the constraints". Nothing
     could ask a criterion what it currently picks, so every surface that helped choose could only
@@ -661,6 +674,8 @@ def test_a_criterion_can_be_asked_what_it_picks_today(capsys, monkeypatch, tmp_p
     monkeypatch.setattr(mcat, "leaderboard_path", lambda: board)
     monkeypatch.setattr("galaius.agents.policy.policy_path", lambda: tmp_path / "agents.json")
     monkeypatch.setenv("FIXTURE_KEY", "set")
+    monkeypatch.setattr("galaius.agents.providers.PROVIDERS", {"x": _VendorOf("x")})
+    monkeypatch.setattr("galaius.agents.providers.provider_for", lambda _n: _VendorOf("x"))
     with catalog_of(
         Model(id="big-one", provider="x", capabilities=set(), intelligence_score=60.0,
               input_cost_per_million=30.0),
@@ -761,7 +776,5 @@ def test_a_criterion_answers_PER_VENDOR_CLI_because_that_is_who_will_run_it(
         agents_criterion("aa.intelligence >= 40", json_out=True)
         answer = json.loads(capsys.readouterr().out)
 
-    assert answer["model"] == "cheap-outsider", "catalog-wide, thrift still wins"
-    assert answer["providers"] == {"onlyvendor": "vendors-own"}, (
-        "but the CLI that will actually run it can only reach its own"
-    )
+    assert answer["model"] == "vendors-own", "a model no CLI here runs is no answer: a spawn could never start it"
+    assert answer["providers"] == {"onlyvendor": "vendors-own"}

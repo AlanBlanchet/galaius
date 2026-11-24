@@ -1,5 +1,6 @@
 """The model registry and the benchmark registry: each `Model` with its prices and scores, each `Benchmark` with its published table, and the benchmarks registered at import."""
 
+import hashlib
 import re
 import json
 import logging
@@ -55,6 +56,18 @@ class RegistryMixin:
     @classmethod
     def by_id(cls, id: str) -> "Self | None":
         return next((x for x in cls._registry if x.id == id), None)
+
+    @classmethod
+    def entry_digest(cls, id: str) -> str:
+        """A short digest of the registered entry `id` names: its id, provider, capabilities and prices — not its score, which
+        moves with every board. "" for an id no entry carries. What a vendor's refusal of the model is remembered against: the
+        refusal holds while this stays the same (`quota.withdrawn`)."""
+        row = cls.by_id(id) or next((x for x in cls._registry if x.catalog_id == id), None)
+        if row is None:
+            return ""
+        entry = row.model_dump(mode="json", exclude={"intelligence_score"})
+        entry["capabilities"] = sorted(entry["capabilities"])   # a set's order changes with every process
+        return hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()[:16]
 
     @classmethod
     def named(cls, catalog_id: str) -> "Self":

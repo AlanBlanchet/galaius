@@ -298,7 +298,7 @@ def _ranked_candidates(
             for rank, row in enumerate(named) for p in universe if p.name in allowed and runs(p, row)
         )
         if served:
-            return _apply_provider_constraint(criteria, served), ()
+            return _apply_provider_constraint(criteria, _without_withdrawn(served)), ()
     candidates = tuple(
         reg.LaunchCandidate(provider=p.name, model=launched(p, row),
                             catalog_id=row.catalog_id, rank=rank)
@@ -310,7 +310,16 @@ def _ranked_candidates(
         raise ModelUnavailable(
             sentence=f"no model the {names} CLIs can run clears {criteria}:\n{criteria.explain(True, pool)}"
         )
-    return _apply_provider_constraint(criteria, candidates), tuple(valued)
+    return _apply_provider_constraint(criteria, _without_withdrawn(candidates)), tuple(valued)
+
+
+def _without_withdrawn(candidates: tuple[reg.LaunchCandidate, ...]) -> tuple[reg.LaunchCandidate, ...]:
+    """A criterion's list less every model the vendor said may not exist, while its catalogue entry is the one it said it of
+    (`quota.withdrawn`): such a model is no fallback, it only costs a refused start per walk (claude-opus-4-7-20260416,
+    2026-09-22). The memory is never why nothing runs: were every candidate withdrawn, the list stays whole."""
+    gone = quota.withdrawn()
+    kept = tuple(c for c in candidates if (c.provider, c.model) not in gone)
+    return kept or candidates
 
 
 def _apply_provider_constraint(
