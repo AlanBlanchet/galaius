@@ -203,7 +203,7 @@ FRUSTRATION = MessageSignal(exclamations=2, repeats=Repeats(), patterns=(
     # working », « I'm fed up » read as none): exasperation, fatigue, fear, a problem named big, a demand that it never happens again, a slow feel.
     r"\bjesus( christ)?\b|\bwhat the (hell|heck)\b|\bfreaking\b|\bfed up\b|\b(sick|tired) of\b|\bi hate\b|\bannoy\w+|\bfrustrat\w+|\bridiculous\b|\bunacceptable\b|\bstupid\b|\bpathetic\b|\bterrible\b|\bawful\b",
     r"\bj['’]en ai (marre|assez)\b|\bras[- ]le[- ]bol\b|\bça (me )?saoule\b|\binadmissible\b|\bn['’]importe quoi\b|\bpas normal\b|\bc['’]est (nul|pourri)\b",
-    r"\b(should|must) never\b|\bnever again\b|\b(no further|no more) (errors?|bugs?|issues?|failures?|crash\w*)\b|\bnot be tolerated\b|\bwould be tolerated\b|\bshould always be working\b",
+    r"\b(should|must) never (be able to|happen|have happened|put|get us|stop|break|fail|lose|disallow)\b|\bnever again\b|\b(no further|no more) (errors?|bugs?|issues?|failures?|crash\w*)\b|\bnot be tolerated\b|\bwould be tolerated\b|\bshould always be working\b",
     r"\bi['’]?m (so |really |very )?(scared|worried|afraid|sad|angry|upset|disappointed)\b",
     r"\b(big|huge|major|serious|real|critical|terrible|horrible|awful)\s+(problem|issue|bug|mess)s?\b|\bi(['’]| a)m having (a )?(problem|issue)\b",
     r"\b(laggy|sluggish|(so|too|very|really) slow)\b|\bfeels? (laggy|slow|bad|wrong|broken)\b|\b(isn['’]?t|is not|not) well thought\b",

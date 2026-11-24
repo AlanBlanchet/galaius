@@ -107,6 +107,8 @@ def test_the_open_rows_reach_the_coordinators_next_card_and_the_durable_ones_the
     ((), "just go check the latest conv i had in the online conversation... I'm fed up", True),
     ((), "Please think logically.... I'm scared by all the vocabulary and ugly things you're ready to do to make things work.", True),
     ((), "Je n\u2019en peux plus, c\u2019est nul, j\u2019en ai marre", True),
+    ((), "we should never be able to put outselves in these situations...", True),
+    ((), "the function should never return None; add a test for it", False),                                      # design talk, not him complaining
     ((), "Go ahead and see all the flaws of the current system, in the meantime, i will look into the code", False),
     ((), "Could you also check if we are correctly using a form of intelligence / cost graph to know what model to automatically select ?", False),
     ((), "please don't use the UI, tell me what to do instead, but you should have access with profiles ? no ?", False),
