@@ -3240,6 +3240,13 @@ def settle_gone() -> list[AgentRun]:
 #: How soon after an automatic resume the same cut means it did not come back (`cut_resume`'s loop guard): the run is
 #: then left to a person; a usage refusal heard this soon after its resume means the window did not reopen.
 RESUME_GRACE = 300.0
+#: How long after its end a run cut with its process (`IMMEDIATE_CUTS`) still comes back by itself: a few hours of a restarted
+#: PC, never weeks. A record older than that whose process is gone is abandoned work: resuming it re-runs a stale brief against
+#: a repository that moved on (2026-11-24: 37 old runs woke at once). Left to a person: « Continuer » still resumes it.
+CUT_RESUME_WINDOW = 24 * 3600.0
+#: The cuts that resume the moment they are seen, with nothing external to wait for (a limit's reset, a sign-in): the ones the
+#: window above bounds.
+IMMEDIATE_CUTS: frozenset[CutCause] = frozenset({"process_gone", "killed"})
 #: How many times in a row a run cut by the same cause (its usage limit apart: each reset is a new window) is resumed by
 #: itself before it is left to a person (`cut_resume`): a cut that comes back later than `RESUME_GRACE` each time (an
 #: OOM at the same peak, a time limit) never loops paid turns.
@@ -3411,10 +3418,12 @@ def cut_resume(run: AgentRun, *, now: float | None = None) -> CutOwed | None:
     cut (`cut_cause`) that ended since this PC resumes cuts (`cut_resume_since`), once per cut, whatever time since —
     a process cut at once, a usage limit at its reset (`limit_resume_at`), a network failure after a bounded backoff
     (`network_resume_at`), a lost login once signed in again. None when nothing resumes it but a person: no cut,
-    resumed for it already, or cut again by the same cause within `RESUME_GRACE` of its last automatic resume (it did
-    not come back) — a cut that times its own resume (`SELF_TIMED_CUTS`) counts its own retries instead."""
+    resumed for it already, a process cut (`IMMEDIATE_CUTS`) more than `CUT_RESUME_WINDOW` ago, or cut again by the same
+    cause within `RESUME_GRACE` of its last automatic resume (it did not come back) — a cut that times its own resume (`SELF_TIMED_CUTS`) counts its own retries instead."""
     cause = cut_cause(run)
     if cause is None or run.finished_at is None or run.finished_at < _cut_since():
+        return None
+    if cause in IMMEDIATE_CUTS and (time.time() if now is None else now) - run.finished_at > CUT_RESUME_WINDOW:
         return None
     if relaunch_owed(run, now=now):
         return CutOwed(cause, "relaunch", run.finished_at)
