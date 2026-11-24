@@ -145,6 +145,18 @@ def share_malloc_arenas(count: int = 2) -> None:
     mallopt(_M_ARENA_MAX, count)
 
 
+def return_free_memory() -> None:
+    """Give the operating system the heap pages this process freed (glibc `malloc_trim`): Python hands back an arena only
+    once none of its objects live, and the C heap keeps what was freed above a used page. A C library without it
+    (musl, macOS, Windows) keeps its own allocator as it is."""
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        ctypes.CDLL(None).malloc_trim(0)
+    except (OSError, AttributeError):
+        return
+
+
 def process_group_options() -> dict:
     """Spawn options making the child lead its own process tree, so `stop_process_tree` reaches
     every descendant (POSIX: a new session; Windows: a new process group)."""
