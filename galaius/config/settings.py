@@ -411,6 +411,9 @@ class Config(BaseSettings):
     agent_record_recall: RecordRecall = Field(default_factory=lambda: RecordRecall())
     # What a coordinator's card reads at the turn his words start (`galaius.agents.turns.facts`).
     agent_turn_facts: TurnFacts = Field(default_factory=lambda: TurnFacts())
+    # How long a run may wait in the spawn line, held by a pause (memory, usage limit), before the run that asked it is told once,
+    # with the holders named (`galaius.agents.spawn_line.SpawnLine.report_slow`).
+    agent_pause_notice_minutes: Annotated[float, Field(gt=0)] = 10.0
     agent_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 45
     agent_run_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 20
     # The agents' kernel soft limit (`MemoryHigh`), a share of RAM: past it their pages are reclaimed and they slow down,

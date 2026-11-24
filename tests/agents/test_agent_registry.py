@@ -77,6 +77,30 @@ def test_registry_preserves_ranked_selection_and_tool_denials():
         reg.AgentRun.model_validate({**original.model_dump(), "denied_tools": ["--bad"]})
 
 
+def test_records_naming_the_same_candidates_share_one_copy_each():
+    """2026-11-24: 14 equal ranked candidates per record were 10 of its 23 KB, held in every process that listed the runs."""
+    candidate = reg.LaunchCandidate(provider="fixture-a", model="top", catalog_id="example/top", rank=0)
+    register_run(candidates=(candidate,), run_id="r1")
+    register_run(candidates=(candidate,), run_id="r2")
+    first, second = reg.get_run("r1"), reg.get_run("r2")
+    assert first.candidates[0] is second.candidates[0]
+
+
+def test_a_record_cache_nobody_listed_from_is_dropped_and_listing_fills_it_again(monkeypatch):
+    """2026-11-24: a dispatcher listed the runs once and held 5.4k records for its life (435 MB at rest). A run's own
+    record read on every tick of its dispatcher is no listing: the cache goes once no listing came for the idle time."""
+    register_run(run_id="r1")
+    monkeypatch.setattr(reg, "RECORD_CACHE_IDLE_SECONDS", 0.04)
+    reg._cache_trimmer = None
+    assert [run.run_id for run in reg._stored_records()] == ["r1"] and reg._RECORD_CACHE
+    deadline = time.monotonic() + 5
+    while reg._RECORD_CACHE and time.monotonic() < deadline:
+        reg.get_run("r1")   # read by its dispatcher meanwhile: not a listing, the cache still goes
+        time.sleep(0.02)
+    assert not reg._RECORD_CACHE
+    assert [run.run_id for run in reg._stored_records()] == ["r1"] and reg._RECORD_CACHE
+
+
 def test_historical_record_does_not_enable_mesh_on_resume():
     original = register_run()
     (reg.agents_dir() / "r1.json").write_text(original.model_dump_json(exclude={"mesh_enabled"}))

@@ -353,6 +353,7 @@ class EndWatch(BaseModel):
             line = SpawnLine.here()
             line.revive()
             deliveries.extend(line.report_lost())
+            deliveries.extend(line.report_slow())
             self.line_failed = False
         except Exception:  # never stops the look's own hand-backs; tried again at the next look, reported once while it keeps failing
             if not self.line_failed:

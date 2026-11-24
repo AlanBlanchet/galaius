@@ -13,6 +13,7 @@ killed agent reports as interrupted instead of spinning forever in the UI.
 
 import faulthandler
 import functools
+import gc
 import hashlib
 import inspect
 import json
@@ -58,7 +59,7 @@ from galaius.host.file_lock import LockTimeout, SoleHolder, exclusive
 from galaius.host.file_stamp import FileStamp
 from galaius.host.pinned_directory import DescriptorDirectory, PinnedDirectory
 from galaius.host.private_files import PRIVATE_FILES
-from galaius.host.processes import detached_options, end_process_tree, platform_signals, process_ancestry, process_started, process_unit
+from galaius.host.processes import detached_options, end_process_tree, platform_signals, process_ancestry, process_started, process_unit, return_free_memory
 from galaius.upgrade.store import active_interpreter
 from galaius.mcp.registry import (
     _alive,  # generic pid liveness (Windows-safe, no signal sent)
@@ -118,6 +119,12 @@ class LaunchCandidate(BaseModel):
     #: `<catalog provider>/<id>`; None when a plain id outside the catalog is passed through.
     catalog_id: str | None = None
     rank: int = Field(ge=0)
+
+
+#: The `LaunchCandidate` values records name, one instance each: a record lists the ranked candidates of its launch
+#: (14 on average, 10 of a record's 23 KB), and the cached records of 5.4k runs held 55 MB of equal frozen copies in every
+#: process that lists runs (2026-11-24, dispatcher 435 MB at rest).
+_CANDIDATES: dict[LaunchCandidate, LaunchCandidate] = {}
 
 
 class SkippedCandidate(BaseModel):
@@ -423,6 +430,12 @@ class AgentRun(OlderTokens, ContextGauge):
     #: Records written before ranking existed load as empty tuples.
     candidates: tuple[LaunchCandidate, ...] = ()
     skipped: tuple[SkippedCandidate, ...] = ()
+
+    @field_validator("candidates", mode="after")
+    @classmethod
+    def _shared_candidates(cls, candidates: tuple[LaunchCandidate, ...]) -> tuple[LaunchCandidate, ...]:
+        return tuple(_CANDIDATES.setdefault(candidate, candidate) for candidate in candidates)
+
     denied_tools: tuple[DeniedTool, ...] = ()
     #: The tools its CLI serves it, when that CLI enforces the list exactly (`AgentProvider.exact_tools`); None: not
     #: limited, or limited only by a coarser sandbox. What the line reads to know a run can start no process (`takes_place`).
@@ -3682,6 +3695,28 @@ def session_ids() -> frozenset[str]:
 _RECORD_CACHE: dict[str, tuple[FileStamp, AgentRun | None]] = {}
 
 
+#: A record cache nobody read for this long is dropped (`_trim_idle_record_cache`).
+RECORD_CACHE_IDLE_SECONDS = 120.0
+_cache_read_at = 0.0
+_cache_trimmer: threading.Thread | None = None
+
+
+def _trim_idle_record_cache() -> None:
+    """Drop the cache of 5.4k records (118 MB, 23 KB each) once no listing read it for `RECORD_CACHE_IDLE_SECONDS`, and
+    return the pages: a dispatcher or a spawn waiter listed the runs once and held it for its life (435 MB at rest,
+    three of them, 2026-11-24 when the agents' memory group sat at its ceiling). A poller reading every tick keeps it
+    hot; the first listing after the drop re-reads the files (2.6 s for 5.4k records). Ends once it has dropped it."""
+    global _cache_trimmer
+    while True:
+        time.sleep(max(1.0, RECORD_CACHE_IDLE_SECONDS / 4))
+        if time.monotonic() - _cache_read_at >= RECORD_CACHE_IDLE_SECONDS:
+            _RECORD_CACHE.clear()
+            gc.collect()
+            return_free_memory()
+            _cache_trimmer = None
+            return
+
+
 def _stat_cached_record(path: Path | os.DirEntry) -> AgentRun | None:
     key = os.fspath(path)
     stamp = FileStamp.at(path)
@@ -3699,7 +3734,13 @@ def _stat_cached_record(path: Path | os.DirEntry) -> AgentRun | None:
 def _stored_records() -> list[AgentRun]:
     """Every readable run record, by file name, each re-read only when its file moved. One
     `scandir` and no `Path` per file: over 3k records, globbing then sorting `Path` objects was
-    most of a poller's 150 ms tick."""
+    most of a poller's 150 ms tick. Each listing marks the cache read (`_trim_idle_record_cache`): one run's own record
+    read every 100 ms by its dispatcher does not."""
+    global _cache_read_at, _cache_trimmer
+    _cache_read_at = time.monotonic()
+    if _cache_trimmer is None:
+        _cache_trimmer = threading.Thread(target=_trim_idle_record_cache, name="record-cache-trim", daemon=True)
+        _cache_trimmer.start()
     try:
         with os.scandir(agents_dir()) as scan:
             entries = sorted((entry for entry in scan if entry.name.endswith(".json") and not entry.name.endswith(QUEUE_SUFFIX)
@@ -3707,7 +3748,9 @@ def _stored_records() -> list[AgentRun]:
     except FileNotFoundError:
         return []
     with _pinned_registry():   # the folder checked once, not once per record (~a quarter of a listing, 2026-11-16)
-        return [run for run in map(_stat_cached_record, entries) if run is not None]
+        records = [run for run in map(_stat_cached_record, entries) if run is not None]
+    _cache_read_at = time.monotonic()   # a cold listing takes seconds: idle counts from its end
+    return records
 
 
 def forget(run_id: str) -> bool:

@@ -247,6 +247,13 @@ class Spawn(BaseModel):
             return elsewhere
         if self.parent_run_id is None:
             return None
+        asking = messaging.asking_run()
+        if asking is not None and self.parent_run_id != asking and reg.get_run(self.parent_run_id) is not None \
+                and reg.conversation_of(self.parent_run_id) != reg.conversation_of(asking):
+            # Refused, never sent to both: its report wakes the conversation named, and the session that briefed it hears nothing
+            # (2026-10-16, 11-20, 11-24: silence 20:25 to 21:58 on the third).
+            return (f"--parent-run-id {self.parent_run_id[:8]} is a run of another conversation than yours ({asking[:8]}): the "
+                    f"report of this run would wake that conversation and none of yours. Spawn it without --parent-run-id: it reports to {asking[:8]}.")
         if (caller := reg.get_run(self.parent_run_id)) is None:
             return f"the run asking ({self.parent_run_id}) has no record on this computer" if self.continues or self.for_run else None
         if (nested := self._nested_coordinator()) is not None:
@@ -661,6 +668,8 @@ class Place(Held):
     #: `SpawnLine.report_lost`; `told`: it did, once.
     lost: bool = False
     told: bool = False
+    #: Its asker was told it has waited past `Config.agent_pause_notice_minutes` (`SpawnLine.report_slow`), once.
+    warned: bool = False
     #: How many times its holder went away and it was put back in line, in its place, for `SpawnLine.revive` to hold again.
     revivals: int = 0
 
@@ -873,6 +882,38 @@ class SpawnLine(BaseModel):
             with self._places() as places:
                 places[:] = [place.model_copy(update={"told": True}) if place.run_id in sent else place for place in places]
         return deliveries
+
+    def report_slow(self, *, now: float | None = None) -> list[messaging.Delivery]:
+        """Tell the run that asked each run held in line past `Config.agent_pause_notice_minutes` that it waits and why, once:
+        the line `agents list` shows (« en pause : mémoire des agents à 103 % de leur plafond (dont … : 2.9 Go, hors agents) »),
+        so who holds what is named where the asker reads, not only on a screen (2026-11-24: 3 spawns held 2.1 h and 4 resumed
+        runs « en pause », nothing reached their parents). Recipient and delivery as `report_lost`; `warned` written once it went through."""
+        minutes = Config().agent_pause_notice_minutes
+        moment = time.time() if now is None else now
+        deliveries, sent = [], []
+        for place in self._places_seen():
+            if place.state != "waiting" or not place.said or place.warned or moment - place.asked_at < minutes * 60:
+                continue
+            recipient = self._asker_of(place)
+            if recipient is None:
+                continue
+            delivery = messaging.deliver_message(
+                recipient, self._slow_sentence(place, moment), sender=reg.SPAWN_LOST_SENDER, message_id=f"spawn-slow-{place.run_id}",
+                turn=agent_queue.MessageTurn(fyi=True))
+            deliveries.append(delivery)
+            if delivery.state != "error":
+                sent.append(place.run_id)
+        if sent:
+            with self._places() as places:
+                places[:] = [place.model_copy(update={"warned": True}) if place.run_id in sent else place for place in places]
+        return deliveries
+
+    @staticmethod
+    def _slow_sentence(place: Place, now: float) -> str:
+        what = (f"{named(place.spawn.agent, place.spawn.community, place.spawn.name)}, task « {gist(place.spawn.task, LOST_TASK_CHARS)} »"
+                if place.spawn is not None else "a resumed turn")
+        return (f"Run {place.run_id[:8]} ({what}) has waited {(now - place.asked_at) / 60:.0f} min to start: {place.said}. "
+                "It starts by itself once that clears; whoever holds the memory named there can free it sooner.")
 
     @staticmethod
     def _asker_of(place: Place) -> str | None:

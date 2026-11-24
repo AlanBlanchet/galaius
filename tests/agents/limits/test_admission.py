@@ -244,3 +244,39 @@ def test_no_pressure_file_or_a_stall_limit_of_zero_holds_nothing(tmp_path):
                       stall_release_percent=1, pressure=None).hold() is None
     assert SoftMemory(soft_percent=85, release_percent=80, cgroup=_cgroup(tmp_path, 2.0),
                       pressure=tmp_path / "pressure").hold() is None
+
+
+def _throttled(tmp_path, used_gb: float, high_gb: float | None, group_stall: float | None = None):
+    """The slice's cgroup with a 15 GB `MemoryMax`, its soft limit `MemoryHigh` (None: `max`) and its own memory pressure."""
+    folder = _cgroup(tmp_path, used_gb, cache_gb=0.5)
+    (folder / "memory.high").write_text("max\n" if high_gb is None else f"{int(high_gb * 1_000_000_000)}\n")
+    if group_stall is not None:
+        (folder / "memory.pressure").write_text(f"some avg10={group_stall * 2:.2f} avg60=0.00 avg300=0.00 total=1\n"
+                                                f"full avg10={group_stall:.2f} avg60=0.00 avg300=0.00 total=1\n")
+    return folder
+
+
+@pytest.mark.parametrize(("used_gb", "high_gb", "held"), [
+    (9.6, 9.35, True),    # 2026-11-24: 64 % of the 15 GB cap, 103 % of the 9.35 GB the kernel throttles at: held, the tenants named
+    (9.6, None, False),   # no soft limit: 64 % of the cap, a turn starts
+    (6.0, 9.35, False),   # 64 % of the throttle: starts
+])
+def test_the_cap_is_the_lower_of_the_slices_hard_and_soft_limits(tmp_path, used_gb, high_gb, held):
+    _throttled(tmp_path, used_gb, high_gb)
+    _cgroup(tmp_path, 2.9, 0.1, "slice/critic-venue-limit-tap44.service")
+    hold = SoftMemory(soft_percent=85, release_percent=80, cgroup=tmp_path / "slice").hold()
+    assert (hold is not None) is held
+    if held:
+        assert "critic-venue-limit-tap44.service : 2.9 Go, hors agents" in hold.line()
+
+
+@pytest.mark.parametrize(("group_stall", "held"), [
+    (42.0, False),   # the slice's own tasks stall 42 %: the throttle makes that pressure, waiting for it to clear never ends
+    (0.5, True),     # the slice calm: the PC's other programs stall it, waiting is right
+])
+def test_a_stall_the_agents_make_themselves_holds_no_turn(tmp_path, group_stall, held):
+    _throttled(tmp_path, 2.0, 9.35, group_stall)
+    _pressure(tmp_path, 12.0, 12.0)
+    memory = SoftMemory(soft_percent=85, release_percent=80, cgroup=tmp_path / "slice", stall_percent=5, stall_release_percent=1,
+                        pressure=tmp_path / "pressure")
+    assert (memory.hold() is not None) is held
