@@ -135,6 +135,8 @@ class Said(BaseModel):
     source: str = "web"
     #: The project's name (its folder's), "" when unknown.
     project: str = ""
+    #: `message`: a turn he typed; `answer`: his answer to a question card (`AskUserQuestion`).
+    kind: str = "message"
     #: What in the text reads as frustration (`settings.FRUSTRATION`: his wording, several « ! », an ask he already made earlier in the
     #: conversation), quoted; "" for none.
     frustrated: str = ""
@@ -459,7 +461,7 @@ class RunLedger:
             said_before.setdefault(typed.conversation, []).append(typed.text)
             if typed.at >= since and (hit or not frustrated):
                 heard.append(Said(at=typed.at, conversation=typed.conversation, to_run=typed.to_run, role=typed.role, text=typed.text, source=typed.source,
-                                  project=typed.project, frustrated=hit or ""))
+                                  project=typed.project, kind=typed.kind, frustrated=hit or ""))
         return heard
 
     def last_words(self, run_id: str, *, text_chars: int | None = None) -> "Ending":
