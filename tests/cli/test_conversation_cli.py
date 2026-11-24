@@ -651,10 +651,11 @@ def test_a_turn_replayed_by_a_fork_counts_once_the_editor_s_state_is_not_his_wor
     long = "Please show the closed asks in the asks view, with the guard that closed each one"
     _claude_session(home, "-work-galaius", "aaaaaaaa-0000-4000-8000-000000000011", [(_iso(900), "user", long), (_iso(800), "user", "continue"),
                                                                                  (_iso(700), "user", "[Request interrupted by user for tool use]")], entrypoint="claude-vscode")
-    _claude_session(home, "-work-galaius", "bbbbbbbb-0000-4000-8000-000000000012", [(_iso(300), "user", long), (_iso(200), "user", "continue")], entrypoint="claude-vscode")   # a fork replaying
+    replay_at = _iso(900)
+    _claude_session(home, "-work-galaius", "bbbbbbbb-0000-4000-8000-000000000012", [(replay_at, "user", long), (_iso(200), "user", "continue")], entrypoint="claude-vscode")   # a fork copying its history
     cli.messages(since="2h", source="editor", json_out=True)
     texts = [m["text"] for m in json.loads(capsys.readouterr().out)["messages"]]
-    assert texts == [long, "continue", "continue"], "a long text said again word for word is one turn, a short one is said again for real; no interruption notice"
+    assert texts == [long, "continue", "continue"], "a turn copied with its moment is one turn, a short text is said again for real; no interruption notice"
 
 
 def test_a_codex_turn_that_opens_with_the_editors_state_keeps_only_his_request() -> None:
@@ -685,3 +686,17 @@ def test_an_index_that_cannot_be_read_is_said_never_read_as_no_messages(folder: 
     assert "cannot be read" in capsys.readouterr().out
     cli.messages(since="1h", source="editor", no_refresh=True, json_out=True)
     assert "cannot be read" in json.loads(capsys.readouterr().out)["index"]["problem"]
+
+
+def test_a_long_message_he_sends_again_later_counts_twice_and_one_found_in_three_sessions_once(folder: Path, monkeypatch, capsys) -> None:
+    """Tester f1ad409d: a real re-send in a later session was lost as a « replay »; a history copied into many sessions (Codex forks) must still count once."""
+    home = folder.parent / "claude-home"
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(folder))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
+    again, copied = "Get working !!!! this is broken again, please", "Why do you keep speaking in french in this conversation ?"
+    _claude_session(home, "-work-galaius", "aaaaaaaa-0000-4000-8000-000000000021", [(_iso(3000), "user", again), (_iso(2900), "user", copied)], entrypoint="claude-vscode")
+    _claude_session(home, "-work-galaius", "bbbbbbbb-0000-4000-8000-000000000022", [(_iso(1000), "user", again), (_iso(900), "user", copied)], entrypoint="claude-vscode")   # a re-send, later
+    _claude_session(home, "-work-galaius", "cccccccc-0000-4000-8000-000000000023", [(_iso(500), "user", copied)], entrypoint="claude-vscode")   # copied into a third session
+    cli.messages(since="2h", source="editor", json_out=True)
+    texts = [m["text"] for m in json.loads(capsys.readouterr().out)["messages"]]
+    assert texts.count(again) == 2 and texts.count(copied) == 1, texts

@@ -19,9 +19,13 @@ NOT_HIS = ("(quoted) ", "<task-notification>", "<command-", "<local-command", "S
 #: Codex's IDE extension prefixes a turn with the editor's state (open tabs, pasted workspace text); his words follow this heading.
 IDE_CONTEXT = "# Context from my IDE setup:"
 IDE_REQUEST = "## My request"
-#: A text this long said again word for word is the same turn replayed (a forked or resumed session copies its history), counted once; a short one
-#: (`continue`, `ok`) is said again for real.
+#: A text this long is told from a replay (a forked or resumed session copies its history); a shorter one (`continue`, `ok`) is said again for real.
 REPLAY_FROM = 20
+#: The copy of a turn carries its original moment (to the second, in another session; within a minute, in the same one).
+SAME_MOMENT = 2.0
+SAME_SESSION_REPLAY = 60.0
+#: A long text found in this many sessions or more is a replayed history, not him saying it again: only its first time counts. Said in two, it is a re-send.
+REPLAYED_IN = 3
 
 
 class Typed(NamedTuple):
@@ -63,8 +67,7 @@ def his_words(text: str) -> str:
 
 
 def read(folder: Path, since: float) -> Reading:
-    """His messages of editor and terminal sessions from `since` on, oldest first, a long text said again word for word only once (its first
-    time). An index that cannot be read says why (`Reading.problem`); one never built reads as none (`index_path`)."""
+    """His messages of editor and terminal sessions from `since` on, oldest first, a replayed turn counted once (`SAME_MOMENT`, `REPLAYED_IN`). An index that cannot be read says why (`Reading.problem`); one never built reads as none (`index_path`)."""
     path = index_path(folder)
     if path is None:
         return Reading([])
@@ -79,14 +82,24 @@ def read(folder: Path, since: float) -> Reading:
             db.close()
     except sqlite3.Error as error:
         return Reading([], f"{path.name} cannot be read ({error}): run `galaius agents search` once to rebuild it")
-    found: dict[tuple[str, str], Typed] = {}
+    kept: list[Typed] = []
+    long: dict[tuple[str, str], list[Typed]] = {}
     for at, conversation, raw, source, project in rows:
         if not isinstance(raw, str) or raw.lstrip().startswith(NOT_HIS) or not (text := his_words(raw)).strip():
             continue
         typed = Typed(at=float(at), conversation=str(conversation), to_run="", role="you", text=text, source=str(source), project=str(project or ""))
-        key = (typed.source, " ".join(text.split()) if len(text) >= REPLAY_FROM else f"{typed.conversation}:{typed.at}:{text}")
-        found.setdefault(key, typed)
-    return Reading(sorted(found.values()))
+        if len(text) < REPLAY_FROM:
+            kept.append(typed)
+        else:
+            long.setdefault((typed.source, " ".join(text.split())), []).append(typed)
+    for told in long.values():   # `rows` are in time order
+        firsts: list[Typed] = []
+        for typed in told:
+            replay = any(abs(typed.at - other.at) <= (SAME_SESSION_REPLAY if typed.conversation == other.conversation else SAME_MOMENT) for other in firsts)
+            if not replay and not any(typed.conversation == other.conversation and abs(typed.at - other.at) <= SAME_SESSION_REPLAY for other in firsts):
+                firsts.append(typed)
+        kept += firsts[:1] if len({typed.conversation for typed in firsts}) >= REPLAYED_IN else firsts
+    return Reading(sorted(kept))
 
 
 class Coverage(NamedTuple):
