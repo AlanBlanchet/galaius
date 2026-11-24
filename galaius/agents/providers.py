@@ -671,12 +671,11 @@ class AgentProvider(ABC):
         r"|\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|ENETDOWN)\b"
         r"|getaddrinfo|\bdns (?:failure|lookup failed)\b|\bfetch failed\b",
         re.IGNORECASE)
-    #: What a turn says when its provider's API answered that it could not take it (`RunCut.overloaded`): the CLI's own sentence
-    #: (Claude Code, recorded 2026-11-23: « API Error: 529 Overloaded. This is a server-side issue, usually temporary »), else
-    #: the vendor's error type or the HTTP 5xx names.
-    OVERLOADED: ClassVar[re.Pattern[str]] = re.compile(
-        r"\bAPI Error: (?:500|502|503|529)\b|\boverloaded(?:_error)?\b|\bservice unavailable\b|\binternal server error\b",
-        re.IGNORECASE)
+    #: What a turn says when its provider's API answered that it could not take it (`RunCut.overloaded`), as a status-less line
+    #: gives it: the CLI's own sentence (Claude Code, recorded 2026-11-23: « API Error: 529 Overloaded. This is a server-side
+    #: issue, usually temporary ») or the vendor's error type. Never the bare word « overloaded »: a tool's or a worker pool's own
+    #: failure says it too, and is no answer from the vendor's API; a status the program gave decides first (`CUT_STATUS`).
+    OVERLOADED: ClassVar[re.Pattern[str]] = re.compile(r"\bAPI Error: (?:500|502|503|529)\b|\boverloaded_error\b", re.IGNORECASE)
     #: The words a failed turn says each cut in when its program gives no status (`cut_of`), checked in order: a usage
     #: refusal first — one is answered by the vendor's own server, so it reached it.
     cut_words: ClassVar[Mapping[RunCut, re.Pattern[str]]] = {RunCut.usage_limit: REFUSAL, RunCut.network_lost: NETWORK_LOST, RunCut.overloaded: OVERLOADED}

@@ -1363,6 +1363,9 @@ def test_a_codex_turn_whose_login_could_not_be_refreshed_is_cut_for_its_login(sa
     (503, "upstream connect error", "overloaded"),
     (500, "Internal server error", "overloaded"),
     (None, '{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}', "overloaded"),
+    (400, "Bad request: worker pool overloaded", None),   # a status that is no cut decides: its words never turn it into one
+    (None, "Error: the worker pool is overloaded, try fewer jobs", None),   # a failure of the turn's own work says the word too
+    (None, "Service unavailable: the build server is down", None),
     (400, "Bad request: the prompt is malformed", None),  # a refusal of the request itself is the turn's own failure
     (None, "Request timed out after 600s", None),  # a slow or unanswered request may have reached the model: its own failure
     (None, "Error: the build failed", None),
