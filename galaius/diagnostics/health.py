@@ -38,6 +38,8 @@ CI_BAD = frozenset({"failure", "timed_out", "startup_failure", "action_required"
 #: A unit up for less than this that systemd has restarted this many times is in a restart loop, whatever state it shows at the instant looked at.
 LOOP_UPTIME = 300.0
 LOOP_RESTARTS = 3
+#: A spawn waiting for an agent place longer than this is a finding (`EfficiencyLimits.place_wait` for the ones that already started).
+PLACE_WAIT = 900.0
 #: Shown as « agents memory » when the agents' slice holds this share of its maximum.
 MEMORY_SHARE = 0.9
 
@@ -281,7 +283,10 @@ def agents(now: float, folder: Path | None = None, limit: int | None = None) -> 
     waiting = [entry for entry in entries if entry.get("state") == "waiting"]
     check.facts["waiting"] = len(waiting)
     if waiting:
-        check.facts["oldest_wait"] = span(now - min(float(entry.get("asked_at") or now) for entry in waiting))
+        oldest = now - min(float(entry.get("asked_at") or now) for entry in waiting)
+        check.facts["oldest_wait"] = span(oldest)
+        if oldest > PLACE_WAIT:
+            check.findings.append(f"{len(waiting)} spawn{'s' if len(waiting) > 1 else ''} waiting for an agent place, the oldest for {span(oldest)} ({places} places)")
     for entry in entries:
         if entry.get("state") == "failed":
             check.findings.append(f"spawn {str(entry.get('run_id', '?'))[:8]} will not start: {clip(str(entry.get('said') or 'no reason kept'))}")
@@ -301,6 +306,26 @@ def _whole(path: Path) -> int | None:
     except OSError:
         return None
     return int(text) if text.isdigit() else None
+
+
+# --- efficiency -----------------------------------------------------------------------------------------------------
+
+
+def efficiency(now: float) -> Check:
+    """Whether the agents of the last `EfficiencyLimits.window` spent their time and capability on their task (`galaius.agents.run_efficiency`):
+    a start below its role's normal, a bookkeeping share over the limit, a wait for a place, a run ended by a vendor error."""
+    from galaius.agents.run_efficiency import EfficiencyLimits, look
+    from galaius.agents.run_ledger import RunLedger
+
+    limits = EfficiencyLimits()
+    report, found, said = look(RunLedger(), now=now, limits=limits)
+    total = report.total
+    check = Check(area="efficiency", facts={"window": span(limits.window), "runs": total.runs, "tool_calls": total.calls,
+                                            "bookkeeping_share": f"{total.bookkeeping_share():.0%}",
+                                            "started_with_less": sum(bool(r.started_with_less) for r in found.runs),
+                                            "vendor_ends": sum(bool(r.vendor_end) for r in found.runs)})
+    check.findings = said[:limits.listed] + ([f"…and {len(said) - limits.listed} more: `galaius conversation check`"] if len(said) > limits.listed else [])
+    return check
 
 
 # --- limits ----------------------------------------------------------------------------------------------------------
@@ -377,7 +402,7 @@ def look(run: Run = run_program, now: float | None = None) -> Health:
     started = time.monotonic()
     areas: dict[str, Callable[[], Check]] = {
         "link": lambda: link(moment, run), "app": lambda: app(moment), "units": lambda: units(run), "agents": lambda: agents(moment),
-        "limits": limits, "ci": lambda: ci(moment, run),
+        "limits": limits, "ci": lambda: ci(moment, run), "efficiency": lambda: efficiency(moment),
     }
     pool = ThreadPoolExecutor(max_workers=len(areas), thread_name_prefix="doctor")
     futures = {name: pool.submit(check) for name, check in areas.items()}

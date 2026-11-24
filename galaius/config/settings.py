@@ -396,6 +396,9 @@ class Config(BaseSettings):
     agent_waiting_flag_minutes: Annotated[float, Field(gt=0)] = 5.0
     # Seconds between two such waits of a run within which the second carries on the first's start (a loop of short waits).
     agent_waiting_gap_seconds: Annotated[float, Field(ge=0)] = 60.0
+    # Tool calls that are process bookkeeping rather than the task, beyond the built-in ones (`galaius.agents.run_slowness.BOOKKEEPING`):
+    # label to a regular expression matched against the call's input. `galaius conversation slow` and `doctor` count them per run.
+    bookkeeping_calls: dict[str, str] = Field(default_factory=dict)
     # How many rounds a critic role may take on one maker's work before an agent asking for another is refused
     # (`galaius.agents.turns.critic_rounds`). The person is never refused.
     agent_critic_cap: CriticCap = Field(default_factory=lambda: CriticCap())
