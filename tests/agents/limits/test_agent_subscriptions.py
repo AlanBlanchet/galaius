@@ -1188,3 +1188,29 @@ def test_a_subscription_never_adopts_through_a_symlinked_notes_folder_or_file(tm
     subscription.adopt({"HOME": str(home), **subscription.overlay()})
     copied = sorted(path.name for path in subscription.folder.rglob("*") if path.is_file())
     assert ".credentials.json" not in copied and "link.md" not in copied
+
+
+@pytest.mark.parametrize("shape", ["synced_dir_link_inside", "file_link_in_real_folder", "dir_link_out_of_home", "default_home_itself_linked"])
+def test_adopt_refuses_every_link_shape_yet_copies_the_real_notes_beside_it(tmp_path, shape) -> None:
+    home = Path.home()
+    real = tmp_path / "real-claude" if shape == "default_home_itself_linked" else home / ".claude"
+    secret = tmp_path / "secret.md"
+    secret.write_text("secret")
+    (real / "projects" / "-p" / "memory").mkdir(parents=True)
+    (real / "projects" / "-p" / "memory" / "good.md").write_text("good")
+    (real / ".credentials.json").write_text("{}")
+    synced = real / "skills" / "synced"
+    synced.mkdir(parents=True)
+    if shape == "synced_dir_link_inside":
+        (synced / "org").symlink_to(real)
+    elif shape == "file_link_in_real_folder":
+        (real / "projects" / "-p" / "memory" / "link.md").symlink_to(real / ".credentials.json")
+    elif shape == "dir_link_out_of_home":
+        (synced / "org").symlink_to(tmp_path)
+    else:
+        (home / ".claude").symlink_to(real)
+    subscription = Subscription.create(uuid4(), "claude")
+    subscription.adopt({"HOME": str(home), **subscription.overlay()})
+    names = sorted(path.name for path in subscription.folder.rglob("*") if path.is_file())
+    assert "good.md" in names
+    assert not {".credentials.json", "link.md", "secret.md"} & set(names)
