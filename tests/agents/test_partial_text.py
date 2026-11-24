@@ -2,7 +2,7 @@
 
 `--include-partial-messages` makes the CLI write each block's words as deltas: the mirror holds the block's text so far a few
 times a second (`partial`), never every delta, never thinking, a sub-agent's words or a half-written bracket, and the block's
-closing `text` event wears the stamp of its first words, so a reader keeps one row from first word to last."""
+closing `text` event wear the stamp of its first words, so a reader keeps one row from first word to last."""
 
 import json
 
@@ -82,5 +82,6 @@ def test_a_block_closing_names_its_key_and_the_mirror_stamps_it_with_its_first_w
         kinds = [event["kind"] for event in mirrored]
         assert kinds[-2:] == ["text", "done"] and set(kinds[:-2]) == {"partial"}, run_id
         said = mirrored[-2]
-        assert said["text"] == text and said["provider_cursor"] == "m1:0" and said["at"] == mirrored[0]["at"], run_id
+        assert said["text"] == text and said["provider_cursor"] == "m1:0", run_id
+        assert {event["at"] for event in mirrored[:-1]} == {mirrored[0]["at"]}, f"{run_id}: one row's stamp from its first words to its last"
         assert all(text.startswith(event["text"]) and event["provider_cursor"] == "m1:0" for event in mirrored[:-2]), run_id

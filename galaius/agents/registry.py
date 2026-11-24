@@ -2697,8 +2697,9 @@ def events_from(run_id: str, first: int) -> list[AgentEvent]:
 
 
 class BlockClock:
-    """When each text block was first seen: the instant of its first `partial` event. The `text` event closing the block
-    takes it (`settle`), so the block's row keeps its stamp from its first words to its last (the web keys a row by it)."""
+    """When each text block was first seen: the instant of its first `partial` event. Every later `partial` of the block and
+    the `text` event closing it take it (`settle`), so the block's row keeps its stamp from its first words to its last
+    (the web keys a row by it)."""
 
     def __init__(self, events: Iterable[AgentEvent] = ()) -> None:
         self.first: dict[str, float] = {}
@@ -2707,7 +2708,7 @@ class BlockClock:
 
     def settle(self, event: AgentEvent) -> None:
         if event.kind == "partial" and event.at is not None:
-            self.first.setdefault(event.provider_cursor, event.at)
+            event.at = self.first.setdefault(event.provider_cursor, event.at)
         elif event.kind == "text" and event.provider_cursor in self.first:
             event.at = self.first[event.provider_cursor]
 
@@ -2872,8 +2873,8 @@ class StreamMirror:
                 return False
             if fresh:
                 now = time.time()
-                # The blocks seen so far are read only for a block closing in this batch (the clock's first sight of each).
-                clock = BlockClock(self.written) if any(event.kind == "text" and event.provider_cursor for event in fresh) else BlockClock()
+                # The blocks seen so far are read only for a batch holding words of a block (the clock's first sight of each).
+                clock = BlockClock(self.written) if any(event.provider_cursor for event in fresh) else BlockClock()
                 for event in fresh:
                     if event.at is None:
                         event.at = now  # as `_carry_observed_at` stamps a line it has not seen
