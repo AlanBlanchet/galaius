@@ -1,4 +1,4 @@
-"""The agent-efficiency check (`galaius.agents.run_efficiency`): one guard row per way a run loses time or capability to something other than its
+"""The agent-efficiency check (`galaius.agents.history.run_efficiency`): one guard row per way a run loses time or capability to something other than its
 task: a start below its role's normal, bookkeeping calls, a wait for a place, a vendor-error end, a model or effort below the role's rule. Each is
 read from a fake registry folder written the way the registry writes it; a row passes only when its finding names the run."""
 
@@ -8,8 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from galaius.agents import run_efficiency as eff, run_slowness
-from galaius.agents.run_efficiency import EfficiencyLimits, Pick, StartKit, efficiency, findings, look, read_pick, read_start, vendor_end
+from galaius.agents import run_slowness
+from galaius.agents.history import run_efficiency as eff
+from galaius.agents.history.run_efficiency import EfficiencyLimits, Pick, StartKit, efficiency, findings, look, read_pick, read_start, vendor_end
 from galaius.agents.run_ledger import RunLedger, RunQuery, RunRow
 from galaius.agents.run_slowness import Slowness, bookkeeping_label, profile_run, read_transcript, rollup
 from galaius.cli.commands.debug import conversation as cli

@@ -19,7 +19,7 @@ from galaius.agents.pc_state import Live
 from galaius.agents import run_ledger
 from galaius.agents.run_ledger import GONE, RunLedger, RunQuery, RunRow, Said, Stats, own_conversation, parse_since, stats
 from galaius.agents import messaging
-from galaius.agents.run_efficiency import Efficiency, EfficiencyLimits, assess, findings, look
+from galaius.agents.history.run_efficiency import Efficiency, EfficiencyLimits, assess, findings, look
 from galaius.agents.run_slowness import Slowness, slowness
 
 conversation_app = App(name="conversation", help="Read what ran in a conversation: recent runs, how one ended, counts and spend, limits.")

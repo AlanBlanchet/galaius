@@ -312,9 +312,9 @@ def _whole(path: Path) -> int | None:
 
 
 def efficiency(now: float) -> Check:
-    """Whether the agents of the last `EfficiencyLimits.window` spent their time and capability on their task (`galaius.agents.run_efficiency`):
+    """Whether the agents of the last `EfficiencyLimits.window` spent their time and capability on their task (`galaius.agents.history.run_efficiency`):
     a start below its role's normal, a bookkeeping share over the limit, a wait for a place, a run ended by a vendor error."""
-    from galaius.agents.run_efficiency import EfficiencyLimits, look
+    from galaius.agents.history.run_efficiency import EfficiencyLimits, look
     from galaius.agents.run_ledger import RunLedger
 
     limits = EfficiencyLimits()
