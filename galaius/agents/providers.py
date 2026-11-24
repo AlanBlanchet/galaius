@@ -90,6 +90,8 @@ def fits_argv(text: str) -> bool:
 #: A transcript is read by a human, and a 50k-char tool result is not read — it is scrolled past,
 #: while bloating every refresh that parses the file. Keep the head, say what was cut.
 _CLIP = 2000
+#: The end of a clipped text kept when it is what the text concludes with: a tool's output (its error, its last lines), a Stop-hook verdict.
+_CLIP_TAIL = _CLIP // 2
 def _safe_process_detail(value: str) -> str:
     """One redacted diagnostic line; child output must never become a credential log."""
     value = re.sub(
@@ -1983,7 +1985,7 @@ class ClaudeCodeProvider(AgentProvider):
                         body = " ".join(b.get("text", "") for b in body if isinstance(b, dict))
                     # `is_error` is how Claude says the call failed; the Codex branches already
                     # carry it as `status`, and a failed call must not read as a success downstream.
-                    return AgentEvent(kind="tool_result", text=_clip(str(body or "")),
+                    return AgentEvent(kind="tool_result", text=_clip(str(body or ""), tail=_CLIP_TAIL),
                                       tool_id=str(block.get("tool_use_id") or ""),
                                       status="failed" if block.get("is_error") else "completed",
                                       session_id=sid, raw_type=kind)
@@ -1995,7 +1997,7 @@ class ClaudeCodeProvider(AgentProvider):
                     text = str(block.get("text") or "")
                     said = "prompt" if not raw.get("isSynthetic") else (
                         "check" if text.startswith(_STOP_HOOK_FEEDBACK) else "injected")
-                    return AgentEvent(kind=said, text=_clip(text, tail=_CLIP // 2 if said == "check" else 0),
+                    return AgentEvent(kind=said, text=_clip(text, tail=_CLIP_TAIL if said == "check" else 0),
                                       session_id=sid, raw_type=kind)
             return AgentEvent(kind="other", session_id=sid, raw_type=kind)
 
@@ -2846,7 +2848,7 @@ class CodexProvider(AgentProvider):
                     tool="Shell", tool_id=str(item.get("id") or ""),
                     tool_input=_clip(str(item.get("command") or "")),
                     status=("failed" if failed else "completed") if completed else "running",
-                    text=_clip(str(item.get("aggregated_output") or item.get("status") or "")),
+                    text=_clip(str(item.get("aggregated_output") or item.get("status") or ""), tail=_CLIP_TAIL),
                 )
             if item_type == "file_change":
                 changes = item.get("changes") or []
@@ -3104,7 +3106,7 @@ class KeyProgramProvider(AgentProvider):
                 return AgentEvent(kind="tool_result" if status in ("completed", "failed") else "tool", session_id=session, raw_type="effect",
                                   tool=str(raw.get("title") or detail.get("toolName") or "tool"), tool_id=str(raw.get("id") or ""),
                                   tool_input=_clip(str(display.get("summary") or "")), status="failed" if status == "failed" else "completed" if status else "running",
-                                  text=_clip(str(state.get("outputText") or "")))
+                                  text=_clip(str(state.get("outputText") or ""), tail=_CLIP_TAIL))
             case TURN_END, _:
                 usage = raw.get("usage")
                 if raw.get("outcome") != "finished":

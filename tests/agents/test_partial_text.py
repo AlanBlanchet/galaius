@@ -85,3 +85,11 @@ def test_a_block_closing_names_its_key_and_the_mirror_stamps_it_with_its_first_w
         assert said["text"] == text and said["provider_cursor"] == "m1:0", run_id
         assert {event["at"] for event in mirrored[:-1]} == {mirrored[0]["at"]}, f"{run_id}: one row's stamp from its first words to its last"
         assert all(text.startswith(event["text"]) and event["provider_cursor"] == "m1:0" for event in mirrored[:-2]), run_id
+
+
+def test_a_clipped_tool_result_keeps_its_end():
+    """backend-engineer B3: a tool's output concludes with its error or its last lines; the opening alone read as a success."""
+    output = "x" * 5000 + " the last lines: BUILD FAILED"
+    line = {"type": "user", "session_id": "s", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": output}]}}
+    [event] = _events([line])
+    assert event.text.endswith("BUILD FAILED") and "chars)" in event.text and len(event.text) < 2100
