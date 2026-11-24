@@ -39,6 +39,8 @@ TERMINAL = frozenset({"done", "failed", "cancelled", "interrupted", "stopped"})
 AT_WORK = frozenset({"starting", "running", "waiting"})
 #: How long a run may be `starting` with no live process before it reads `gone`: a launch records its process a moment after its record.
 LAUNCH_GRACE = 600.0
+#: How long after its ending is recorded a run still reads as coming back while its queue holds a message (`registry.SETTLE_GAP_SECONDS`).
+SETTLE_GAP = 30.0
 #: A status the registry once wrote and now reads as `interrupted` (`registry._LEGACY_INTERRUPTED`).
 LEGACY_INTERRUPTED = "crashed"
 #: What a run still at work reads when its process is gone and its record was never settled.
@@ -208,14 +210,17 @@ class RunLedger:
         self._listed: set[str] | None = None
 
     def status_of(self, raw: dict, *, depth: int = 0) -> str:
-        """The status the registry would list the run under (`registry._status_for`), without deriving it: a record at work whose process is
-        gone reads `gone` (the registry says `interrupted` and settles it later); a conversation whose process is gone is `interrupted` as
-        there; an exit code the record never turned into a status gives its end; a run its provider hosts is as alive as its host; a run
-        `starting` with no process recorded is launching for `LAUNCH_GRACE`, then `gone`. One case is not mirrored: a run coming back for a
-        queued message (`registry._resuming`, read from the run's queue) reads as its record says."""
+        """The status the registry would list the run under (`registry._status_for`, `_derive`), without deriving it: a process run its PC is
+        bringing back for a queued message reads `starting` first, whatever its record (`registry._resuming`); a record at work whose
+        process is gone reads how its own stream ended (`done`, `failed`), else `gone` (the registry says `interrupted` and settles it later);
+        a conversation whose process is gone is `interrupted` as there; an exit code the record never turned into a status gives its end;
+        a run its provider hosts is as alive as its host; a run `starting` with no process recorded is launching for `LAUNCH_GRACE`,
+        then `gone`."""
         status, kind = str(raw.get("status") or "?"), raw.get("kind") or "process"
         if status == LEGACY_INTERRUPTED:
             return "interrupted"
+        if kind == "process" and self._resuming(raw, status):
+            return "starting"
         if status not in AT_WORK and kind != "conversation":
             return status
         if kind == "provider_child":
@@ -226,28 +231,36 @@ class RunLedger:
         if kind == "conversation":
             if status in TERMINAL or alive(raw, strict=True):
                 return status
-            return self._unsettled(raw, status) if status in AT_WORK else "interrupted"
+            return self._ended(raw) if status in AT_WORK else "interrupted"
         code = raw.get("exit_code")
         if isinstance(code, int):
             return "stopped" if code == -15 else "done" if code == 0 else "failed"
-        return status if alive(raw, strict=False) else self._unsettled(raw, status)
+        return status if alive(raw, strict=False) else self._ended(raw)
 
-    def _unsettled(self, raw: dict, status: str) -> str:
-        """What a record at work reads when its process is gone and no ending was recorded, as the registry reads it (`registry._status_for`,
-        `_derive`): `starting` while this PC brings it back for a message it holds (its queue holds an active item and the dispatcher that
-        drains it lives), `done` when its own stream's last ending was a clean one (the registry settles it a minute later), else `gone`."""
-        if self._coming_back(str(raw.get("run_id") or "")):
-            return "starting"
+    @staticmethod
+    def _ended(raw: dict) -> str:
+        """What a record at work reads when its process is gone and no ending was recorded: how its own stream ended, as the registry settles it
+        (`registry._derive`: `done`, or `failed` for an error), else `gone`."""
         digest = raw.get("stream_digest")
-        return "done" if isinstance(digest, dict) and digest.get("ending") == "done" else GONE
+        ending = digest.get("ending") if isinstance(digest, dict) else None
+        return "done" if ending == "done" else "failed" if ending == "error" else GONE
 
-    def _coming_back(self, run_id: str) -> bool:
-        """`agent_queue.resuming`: an item of the run's queue is `pending` or `running` and its dispatcher is still that very process."""
+    def _resuming(self, raw: dict, status: str) -> bool:
+        """`registry._resuming`: a process run at work (not `waiting`), or ended within `SETTLE_GAP_SECONDS`, whose process is not running and
+        whose queue holds a message this PC is delivering (`agent_queue.resuming`: an item `pending` or `running` and its dispatcher still that
+        very process, or an item in its pause before another try)."""
+        ended_now = status in TERMINAL and isinstance(raw.get("finished_at"), (int, float)) and time.time() - raw["finished_at"] < SETTLE_GAP
+        if status not in ("starting", "running") and not ended_now:
+            return False
+        if alive(raw, strict=True):
+            return False
         try:
-            state = json.loads((self.root / f"{run_id}.queue.json").read_text(encoding="utf-8"))
-            items = state["items"]
-            if not any(isinstance(item, dict) and item.get("state") in ("pending", "running") for item in items):
+            state = json.loads((self.root / f"{raw.get('run_id') or ''}.queue.json").read_text(encoding="utf-8"))
+            active = [item for item in state["items"] if isinstance(item, dict) and item.get("state") in ("pending", "running")]
+            if not active:
                 return False
+            if any(isinstance(after := item.get("not_before"), (int, float)) and time.time() < after + SETTLE_GAP for item in active):
+                return True
             pid, started = state.get("dispatcher_pid"), state.get("dispatcher_started")
             if not isinstance(pid, int) or not state.get("dispatcher_token") or started is None:
                 return False

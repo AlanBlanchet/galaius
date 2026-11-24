@@ -100,19 +100,30 @@ def test_a_record_at_work_whose_process_is_gone_reads_gone_and_one_alive_reads_r
 
 @needs_proc
 def test_a_run_whose_process_ended_cleanly_or_is_coming_back_for_a_held_message_never_reads_gone(folder: Path) -> None:
-    """The registry settles the first as `done` and reads the second `starting` (`_derive`, `_resuming`): the listing says the same
-    in the minutes before it settles (2026-11-23: two runs between a finished turn and the resume of a handed-back report read « gone »)."""
-    finished, waiting, cut = CHILD, GRAND, WEB
+    """The listing says what the registry says (`_derive`: its own stream's ending; `_resuming`: a held message being delivered, first, whatever
+    the record's exit code) in the minutes before the registry settles it (2026-11-23: runs between a finished turn and the resume of a
+    handed-back report read « gone »)."""
+    finished, waiting, cut, resumed, stopped = CHILD, GRAND, WEB, OTHER, ROOT
     dead = {"status": "running", "pid": DEAD_PID, "pid_started": 1, "session_id": None, "exit_code": None}
-    put(folder, finished, parent_run_id=ROOT, **dead, stream_digest={"source": "x", "ending": "done", "ending_text": "report"})
-    put(folder, waiting, parent_run_id=ROOT, **dead, stream_digest={"source": "x", "ending": "done"})
-    put(folder, cut, parent_run_id=ROOT, **dead, stream_digest={"source": "x", "ending": "error"})
-    stat = Path(f"/proc/{os.getpid()}/stat").read_text().rsplit(")", 1)[1].split()
-    (folder / f"{waiting}.queue.json").write_text(json.dumps({"items": [{"state": "pending"}], "dispatcher_pid": os.getpid(), "dispatcher_token": "t", "dispatcher_started": int(stat[19])}))
-    status = {row.run_id: row.status for row in RunLedger(folder).rows(RunQuery(conversation=ROOT))}
-    assert (status[finished], status[waiting], status[cut]) == ("done", "starting", "gone")
-    (folder / f"{waiting}.queue.json").write_text(json.dumps({"items": [{"state": "pending"}], "dispatcher_pid": DEAD_PID, "dispatcher_token": "t", "dispatcher_started": 1}))
-    assert {row.run_id: row.status for row in RunLedger(folder).rows(RunQuery(conversation=ROOT))}[waiting] == "done", "no live dispatcher: not coming back, its own ending says done"
+    put(folder, finished, **dead, stream_digest={"source": "x", "ending": "done", "ending_text": "report"})
+    put(folder, waiting, **dead, stream_digest={"source": "x", "ending": "done"})
+    put(folder, cut, **dead, stream_digest={"source": "x", "ending": "error"})
+    put(folder, resumed, **{**dead, "status": "starting", "exit_code": 0})   # a resume's record keeps its previous ending
+    put(folder, stopped, **{**dead, "status": "starting", "exit_code": -15})
+    me = {"dispatcher_pid": os.getpid(), "dispatcher_token": "t", "dispatcher_started": int(Path(f"/proc/{os.getpid()}/stat").read_text().rsplit(")", 1)[1].split()[19])}
+    for run in (waiting, resumed, stopped):
+        (folder / f"{run}.queue.json").write_text(json.dumps({"items": [{"state": "pending"}], **me}))
+    read = lambda: {row.run_id: row.status for row in RunLedger(folder).rows()}  # noqa: E731
+    status = read()
+    assert (status[finished], status[waiting], status[cut], status[resumed], status[stopped]) == ("done", "starting", "failed", "starting", "starting")
+    gone = {"dispatcher_pid": DEAD_PID, "dispatcher_token": "t", "dispatcher_started": 1}
+    (folder / f"{waiting}.queue.json").write_text(json.dumps({"items": [{"state": "pending"}], **gone}))
+    (folder / f"{resumed}.queue.json").write_text(json.dumps({"items": [{"state": "pending", "not_before": time.time() + 60}], **gone}))
+    (folder / f"{stopped}.queue.json").write_text(json.dumps({"items": [{"state": "replied"}], **me}))
+    status = read()
+    assert status[waiting] == "done", "no live dispatcher: not coming back, its own ending says done"
+    assert status[resumed] == "starting", "an item in its pause before another try is coming back whoever delivers it"
+    assert status[stopped] == "stopped", "nothing active in its queue: its recorded ending"
 
 
 def test_a_cut_is_a_filter_and_a_count(folder: Path) -> None:
