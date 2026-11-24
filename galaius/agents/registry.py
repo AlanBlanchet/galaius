@@ -2696,6 +2696,23 @@ def events_from(run_id: str, first: int) -> list[AgentEvent]:
     return StreamReader(run_id, first).past()
 
 
+class BlockClock:
+    """When each text block was first seen: the instant of its first `partial` event. Every later `partial` of the block and
+    the `text` event closing it take it (`settle`), so the block's row keeps its stamp from its first words to its last
+    (the web keys a row by it)."""
+
+    def __init__(self, events: Iterable[AgentEvent] = ()) -> None:
+        self.first: dict[str, float] = {}
+        for event in events:
+            self.settle(event)
+
+    def settle(self, event: AgentEvent) -> None:
+        if event.kind == "partial" and event.at is not None:
+            event.at = self.first.setdefault(event.provider_cursor, event.at)
+        elif event.kind == "text" and event.provider_cursor in self.first:
+            event.at = self.first[event.provider_cursor]
+
+
 def _carry_observed_at(path: Path, events: list[AgentEvent]) -> None:
     """Stamp when each event was first seen, keeping the stamps already on record; an event that
     carries its own time (a message or a refused resume from the run's messages file) keeps it.
@@ -2717,11 +2734,12 @@ def _carry_observed_at(path: Path, events: list[AgentEvent]) -> None:
     except ValueError:
         pass  # a line still being appended (`StreamMirror`): the stamps before it hold
     now = time.time()
+    clock = BlockClock()
     for i, event in enumerate(events):
-        if event.at is not None:
-            continue  # its own time (a message, a refused resume, written with its moment): never when its line was first seen
-        prior = seen[i] if i < len(seen) else None
-        event.at = prior if isinstance(prior, (int, float)) else now
+        if event.at is None:  # else its own time (a message, a refused resume, written with its moment): never when its line was first seen
+            prior = seen[i] if i < len(seen) else None
+            event.at = prior if isinstance(prior, (int, float)) else now
+        clock.settle(event)
 
 
 def _mirror_normalised(run_id: str, events: list[AgentEvent]) -> FileStamp | None:
@@ -2855,9 +2873,12 @@ class StreamMirror:
                 return False
             if fresh:
                 now = time.time()
+                # The blocks seen so far are read only for a batch holding words of a block (the clock's first sight of each).
+                clock = BlockClock(self.written) if any(event.provider_cursor for event in fresh) else BlockClock()
                 for event in fresh:
                     if event.at is None:
                         event.at = now  # as `_carry_observed_at` stamps a line it has not seen
+                    clock.settle(event)
                 payload = "".join(event.model_dump_json() + "\n" for event in fresh).encode()
                 if os.write(descriptor, payload) != len(payload):
                     raise OSError("short agent-registry append")
