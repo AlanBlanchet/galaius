@@ -186,12 +186,31 @@ def test_an_unchanged_catalog_is_a_304_and_one_process_reads_it_once_per_reuse_w
     assert asked[-1] == f'"{first.snapshot.cursor}"' and Policy.from_catalog(changed).criterion_for("fixture-worker") == "price.in >= 2"
 
 
+def test_two_links_on_one_computer_each_start_on_their_own_cached_catalog_while_the_server_is_down(catalog_home, capsys):
+    """2026-11-24 01:20-02:50: the owner's link and the test PC's (another company, same config folder) wrote one cache file
+    in turn; while the server was down the one that did not write last read « cached agent catalog belongs to a different
+    connection » and every agent on the PC stopped. One cache per server and company: each reads its own."""
+    mine = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode="preview", workspace_id=uuid4())
+    test_pc = mine.model_copy(update={"workspace_id": uuid4()})
+    first, second = snapshot(1), snapshot(2)
+    AgentCatalog.refresh(mine, transport=catalog_transport(first))
+    AgentCatalog.refresh(test_pc, transport=catalog_transport(second))
+
+    def offline(request):
+        raise httpx.ConnectError("fixture network failure")
+
+    for connection, held in ((mine, first), (test_pc, second), (mine, first)):
+        stale = AgentCatalog.refresh(connection, allow_stale=True, transport=httpx.MockTransport(offline))
+        assert stale.stale and stale.snapshot.cursor == held.cursor and stale.connection == connection
+    assert AgentCatalog.cache_path(mine) != AgentCatalog.cache_path(test_pc)
+
+
 @pytest.mark.parametrize("refusal", [401, 403, 404])
 def test_deleted_cache_resync_and_network_fallback_auth_revocation(catalog_home, capsys, refusal):
     connection = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode="preview", workspace_id=uuid4())
     value = snapshot()
     AgentCatalog.refresh(connection, transport=catalog_transport(value))
-    AgentCatalog.cache_path().unlink()
+    AgentCatalog.cache_path(connection).unlink()
     restored = AgentCatalog.refresh(connection, transport=catalog_transport(value))
     assert restored.snapshot.cursor == value.cursor
 
@@ -203,7 +222,7 @@ def test_deleted_cache_resync_and_network_fallback_auth_revocation(catalog_home,
     assert "STALE agent catalog" in capsys.readouterr().err
     with pytest.raises(CatalogAuthenticationError):
         AgentCatalog.refresh(connection, allow_stale=True, transport=catalog_transport(value, status=refusal))
-    assert not AgentCatalog.cache_path().exists()
+    assert not AgentCatalog.cache_path(connection).exists()
     with pytest.raises(CatalogConnectionError, match="no validated cache"):
         AgentCatalog.refresh(connection, allow_stale=True, transport=httpx.MockTransport(offline))
 
@@ -244,7 +263,7 @@ def test_invalid_server_snapshot_never_replaces_last_valid_cache(catalog_home, d
     connection = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode="preview", workspace_id=uuid4())
     value = snapshot()
     AgentCatalog.refresh(connection, transport=catalog_transport(value))
-    previous = AgentCatalog.cache_path().read_bytes()
+    previous = AgentCatalog.cache_path(connection).read_bytes()
     invalid = value.model_dump(mode="json")
     if damage == "cursor":
         invalid["cursor"] = "0" * 64
@@ -259,7 +278,7 @@ def test_invalid_server_snapshot_never_replaces_last_valid_cache(catalog_home, d
             CatalogSnapshot.model_validate_json(connection.request(client, "GET", "/catalog"))
     with pytest.raises(CatalogConnectionError, match="invalid server"):
         AgentCatalog.refresh(connection, transport=httpx.MockTransport(lambda request: httpx.Response(200, json=invalid)))
-    assert AgentCatalog.cache_path().read_bytes() == previous
+    assert AgentCatalog.cache_path(connection).read_bytes() == previous
 
 
 def test_a_catalog_cached_when_an_empty_tool_list_meant_every_tool_is_never_read_again(catalog_home, tmp_path):
@@ -550,7 +569,7 @@ def test_cli_sync_persists_connection_and_rebuilds_deleted_cache(linked_pc, cata
         app(["agents", "sync"])
     assert second.value.code == 0
     assert json.loads(capsys.readouterr().out)["cursor"] == values[1].cursor
-    AgentCatalog.cache_path().unlink()
+    AgentCatalog.cache_path(CatalogConnection.load()).unlink()
     with pytest.raises(SystemExit) as rebuilt:
         app(["agents", "sync"])
     assert rebuilt.value.code == 0
@@ -742,7 +761,7 @@ def historical_http(advanced_catalogs, monkeypatch):
 
     connect = CatalogConnection.connect
     monkeypatch.setattr(CatalogConnection, "connect", lambda self, **kwargs: connect(self, **{"transport": httpx.MockTransport(respond), **kwargs}))
-    PRIVATE_FILES.replace_text(AgentCatalog.cache_path(), current.model_dump_json())
+    PRIVATE_FILES.replace_text(AgentCatalog.cache_path(current.connection), current.model_dump_json())
     return requests
 
 
@@ -754,7 +773,7 @@ def test_delegation_pin_never_falls_back_to_advanced_head(advanced_catalogs, his
     assert pinned.catalog.snapshot == current.snapshot
     assert pinned.catalog.snapshot.cursor == current.snapshot.cursor
     assert sum(request.method == "POST" for request in historical_http) == 1
-    assert AgentCatalog.model_validate_json(AgentCatalog.cache_path().read_bytes()).snapshot == current.snapshot
+    assert AgentCatalog.model_validate_json(AgentCatalog.cache_path(current.connection).read_bytes()).snapshot == current.snapshot
     assert pinned.catalog.model_dump_json() == current.model_dump_json()
     unpinned, role = Policy.from_catalog(current).for_launch("fixture-worker")
     assert unpinned.criterion_for(role) == "price.in >= 2"
@@ -775,7 +794,7 @@ def test_historical_response_must_match_every_exact_reference(advanced_catalogs,
     old, current, worker_ref, _ = advanced_catalogs
     agent = old.snapshot.revision(worker_ref)
     before = current.model_dump_json()
-    PRIVATE_FILES.replace_text(AgentCatalog.cache_path(), before)
+    PRIVATE_FILES.replace_text(AgentCatalog.cache_path(current.connection), before)
 
     def respond(request):
         if request.url.path == "/v1/auth/local-preview":
@@ -804,15 +823,15 @@ def test_historical_response_must_match_every_exact_reference(advanced_catalogs,
     monkeypatch.setattr(CatalogConnection, "connect", lambda self: connect(self, transport=httpx.MockTransport(respond)))
     with pytest.raises(CatalogConnectionError):
         current.at_revision(worker_ref)
-    assert AgentCatalog.cache_path().read_text() == before
-    assert not (AgentCatalog.cache_path().parent / "agent-catalog-definitions").exists()
+    assert AgentCatalog.cache_path(current.connection).read_text() == before
+    assert not (AgentCatalog.cache_path(current.connection).parent / "agent-catalog-definitions").exists()
 
 
 @pytest.mark.parametrize("status", [401, 403, 404])
 @pytest.mark.parametrize("endpoint", ["agent", "prompt"])
 def test_exact_read_refusal_invalidates_cache_before_later_outage(advanced_catalogs, monkeypatch, status, endpoint):
     old, current, worker_ref, _ = advanced_catalogs
-    PRIVATE_FILES.replace_text(AgentCatalog.cache_path(), current.model_dump_json())
+    PRIVATE_FILES.replace_text(AgentCatalog.cache_path(current.connection), current.model_dump_json())
 
     def respond(request):
         if request.url.path == "/v1/auth/local-preview":
@@ -825,7 +844,7 @@ def test_exact_read_refusal_invalidates_cache_before_later_outage(advanced_catal
     monkeypatch.setattr(CatalogConnection, "connect", lambda self: connect(self, transport=httpx.MockTransport(respond)))
     with pytest.raises(CatalogAuthenticationError):
         current.at_revision(worker_ref)
-    assert not AgentCatalog.cache_path().exists()
+    assert not AgentCatalog.cache_path(current.connection).exists()
 
     def offline(request):
         raise httpx.ConnectError("fixture outage")
@@ -839,7 +858,7 @@ def test_exact_read_refusal_invalidates_cache_before_later_outage(advanced_catal
 
 def test_network_cannot_substitute_latest_for_uncached_pin(advanced_catalogs, monkeypatch, capsys):
     old, current, worker_ref, _ = advanced_catalogs
-    PRIVATE_FILES.replace_text(AgentCatalog.cache_path(), current.model_dump_json())
+    PRIVATE_FILES.replace_text(AgentCatalog.cache_path(current.connection), current.model_dump_json())
 
     def offline(request):
         raise httpx.ConnectError("fixture outage")
@@ -897,6 +916,21 @@ async def test_missing_parent_revision_cannot_silently_use_latest_policy(advance
         reg.register(run_id="fixture-parent", pid=None, provider="codex", name="Fixture parent", cwd=str(catalog_home))
     with pytest.raises(ModelUnavailable, match=said):
         await run_agent(CodexProvider(), "Bounded task", agent="fixture-worker", parent_run_id="fixture-parent", cwd=str(catalog_home))
+
+
+def test_a_coordinator_begun_before_its_role_was_pinned_still_resolves_its_children_roles(advanced_catalogs, catalog_home):
+    """The web conversation's coordinator (begun in the editor, forked into the app, record with a role and no revision) ran every
+    turn on its role's latest revision yet its role spawns were refused « ran without a server revision » (2026-11-23): its
+    children resolve from that latest revision, as it runs. A record with no role still resolves from nothing."""
+    from galaius.agents.run import resolve_role
+    _, current, _, _ = advanced_catalogs
+    policy = Policy.from_catalog(current)
+    reg.register(run_id="forked-parent", pid=None, provider="claude", name="main", agent="fixture-lead", cwd=str(catalog_home))
+    reg.register(run_id="nameless-parent", pid=None, provider="claude", name="main", cwd=str(catalog_home))
+    _, role, ref = resolve_role(policy, "fixture-worker", reference=None, parent="forked-parent", delegate=None)
+    assert role == "fixture-worker" and ref is not None
+    with pytest.raises(ModelUnavailable, match="ran without a server revision"):
+        resolve_role(policy, "fixture-worker", reference=None, parent="nameless-parent", delegate=None)
 
 
 @pytest.mark.asyncio
@@ -1071,7 +1105,7 @@ def test_preview_refusal_discards_session_and_requires_fresh_login(catalog_home,
     with pytest.raises(CatalogAuthenticationError):
         AgentCatalog.refresh(connection, allow_stale=True, transport=catalog_transport(value, status))
     assert not connection.session_path().exists()
-    assert not AgentCatalog.cache_path().exists()
+    assert not AgentCatalog.cache_path(connection).exists()
     AgentCatalog.refresh(connection, transport=httpx.MockTransport(respond))
     assert calls == ["POST", "GET", "POST", "GET"]
 
@@ -1131,7 +1165,7 @@ def test_denial_prevents_older_refresh_restoring_stale_access(catalog_home, stat
     connection = CatalogConnection(endpoint="http://localhost:8767", auth_mode="preview", workspace_id=uuid4())
     value = snapshot()
     AgentCatalog.refresh(connection, transport=catalog_transport(value))
-    previous = AgentCatalog.cache_path().read_bytes()
+    previous = AgentCatalog.cache_path(connection).read_bytes()
     successful = catalog_transport(value)
 
     def race(request):
@@ -1155,14 +1189,14 @@ def test_denial_prevents_older_refresh_restoring_stale_access(catalog_home, stat
 
     with pytest.raises(CatalogAuthenticationError):
         AgentCatalog.refresh(connection, transport=httpx.MockTransport(race))
-    assert not AgentCatalog.cache_path().exists()
+    assert not AgentCatalog.cache_path(connection).exists()
 
     def offline(request):
         raise httpx.ConnectError("fixture outage")
 
     with pytest.raises(CatalogConnectionError):
         AgentCatalog.refresh(connection, allow_stale=True, transport=httpx.MockTransport(offline))
-    AgentCatalog.cache_path().write_bytes(previous)
+    AgentCatalog.cache_path(connection).write_bytes(previous)
     with pytest.raises(CatalogAuthenticationError, match="invalidated"):
         AgentCatalog.refresh(connection, allow_stale=True, transport=httpx.MockTransport(offline))
     # A new online authorization may restore access, and only its snapshot may go stale.
@@ -1204,7 +1238,7 @@ def test_denial_fences_historical_result(advanced_catalogs, historical_http, mon
     monkeypatch.setattr(CatalogConnection, "request", delayed)
     with pytest.raises(CatalogAuthenticationError, match="invalidated"):
         current.at_revision(worker_ref)
-    assert not AgentCatalog.cache_path().exists()
+    assert not AgentCatalog.cache_path(current.connection).exists()
 
 
 def test_late_invalidated_response_preserves_new_authorized_cache(catalog_home):
@@ -1221,7 +1255,7 @@ def test_late_invalidated_response_preserves_new_authorized_cache(catalog_home):
 
     with pytest.raises(CatalogAuthenticationError):
         AgentCatalog.refresh(connection, transport=httpx.MockTransport(race))
-    assert AgentCatalog.model_validate_json(AgentCatalog.cache_path().read_bytes()).snapshot.cursor == new.cursor
+    assert AgentCatalog.model_validate_json(AgentCatalog.cache_path(connection).read_bytes()).snapshot.cursor == new.cursor
 
 
 @pytest.mark.parametrize("status", [401, 403, 404])
@@ -1419,7 +1453,7 @@ lead = AgentRevisionRef(id=sys.argv[1], revision=sys.argv[2])
 worker = AgentRevisionRef(id=sys.argv[3], revision=sys.argv[4])
 parent = reg.register(run_id="fixture-parent", pid=None, provider="codex", name="Fixture parent",
                       agent="fixture-lead", agent_ref=lead, cwd=str(Path.cwd()))
-before = AgentCatalog.model_validate_json(AgentCatalog.cache_path().read_bytes()).snapshot
+before = AgentCatalog.model_validate_json(AgentCatalog.cache_path(connection).read_bytes()).snapshot
 commands = []
 build = CodexProvider.command
 
@@ -1456,7 +1490,7 @@ async def main():
     assert reg.get_run(handle.run_id).agent_ref != worker
     assert "Fixture instructions revision 2" in commands[-1][0]
     assert commands[-1][1]["allowed_tools"] == ["Write"]
-    assert AgentCatalog.model_validate_json(AgentCatalog.cache_path().read_bytes()).snapshot == before
+    assert AgentCatalog.model_validate_json(AgentCatalog.cache_path(connection).read_bytes()).snapshot == before
     print(json.dumps({"pinned_launches": 3, "latest_launches": 1, "continuations": 1, "head_cache_preserved": True}))
 
 with patch.object(CodexProvider, "available", return_value=True), patch.object(CodexProvider, "command", command), patch.object(CodexProvider, "resume_command", resume), patch("galaius.agents.run.resolve_model", lambda rule, env, **kwargs: ({}, "fixture-model-" + rule.rsplit(" ", 1)[-1])):
@@ -1600,3 +1634,80 @@ def test_ranking_weights_come_from_the_online_record_never_the_local_file(catalo
     assert policy.relation_for("fixture-worker") == ModelRelation(cost=6)
     assert policy.relation_for("no-such-role") == ModelRelation()
     assert "model" not in policy.defaults and policy.default_touch_intent() == "workspace_write"
+
+
+def test_a_parent_whose_role_the_catalog_lacks_still_refuses_its_children(advanced_catalogs, catalog_home):
+    from galaius.agents.run import resolve_role
+    _, current, _, _ = advanced_catalogs
+    policy = Policy.from_catalog(current)
+    reg.register(run_id="stray-parent", pid=None, provider="claude", name="main", agent="no-such-role", cwd=str(catalog_home))
+    with pytest.raises(ModelUnavailable, match="ran without a server revision"):
+        resolve_role(policy, "fixture-worker", reference=None, parent="stray-parent", delegate=None)
+
+
+def test_a_cached_catalog_is_never_read_for_another_company_or_workspace_none(catalog_home):
+    """Tenant isolation of the per-company head cache: a trailing slash names the same company, another company or no company
+    never reads it, offline."""
+    def offline(request):
+        raise httpx.ConnectError("fixture network failure")
+
+    mine = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode="preview", workspace_id=uuid4())
+    AgentCatalog.refresh(mine, transport=catalog_transport(snapshot(1)))
+    slashed = mine.model_copy(update={"endpoint": "http://127.0.0.1:8767/"})
+    assert AgentCatalog.cache_path(slashed) == AgentCatalog.cache_path(mine)
+    for other in (mine.model_copy(update={"workspace_id": uuid4()}), mine.model_copy(update={"workspace_id": None}),
+                  mine.model_copy(update={"endpoint": "http://127.0.0.1:8768"})):
+        assert AgentCatalog.cache_path(other) != AgentCatalog.cache_path(mine)
+        with pytest.raises(CatalogConnectionError, match="no validated cache"):
+            AgentCatalog.refresh(other, allow_stale=True, transport=httpx.MockTransport(offline))
+    same_company_other_mode = mine.model_copy(update={"auth_mode": "token", "token_file": Path("/nonexistent")})
+    assert AgentCatalog.cache_path(same_company_other_mode) != AgentCatalog.cache_path(mine)   # a cache records its writing connection: each way in has its own
+
+
+@pytest.mark.parametrize("refusal", [401, 403, 404])
+def test_a_refusal_for_one_company_drops_only_its_own_cache_and_pins(catalog_home, refusal):
+    def offline(request):
+        raise httpx.ConnectError("fixture network failure")
+
+    mine = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode="preview", workspace_id=uuid4())
+    other = mine.model_copy(update={"workspace_id": uuid4()})
+    kept, revoked = snapshot(1), snapshot(2)
+    keeper = AgentCatalog.refresh(mine, transport=catalog_transport(kept))
+    victim = AgentCatalog.refresh(other, transport=catalog_transport(revoked))
+    for catalog in (keeper, victim):
+        agent = catalog.snapshot.agents[0]
+        catalog.at_revision(AgentRevisionRef(id=agent.id, revision=agent.revision))
+    pins = sorted(AgentCatalog.pins_path().glob("*/*.json"))
+    assert pins
+    with pytest.raises(CatalogAuthenticationError):
+        AgentCatalog.refresh(other, allow_stale=True, transport=catalog_transport(revoked, status=refusal))
+    assert not AgentCatalog.cache_path(other).exists() and AgentCatalog.cache_path(mine).exists()
+    again = AgentCatalog.refresh(mine, allow_stale=True, transport=httpx.MockTransport(offline))
+    assert again.stale and again.snapshot.cursor == kept.cursor
+    assert any(path.exists() for path in pins)
+
+
+def test_a_revoked_key_falls_back_to_the_link_and_writes_the_linked_companys_own_cache(linked_pc, catalog_home):
+    key = catalog_home / "key"
+    PRIVATE_FILES.write_secret(key, "iwk_" + "r" * 40)
+    def server(request):
+        if request.headers["Authorization"] == "Bearer iwk_" + "r" * 40:
+            return httpx.Response(401)
+        return httpx.Response(200, content=snapshot(1).model_dump_json())
+    revoked = CatalogConnection(endpoint="http://127.0.0.1:8767", workspace_id=uuid4(), auth_mode="token", token_file=key)
+    catalog = AgentCatalog.refresh(revoked, transport=httpx.MockTransport(server))
+    assert AgentCatalog.cache_path(catalog.connection).exists() and not AgentCatalog.cache_path(revoked).exists()
+
+
+def test_one_company_read_by_key_then_by_link_still_starts_from_its_cache_while_the_server_is_down(linked_pc, catalog_home):
+    def offline(request):
+        raise httpx.ConnectError("fixture network failure")
+
+    key = catalog_home / "key"
+    PRIVATE_FILES.write_secret(key, "iwk_" + "r" * 40)
+    by_key = CatalogConnection(endpoint="http://127.0.0.1:8767", workspace_id=linked_pc.workspace_id, auth_mode="token", token_file=key)
+    by_link = CatalogConnection.linked()
+    AgentCatalog.refresh(by_key, transport=httpx.MockTransport(lambda request: httpx.Response(200, content=snapshot(1).model_dump_json())))
+    AgentCatalog.refresh(by_link, transport=httpx.MockTransport(lambda request: httpx.Response(200, content=snapshot(1).model_dump_json())))
+    for connection in (by_key, by_link):
+        assert AgentCatalog.refresh(connection, allow_stale=True, transport=httpx.MockTransport(offline)).stale

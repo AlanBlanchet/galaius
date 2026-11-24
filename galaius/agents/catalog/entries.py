@@ -1,6 +1,7 @@
 """Validated server catalog, replaceable local cache, and role prompt composition."""
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -273,14 +274,19 @@ class AgentCatalog(CachedRecord):
         return AgentRevisionRef(id=agent_id, revision=revision)
 
     @classmethod
-    def cache_path(cls) -> Path:
-        return CatalogConnection.path().with_name("agent-catalog-cache.json")
+    def cache_path(cls, connection: CatalogConnection) -> Path:
+        """The head cache of the catalog `connection` reaches: one file per server, company and way in (a cache records the
+        connection that wrote it, so the same company read by key and by link must not share one), so two links on one
+        computer (its own and the test PC's, 2026-11-24) never overwrite each other's and an outage reads the cache of the
+        company it asks for, never « belongs to a different connection » for every agent on the PC."""
+        identity = f"{connection.endpoint.rstrip('/')}\n{connection.workspace_id}\n{connection.auth_mode}\n{connection.token_file}"
+        return CatalogConnection.path().with_name(f"agent-catalog-cache-{hashlib.sha256(identity.encode()).hexdigest()[:16]}.json")
 
     @classmethod
     def pins_path(cls) -> Path:
         """Where every exact revision this computer has been answered for is kept (`pin_path`), beside the head
         cache: the same access is granted for all of them, so one sweep drops them together."""
-        return cls.cache_path().parent / "agent-catalog-pins"
+        return CatalogConnection.path().parent / "agent-catalog-pins"
 
     @classmethod
     def pin_path(cls, reference: AgentRevisionRef) -> Path:
@@ -364,7 +370,7 @@ class AgentCatalog(CachedRecord):
         """The server's current catalog. Asked conditionally on the snapshot already held
         (`known`, else the cache file): its cursor is the entity tag the server answers 304 to
         while nothing changed, so an unchanged catalog costs no download."""
-        target = cache_path if cache_path is not None else cls.cache_path()
+        target = cache_path if cache_path is not None else cls.cache_path(connection)
         generation = connection.access_generation()
         resolved = connection
         try:
@@ -462,7 +468,7 @@ class AgentCatalog(CachedRecord):
             with self.connection.access_guard(self.access_generation):
                 return self.model_copy(update={"selection": selection})
         except CatalogAuthenticationError:
-            self.discard_invalidated_cache(self.connection, self.cache_path())
+            self.discard_invalidated_cache(self.connection, self.cache_path(self.connection))
             raise
         except (CatalogOffline, httpx.TransportError) as error:
             # Unreachable, timed out, dropped mid-answer, or a front with no app behind it (502 / 503 / 504 on every deploy
@@ -511,7 +517,7 @@ class AgentCatalog(CachedRecord):
         return self.snapshot.definition(role, self.skill_root(), instructions=source)
 
     def skill_root(self) -> Path:
-        return self.cache_path().parent / "agent-catalog-skills"
+        return CatalogConnection.path().parent / "agent-catalog-skills"
 
     def skill_path(self, reference: PromptExecutionRef) -> Path:
         prompt = self.prompt(reference)
@@ -522,6 +528,6 @@ class AgentCatalog(CachedRecord):
     def definition_path(self, role: str) -> Path:
         # role() resolves a core-validated kebab-case key before it becomes a filename.
         agent = self.role(role)
-        target = self.cache_path().parent / "agent-catalog-definitions" / str(agent.id) / str(agent.revision) / f"{agent.role_key}.md"
+        target = CatalogConnection.path().parent / "agent-catalog-definitions" / str(agent.id) / str(agent.revision) / f"{agent.role_key}.md"
         PRIVATE_FILES.replace_text(target, self.instructions(role))
         return target

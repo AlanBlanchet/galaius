@@ -412,6 +412,42 @@ def test_a_subscription_takes_the_owners_hooks_permissions_and_instructions_and_
     assert (tree(home / ".claude"), tree(home / ".codex")) == before
 
 
+def test_a_subscription_takes_the_owners_memory_notes_and_synced_skills_never_over_a_newer_one_never_a_session() -> None:
+    """2026-11-23: the web conversation's folder held no memory note and no synced skill (13 of its 60 skills) while the editor's
+    default login held them: every app turn started without. Notes and skills only; a transcript beside them never moves
+    (`NEVER_ADOPTED`). The guard counts what each side holds, never one name."""
+    home = Path.home()
+    notes = home / ".claude" / "projects" / "-work-project" / "memory"
+    notes.mkdir(parents=True)
+    (notes / "MEMORY.md").write_text("- [deploy](deploy.md)\n")
+    (notes / "deploy.md").write_text("deploy every slice\n")
+    (notes / "topic").mkdir()
+    (notes / "topic" / "deep.md").write_text("nested\n")
+    (notes.parent / "session.jsonl").write_text("{}\n")
+    synced = home / ".claude" / "skills" / "synced" / "org_account"
+    (synced / "docx").mkdir(parents=True)
+    (synced / "docx" / "SKILL.md").write_text("docx skill\n")
+    (synced / "manifest.json").write_text("{}\n")
+    subscription = Subscription.create(uuid4(), "claude")
+    kept = subscription.folder / "projects" / "-work-project" / "memory"
+    kept.mkdir(parents=True)
+    (kept / "deploy.md").write_text("written by a run here\n")
+    os.utime(kept / "deploy.md", (time.time() + 60,) * 2)
+    subscription.adopt({"HOME": str(home), **subscription.overlay()})
+    assert (kept / "MEMORY.md").read_text() == "- [deploy](deploy.md)\n" and (kept / "topic" / "deep.md").read_text() == "nested\n"
+    assert (kept / "deploy.md").read_text() == "written by a run here\n"
+    assert not (kept.parent / "session.jsonl").exists()
+    held = lambda root: sorted(path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file() and ("memory" in path.parts or "synced" in path.parts))
+    assert len(held(subscription.folder)) == len(held(home / ".claude")) == 5   # 3 notes + docx skill + manifest, the one rewritten note counted once
+    (notes / "MEMORY.md").write_text("- [deploy](deploy.md)\n- [more](more.md)\n")
+    os.utime(notes / "MEMORY.md", (time.time() + 120,) * 2)
+    subscription.adopt({"HOME": str(home), **subscription.overlay()})
+    assert "more.md" in (kept / "MEMORY.md").read_text()
+    codex = Subscription.create(uuid4(), "codex")
+    codex.adopt({"HOME": str(home), **codex.overlay()})
+    assert not (codex.folder / "projects").exists()
+
+
 def test_continuing_on_another_subscription_carries_the_session_never_a_credential_and_pins_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
     """Contract A9: his « Continuer sur Claude pro » after a usage limit copies that session's transcript from A's folder
     to B's (nothing else, never a credential), pins the run to B; a Codex login is never a target of a Claude session; a
@@ -1135,3 +1171,47 @@ def test_context_of_reads_the_catalog_through_the_real_registry_model(monkeypatc
         models=[catalog.ModelInfo(id="anthropic/claude-haiku-5.5", context_length=200_000)], source="openrouter", fetched_at=0.0))
     with catalog_of(registry_model(_HAIKU, provider="anthropic"), registry_model("claude-unlisted-1", provider="anthropic")):
         assert run_module._context_of(model, ()) == window
+
+
+def test_a_subscription_never_adopts_through_a_symlinked_notes_folder_or_file(tmp_path) -> None:
+    """A notes folder (or a note) that is a link never carries the default login's credential or a transcript into another
+    subscription's folder, even when its target lies inside the default home."""
+    home = Path.home()
+    default = home / ".claude"
+    (default / "projects" / "-p").mkdir(parents=True)
+    (default / ".credentials.json").write_text('{"token": "secret"}')
+    (default / "projects" / "-p" / "memory").symlink_to(default)
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside")
+    (default / "skills" / "synced").mkdir(parents=True)
+    (default / "skills" / "synced" / "link.md").symlink_to(outside)
+    subscription = Subscription.create(uuid4(), "claude")
+    subscription.adopt({"HOME": str(home), **subscription.overlay()})
+    copied = sorted(path.name for path in subscription.folder.rglob("*") if path.is_file())
+    assert ".credentials.json" not in copied and "link.md" not in copied
+
+
+@pytest.mark.parametrize("shape", ["synced_dir_link_inside", "file_link_in_real_folder", "dir_link_out_of_home", "default_home_itself_linked"])
+def test_adopt_refuses_every_link_shape_yet_copies_the_real_notes_beside_it(tmp_path, shape) -> None:
+    home = Path.home()
+    real = tmp_path / "real-claude" if shape == "default_home_itself_linked" else home / ".claude"
+    secret = tmp_path / "secret.md"
+    secret.write_text("secret")
+    (real / "projects" / "-p" / "memory").mkdir(parents=True)
+    (real / "projects" / "-p" / "memory" / "good.md").write_text("good")
+    (real / ".credentials.json").write_text("{}")
+    synced = real / "skills" / "synced"
+    synced.mkdir(parents=True)
+    if shape == "synced_dir_link_inside":
+        (synced / "org").symlink_to(real)
+    elif shape == "file_link_in_real_folder":
+        (real / "projects" / "-p" / "memory" / "link.md").symlink_to(real / ".credentials.json")
+    elif shape == "dir_link_out_of_home":
+        (synced / "org").symlink_to(tmp_path)
+    else:
+        (home / ".claude").symlink_to(real)
+    subscription = Subscription.create(uuid4(), "claude")
+    subscription.adopt({"HOME": str(home), **subscription.overlay()})
+    names = sorted(path.name for path in subscription.folder.rglob("*") if path.is_file())
+    assert "good.md" in names
+    assert not {".credentials.json", "link.md", "secret.md"} & set(names)
