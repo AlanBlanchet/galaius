@@ -100,6 +100,17 @@ def test_the_open_rows_reach_the_coordinators_next_card_and_the_durable_ones_the
     ((), "Ça ne marche toujours pas", True),
     ((), "Encore raté !! Regarde le panneau !", True),
     ((), "if a != b and c != d: return ![img](a.png) ![img](b.png)", False),                                       # code, never « ! »
+    # his words of 2026-11-22/23 that read as none (the rule knew a few curses and « still not working »)
+    ((), "Librarian also really needs to kick in. It always feels laggy and slow. So big problem UX wise", True),
+    ((), "continue on the work. You'll stop when everything is super stable. No further errors would be tolerated", True),
+    ((), "Fuck you, it should always be working. If fable is not available it should fallback.", True),
+    ((), "just go check the latest conv i had in the online conversation... I'm fed up", True),
+    ((), "Please think logically.... I'm scared by all the vocabulary and ugly things you're ready to do to make things work.", True),
+    ((), "Je n\u2019en peux plus, c\u2019est nul, j\u2019en ai marre", True),
+    ((), "Go ahead and see all the flaws of the current system, in the meantime, i will look into the code", False),
+    ((), "Could you also check if we are correctly using a form of intelligence / cost graph to know what model to automatically select ?", False),
+    ((), "please don't use the UI, tell me what to do instead, but you should have access with profiles ? no ?", False),
+    ((), "Please fix the things that need to be fixed, then let the online version do all the work since it has more integrations, right ?", False),
     (("Ajoute le mode sombre au panneau des agents",), "Now export the invoices as CSV", False),
     (("build the agents panel with a list of runs",), "the agents panel looks good, now add filters to the runs list", False),  # a follow-up
     (("translate the invoice email to French",), "now translate the invoice email to German too", False),

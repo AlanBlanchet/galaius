@@ -6,7 +6,9 @@ session galaius started never read as a copy. This module reads those rows with 
 marks as quoted (a launch brief an agent was handed, a `[Galaius: …]` block) or a harness notice is no word of his. The index lags the files by what has not
 been read yet: `refresh_index` brings it up to date for a bounded time and says how much is still pending."""
 
+import json
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 
@@ -39,6 +41,8 @@ class Typed(NamedTuple):
     text: str
     source: str
     project: str
+    #: `message`: a turn he typed; `answer`: his answer to a question card (Claude Code's `AskUserQuestion`), a tool's result in the transcript.
+    kind: str = "message"
 
 
 def index_path(folder: Path) -> Path | None:
@@ -66,28 +70,79 @@ def his_words(text: str) -> str:
     return (request or heading.partition(":")[2]).strip()
 
 
-def read(folder: Path, since: float) -> Reading:
-    """His messages of editor and terminal sessions from `since` on, oldest first, a replayed turn counted once (`SAME_MOMENT`, `REPLAYED_IN`). An index that cannot be read says why (`Reading.problem`); one never built reads as none (`index_path`)."""
-    path = index_path(folder)
-    if path is None:
-        return Reading([])
+#: What Claude Code writes into the user turn that answers a question card.
+CARD_ANSWER = b"The user answered"
+#: The origins of the sessions a person types in (`ClaudeCodeProvider.typed_origins`); a test holds the two equal.
+TYPED_ORIGINS = frozenset({"cli", "claude-vscode", "claude-desktop"})
+
+
+def _moment(text: object) -> float | None:
     try:
-        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+        return datetime.fromisoformat(str(text).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def card_answers(folder: Path, since: float) -> list[Typed]:
+    """His answers to question cards (`AskUserQuestion`) in Claude Code sessions since `since`: the transcript keeps them as a tool result
+    (`toolUseResult.answers`, question -> answer), which the index never reads (it keeps a tool call's lead only). Files read are Claude's saved sessions
+    changed since `since` (`ConversationIndex.files`); a line is looked at only when it holds the answer marker; credentials are masked as the index masks them.
+    Imported here only: the registry's import costs seconds the other verbs never pay."""
+    from galaius.agents.conversations import ConversationIndex
+
+    index = ConversationIndex(folder=folder)
+    try:
+        files = [found for found in index.files() if found.provider is not None and found.provider.name == "claude" and found.mtime / 1e9 >= since]
+        secrets = index.secrets
+    except (OSError, ValueError):
+        return []
+    answered: list[Typed] = []
+    for found in files:
         try:
-            rows = db.execute(
+            with found.path.open("rb") as lines:
+                for line in lines:
+                    if CARD_ANSWER not in line:
+                        continue
+                    try:
+                        turn = json.loads(line)
+                    except ValueError:
+                        continue
+                    result = turn.get("toolUseResult") if isinstance(turn, dict) else None
+                    if (turn.get("type") != "user" or turn.get("isSidechain") or turn.get("entrypoint") not in TYPED_ORIGINS or not isinstance(result, dict)
+                            or not isinstance(result.get("answers"), dict) or (at := _moment(turn.get("timestamp"))) is None or at < since):
+                        continue
+                    for answer in result["answers"].values():
+                        if isinstance(answer, str) and answer.strip():
+                            answered.append(Typed(at=at, conversation=str(turn.get("sessionId") or found.conversation), to_run="", role="you",
+                                                  text=ConversationIndex.masked(answer.strip(), secrets), source="claude", project=Path(str(turn.get("cwd") or "")).name, kind="answer"))
+        except OSError:
+            continue
+    return answered
+
+
+def read(folder: Path, since: float, *, cards: bool = True) -> Reading:
+    """His messages of editor and terminal sessions from `since` on, oldest first, a replayed turn counted once (`SAME_MOMENT`, `REPLAYED_IN`). An index that cannot be read says why (`Reading.problem`); one never built reads as none (`index_path`)."""
+    path, rows, problem = index_path(folder), [], ""
+    try:
+        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5) if path is not None else None
+        try:
+            rows = [] if db is None else db.execute(
                 "SELECT l.at, l.conversation, t.text, c.source, c.project FROM lines l JOIN line_texts t ON t.id = l.id JOIN conversations c ON c.id = l.conversation "
                 f"WHERE l.tier = {TYPED} AND l.kind = 'prompt' AND l.at IS NOT NULL AND l.at >= ? AND c.source IN ({','.join('?' * len(SOURCES))}) ORDER BY l.at",
                 (since, *SOURCES)).fetchall()
         finally:
-            db.close()
+            if db is not None:
+                db.close()
     except sqlite3.Error as error:
-        return Reading([], f"{path.name} cannot be read ({error}): run `galaius agents search` once to rebuild it")
+        problem = f"{path.name} cannot be read ({error}): run `galaius agents search` once to rebuild it"
     kept: list[Typed] = []
     long: dict[tuple[str, str], list[Typed]] = {}
-    for at, conversation, raw, source, project in rows:
-        if not isinstance(raw, str) or raw.lstrip().startswith(NOT_HIS) or not (text := his_words(raw)).strip():
+    typed_turns = [Typed(at=float(at), conversation=str(conversation), to_run="", role="you", text=his_words(raw), source=str(source), project=str(project or ""))
+                   for at, conversation, raw, source, project in rows if isinstance(raw, str) and not raw.lstrip().startswith(NOT_HIS)]
+    for typed in sorted([*typed_turns, *(card_answers(folder, since) if cards else ())]):
+        text = typed.text
+        if not text.strip():
             continue
-        typed = Typed(at=float(at), conversation=str(conversation), to_run="", role="you", text=text, source=str(source), project=str(project or ""))
         if len(text) < REPLAY_FROM:
             kept.append(typed)
         else:
@@ -99,7 +154,7 @@ def read(folder: Path, since: float) -> Reading:
             if not replay and not any(typed.conversation == other.conversation and abs(typed.at - other.at) <= SAME_SESSION_REPLAY for other in firsts):
                 firsts.append(typed)
         kept += firsts[:1] if len({typed.conversation for typed in firsts}) >= REPLAYED_IN else firsts
-    return Reading(sorted(kept))
+    return Reading(sorted(kept), problem)
 
 
 class Coverage(NamedTuple):

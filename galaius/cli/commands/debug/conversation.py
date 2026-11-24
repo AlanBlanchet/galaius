@@ -281,7 +281,8 @@ def messages(*, conversation: Annotated[str | None, Parameter(help="A conversati
              json_out: Annotated[bool, Parameter(name="--json", negative=(), help="One JSON object: `covers`, `messages`, `by_day`, `by_project`, `index`.")] = False) -> None:
     """What he typed lately, oldest first: when, which conversation, where (`web`, or the CLI of an editor / terminal session), his words, and `!`
     for what reads as frustration. Then per day and per project: how many, how many frustrated. Editor and terminal messages are read from the
-    conversation index of `galaius agents search` (masked, his prompts only, never an agent's text), brought up to date for up to 20 s first."""
+    conversation index of `galaius agents search` (masked, his prompts only, never an agent's text), brought up to date for up to 20 s first, and his answers
+    to Claude Code's question cards (marked `/card`) from its sessions' own files."""
     from galaius.agents.history import editor_words
     from galaius.host.paths import UserPaths
 
@@ -315,7 +316,7 @@ def messages(*, conversation: Annotated[str | None, Parameter(help="A conversati
     print(f"{covers} · {len(found)} messages" + (f" · {sum(bool(said.frustrated) for said in found)} frustrated" if found else ""))
     for said in found:
         text = " ".join(said.text.split())
-        print(f"{_when(said.at):>11} {said.source:<6} {said.conversation[:12]:<12} {said.project[:14] or '-':<14} {'!' if said.frustrated else ' '} {text if not chars else text[:chars]}")
+        print(f"{_when(said.at):>11} {said.source + ('/card' if said.kind == 'answer' else ''):<11} {said.conversation[:12]:<12} {said.project[:14] or '-':<14} {'!' if said.frustrated else ' '} {text if not chars else text[:chars]}")
     for title, rows in (("per day", days), ("per project", projects)):
         if rows:
             print(f"{title}: " + " · ".join(f"{row.name} {row.messages}" + (f" ({row.frustrated} !)" if row.frustrated else "") for row in rows))

@@ -711,3 +711,50 @@ def test_a_long_message_he_sends_again_later_counts_twice_and_one_found_in_three
     cli.messages(since="2h", source="editor", json_out=True)
     texts = [m["text"] for m in json.loads(capsys.readouterr().out)["messages"]]
     assert texts.count(again) == 2 and texts.count(copied) == 1, texts
+
+
+def _card_answer(home: Path, session: str, answers: dict[str, str], *, seconds_ago: float, sidechain: bool = False, entrypoint: str = "claude-vscode") -> None:
+    """A Claude Code user turn answering a question card: the tool result, with `toolUseResult.answers` (question -> answer), as the CLI saves it."""
+    folder = home / "projects" / "-work-galaius"
+    folder.mkdir(parents=True, exist_ok=True)
+    pairs = ", ".join(f'"{question}"="{answer}"' for question, answer in answers.items())
+    turn = {"type": "user", "timestamp": _iso(seconds_ago), "sessionId": session, "cwd": "/work/galaius", "entrypoint": entrypoint, "isSidechain": sidechain,
+            "toolUseResult": {"questions": [{"question": question} for question in answers], "answers": answers},
+            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": f"The user answered: {pairs}. Read the answers carefully."}]}}
+    with open(folder / f"{session}.jsonl", "a") as stream:
+        stream.write(json.dumps(turn) + "\n")
+
+
+def test_his_answers_on_question_cards_count_as_his_words_marked_and_read_for_frustration(folder: Path, monkeypatch, capsys) -> None:
+    home = folder.parent / "claude-home"
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(folder))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
+    session = "dddddddd-0000-4000-8000-000000000031"
+    _claude_session(home, "-work-galaius", session, [(_iso(900), "user", "go ahead and build it")], entrypoint="claude-vscode")
+    _card_answer(home, session, {"Build the keyless route?": "Please think logically.... I'm scared by all the vocabulary and ugly things you're ready to do"}, seconds_ago=600)
+    _card_answer(home, session, {"Which model?": "Opus"}, seconds_ago=500)
+    _card_answer(home, session, {"A subagent's question?": "its parent's answer"}, seconds_ago=400, sidechain=True)
+    _card_answer(home, "eeeeeeee-0000-4000-8000-000000000032", {"A headless run's question?": "an agent's answer"}, seconds_ago=300, entrypoint="sdk-cli")
+    cli.messages(since="2h", source="editor", json_out=True)
+    out = json.loads(capsys.readouterr().out)
+    said = [(m["kind"], m["text"][:29], bool(m["frustrated"])) for m in out["messages"]]
+    assert said == [("message", "go ahead and build it", False), ("answer", "Please think logically.... I'", True), ("answer", "Opus", False)], said
+    cli.messages(since="2h", source="editor", frustrated=True)
+    shown = capsys.readouterr().out
+    assert "claude/card" in shown and "scared" in shown and "go ahead" not in shown
+
+
+def test_a_card_answer_is_masked_like_every_line_the_index_keeps(folder: Path, monkeypatch, capsys) -> None:
+    home = folder.parent / "claude-home"
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(folder))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
+    _card_answer(home, "ffffffff-0000-4000-8000-000000000033", {"The key?": "use sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789 for it"}, seconds_ago=100)
+    cli.messages(since="2h", source="editor", json_out=True)
+    text = json.loads(capsys.readouterr().out)["messages"][0]["text"]
+    assert "abcdefghijklmnopqrstuvwxyz" not in text and text.startswith("use sk-")
+
+
+def test_the_origins_a_card_answer_is_read_from_are_the_providers_typed_ones() -> None:
+    from galaius.agents.history import editor_words
+    from galaius.agents.providers import ClaudeCodeProvider
+    assert editor_words.TYPED_ORIGINS == ClaudeCodeProvider.typed_origins
