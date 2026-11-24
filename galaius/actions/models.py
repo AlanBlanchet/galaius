@@ -4,8 +4,8 @@ from typing import Annotated, ClassVar, Literal
 from pathlib import Path
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from playwright.async_api import Page
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
+from playwright.async_api import Error as PlaywrightError, Page
 
 from galaius.config.settings import DEFAULT_LIMIT
 from galaius.browser.settle import settle_animations
@@ -769,12 +769,41 @@ class PressAction(_CoordinateTargetMixin):
     there is no frame to screenshot or record. A JS-dispatched PointerEvent cannot substitute —
     synthetic events are untrusted, so Chromium does not apply `:active` for them (#103).
 
-    Target it like a click (`ref` / `selector` / `name` / `x`,`y`); `hold` is how long the button
-    stays down, in seconds. Pair it with `record` to capture the pressed state as motion."""
+    Target it like a click (`ref` / `selector` / `name` / `x`,`y`); `hold` is how long the pointer
+    stays down, in seconds.
+
+    On a TOUCH context (`emulate_device` with touch, a phone profile) it is a real finger: trusted
+    touchstart / touchmove / touchend through CDP, so Chromium is the only engine that holds
+    (Firefox / WebKit contexts only tap, said as an error). Desktop Chromium never turns a held
+    touch into the platform's long-press, so at LONG_PRESS_SECONDS, if the finger has not moved
+    past TOUCH_SLOP_PX, the press sends the trusted right-button `contextmenu` a phone raises
+    there and ends the touch with touchcancel (no click after), as a phone does; `long_press=false`
+    keeps the bare touch sequence. On a mouse context it is mousedown, wait, mouseup (`long_press`
+    does not apply).
+
+    `move_to` [x, y] drags the pointer there while held, `move_at` seconds into the hold (default:
+    at the end of `hold`); a `move_at` under LONG_PRESS_SECONDS cancels the long press, as a real
+    move does. `capture` takes a frame at the end of the hold, BEFORE the release (a batch is
+    blocked while it holds): `path` saves it, `query` has it described; the frame is also a
+    `compare` step. Pair with `record` to capture the pressed state as motion."""
 
     type: Literal["press"] = "press"
     hold: float = 1.0
     button: Literal["left", "right", "middle"] = "left"
+    long_press: bool = True
+    move_to: tuple[int, int] | None = None
+    move_at: float | None = None
+    capture: bool = False
+    path: str | None = None
+    query: str | None = None
+
+    # Browsers' long-press delay (Chromium's own is 500 ms) and the finger's drift tolerance.
+    LONG_PRESS_SECONDS: ClassVar[float] = 0.5
+    TOUCH_SLOP_PX: ClassVar[float] = 10.0
+    MOVE_STEPS: ClassVar[int] = 8
+
+    # The frame taken at the end of the hold; the runner reads it after `execute`.
+    _frame: bytes | None = PrivateAttr(default=None)
 
     @field_validator("hold")
     @classmethod
@@ -785,27 +814,124 @@ class PressAction(_CoordinateTargetMixin):
             raise ValueError("hold must be > 0 and <= 30 seconds")
         return v
 
-    async def execute(self, page: Page):
+    @model_validator(mode="after")
+    def _hold_shape(self):
+        if self.path or self.query:
+            self.capture = True
+        if self.move_at is not None:
+            if self.move_to is None:
+                raise ValueError("move_at needs move_to")
+            if not 0 <= self.move_at <= self.hold:
+                raise ValueError("move_at must be within the hold: 0 <= move_at <= hold")
+        return self
+
+    async def _centre(self, page: Page) -> tuple[float, float]:
         if self.x is not None and self.y is not None:
-            x, y = float(self.x), float(self.y)
-        else:
-            locator = (
-                self._locator(page)
-                if (self.ref or self.selector)
-                else page.get_by_role(self.role or "button", name=self.name)
-            )
-            box = await locator.first.bounding_box()
-            if not box:
-                raise ValueError("press target has no layout box — is it visible?")
-            x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+            return float(self.x), float(self.y)
+        locator = (
+            self._locator(page)
+            if (self.ref or self.selector)
+            else page.get_by_role(self.role or "button", name=self.name)
+        )
+        await locator.first.scroll_into_view_if_needed()
+        box = await locator.first.bounding_box()
+        if not box:
+            raise ValueError("press target has no layout box — is it visible?")
+        return box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+
+    async def _grab(self, page: Page) -> None:
+        if self.capture:
+            self._frame = await page.screenshot(type="png")
+
+    async def execute(self, page: Page):
+        self._frame = None
+        x, y = await self._centre(page)
+        if await page.evaluate("navigator.maxTouchPoints > 0"):
+            if self.button != "left":
+                raise ValueError("a touch has no buttons: use button=left, or a context without touch")
+            return await self._touch_hold(page, x, y)
+        await self._mouse_hold(page, x, y)
+
+    async def _mouse_hold(self, page: Page, x: float, y: float) -> None:
         await page.mouse.move(x, y)
         await page.mouse.down(button=self.button)
         try:
-            await asyncio.sleep(self.hold)
+            await self._hold_timeline(page.mouse.move, x, y, page)
         finally:
             # Release even if the wait is cancelled — a stuck mouse button would poison every
             # later action in the session.
             await page.mouse.up(button=self.button)
+
+    async def _hold_timeline(self, move, x: float, y: float, page: Page, on_threshold=None) -> bool:
+        """Keep the pointer down for `hold`: walk it to `move_to` at `move_at`, fire `on_threshold`
+        at LONG_PRESS_SECONDS unless a move already took it past the slop, take the frame at the
+        end. A tie goes to the threshold (a move at exactly the threshold is a drag after the
+        hold). Returns whether `on_threshold` fired."""
+        events: list[tuple[float, int, str]] = []
+        if self.move_to is not None:
+            events.append((self.hold if self.move_at is None else self.move_at, 1, "move"))
+        if on_threshold is not None and self.hold >= self.LONG_PRESS_SECONDS:
+            events.append((self.LONG_PRESS_SECONDS, 0, "threshold"))
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        moved = fired = False
+        for at, _, kind in sorted(events):
+            await asyncio.sleep(max(0.0, started + at - loop.time()))
+            if kind == "move":
+                tx, ty = self.move_to
+                for k in range(1, self.MOVE_STEPS + 1):
+                    await move(x + (tx - x) * k / self.MOVE_STEPS, y + (ty - y) * k / self.MOVE_STEPS)
+                    await asyncio.sleep(0.016)
+                moved = True
+            elif not (moved and self._drift(x, y) > self.TOUCH_SLOP_PX):
+                fired = True
+                await on_threshold()
+        await asyncio.sleep(max(0.0, started + self.hold - loop.time()))
+        await self._grab(page)
+        return fired
+
+    def _drift(self, x: float, y: float) -> float:
+        tx, ty = self.move_to
+        return ((tx - x) ** 2 + (ty - y) ** 2) ** 0.5
+
+    async def _touch_hold(self, page: Page, x: float, y: float) -> str:
+        try:
+            cdp = await page.context.new_cdp_session(page)
+        except PlaywrightError:
+            raise ValueError(
+                "a touch hold needs Chromium (CDP touch events); this context has touch but its engine "
+                "only taps — use a Chromium session, or a mouse context for a mouse press"
+            ) from None
+
+        async def touch(kind: str, px: float | None = None, py: float | None = None):
+            points = [] if px is None else [{"x": px, "y": py, "id": 0}]
+            await cdp.send("Input.dispatchTouchEvent", {"type": kind, "touchPoints": points})
+
+        async def context_menu():
+            for kind in ("mousePressed", "mouseReleased"):
+                await cdp.send(
+                    "Input.dispatchMouseEvent",
+                    {"type": kind, "x": x, "y": y, "button": "right",
+                     "buttons": 2 if kind == "mousePressed" else 0, "clickCount": 1},
+                )
+
+        long_pressed = finished = False
+        await touch("touchStart", x, y)
+        try:
+            long_pressed = await self._hold_timeline(
+                lambda tx, ty: touch("touchMove", tx, ty), x, y, page,
+                on_threshold=context_menu if self.long_press else None,
+            )
+            finished = True
+        finally:
+            # Always lift the finger, also when the batch is cancelled: a touch left down would
+            # swallow every later tap. A long press ends cancelled (no click), as on a phone; so
+            # does a hold cut short, which must not tap its target.
+            try:
+                await touch("touchCancel" if long_pressed or not finished else "touchEnd")
+            finally:
+                await cdp.detach()
+        return "long press: contextmenu sent, touch cancelled" if long_pressed else None
 
 
 class HandleDialogAction(Action):
@@ -863,7 +989,8 @@ AnyAction = Annotated[
     | SleepAction
     | CompareAction
     | HandleDialogAction
-    | ResizeAction,
+    | ResizeAction
+    | PressAction,
     Field(discriminator="type"),
 ]
 
