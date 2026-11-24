@@ -1643,3 +1643,71 @@ def test_a_parent_whose_role_the_catalog_lacks_still_refuses_its_children(advanc
     reg.register(run_id="stray-parent", pid=None, provider="claude", name="main", agent="no-such-role", cwd=str(catalog_home))
     with pytest.raises(ModelUnavailable, match="ran without a server revision"):
         resolve_role(policy, "fixture-worker", reference=None, parent="stray-parent", delegate=None)
+
+
+def test_a_cached_catalog_is_never_read_for_another_company_or_workspace_none(catalog_home):
+    """Tenant isolation of the per-company head cache: a trailing slash names the same company, another company or no company
+    never reads it, offline."""
+    def offline(request):
+        raise httpx.ConnectError("fixture network failure")
+
+    mine = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode="preview", workspace_id=uuid4())
+    AgentCatalog.refresh(mine, transport=catalog_transport(snapshot(1)))
+    slashed = mine.model_copy(update={"endpoint": "http://127.0.0.1:8767/"})
+    assert AgentCatalog.cache_path(slashed) == AgentCatalog.cache_path(mine)
+    for other in (mine.model_copy(update={"workspace_id": uuid4()}), mine.model_copy(update={"workspace_id": None}),
+                  mine.model_copy(update={"endpoint": "http://127.0.0.1:8768"})):
+        assert AgentCatalog.cache_path(other) != AgentCatalog.cache_path(mine)
+        with pytest.raises(CatalogConnectionError, match="no validated cache"):
+            AgentCatalog.refresh(other, allow_stale=True, transport=httpx.MockTransport(offline))
+    same_company_other_mode = mine.model_copy(update={"auth_mode": "token", "token_file": Path("/nonexistent")})
+    assert AgentCatalog.cache_path(same_company_other_mode) != AgentCatalog.cache_path(mine)   # a cache records its writing connection: each way in has its own
+
+
+@pytest.mark.parametrize("refusal", [401, 403, 404])
+def test_a_refusal_for_one_company_drops_only_its_own_cache_and_pins(catalog_home, refusal):
+    def offline(request):
+        raise httpx.ConnectError("fixture network failure")
+
+    mine = CatalogConnection(endpoint="http://127.0.0.1:8767", auth_mode="preview", workspace_id=uuid4())
+    other = mine.model_copy(update={"workspace_id": uuid4()})
+    kept, revoked = snapshot(1), snapshot(2)
+    keeper = AgentCatalog.refresh(mine, transport=catalog_transport(kept))
+    victim = AgentCatalog.refresh(other, transport=catalog_transport(revoked))
+    for catalog in (keeper, victim):
+        agent = catalog.snapshot.agents[0]
+        catalog.at_revision(AgentRevisionRef(id=agent.id, revision=agent.revision))
+    pins = sorted(AgentCatalog.pins_path().glob("*/*.json"))
+    assert pins
+    with pytest.raises(CatalogAuthenticationError):
+        AgentCatalog.refresh(other, allow_stale=True, transport=catalog_transport(revoked, status=refusal))
+    assert not AgentCatalog.cache_path(other).exists() and AgentCatalog.cache_path(mine).exists()
+    again = AgentCatalog.refresh(mine, allow_stale=True, transport=httpx.MockTransport(offline))
+    assert again.stale and again.snapshot.cursor == kept.cursor
+    assert any(path.exists() for path in pins)
+
+
+def test_a_revoked_key_falls_back_to_the_link_and_writes_the_linked_companys_own_cache(linked_pc, catalog_home):
+    key = catalog_home / "key"
+    PRIVATE_FILES.write_secret(key, "iwk_" + "r" * 40)
+    def server(request):
+        if request.headers["Authorization"] == "Bearer iwk_" + "r" * 40:
+            return httpx.Response(401)
+        return httpx.Response(200, content=snapshot(1).model_dump_json())
+    revoked = CatalogConnection(endpoint="http://127.0.0.1:8767", workspace_id=uuid4(), auth_mode="token", token_file=key)
+    catalog = AgentCatalog.refresh(revoked, transport=httpx.MockTransport(server))
+    assert AgentCatalog.cache_path(catalog.connection).exists() and not AgentCatalog.cache_path(revoked).exists()
+
+
+def test_one_company_read_by_key_then_by_link_still_starts_from_its_cache_while_the_server_is_down(linked_pc, catalog_home):
+    def offline(request):
+        raise httpx.ConnectError("fixture network failure")
+
+    key = catalog_home / "key"
+    PRIVATE_FILES.write_secret(key, "iwk_" + "r" * 40)
+    by_key = CatalogConnection(endpoint="http://127.0.0.1:8767", workspace_id=linked_pc.workspace_id, auth_mode="token", token_file=key)
+    by_link = CatalogConnection.linked()
+    AgentCatalog.refresh(by_key, transport=httpx.MockTransport(lambda request: httpx.Response(200, content=snapshot(1).model_dump_json())))
+    AgentCatalog.refresh(by_link, transport=httpx.MockTransport(lambda request: httpx.Response(200, content=snapshot(1).model_dump_json())))
+    for connection in (by_key, by_link):
+        assert AgentCatalog.refresh(connection, allow_stale=True, transport=httpx.MockTransport(offline)).stale

@@ -275,10 +275,11 @@ class AgentCatalog(CachedRecord):
 
     @classmethod
     def cache_path(cls, connection: CatalogConnection) -> Path:
-        """The head cache of the catalog `connection` reaches: one file per server and company, so two links on one
+        """The head cache of the catalog `connection` reaches: one file per server, company and way in (a cache records the
+        connection that wrote it, so the same company read by key and by link must not share one), so two links on one
         computer (its own and the test PC's, 2026-11-24) never overwrite each other's and an outage reads the cache of the
         company it asks for, never « belongs to a different connection » for every agent on the PC."""
-        identity = f"{connection.endpoint.rstrip('/')}\n{connection.workspace_id}"
+        identity = f"{connection.endpoint.rstrip('/')}\n{connection.workspace_id}\n{connection.auth_mode}\n{connection.token_file}"
         return CatalogConnection.path().with_name(f"agent-catalog-cache-{hashlib.sha256(identity.encode()).hexdigest()[:16]}.json")
 
     @classmethod
