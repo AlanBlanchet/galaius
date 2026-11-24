@@ -161,7 +161,10 @@ class Subscription(BaseModel):
             except (ValueError, SubscriptionRefused) as error:
                 unreadable[folder.name] = str(error)
                 if _UNREADABLE.get(folder.name) != unreadable[folder.name]:
-                    logger.warning("subscription folder %s has no readable state: %s", folder.name, error)
+                    # A folder never signed in here is a sign-in not finished, not a fault: its page on the web says so. Said at every
+                    # start of every process, it printed a warning in each agent shell (2026-11-23, folder of 10-31 with no login file).
+                    said = logger.debug if isinstance(error, SubscriptionRefused) and error.refusal.reason == "not_signed_in" else logger.warning
+                    said("subscription folder %s has no readable state: %s", folder.name, error)
         _UNREADABLE.clear()
         _UNREADABLE.update(unreadable)
         return tuple(found)
