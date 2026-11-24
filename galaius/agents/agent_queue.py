@@ -896,6 +896,8 @@ def revive_orphans() -> list[str]:
                 run = reg.get_run(run_id)
                 if run is None or _dispatcher_matches(state) or not any(item.state in ACTIVE for item in _items(state)):
                     continue
+                if run.held_at is not None and not run.working():   # a person's stop holds it: what waits goes once he releases it (`dispatch`)
+                    continue
                 reg.begin_resume_locked(run_id)
                 ensure_dispatcher_locked(run_id, cwd=run.cwd or ".")
             revived.append(run_id)

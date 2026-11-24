@@ -33,6 +33,8 @@ from galaius.host.private_files import PRIVATE_FILES
 
 log = logging.getLogger(__name__)
 
+#: Seconds between two sweeps of every queue for a message no dispatcher holds (`EndWatch.queues_swept`).
+QUEUES_SWEPT_SECONDS = 300.0
 #: Each report's share of the hand-back message (`agent_queue.BRIEF_MAX` in all); the full one is `galaius agents events`.
 REPORT_MAX = 12_000
 #: The statuses of a parent whose turn ended on its own (a conversation's done turn reads "waiting"); a person's stop or a
@@ -310,6 +312,9 @@ class EndWatch(BaseModel):
     #: The spawn line's own look (`SpawnLine.revive`, `report_lost`) raised at the last look: said once, not at every look.
     line_failed: bool = False
     queues_failed: bool = False
+    #: When the queues were last swept for a message no dispatcher holds (`agent_queue.revive_orphans`): reading every queue file costs
+    #: seconds at 5,000 runs, so once at the first look (a boot) and then every `QUEUES_SWEPT_SECONDS`, never at each look.
+    queues_swept: float = 0.0
 
     def model_post_init(self, _context) -> None:
         relations.handback_since()   # from its first look on, a report its asker was at work for is carried (`_resume`)
@@ -354,7 +359,9 @@ class EndWatch(BaseModel):
                 log.exception("holding or reporting the spawns in line failed; tried again at every look, reported once")
             self.line_failed = True
         try:   # a message pending in a queue whose dispatcher a power-off took is handed to one again (`agent_queue.revive_orphans`)
-            agent_queue.revive_orphans()
+            if now - self.queues_swept >= QUEUES_SWEPT_SECONDS:
+                self.queues_swept = now
+                agent_queue.revive_orphans()
             self.queues_failed = False
         except Exception:
             if not self.queues_failed:

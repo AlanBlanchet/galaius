@@ -991,3 +991,30 @@ def test_a_message_pending_after_a_power_off_is_handed_to_a_dispatcher_again(mon
     # a queue whose dispatcher lives, or holding nothing active, is left alone
     monkeypatch.setattr(agent_queue, "_dispatcher_matches", lambda state: True)
     assert agent_queue.revive_orphans() == []
+
+
+def test_a_run_a_person_stopped_is_not_handed_a_dispatcher_by_the_sweep(monkeypatch):
+    """What waits for a held run goes once he releases it (`dispatch`), never by the sweep after a power-off."""
+    setup_queue(monkeypatch)
+    handed: list[str] = []
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda run_id, **rest: handed.append(run_id) or 1)
+    message_id = reg.record_message_event(from_run="operator", to_run="r1", text="held")
+    assert message_id and agent_queue.enqueue("r1", message_id=message_id, sender="operator")
+    with reg.record_lock("r1"):
+        reg._merge_record_locked("r1", {"held_at": time.time()})
+    handed.clear()
+    assert agent_queue.revive_orphans() == [] and handed == []
+
+
+def test_the_sweep_for_orphaned_queues_runs_at_the_first_look_then_every_few_minutes(monkeypatch):
+    """Reading every queue file costs 3-4 s at 5,000 runs: never at each look."""
+    from galaius.agents.turns import handback
+
+    swept: list[int] = []
+    monkeypatch.setattr(agent_queue, "revive_orphans", lambda: swept.append(1) or [])
+    watch = handback.EndWatch()
+    watch.tick(), watch.tick()
+    assert len(swept) == 1
+    watch.queues_swept -= handback.QUEUES_SWEPT_SECONDS
+    watch.tick()
+    assert len(swept) == 2
