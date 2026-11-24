@@ -26,9 +26,12 @@ for path in $(printf '%s\n' "$changed" | grep -E '^galaius/.*\.py$'); do
   parent="${module%.*}" leaf="${module##*.}"
   picked+=$'\n'"$(grep -rlE --include='test_*.py' "\\b${module//./\\.}\\b|from ${parent//./\\.} import [^#]*\\b${leaf}\\b" tests 2>/dev/null)"
 done
-mapfile -t files < <(printf '%s\n' "$picked" | grep -v '^$' | sort -u | while read -r file; do [ -f "$file" ] && echo "$file"; done)
-[ -z "${PREPUSH_LIST_ONLY:-}" ] || { printf '%s\n' "${files[@]}"; exit 0; }   # what a push would run, for tests/repo/test_prepush_scan.py
+files=()   # a loop, not `mapfile`: macOS ships bash 3.2
+while IFS= read -r file; do
+  [ -f "$file" ] && files+=("$file")
+done < <(printf '%s\n' "$picked" | grep -v '^$' | sort -u)
 [ "${#files[@]}" -gt 0 ] || exit 0
+[ -z "${PREPUSH_LIST_ONLY:-}" ] || { printf '%s\n' "${files[@]}"; exit 0; }   # what a push would run, for tests/repo/test_prepush_scan.py
 echo "pre-push: ${#files[@]} test file(s) touched by this push, run here first (Linux, batches of ${BATCH}):" >&2
 
 # The batches start when this computer is quiet: its tests have per-test time bounds (90 s, a cold console child, an ffmpeg clip) a

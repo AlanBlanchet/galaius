@@ -65,6 +65,12 @@ def test_a_console_window_of_the_tree_is_hidden_and_named_and_no_other(tmp_path:
             assert recorded and recorded[-1].program.lower() in {"cmd.exe", "conhost.exe", "ping.exe"}, recorded
             assert appeared == set(), f"still visible: {appeared}"
         else:
+            # A console the tree does not own stays visible: it may take a slow runner longer than the 4 s above to show (the 2026-11-23 Windows run: nothing yet).
+            deadline = time.monotonic() + 30
+            while not appeared and time.monotonic() < deadline:
+                time.sleep(0.5)
+                appeared = _visible_consoles() - before
+            recorded = ConsoleWatch.recent(watch.path)
             assert recorded == [] and appeared, (recorded, appeared)
     finally:
         child.kill()
