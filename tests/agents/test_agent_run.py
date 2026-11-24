@@ -249,6 +249,7 @@ def test_codex_resume_hands_the_mesh_to_a_role_granted_galaius_tools_whatever_it
     run = reg.register(run_id="fixture-run", pid=None, provider="codex", name="tester",
                        agent="tester", cwd=str(tmp_path), session_id="fixture-owner", **kwargs)
     provider = CodexProvider()
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))   # an agent's own login folder in the environment is never where this writes its rollout
     monkeypatch.setattr(provider, "_inject_definition", lambda agent, task, agent_prompt=None: task)
     captured = []
 

@@ -441,7 +441,13 @@ def test_a_channel_that_keeps_failing_tells_its_page_why_once(tmp_path: Path, mo
         raise OSError(f"[SSL: CERTIFICATE_VERIFY_FAILED] while sending {token}")
 
     monkeypatch.setattr(websockets, "connect", connect)
-    monkeypatch.setattr(httpx, "post", lambda url, timeout, **options: sent.append(httpx.Request("POST", url, **options)) or httpx.Response(204))
+    def post(url, timeout, **options):
+        if url.endswith("/v1/machine/error-events"):   # the PC's error counter flushes from the connection's upkeep when its tick falls inside this run: a loaded computer made it a third post
+            return httpx.Response(204)
+        sent.append(httpx.Request("POST", url, **options))
+        return httpx.Response(204)
+
+    monkeypatch.setattr(httpx, "post", post)
     runner = MachineRunner(tmp_path / "machine.json")
     runner.reconnect_seconds = (0,)
     with pytest.raises(PermissionError):
