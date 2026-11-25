@@ -787,7 +787,9 @@ def heading(event: AgentEvent, run: reg.AgentRun, *, mid_turn: bool) -> str | No
     words and the launcher's own open a turn bare (they ARE its prompt) and carry `inbox_hook.HEADING` mid-turn."""
     origin = _get(event.from_run) if event.from_run and event.from_run != reg.PERSON_SENDER else None
     if origin is None:
-        who = OPERATOR if event.from_run in (None, reg.PERSON_SENDER) else f"Galaius on this computer ({event.from_run})"
+        who = OPERATOR if event.from_run in (None, reg.PERSON_SENDER) \
+            else f"an agent session outside galaius's runs ({event.from_run[len(reg.SESSION_SENDER_PREFIX):][:8]})" if reg.is_session_sender(event.from_run) \
+            else f"Galaius on this computer ({event.from_run})"
         return HEADING.format(who=who) if mid_turn else None
     kind = event.relation or relation(origin, run, event.text, reports=event.reports)
     if kind in (Relation.REPORT, Relation.REPORT_ASKING):

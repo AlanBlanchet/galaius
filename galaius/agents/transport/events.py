@@ -128,6 +128,21 @@ _UNSAFE_INTERACTION_KEYS = frozenset({".", "..", "__proto__", "prototype", "cons
 
 #: Who a message from the person (the CLI, the web) is from, on its queue item and message event (`from_run`).
 PERSON_SENDER = "operator"
+#: Who a message from an agent CLI's session outside galaius's runs is from (a coordinator in an editor, writing through
+#: `galaius agents send`): `session:<its conversation id>`, never the person (`PERSON_SENDER`). A reader tells it from a run
+#: and from the person by this prefix alone.
+SESSION_SENDER_PREFIX = "session:"
+
+
+def is_session_sender(sender: str | None) -> bool:
+    """Whether `sender` names an agent CLI's session outside galaius's runs (`session_sender`)."""
+    return bool(sender) and sender.startswith(SESSION_SENDER_PREFIX)
+
+
+def session_sender(session_id: str) -> str:
+    """The sender of a message written from the agent CLI session `session_id` outside galaius's runs (the id its CLI tells
+    its commands, `Caller.THREAD`; "" when it tells none)."""
+    return SESSION_SENDER_PREFIX + (session_id or "unknown")
 
 
 class InteractionField(BaseModel):
@@ -584,6 +599,8 @@ def _who(run_id: str | None) -> str:
         return "?"
     if run_id == PERSON_SENDER:
         return PERSON_SENDER
+    if is_session_sender(run_id):
+        return f"session {run_id[len(SESSION_SENDER_PREFIX):][:8]}"
     # Deliberately local: registry imports AgentEvent from this module, so a module-level
     # import would create the events<->registry cycle before either side declared its models.
     from galaius.agents import registry as reg

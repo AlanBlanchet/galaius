@@ -347,6 +347,8 @@ class QueueItem(BaseModel):
         (`registry.LIMIT_RESUME_SENDER`)."""
         if self.sender == reg.PERSON_SENDER:
             return OPERATOR
+        if reg.is_session_sender(self.sender):
+            return f"an agent session outside galaius's runs ({self.sender[len(reg.SESSION_SENDER_PREFIX):][:8]})"
         origin = reg.get_run(self.sender)
         return f"another agent, {origin.name} (run {self.sender[:8]})" if origin is not None else f"Galaius on this computer ({self.sender})"
 
