@@ -68,6 +68,11 @@ def snapshot(into: Path, version: str, public_pem: bytes) -> Path:
     shutil.rmtree(keys)
     keys.mkdir()
     (keys / "test.pub").write_bytes(public_pem)
+    # The snapshot's processes run `-I`, which drops the test aid every other test's child gets (`tests/support/child_site`): inside a
+    # `systemd-run` service (the pre-push hook's) the server would refuse tools/list to a caller that is no run and not the person.
+    # This snapshot's caller reads no unit and no run scope, as that aid makes every test's child read it.
+    with (into / "galaius" / "account" / "caller.py").open("a") as caller:
+        caller.write("\n\nprocess_unit = lambda pid: None  # test snapshot (tests/upgrade/test_upgrade_integration.py): this process is the person's terminal\nrun_of_process = lambda pid: None\n")
     pyproject = into / "pyproject.toml"
     pyproject.write_text(re.sub(r'(?m)^version = "[^"]+"', f'version = "{version}"', pyproject.read_text(), count=1))
     return into
@@ -225,7 +230,9 @@ def test_running_mcp_server_and_machine_connection_upgrade_themselves_from_n_to_
 
         # What the client sees: its tools change under it (`list_changed`) and a note says why; its connection is never dropped.
         until(lambda: any(note.get("method") == "notifications/tools/list_changed" for note in notes) or (notes.append(lines.get(timeout=1)) if not lines.empty() else None), 120, "list_changed")
-        tools_after = request(3, "tools/list", {})["result"]["tools"]
+        answer = request(3, "tools/list", {})
+        assert "result" in answer, answer
+        tools_after = answer["result"]["tools"]
         assert {tool["name"] for tool in tools_after} == {tool["name"] for tool in tools_before}
         said = "moved to the galaius MCP server" if shared else "upgraded from 0.43.0"
         until(lambda: any(said in note.get("params", {}).get("data", "") for note in notes) or (notes.append(lines.get(timeout=1)) if not lines.empty() else None), 120, f"the note « {said} »")
@@ -246,7 +253,9 @@ def test_running_mcp_server_and_machine_connection_upgrade_themselves_from_n_to_
             assert (before[machine.pid], after[machine.pid]) == (first.path, second.path)
             assert shared or after[mcp.pid] == second.path
         # The client's session survived the move: this call needs the handshake the relay carried over to N+1's server.
-        assert {tool["name"] for tool in request(4, "tools/list", {})["result"]["tools"]} == {tool["name"] for tool in tools_before}
+        answer = request(4, "tools/list", {})
+        assert "result" in answer, answer
+        assert {tool["name"] for tool in answer["result"]["tools"]} == {tool["name"] for tool in tools_before}
     finally:
         mcp.stdin.close()
         machine.terminate()
