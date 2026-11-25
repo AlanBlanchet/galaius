@@ -241,6 +241,19 @@ def test_the_owners_own_web_runs_are_not_counted(at_work, started):
     assert line.enter(_spawn()).ahead is None  # counted, it would fill the one place
 
 
+def test_an_unqueued_role_never_waits_for_a_place_behind_builders(at_work, started):
+    """The deployer behind six builders waited 50 min twice (2026-11-24) while every slice waited on it."""
+    line = SpawnLine(limit=1, waiting_flag_minutes=5, waiting_gap_seconds=60, unqueued_roles=frozenset({"deployer"}))
+    at_work("builder", served_tools=None)                                                    # the one place taken
+    assert line.enter(_spawn()).ahead is not None                                            # another builder-like role waits
+    assert line.enter(_spawn().model_copy(update={"agent": "deployer"})).ahead is None       # the deployer starts at once
+    owner = at_work("deployer-run", agent="deployer", served_tools=None)
+    with line.resuming(reg.get_run("deployer-run")) as may:                                  # and its resumed turn is never held
+        assert may is True
+    owner.kill()
+    owner.wait()
+
+
 READING = ("Read", "Grep", "Glob", "SendMessage", "mcp__galaius__conversation_read", "mcp__galaius__ext__galaius__note_save")
 #: (tools its CLI serves it, None: not limited; denied; takes a place). 2026-11-18: 6 places of 6 taken while 12-15 runs
 #: waited, read-only thinkers among the holders. A place holds back memory; a run that can start no process holds its CLI's.
