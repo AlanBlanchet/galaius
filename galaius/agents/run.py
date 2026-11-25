@@ -520,8 +520,7 @@ def _vendor_says(line: dict) -> bool:
     if kind in _VENDOR_LINES:
         return True
     if kind == "result":
-        # A healthy result is the model's own final answer, unless it is only a short refusal worded as one (`quota.refused_as_answer`).
-        return bool(line.get("is_error")) or (isinstance(line.get("result"), str) and quota.refused_as_answer(line["result"]))
+        return bool(line.get("is_error"))  # a healthy result is the model's own final answer
     message = line.get("message")
     # Claude Code's own notice ("You've hit your limit · resets …") wears an assistant turn
     # written by the CLI, never the model: its model is "<synthetic>".
