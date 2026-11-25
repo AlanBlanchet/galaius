@@ -451,6 +451,9 @@ class Block(BaseModel):
     #: The instant the vendor named that period reopening at; None when it named none. `until` is what this PC passes over
     #: for, never past it (`Refusal.latest`): a rolling window reopens before the instant it names.
     reopens_at: float | None = None
+    #: True for the short bench an overloaded API earned (`record_refusal`'s `bench`): the vendor's, not the login's, so
+    #: forgetting the login (`forget_login`) never ends it. Written only when set.
+    overload: bool = Field(default=False, exclude_if=lambda value: not value)
 
     @staticmethod
     def length(count: int) -> float:
@@ -674,7 +677,9 @@ def record_refusal(provider: str, model: str | None, *, said: str = "", subscrip
         if previous is not None and moment < previous.until:
             # A weaker signal never shortens a live block; clearing one early is `served`'s job.
             until = max(until, previous.until)
-        blocks[key] = Block(until=until, count=count, at=max(moment, previous.at) if previous else moment, **named)
+        # An overload bench is marked only when it is the whole block: one over a usage limit still standing stays that limit's.
+        overload = bench is not None and (previous is None or moment >= previous.until or previous.overload)
+        blocks[key] = Block(until=until, count=count, at=max(moment, previous.at) if previous else moment, overload=overload, **named)
         if family is not None and model and refusal.pool not in model.lower():
             # A model id that carries no family token (an alias) is not reached by the pool's key: it is noted itself.
             blocks[model] = blocks[key]
@@ -880,6 +885,9 @@ def forget_login(provider: str, *, subscription: UUID | None = None, now: float 
     `keep_pools`: a model family's pool the vendor refused (`POOLS`) stays: asking again cannot reopen it before its reset,
     only another account does (`note_login`).
 
+    An overload bench (`Block.overload`) always stays: the vendor's API was overloaded for that model, whoever asks and
+    whichever login: his « Continuer » or message is taken at once by the next ranked model, never by the overloaded one.
+
     Blocks are ended, never dropped: the answer that follows still notes the login's lift (`served`) for its
     other paused runs."""
     moment = time.time() if now is None else now
@@ -891,7 +899,7 @@ def forget_login(provider: str, *, subscription: UUID | None = None, now: float 
         if usage is None:
             return
         for key, block in usage.quota_blocks().items():
-            if block.until > moment and not (keep_pools and key.startswith("~")):
+            if block.until > moment and not block.overload and not (keep_pools and key.startswith("~")):
                 usage.blocks[key] = block.model_copy(update={"until": moment})
         usage.pauses.pop("usage_limit", None)
 

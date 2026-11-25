@@ -115,6 +115,22 @@ def test_a_resumed_conversation_goes_to_his_other_login_else_to_the_next_ranked_
         assert reg.get_run("r1").subscription_id == logins["b"].id
 
 
+@pytest.mark.parametrize("sender", ["operator", reg.CUT_RESUME_SENDER])   # his message; the automatic resume of a cut run
+def test_with_one_provider_and_every_login_overloaded_a_resume_takes_the_lower_model_and_the_bench_stands(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sender: str) -> None:
+    """No other login and no other provider can take the turn, so a resume (his message, a « Continuer »; the automatic one) forgets this login's notes (`AgentRun.prepare_continue`).
+    An overload bench is the vendor's, never the login's: it stands, so the resume starts at once on the lower model, never on the overloaded one again.
+    The rest of the file leaves another provider installed on this PC, which hid it."""
+    provider, logins, _ = _stopped_run(monkeypatch, tmp_path)
+    monkeypatch.setattr(fallback, "PROVIDERS", {"claude": provider})   # the one provider installed, as on a clean runner
+    for login in (*logins.values(), OWN):
+        _hold("overload", login)
+    messaging.deliver_message("r1", "go on", sender=sender)
+    agent_queue.dispatch("r1")
+    assert (reg.get_run("r1").subscription_id, reg.get_run("r1").model) == (logins["a"].id, "lower-model")
+    for held in (logins["a"].id, logins["b"].id, None):
+        assert quota.blocked_until("claude", "fable-fixture", subscription=held) is not None, "forgetting the login did not end the vendor's overload"
+
+
 @pytest.mark.parametrize("line", [
     "There's an issue with the selected model (claude-nonexistent-9). It may not exist or you may not have access to it.",
     "Prompt is too long",
