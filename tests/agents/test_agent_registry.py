@@ -2471,7 +2471,7 @@ def test_a_cut_comes_back_by_itself_only_once_a_runner_here_resumes_cuts_and_onl
 
 
 @pytest.mark.parametrize("hours, resumes", [(1, True), (23, True), (25, False), (24 * 21, False)], ids=["1h", "23h", "25h", "three-weeks"])
-@pytest.mark.parametrize("how", ["killed", "process_gone"])
+@pytest.mark.parametrize("how", [pytest.param("killed", marks=pytest.mark.skipif(os.name != "posix", reason="Windows has no SIGKILL: no exit there reads as one")), "process_gone"])
 def test_a_process_cut_comes_back_by_itself_only_within_a_day_of_its_end(resuming, how, hours, resumes):
     """2026-11-24: 37 runs cut up to a month before woke at once and re-ran their stale briefs. A record whose process went
     away more than `CUT_RESUME_WINDOW` ago stays as it is for a person; one cut an hour ago still comes back."""

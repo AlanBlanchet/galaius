@@ -1585,13 +1585,22 @@ def test_a_copy_of_a_folder_with_no_file_arrives_as_an_empty_folder(tmp_path: Pa
 
 _REVOKED = {"type": "result", "subtype": "success", "is_error": True, "api_error_status": 401, "session_id": "SID",
             "result": "Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator."}
-_LIMITED = {"type": "result", "is_error": True, "session_id": "SID", "result": "You've hit your session limit · resets 5:20pm (Europe/Paris)"}
+
+
+def _limited(at: float) -> dict:
+    """A session limit heard at `at` that reopens an hour later, spoken in UTC: the reset is past whatever the hour of the day the test runs
+    (a fixed « 5:20pm » was a day-time lottery once the cut was only hours old)."""
+    reset = datetime.fromtimestamp(at + 3600, UTC)
+    return {"type": "result", "is_error": True, "session_id": "SID",
+            "result": f"You've hit your session limit · resets {reset.hour % 12 or 12}:{reset.minute:02d}{'am' if reset.hour < 12 else 'pm'} (UTC)"}
+
+
 _BROKEN = {"type": "result", "is_error": True, "session_id": "SID", "result": "Error: the build failed"}
 
 
 def _cut(run_id: str, kind: str, *, pid: int, at: float) -> None:
     """Run `run_id` cut by `kind` as its PC records it, ended at `at`."""
-    stream = {"login_lost": _REVOKED, "usage_limit": _LIMITED, "error": _BROKEN}.get(kind)
+    stream = {"login_lost": _REVOKED, "usage_limit": _limited(at), "error": _BROKEN}.get(kind)
     reg.raw_events_path(run_id).write_text(json.dumps(stream) + "\n" if stream else "")
     exit_code = {"killed": -9, "sigterm": -15, "stopped": -15}.get(kind, 1)
     if kind not in ("process_gone", "out_of_memory"):
