@@ -1,6 +1,6 @@
-"""report_issue must reliably get a problem to the maintainers: GitHub issue when gh is
-authed, else a prefilled issue page opened in the user's browser, else a local file + link.
-And it must NEVER raise — reporting a bug can't itself blow up."""
+"""report_issue records a report privately on this computer by default and never touches GitHub; only
+a call that says the person asked (`public=True`) files a public issue: gh when authed, else a prefilled
+issue link, else a local file + link. And it must NEVER raise — reporting a bug can't itself blow up."""
 
 import pytest
 
@@ -24,7 +24,7 @@ class _Ok:
 def test_files_github_issue_when_gh_available(monkeypatch):
     monkeypatch.setattr(fb.shutil, "which", lambda c: "/usr/bin/gh")
     monkeypatch.setattr(fb.subprocess, "run", lambda *a, **k: _Ok())
-    out = fb.report("click times out on a canvas", "steps to reproduce…", "bug")
+    out = fb.report("click times out on a canvas", "steps to reproduce…", "bug", public=True)
     assert "issues/42" in out
 
 
@@ -37,7 +37,7 @@ def test_kind_prefixes_title_and_appends_env_footer(monkeypatch):
 
     monkeypatch.setattr(fb.shutil, "which", lambda c: "/usr/bin/gh")
     monkeypatch.setattr(fb.subprocess, "run", fake_run)
-    fb.report("missing select_option", "would help", "limitation")
+    fb.report("missing select_option", "would help", "limitation", public=True)
     cmd = captured["cmd"]
     assert cmd[cmd.index("--title") + 1].startswith("[limitation] ")
     body = cmd[cmd.index("--body") + 1]
@@ -53,14 +53,14 @@ def test_invalid_kind_becomes_feedback(monkeypatch):
 
     monkeypatch.setattr(fb.shutil, "which", lambda c: "/usr/bin/gh")
     monkeypatch.setattr(fb.subprocess, "run", fake_run)
-    fb.report("note", "body", "not-a-kind")
+    fb.report("note", "body", "not-a-kind", public=True)
     assert captured["cmd"][captured["cmd"].index("--title") + 1].startswith("[feedback] ")
 
 
 def test_falls_back_to_local_file_without_gh(monkeypatch, tmp_path):
     monkeypatch.setattr(fb.shutil, "which", lambda c: None)  # no gh
     monkeypatch.setattr(fb, "FEEDBACK_DIR", tmp_path / "feedback")
-    out = fb.report("offline bug", "body text")
+    out = fb.report("offline bug", "body text", public=True)
     files = list((tmp_path / "feedback").glob("*.md"))
     assert "Saved feedback locally" in out and len(files) == 1
     assert "offline bug" in files[0].read_text()
@@ -70,7 +70,7 @@ def test_never_raises_even_when_everything_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(fb.shutil, "which", lambda c: "/usr/bin/gh")
     monkeypatch.setattr(fb.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
     monkeypatch.setattr(fb, "FEEDBACK_DIR", tmp_path / "feedback")
-    out = fb.report("x", "y")  # gh raises → local fallback still works
+    out = fb.report("x", "y", public=True)  # gh raises → local fallback still works
     assert "Saved feedback locally" in out
 
 
@@ -87,7 +87,7 @@ def test_gh_failure_reason_reaches_the_caller(monkeypatch, tmp_path):
     monkeypatch.setattr(fb.shutil, "which", lambda c: "/usr/bin/gh")
     monkeypatch.setattr(fb.subprocess, "run", lambda *a, **k: _Denied())
     monkeypatch.setattr(fb, "FEEDBACK_DIR", tmp_path / "feedback")
-    out = fb.report("t", "b")
+    out = fb.report("t", "b", public=True)
     assert "403" in out
 
 
@@ -103,7 +103,7 @@ def test_gh_never_inherits_stdin(monkeypatch, tmp_path):
 
     monkeypatch.setattr(fb.shutil, "which", lambda c: "/usr/bin/gh")
     monkeypatch.setattr(fb.subprocess, "run", fake_run)
-    fb.report("t", "b")
+    fb.report("t", "b", public=True)
     assert captured.get("stdin") == fb.subprocess.DEVNULL
 
 
@@ -113,7 +113,7 @@ def test_no_gh_returns_the_prefilled_issue_page_without_opening_it(monkeypatch, 
     monkeypatch.setattr(fb.shutil, "which", lambda c: None)
     monkeypatch.setattr(fb, "_open_browser", lambda url: opened.append(url) or True)
     monkeypatch.setattr(fb, "FEEDBACK_DIR", tmp_path / "feedback")
-    out = fb.report("crash on launch", "details here")
+    out = fb.report("crash on launch", "details here", public=True)
     assert opened == []
     assert f"https://github.com/{fb.REPO}/issues/new?" in out
     assert "crash%20on%20launch" in out
@@ -133,7 +133,7 @@ def test_gh_failure_returns_an_explicit_browser_action(monkeypatch, tmp_path):
     monkeypatch.setattr(fb.subprocess, "run", lambda *a, **k: _Denied())
     monkeypatch.setattr(fb, "_open_browser", lambda url: opened.append(url) or True)
     monkeypatch.setattr(fb, "FEEDBACK_DIR", tmp_path / "feedback")
-    out = fb.report("t", "b")
+    out = fb.report("t", "b", public=True)
     assert opened == []
     assert f"https://github.com/{fb.REPO}/issues/new?" in out
     assert "open" in out.lower() or "submit" in out.lower()
@@ -145,7 +145,7 @@ def test_fallback_offers_a_prefilled_issue_url(monkeypatch, tmp_path):
     still carries the prefilled new-issue URL, so nothing is ever lost."""
     monkeypatch.setattr(fb.shutil, "which", lambda c: None)
     monkeypatch.setattr(fb, "FEEDBACK_DIR", tmp_path / "feedback")
-    out = fb.report("crash on launch", "details here")
+    out = fb.report("crash on launch", "details here", public=True)
     assert f"https://github.com/{fb.REPO}/issues/new?" in out
     assert "crash%20on%20launch" in out
     assert "Saved feedback locally" in out
@@ -176,7 +176,7 @@ def test_prefilled_url_stays_valid_for_huge_bodies(monkeypatch, tmp_path, huge):
     leaves a severed %XX escape — even when every char encodes to three."""
     monkeypatch.setattr(fb.shutil, "which", lambda c: None)
     monkeypatch.setattr(fb, "FEEDBACK_DIR", tmp_path / "feedback")
-    out = fb.report("t", huge)
+    out = fb.report("t", huge, public=True)
     url = next(w for w in out.split() if w.startswith("https://") and "/issues/new?" in w)
     assert len(url) < 8000
     assert "%" not in url[-3:] or len(url[url.rindex("%"):]) == 3  # any trailing escape is whole
@@ -189,14 +189,16 @@ def test_cli_report_command_sends_through_feedback(monkeypatch, capsys):
 
     sent: dict = {}
 
-    def fake_report(title, body, kind="bug"):
-        sent.update(title=title, body=body, kind=kind)
+    def fake_report(title, body, kind="bug", public=False):
+        sent.update(title=title, body=body, kind=kind, public=public)
         return "Reported to galaius — https://github.com/AlanBlanchet/galaius/issues/7"
 
     monkeypatch.setattr(fb, "report", fake_report)
     cli_feedback.report("emulator black", "frames are black", kind="limitation")
-    assert sent == {"title": "emulator black", "body": "frames are black", "kind": "limitation"}
+    assert sent == {"title": "emulator black", "body": "frames are black", "kind": "limitation", "public": False}
     assert "issues/7" in capsys.readouterr().out
+    cli_feedback.report("emulator black", "frames are black", public=True)
+    assert sent["public"] is True
 
 
 def test_footer_survives_platform_platform_raising(monkeypatch):
@@ -253,7 +255,7 @@ def test_report_prepends_the_stale_banner(monkeypatch):
 
     monkeypatch.setattr(fb.shutil, "which", lambda c: "/usr/bin/gh")
     monkeypatch.setattr(fb.subprocess, "run", fake_run)
-    fb.report("clicks dropped after N actions", "repro steps", "bug")
+    fb.report("clicks dropped after N actions", "repro steps", "bug", public=True)
     body = captured["cmd"][captured["cmd"].index("--body") + 1]
     assert body.lstrip().startswith(">") and "may already be fixed" in body  # banner leads the body
 
@@ -275,7 +277,7 @@ def test_a_report_naming_a_listed_private_term_is_refused_before_any_delivery(mo
     monkeypatch.setattr(fb, "FEEDBACK_DIR", tmp_path / "feedback")
     monkeypatch.setattr(fb.shutil, "which", lambda c: "/usr/bin/gh")
     monkeypatch.setattr(fb.subprocess, "run", lambda *a, **k: pytest.fail("a private report reached gh"))
-    out = fb.report(title, body, "bug")
+    out = fb.report(title, body, "bug", public=True)
     assert out.startswith("Not reported") and str(terms) in out and "github.com" not in out
     assert not (tmp_path / "feedback").exists()
 
@@ -286,4 +288,59 @@ def test_a_clean_report_still_files_when_a_private_terms_list_exists(monkeypatch
     monkeypatch.setattr(fb, "PRIVATE_TERMS", terms)
     monkeypatch.setattr(fb.shutil, "which", lambda c: "/usr/bin/gh")
     monkeypatch.setattr(fb.subprocess, "run", lambda *a, **k: _Ok())
-    assert "issues/42" in fb.report("click times out", "steps", "bug")
+    assert "issues/42" in fb.report("click times out", "steps", "bug", public=True)
+
+
+def _forbid_github(monkeypatch):
+    """Any route to GitHub fails the test: gh, the browser, an issue link."""
+    monkeypatch.setattr(fb.shutil, "which", lambda c: pytest.fail(f"looked for {c}"))
+    monkeypatch.setattr(fb.subprocess, "run", lambda *a, **k: pytest.fail("a default report reached gh"))
+    monkeypatch.setattr(fb.subprocess, "Popen", lambda *a, **k: pytest.fail("a default report spawned a process"))
+    monkeypatch.setattr(fb, "_open_browser", lambda url: pytest.fail("a default report opened a browser"))
+
+
+def test_a_default_report_is_recorded_privately_and_never_reaches_github(monkeypatch, tmp_path):
+    """The invariant: a call without `public` never invokes gh, opens a browser or returns a
+    github.com issue link; it says where the private record is."""
+    _forbid_github(monkeypatch)
+    monkeypatch.setattr(fb, "FEEDBACK_DIR", tmp_path / "feedback")
+    out = fb.report("click times out", "steps to reproduce", "bug")
+    files = list((tmp_path / "feedback").glob("*.md"))
+    assert len(files) == 1 and str(files[0]) in out
+    assert "github.com" not in out and "issues/new" not in out
+    assert "click times out" in files[0].read_text() and "steps to reproduce" in files[0].read_text()
+    assert files[0].stat().st_mode & 0o077 == 0  # owner-only
+
+
+def test_a_default_report_naming_private_terms_is_kept_here_not_refused(monkeypatch, tmp_path):
+    """The private-terms refusal guards the PUBLIC tracker; a private record may name them."""
+    terms = tmp_path / "private-terms"
+    terms.write_text("zz-hidden-term\n")
+    monkeypatch.setattr(fb, "PRIVATE_TERMS", terms)
+    monkeypatch.setattr(fb, "FEEDBACK_DIR", tmp_path / "feedback")
+    _forbid_github(monkeypatch)
+    out = fb.report("crash", "seen with zz-hidden-term")
+    assert not out.startswith("Not reported") and len(list((tmp_path / "feedback").glob("*.md"))) == 1
+
+
+def test_a_default_report_never_raises_when_the_record_cannot_be_written(monkeypatch, tmp_path):
+    _forbid_github(monkeypatch)
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    monkeypatch.setattr(fb, "FEEDBACK_DIR", blocker / "feedback")  # a parent that is a file
+    out = fb.report("t", "b")
+    assert "Could not record" in out and "nothing was sent" in out and "github.com" not in out
+
+
+def test_the_mcp_tool_defaults_to_private_and_forwards_public(monkeypatch):
+    """The tool's `public` argument defaults to False and reaches `report` untouched."""
+    import asyncio
+
+    from galaius.server.tools import meta
+
+    seen: list[tuple] = []
+    monkeypatch.setattr(fb, "report", lambda *args: seen.append(args) or "ok")
+    asyncio.run(meta.report_issue("t", "b"))
+    asyncio.run(meta.report_issue("t", "b", "bug", True))
+    assert [args[3] for args in seen] == [False, True]
+    assert "public=True" in (meta.report_issue.__doc__ or "")

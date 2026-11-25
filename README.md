@@ -191,7 +191,7 @@ One tool per job. The generic ones take a `target` — unset for the browser, a 
 | `launch_app` · `reset_sandbox` | Run an app in an isolated display the agent owns; tear it down again. |
 | `list_desktop_windows` | List drivable targets — monitors, open windows, sandbox windows. |
 | `session` · `get_logs` · `download_asset` | Browser session lifecycle, network / console logs, authenticated downloads. |
-| `list_providers` · `report_issue` | What's configured, and file a bug or idea straight to the maintainers. |
+| `list_providers` · `report_issue` | What's configured, and record a bug or idea privately on this computer (a public issue only when asked). |
 
 ### Models and keys
 

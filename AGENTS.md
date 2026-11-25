@@ -20,7 +20,7 @@ Client and server:
 - The hosted server consumes a released public schema version and is never imported here. This
   repository never names or describes it beyond that.
 - User feedback arrives as GitHub issues on the public repo — `.github/ISSUE_TEMPLATE/` shapes the
-  human ones, galaius's own `report_issue` tool files the agent ones.
+  human ones; galaius's own `report_issue` tool records the agent ones privately and files a public issue only when the call says the owner asked (`public=True`).
 
 Ownership (short names map to the standalone `../galaius-core` checkout and `galaius`):
 
