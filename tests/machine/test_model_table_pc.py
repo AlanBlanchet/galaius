@@ -63,3 +63,66 @@ async def test_a_run_cut_mid_work_on_every_model_of_its_login_waits_for_the_reop
     assert cut.cause == "usage_limit" and cut.at is not None and cut.at > reg.get_run(run_id).finished_at + 3600, "the resume is due at the named reset"
     assert await _agents(base, tmp_path).resume_paused() == [], "nothing is asked of a login whose window is shut"
     assert asked() == ["model-a"], f"the shut login was asked again: {asked()}"
+
+
+async def test_member_3_claude_shut_on_every_login_the_conversation_is_continued_by_another_program_on_the_stand_in(standin, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Member 3 (owner 2026-11-20 « any form of usage »): the run's program refuses every model with its login's whole window; another signed-in
+    program is in the table: his message to the run is answered by a successor run there, a real subprocess, with no hand."""
+    from galaius.agents import messaging, walk
+    from galaius.agents.run import run_agent as launch
+    from tests.support.agents import install_provider, use_policy
+    from tests.agents.limits.test_model_table_living import _Standin, _continue
+    from galaius.agents import run as run_module
+
+    class _OtherStandin(_Standin):
+        name = "other"
+
+    plan, asked, tmp_path = standin
+    other = _OtherStandin()
+    install_provider(monkeypatch, other)
+    monkeypatch.setattr(walk, "PROVIDERS", {"claude": walk.PROVIDERS["claude"], "other": other})
+    use_policy(monkeypatch, messaging, run_module, agents={"tester": "queue-model"}, reasoning={"tester": "medium"}, providers={"claude": True, "other": True})
+    rows = (("claude", "model-a"), ("claude", "model-b"), ("other", "model-c"))
+    monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None, among=None: tuple(
+        reg.LaunchCandidate(provider=provider, model=model, rank=index) for index, (provider, model) in enumerate(rows) if provider in {one.name for one in providers}))
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
+    plan(all={str(turn): "week" for turn in range(2, 30)})   # every Claude model, from its second turn on, hits the login's window
+    first = await launch(walk.PROVIDERS["claude"], "go", agent="tester", cwd=str(tmp_path), quota_window=0.5)
+    await first.wait()
+    run = reg.get_run(first.run_id)
+    assert (run.provider, run.model, run.status) == ("claude", "model-a", "done")
+    state = await asyncio.to_thread(_continue, run.run_id, "operator")   # his message: refused by the login's window, then handed on
+    assert state.successor is not None or reg.get_run(run.run_id).successor is not None, f"asked {asked()}, run {state.status}: no successor took the conversation"
+    successor = reg.get_run(reg.get_run(run.run_id).successor)
+    assert successor.provider == "other", f"continued on {successor.provider}"
+    assert successor.model == "model-c" and "model-c" in asked(), f"asked {asked()}"
+
+
+async def test_member_6_a_lent_run_steps_down_models_of_its_one_program_on_the_stand_in_and_is_never_handed_on(standin, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Member 6: a run lent to a member (it runs on none of this PC's logins). Its model is refused, a lower row of its own program answers; another
+    program is in the table and open, yet the lent run is never handed on to it, and its login never moves."""
+    from galaius.agents import messaging, run as run_module, walk
+    from galaius.agents.limits.subscriptions import RunSubscription
+    from galaius.agents.run import run_agent as launch
+    from tests.agents.limits.test_model_table_living import _Standin, _continue
+    from tests.support.agents import install_provider, use_policy
+
+    class _OtherStandin(_Standin):
+        name = "other"
+
+    plan, asked, tmp_path = standin
+    other = _OtherStandin()
+    install_provider(monkeypatch, other)
+    monkeypatch.setattr(walk, "PROVIDERS", {"claude": walk.PROVIDERS["claude"], "other": other})
+    use_policy(monkeypatch, messaging, run_module, agents={"tester": "queue-model"}, reasoning={"tester": "medium"}, providers={"claude": True, "other": True})
+    rows = (("claude", "model-a"), ("other", "model-c"), ("claude", "model-b"))   # the other program sits between the two Claude rows
+    monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None, among=None: tuple(
+        reg.LaunchCandidate(provider=provider, model=model, rank=index) for index, (provider, model) in enumerate(rows) if provider in {one.name for one in providers}))
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
+    plan(model_a={str(turn): "pool" for turn in range(2, 30)})
+    first = await launch(walk.PROVIDERS["claude"], "go", agent="tester", cwd=str(tmp_path), quota_window=0.5)
+    await first.wait()
+    reg.save_run(reg.get_run(first.run_id).model_copy(update={"subscription": RunSubscription(lent=True)}))
+    state = await asyncio.to_thread(_continue, first.run_id, "operator")
+    assert (state.status, state.provider, state.model, state.successor) == ("done", "claude", "model-b", None), f"asked {asked()}"
+    assert "model-c" not in asked() and state.subscription is not None and state.subscription.lent
