@@ -2608,6 +2608,22 @@ def test_a_model_overloaded_twice_in_a_row_is_passed_over_on_that_login_so_the_n
     assert quota.login_pause("claude") is None, "an overloaded vendor is no login's usage window: nothing else is held"
 
 
+@pytest.mark.parametrize(("other_takes_it", "waits"), [(False, True), (True, False)], ids=["alone", "another-login-or-provider"])
+def test_a_run_whose_model_is_benched_by_an_overload_resumes_when_the_bench_ends_unless_something_else_takes_the_turn(resuming, monkeypatch, other_takes_it, waits):
+    """One login, one provider, the model overloaded twice in a row: the automatic resume comes when the 600 s bench ends, not into the overload again after
+    its short backoff; with another login or provider to take the turn it is due after the backoff as before."""
+    from galaius.agents.limits import quota
+
+    run = _ended_on("ovl4", _OVERLOADED, pid=514)
+    reg._update_fields("ovl4", {"resumed_cut": "overloaded", "resumed_cuts": 1})
+    quota.record_refusal("claude", run.model, now=run.finished_at, bench=reg.OVERLOAD_BENCH)
+    monkeypatch.setattr(reg, "open_logins", lambda run: (object(),) if other_takes_it else ())
+    monkeypatch.setattr(reg.fallback, "moves", lambda run: False)
+    backoff = run.finished_at + reg.OVERLOAD_RESUME_BACKOFF[1]
+    assert reg.overload_resume_at(reg.get_run("ovl4"), now=run.finished_at + 1) == (run.finished_at + reg.OVERLOAD_BENCH if waits else backoff)
+    assert reg.overload_resume_at(reg.get_run("ovl4"), now=run.finished_at + reg.OVERLOAD_BENCH + 1) == backoff, "the bench over: the backoff alone"
+
+
 def test_one_run_is_read_along_its_own_launch_links_as_the_forest_lists_it():
     """A web read of one run rebuilt the whole forest each second its conversation stayed open (~0.3 s for
     1,500 runs, 2026-11-02); `tree_run` walks its launch links instead and must agree with `forest`."""

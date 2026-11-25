@@ -598,6 +598,13 @@ def blocked_until(provider: str, model: str | None, *, subscription: UUID | None
     return max(untils, default=None)
 
 
+def overload_until(provider: str, model: str | None, *, subscription: UUID | None = None, now: float | None = None) -> float | None:
+    """When the overload bench (`Block.overload`) this model earned on this login ends, None when it is under none."""
+    moment = time.time() if now is None else now
+    block = _blocks(provider, subscription, moment).get(model or "")
+    return block.until if block is not None and block.overload and block.until > moment else None
+
+
 def pool_blocked_until(provider: str, model: str | None, *, subscription: UUID | None = None, now: float | None = None) -> float | None:
     """When this model's FAMILY pool (`POOLS`) is open again on this login (refused, or past his stop), None when it is not
     shut: the vendor said « Switch to another model » for exactly this family, unlike a model blocked by an account-level limit."""

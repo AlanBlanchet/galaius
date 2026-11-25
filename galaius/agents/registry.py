@@ -3426,11 +3426,18 @@ def network_resume_at(run: AgentRun, *, now: float | None = None) -> float | Non
 def overload_resume_at(run: AgentRun, *, now: float | None = None) -> float | None:
     """When `run`, whose last turn its provider's API ended as overloaded (`RunCut.overloaded`), is resumed by itself:
     `OVERLOAD_RESUME_BACKOFF` after that end, one step further per automatic resume already made for that cut. None past the
-    last step. `now` is unread, as in `network_resume_at`."""
+    last step, and not before its model's overload bench ends when nothing else can take the turn. `now` only tells whether that bench still stands."""
     if run.finished_at is None:
         return None
     made = run.resumed_cuts if run.resumed_cut == "overloaded" else 0
-    return None if made >= len(OVERLOAD_RESUME_BACKOFF) else run.finished_at + OVERLOAD_RESUME_BACKOFF[made]
+    if made >= len(OVERLOAD_RESUME_BACKOFF):
+        return None
+    due = run.finished_at + OVERLOAD_RESUME_BACKOFF[made]
+    # Its model benched on its login (`OVERLOAD_BENCH`) with no other login or provider to take the turn: the vendor's API is the
+    # one thing left to wait for, so the automatic try comes when the bench ends, never into the overload again. A person's message
+    # (his « Continuer ») never waits: the next ranked model takes it at once (`quota.forget_login` leaves the bench standing).
+    bench = quota.overload_until(run.provider, run.model, subscription=run.subscription_id, now=now)
+    return due if bench is None or open_logins(run) or fallback.moves(run) else max(due, bench)
 
 
 def cut_cause(run: AgentRun) -> CutCause | None:
