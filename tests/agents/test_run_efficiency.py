@@ -58,11 +58,40 @@ def test_a_role_with_too_few_peers_or_a_start_with_no_init_line_gets_no_verdict_
 
 
 def test_the_init_line_of_a_raw_stream_gives_the_kit_and_another_provider_s_stream_gives_none(tmp_path: Path) -> None:
-    init = {"type": "system", "subtype": "init", "tools": ["a"] * 27, "mcp_servers": [{}], "skills": ["s"] * 48, "memory_paths": {"auto": "/x"}}
+    init = {"type": "system", "subtype": "init", "tools": ["a"] * 27, "mcp_servers": [{"name": "galaius", "status": "connected"}, {"name": "telegram", "status": "failed"}, {"name": "x"}], "skills": ["s"] * 48, "memory_paths": {"auto": "/x"}}
     (tmp_path / f"{run_id(1)}.raw.jsonl").write_text(json.dumps({"type": "other"}) + "\n" + json.dumps(init) + "\n")
     (tmp_path / f"{run_id(2)}.raw.jsonl").write_text(json.dumps({"type": "thread.started"}) + "\n")
-    assert read_start(tmp_path, run_id(1)) == StartKit(tools=27, mcp=1, skills=48, memory=True)
+    assert read_start(tmp_path, run_id(1)) == StartKit(tools=27, mcp=1, skills=48, memory=True, servers=frozenset({"galaius"}))
     assert read_start(tmp_path, run_id(2)) is None and read_start(tmp_path, run_id(3)) is None
+
+
+def test_a_run_is_measured_only_against_the_peers_of_its_own_login_because_a_login_s_config_folder_decides_the_connectors_and_vendor_skills() -> None:
+    account = StartKit(tools=17, mcp=1, skills=50, memory=True, servers=frozenset({"galaius"}))
+    owner = StartKit(tools=17, mcp=7, skills=63, memory=True, servers=frozenset({"galaius", "docs"}))
+    rows = [row(1, login="b"), *(row(10 + i, login="a") for i in range(4)), *(row(20 + i, login="b") for i in range(4))]
+    kinds = {run_id(10 + i): owner for i in range(4)} | {run_id(20 + i): account for i in range(4)} | {run_id(1): account}
+    found = efficiency([rows[0]], rows, Path("."), kit=kits(kinds), pick=no_pick, fenced=lambda *_: False).runs[0]
+    assert found.started_with_less == [] and found.start_unjudged == ""
+    alone = efficiency([rows[0]], [rows[0], *rows[1:5]], Path("."), kit=kits(kinds), pick=no_pick, fenced=lambda *_: False).runs[0]
+    assert alone.start_unjudged == "0 peers of 3", "no peer on its login is no verdict, never the other login's start as the normal"
+
+
+def test_a_server_the_peers_had_connected_and_this_start_lacks_is_named_though_one_server_is_below_the_count_gap() -> None:
+    had = StartKit(tools=17, mcp=1, skills=50, memory=True, servers=frozenset({"galaius"}))
+    pending = StartKit(tools=17, mcp=0, skills=50, memory=True, servers=frozenset())
+    rows = [row(1), *(row(10 + i) for i in range(4))]
+    found = efficiency([rows[0]], rows, Path("."), kit=kits({run_id(10 + i): had for i in range(4)} | {run_id(1): pending}), pick=no_pick,
+                       fenced=lambda *_: False).runs[0]
+    assert found.started_with_less == ["MCP server galaius not connected"]
+
+
+def test_a_fenced_run_is_never_compared_with_its_role_s_normal_start(tmp_path: Path) -> None:
+    (tmp_path / f"{run_id(1)}.json").write_text(json.dumps({"run_id": run_id(1), "fence": {"working_directory": "/x"}}))
+    (tmp_path / f"{run_id(2)}.json").write_text(json.dumps({"run_id": run_id(2), "fence": None}))
+    assert eff.read_fenced(tmp_path, run_id(1)) and not eff.read_fenced(tmp_path, run_id(2)) and not eff.read_fenced(tmp_path, run_id(3))
+    rows = [row(1), *(row(10 + i) for i in range(4))]
+    found = efficiency([rows[0]], rows, Path("."), kit=kits({run_id(1): StartKit(tools=12, mcp=1, skills=50, memory=True)}), pick=no_pick, fenced=lambda _r, rid: rid == run_id(1)).runs[0]
+    assert found.start_unjudged == "fenced run" and found.started_with_less == []
 
 
 # --- 2. bookkeeping ------------------------------------------------------------------------------------------------------------
@@ -198,7 +227,7 @@ def registry(tmp_path: Path) -> Path:
         (folder / f"{run_id(n)}.json").write_text(json.dumps({"run_id": run_id(n), "agent": "backend-engineer", "status": "done", "provider": "claude", "model": "m",
                                                                "started_at": now - 1800 - n, "finished_at": now - 60 - n, "stream_digest": {"source": "x"}}))
         tools = 27 if n == 1 else 141
-        init = {"type": "system", "subtype": "init", "tools": ["t"] * tools, "mcp_servers": [{}] * 6, "skills": ["s"] * 60, "memory_paths": {"auto": "/x"}}
+        init = {"type": "system", "subtype": "init", "tools": ["t"] * tools, "mcp_servers": [{"name": f"s{i}", "status": "connected"} for i in range(6)], "skills": ["s"] * 60, "memory_paths": {"auto": "/x"}}
         (folder / f"{run_id(n)}.raw.jsonl").write_text(json.dumps(init) + "\n")
     return folder
 
@@ -224,7 +253,7 @@ def test_the_periodic_check_posts_what_broke_once_per_window_as_a_note_that_is_n
     cli.check(post=True, to=run_id(9))
     assert len(sent) == 1 and sent[0]["target"] == run_id(9) and sent[0]["sender"] == cli.CHECK_SENDER and sent[0]["turn"].fyi
     assert "tools 27 of 141" in sent[0]["body"] and sent[0]["message_id"].startswith("efficiency-check-")
-    (registry / f"{run_id(1)}.raw.jsonl").write_text(json.dumps({"type": "system", "subtype": "init", "tools": ["t"] * 141, "mcp_servers": [{}] * 6, "skills": ["s"] * 60, "memory_paths": {"a": "/x"}}) + "\n")
+    (registry / f"{run_id(1)}.raw.jsonl").write_text(json.dumps({"type": "system", "subtype": "init", "tools": ["t"] * 141, "mcp_servers": [{"name": f"s{i}", "status": "connected"} for i in range(6)], "skills": ["s"] * 60, "memory_paths": {"a": "/x"}}) + "\n")
     cli.check(post=True, to=run_id(9))
     assert len(sent) == 1, "nothing broke, nothing is sent"
     assert "0 findings" in capsys.readouterr().out

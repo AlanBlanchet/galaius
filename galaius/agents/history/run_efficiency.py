@@ -1,14 +1,16 @@
 """Is a run's time and capability spent on its task? The five ways a run loses either to something other than its task, read from what
 the run records and transcripts already hold:
 
-1. `started_with_less`: the process came up with fewer tools, MCP servers or skills, or without memory notes, than the role's normal start
-   (the `system init` line of the run's raw stream, against the role's peers over `baseline_days`);
+1. `started_with_less`: the process came up with fewer tools, connected MCP servers or skills, without a server its peers had connected, or
+   without memory notes, than the role's normal start (the `system init` line of the run's raw stream, against the role's peers over
+   `baseline_days` ON THE SAME LOGIN: a login's own config folder decides which account connectors and vendor skills the CLI hands every
+   run, so a run is never measured against another login's start, and a fenced run's tools are the fence's);
 2. bookkeeping: the share of its tool calls that serve the process around the task (`run_slowness.BOOKKEEPING`);
 3. a wait for an agent place (`RunProfile.queued`) or, now, a spawn still waiting for one (`health.agents`);
 4. `vendor_end`: it ended by a vendor error (an overload, a rate or usage limit, a lost login) and nothing carried its work on;
 5. `model_below_pick`, `effort_below_role`: it ran on a model the role's rule ranks below its first pick, or at a lower effort than its role's usual.
 
-A verdict needs `baseline_peers` other runs of the same role (and provider, for a start) to compare with: with fewer it says nothing, it never
+A verdict needs `baseline_peers` other runs of the same role (and provider and login, for a start) to compare with: with fewer it says nothing, it never
 guesses. Every threshold is a field of `EfficiencyLimits`. Stdlib JSON over the record and the head of the raw stream; no server, no registry import."""
 
 import json
@@ -30,6 +32,8 @@ VENDOR_SAID = re.compile(r"API Error:\s*(?:429|5\d\d)|\boverloaded\b|rate.?limit
 EFFORT = ("minimal", "low", "medium", "high", "xhigh", "max")
 #: Lines of a raw stream read for its `system init` line (it is the first).
 INIT_LINES = 40
+#: The status the CLI's `system init` line gives an MCP server that is up.
+CONNECTED = "connected"
 
 
 class EfficiencyLimits(BaseModel):
@@ -61,9 +65,21 @@ class StartKit(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     tools: int
+    #: MCP servers connected at start (one that failed, waits for a login or was still pending is a server the run does not have).
     mcp: int
     skills: int
     memory: bool
+    #: The names of the connected servers: a start without the one its peers all had (the browser's, galaius's) is a loss a count of 1 hides.
+    servers: frozenset[str] = frozenset()
+
+
+def read_fenced(root: Path, run_id: str) -> bool:
+    """Whether the run's record names a fence (a community run: its tools and folders are the fence's choice, never the role's normal)."""
+    try:
+        record = json.loads((root / f"{run_id}.json").read_bytes())
+    except (OSError, ValueError):
+        return False
+    return isinstance(record, dict) and bool(record.get("fence"))
 
 
 def read_start(root: Path, run_id: str) -> StartKit | None:
@@ -83,7 +99,10 @@ def read_start(root: Path, run_id: str) -> StartKit | None:
                 if isinstance(event, dict) and event.get("type") == "system" and event.get("subtype") == "init":
                     count = lambda key: len(event[key]) if isinstance(event.get(key), list) else 0  # noqa: E731
                     memory = event.get("memory_paths")
-                    return StartKit(tools=count("tools"), mcp=count("mcp_servers"), skills=count("skills"), memory=bool(memory))
+                    servers = event.get("mcp_servers")
+                    up = frozenset(str(item.get("name") or index) for index, item in enumerate(servers if isinstance(servers, list) else [])
+                                   if isinstance(item, dict) and item.get("status") == CONNECTED)
+                    return StartKit(tools=count("tools"), mcp=len(up), skills=count("skills"), memory=bool(memory), servers=up)
     except OSError:
         pass
     return None
@@ -170,6 +189,9 @@ def _less(kit: StartKit, peers: list[StartKit], limits: EfficiencyLimits) -> lis
         normal = _normal([getattr(peer, name) for peer in peers])
         if getattr(kit, name) < limits.start_ratio * normal and normal - getattr(kit, name) >= limits.start_min_gap:
             said.append(f"{label} {getattr(kit, name)} of {normal}")
+    for server in sorted(name for name in set().union(*(peer.servers for peer in peers)) - kit.servers):
+        if sum(server in peer.servers for peer in peers) * 2 >= len(peers):
+            said.append(f"MCP server {server} not connected")
     if not kit.memory and sum(peer.memory for peer in peers) * 2 >= len(peers):
         said.append("no memory notes")
     return said
@@ -185,8 +207,10 @@ def vendor_end(row: RunRow) -> str:
 
 
 def efficiency(rows: list[RunRow], baseline: Iterable[RunRow], root: Path, limits: EfficiencyLimits = EfficiencyLimits(),
-               *, kit: Callable[[Path, str], StartKit | None] = read_start, pick: Callable[[Path, RunRow], Pick | None] = read_pick) -> Efficiency:
-    """The efficiency of `rows`, each judged against the runs of the same role in `baseline` (itself excluded)."""
+               *, kit: Callable[[Path, str], StartKit | None] = read_start, pick: Callable[[Path, RunRow], Pick | None] = read_pick,
+               fenced: Callable[[Path, str], bool] = read_fenced) -> Efficiency:
+    """The efficiency of `rows`, each judged against the runs of the same role in `baseline` (itself excluded); its start against the peers
+    that came up under the same provider and login."""
     roles = {row.role for row in rows}
     peers_of = [row for row in baseline if row.role in roles]
     kits: dict[str, StartKit | None] = {}
@@ -205,11 +229,13 @@ def efficiency(rows: list[RunRow], baseline: Iterable[RunRow], root: Path, limit
     judged: list[RunEfficiency] = []
     for row in rows:
         mine = start_of(row)
-        peers = [start_of(p) for p in peers_of if p.role == row.role and p.provider == row.provider and p.run_id != row.run_id]
-        known = [p for p in peers if p is not None]
+        same_login = [start_of(p) for p in peers_of if p.role == row.role and p.provider == row.provider and p.login == row.login and p.run_id != row.run_id]
+        known = [p for p in same_login if p is not None]
         less, unjudged = [], ""
         if mine is None:
             unjudged = "no start line"
+        elif fenced(root, row.run_id):
+            unjudged = "fenced run"
         elif len(known) < limits.baseline_peers:
             unjudged = f"{len(known)} peers of {limits.baseline_peers}"
         else:
@@ -262,9 +288,12 @@ def findings(report: Slowness, found: Efficiency) -> list[str]:
         worst: dict[str, tuple[int, int]] = {}   # what was short -> the lowest count seen, and the normal
         for _, parts in runs:
             for part in parts:
-                label, _, counts = part.partition(" of ")
-                name, _, value = label.rpartition(" ") if counts else (part, "", "")
-                worst[name] = (min(int(value), worst.get(name, (10**9, 0))[0]), int(counts)) if counts else (0, 0)
+                label, _, counts = part.rpartition(" of ")
+                name, _, value = label.rpartition(" ")
+                if counts.isdigit() and value.isdigit():
+                    worst[name] = (min(int(value), worst.get(name, (10**9, 0))[0]), int(counts))
+                else:
+                    worst[part] = (0, 0)
         what = ", ".join(f"{name} {low} of {normal}" if normal else name for name, (low, normal) in worst.items())
         ids = [run for run, _ in runs]
         said.append(f"{role}: {len(ids)} run{'s' if len(ids) > 1 else ''} ({', '.join(ids[:4])}{', …' if len(ids) > 4 else ''}) started with less than the role's normal: {what}"
