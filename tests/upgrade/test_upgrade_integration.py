@@ -89,13 +89,14 @@ def reported_version(runtime: Runtime, environment: dict[str, str]) -> str:
     return subprocess.run(runtime.command(("--version",)), env=environment, capture_output=True, text=True, timeout=120).stdout.strip()
 
 
-def until(condition, timeout: float, what: str):
+def until(condition, timeout: float, what: str, store: RuntimeStore | None = None):
+    """The first truthy answer of `condition`; the registered processes (`store`) are named in the failure."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         if (value := condition()):
             return value
         time.sleep(0.2)
-    raise AssertionError(f"timed out waiting for {what}")
+    raise AssertionError(f"timed out waiting for {what}" + ("" if store is None else f"; registered: { {pid: path.name for pid, path in running(store).items()} }"))
 
 
 class MachineChannel:
@@ -208,7 +209,7 @@ def test_running_mcp_server_and_machine_connection_upgrade_themselves_from_n_to_
         shared = SharedEndpoint.supported()  # POSIX: `galaius mcp` is a relay to one shared server; Windows: a supervisor and its worker, like the machine connection
         # Everything registered on N: the machine's supervisor and worker, and for the MCP client the relay and the shared server
         # (or its supervisor and worker): four whatever the system, read from the registrations, never /proc.
-        until(lambda: list(running(store).values()).count(first.path) >= 4, 30, "two clients' processes and two of the machine's on N")
+        until(lambda: list(running(store).values()).count(first.path) >= 4, 30, "two clients' processes and two of the machine's on N", store)
         before = running(store)
         if shared:
             assert set(before) >= {mcp.pid, machine.pid} and len(before) == 4 and set(before.values()) == {first.path}
@@ -237,7 +238,7 @@ def test_running_mcp_server_and_machine_connection_upgrade_themselves_from_n_to_
             found = running(store)
             return found if list(found.values()).count(first.path) == (1 if shared else 0) and list(found.values()).count(second.path) >= (3 if shared else 4) else None
 
-        after = until(moved, 120, "N's processes gone but the relay, N+1's all up")
+        after = until(moved, 120, "N's processes gone but the relay, N+1's all up", store)
         assert mcp.poll() is None and machine.poll() is None
         if shared:
             assert (before[mcp.pid], after[mcp.pid]) == (first.path, first.path)  # the relay, registered: N stays in use for as long as that client does
