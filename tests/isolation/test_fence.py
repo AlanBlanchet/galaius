@@ -748,8 +748,46 @@ def test_a_continued_turn_starts_the_galaius_its_runner_finds_now_never_the_remo
     assert _galaius_command()[0] == str(now)  # what its server starts, `_fenced` binds
     if not available()[0]:
         pytest.skip(f"no fence on this PC to start it in: {available()[1]}")
-    done = subprocess.run(_fenced([str(now)], recorded, claude), cwd=recorded.start, capture_output=True, text=True, timeout=60)
+    done = subprocess.run(_fenced([str(now)], recorded, claude, "run-1"), cwd=recorded.start, capture_output=True, text=True, timeout=60)
     assert (done.returncode, done.stdout.strip()) == (0, "served from installed-rt"), done.stderr
+
+
+def test_the_files_a_turn_is_shown_are_bound_read_only_at_their_own_path(home: Path, tmp_path: Path) -> None:
+    """The image a message names by its path (`RunMedia`) sits in the runner's own folder, which the fence hides: a turn
+    shown it binds that file alone, read-only, at the path it was named by (a photo sent from the phone reached its agent as
+    « l'image jointe n'est pas arrivée sur ce PC », 2026-11-25). A missing file and a link are left out."""
+    folder = home / ".galaius" / "out" / "agents with accents é"
+    folder.mkdir(parents=True)
+    photo, other = folder / "run-1.media.0123456789abcdef0123.png", folder / "run-1.run.json"
+    photo.write_bytes(b"\x89PNG\r\n\x1a\n")
+    other.write_text("{}")
+    link = folder / "run-1.media.fedcba9876543210fedc.png"
+    link.symlink_to(photo)
+    fence = _spec(home, tmp_path).build(shown=(photo, photo, link, folder / "gone.png"))
+    shown = [bind for bind in fence.binds if folder in bind.target.parents]
+    assert [(bind.source, bind.target, bind.writable) for bind in shown] == [(photo, photo, False)]
+    assert not any(bind.target in {folder, other} for bind in fence.binds)
+
+
+@live
+@bubblewrap
+def test_an_agent_in_the_fence_reads_the_image_its_message_names(home: Path, tmp_path: Path) -> None:
+    """Real bubblewrap: the file named in a message opens inside the fence, byte for byte, and its folder shows nothing else
+    (not the run's record, not another run's image)."""
+    folder = home / ".galaius" / "out" / "agents"
+    folder.mkdir(parents=True, exist_ok=True)
+    photo, another = folder / "run-1.media.0123456789abcdef0123.png", folder / "run-2.media.0123456789abcdef0123.png"
+    photo.write_bytes(b"\x89PNG\r\n\x1a\nphoto")
+    another.write_bytes(b"\x89PNG\r\n\x1a\nother")
+    (folder / "run-1.json").write_text("{}")
+    probe = ("import json, os, sys; print(json.dumps([open(sys.argv[1], 'rb').read().endswith(b'photo'), sorted(os.listdir(os.path.dirname(sys.argv[1])))]))")
+    claude = _Installed("claude", Path(sys.executable))
+    spec = _spec(home, tmp_path)
+    done = subprocess.run(fenced([sys.executable, "-c", probe, str(photo)], spec, claude, shown=(photo,)), cwd=spec.build().cwd, capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == [True, [photo.name]]
+    hidden = subprocess.run(fenced([sys.executable, "-c", probe, str(photo)], spec, claude), cwd=spec.build().cwd, capture_output=True, text=True, timeout=60)
+    assert hidden.returncode != 0   # without the bind the folder is not there: what the agent met
 
 
 def test_a_turn_whose_cli_is_installed_nowhere_is_refused_naming_it(home: Path, tmp_path: Path) -> None:

@@ -758,10 +758,11 @@ def _galaius_command() -> tuple[str, list[str]]:
     return console_python(), ["-m", "galaius", "mcp"]
 
 
-def _fenced(argv: list[str], fence: FenceSpec | None, provider: AgentProvider) -> list[str]:
+def _fenced(argv: list[str], fence: FenceSpec | None, provider: AgentProvider, run_id: str) -> list[str]:
     """`argv`, a turn of `provider`, inside `fence` with the galaius its server starts (`mesh_config`, or its CLI's own
-    entry) as this process finds it now (`fenced`)."""
-    return fenced(argv, fence, provider, (_galaius_command()[0],))
+    entry) as this process finds it now, and every image run `run_id` was shown readable (`RunMedia.held`: the paths its
+    messages name, in a folder the fence otherwise hides) (`fenced`)."""
+    return fenced(argv, fence, provider, (_galaius_command()[0],), reg.RunMedia.held(run_id) if fence is not None else ())
 
 
 #: How every brief the launcher hands a role begins: a session that opens with it is agent work
@@ -942,7 +943,7 @@ class AheadLaunch(BaseModel):
         stderr = stderr if later else reg.open_stderr(run_id, append=False)
         try:
             return await asyncio.create_subprocess_exec(
-                *contained(_fenced(spawnable(argv, env), self.fence, self.provider), run_id=run_id), cwd=self.cwd, env=env,
+                *contained(_fenced(spawnable(argv, env), self.fence, self.provider, run_id), run_id=run_id), cwd=self.cwd, env=env,
                 # Never the launcher's own stdin: Claude Code waits 3 s for input on one that is no
                 # terminal, and an MCP server's stdin carries its protocol.
                 stdin=asyncio.subprocess.PIPE if ahead else asyncio.subprocess.DEVNULL,
@@ -1317,7 +1318,7 @@ def _spawn_turn(
     stderr_file = tempfile.TemporaryFile()
     try:
         process = subprocess.Popen(
-            contained(_fenced(spawnable(argv, env), run.fence, provider), run_id=run.run_id), cwd=run.cwd or ".", env=env,
+            contained(_fenced(spawnable(argv, env), run.fence, provider, run.run_id), run_id=run.run_id), cwd=run.cwd or ".", env=env,
             stdin=subprocess.DEVNULL if stdin is None else subprocess.PIPE, stdout=sink, stderr=stderr_file,  # never the launcher's stdin (`AheadLaunch.start`)
             **process_group_options(),
         )

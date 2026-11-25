@@ -1090,6 +1090,13 @@ class RunMedia:
         return tuple(dict.fromkeys(names))
 
     @classmethod
+    def held(cls, run_id: str) -> tuple[Path, ...]:
+        """The files of every image kept for run `run_id` so far, whichever message showed it: a turn names the images of the
+        messages before it too, and a fenced agent opens only the files its fence shows (`FenceSpec.build`, `shown`)."""
+        prefix = f"{_safe_run_id(run_id)}.media."
+        return tuple(sorted(path for path in agents_dir().glob(f"{prefix}*") if re.fullmatch(MEDIA_KEY, path.name[len(prefix):]) and path.is_file()))
+
+    @classmethod
     def keep_files(cls, run_id: str, paths: Iterable[Path]) -> tuple[str, ...]:
         """`keep` of the image files at `paths` (ValueError: one is no image)."""
         return cls.keep(run_id, (AgentMedia.of(path.read_bytes()) for path in paths))
