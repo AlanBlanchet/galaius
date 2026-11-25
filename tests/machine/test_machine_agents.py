@@ -42,7 +42,7 @@ from galaius.diagnostics.error_reports import MachineErrorReports
 from galaius.machine.connection import signing
 from galaius.machine.connection.config import MachineConfig
 from galaius.machine.connection.runner import MachineRunner
-from galaius.agents.limits import admission
+from galaius.agents.limits import admission, quota
 from galaius.agents.policy import PolicyError
 from galaius.agents.providers import UnsupportedToolPolicy
 from galaius.agents.limits.subscriptions import SubscriptionCapped
@@ -1753,16 +1753,18 @@ ACCOUNT, OTHER_ACCOUNT = "ed1067c105a80a9a", "0123456789abcdef"
 @pytest.mark.parametrize("signed_in, lands", [
     pytest.param({"own": ACCOUNT}, "own", id="this-pcs-own-login-of-its-account"),
     pytest.param({"spare": ACCOUNT}, "spare", id="another-subscription-of-its-account"),
-    pytest.param({"own": ACCOUNT, "spare": ACCOUNT}, "own", id="both-this-pcs-own-first"),
-    pytest.param({"own": OTHER_ACCOUNT, "spare": OTHER_ACCOUNT}, None, id="only-another-account-waits"),
+    pytest.param({"own": ACCOUNT, "spare": ACCOUNT}, "spare", id="both-a-subscription-login-first-this-pcs-own-last"),
+    pytest.param({"own": OTHER_ACCOUNT, "spare": OTHER_ACCOUNT}, "spare", id="only-another-account-his-other-login-takes-it"),
     pytest.param({}, None, id="none-signed-in-waits"),
 ])
 def test_a_run_its_login_lost_resumes_on_any_login_of_its_account_signed_in_here(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
                                                                                  signed_in: dict[str, str], lands: str | None) -> None:
     """Owner 2026-11-05 « you're allowed to work right now because you have the subscription, so it's working. Yet I have a
     message in another project saying this : "Claude déconnecté …" »: three runs waited on a subscription folder's dead copy
-    of a login while this PC's own login of the same account worked. A lost login's run resumes on the first login of its
-    account signed in here, its session carried there and pinned there; one of another account never takes it."""
+    of a login while this PC's own login of the same account worked. A lost login's run resumes on the first login of his the model walk
+    offers that is signed in here (his subscription logins in his order, this PC's own last: `walk.logins_of`; even one of another account,
+    since « the harness should never dissalow if i have any form of usage »), its session carried there and pinned there; with none signed in
+    it waits for a sign-in."""
     reg.cut_resume_since(now=1000.0)
     dead, spare = Subscription.create(uuid4(), "claude"), Subscription.create(uuid4(), "claude")
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
@@ -1771,6 +1773,7 @@ def test_a_run_its_login_lost_resumes_on_any_login_of_its_account_signed_in_here
     reg.register(run_id=run_id, pid=431, provider="claude", name="w", agent="app-engineer", model="claude-opus-5-5", cwd=str(cwd), login=ACCOUNT,
                  subscription=RunSubscription(subscription_id=dead.id, limits=SubscriptionLimits(weekly_percent=80)))
     _cut(run_id, "login_lost", pid=431, at=time.time() - 5 * 3600)
+    quota.pause_login("claude", "login_lost", subscription=dead.id, said="Not logged in")   # what the cut run's end recorded (`registry.finish`)
     session = ClaudeCodeProvider().session_files(dead.folder, cwd, reg.get_run(run_id).provider_session_id or run_id)[0]
     session.parent.mkdir(parents=True)
     session.write_text('{"type": "user"}\n')
@@ -1784,6 +1787,8 @@ def test_a_run_its_login_lost_resumes_on_any_login_of_its_account_signed_in_here
     assert asyncio.run(agents.resume_paused()) == ([run_id] if lands else [])
     run = reg.get_run(run_id)
     if lands is None:
+        reg.schedule_resumes()   # the next pass: every login the walk offered is paused as signed out, so the run reads « sign in »
+        run = reg.get_run(run_id)
         assert (run.resumes, run.subscription_id, sent) == ("sign_in", dead.id, []), "resumed on no login of its account"
         return
     assert run.subscription_id == (None if lands == "own" else spare.id) and run.resumes is None

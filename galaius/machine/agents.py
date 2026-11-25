@@ -45,7 +45,7 @@ from galaius_core import (
     AgentAllowanceRequest, AgentMoveRequest, AgentExportRequest, AgentImportRequest, AgentReleaseRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentToolInstallRequest, AgentToolsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, AgentHeldTakeRequest, AgentHeldPutRequest, AgentRetractRequest, RetractOutcome, SubscriptionAllowance, Lent, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
     WorkspaceFailure, WorkspaceUpload, FailedMessage, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, media_key, media_paths, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest, ProjectFilesBase, ProjectFilePart,
 )
-from galaius.agents import agent_queue
+from galaius.agents import agent_queue, walk
 from galaius.agents.limits import quota
 from galaius.agents import registry as reg
 from galaius.agents.assembly import _TransportRegistry
@@ -1345,6 +1345,10 @@ class MachineAgents(BaseModel):
                     relaunching.append(taken)
                 continue
             ready = False
+            if cut.cause == "login_lost" and cut.resumes == "itself":
+                if (moved := await self._login_taking(run, signed_in)) is None:
+                    continue   # every login the walk offered is signed out: each is now paused, the next pass reads « sign in »
+                run = moved
             if cut.resumes == "sign_in":
                 login = run.provider, run.subscription_id
                 if self.programs is not None and login not in signed_in:
@@ -1360,6 +1364,25 @@ class MachineAgents(BaseModel):
             if await self._resume(run, sender, after, agents=await asyncio.to_thread(self._cut_with, run.run_id, resumed)):
                 resumed.append(run.run_id)
         return resumed
+
+    async def _login_taking(self, run: reg.AgentRun, signed_in: dict[tuple[str, UUID | None], bool | None]) -> reg.AgentRun | None:
+        """Cut `run` (its login lost) on the login of this PC the model walk offers it (its lost one is shut), that login being signed in
+        (asked of its program once per login in a pass; one that is not is paused as lost, `quota.pause_login`, so the walk offers the
+        next), its session carried there (`registry.carry_to`). None when no login takes it; the run unchanged when the walk's step is
+        another program's row (a successor, started signed in by its own check)."""
+        for _ in range(8):   # his logins, a few: each turn pauses one
+            step = await asyncio.to_thread(walk.open_for, run)
+            if step is None:
+                return None
+            if step.unit.provider != run.provider or self.programs is None:
+                return run
+            login = run.provider, step.unit.login
+            if login not in signed_in:
+                signed_in[login] = await asyncio.to_thread(self.programs.signed_in, *login)
+            if signed_in[login]:
+                return await asyncio.to_thread(reg.carry_to, run, step.unit.login)
+            await asyncio.to_thread(quota.pause_login, run.provider, "login_lost", subscription=step.unit.login, said="not signed in")
+        return None
 
     def _to_account_login(self, run: reg.AgentRun, accounts: dict[tuple[str, str], tuple[UUID | None, ...]]) -> reg.AgentRun | None:
         """Run `run`, its own login lost, carried to another login of its account signed in here (`signed_in_as`, asked
