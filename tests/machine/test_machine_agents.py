@@ -990,6 +990,35 @@ def test_options_for_a_role_ask_the_pc_what_its_rule_picks(base: Path, tmp_path:
     assert [(item.provider, item.model) for item in _answer(agents, _request("options", role="source-validator")).models] == [("claude", "claude-sonnet-5")]
 
 
+def test_a_roles_models_are_the_first_of_the_one_list_a_start_walks(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The box's model is the start's first candidate: ONE ranking over every CLI (a rank only compares inside one list: a list
+    per CLI put each CLI's best at rank 0 and the CLI listed first won — box « Codex », start « Claude »), each CLI's first
+    candidate in that order, a CLI refusing the role's tool rules left out."""
+    from types import SimpleNamespace
+    from galaius.machine import agents as module
+
+    asked: list[list[str]] = []
+    def provider(name: str, refuses: bool = False):
+        def validate(*_args, **_kwargs):
+            if refuses:
+                raise ValueError("tools")
+        return SimpleNamespace(name=name, available=lambda: True, validate_tool_policy=validate)
+    cli = [provider("codex"), provider("claude"), provider("gemini", refuses=True)]
+    walk = [SimpleNamespace(provider=name, model=model, rank=rank) for name, model, rank in
+            (("claude", "claude-haiku-5-5", 4), ("gemini", "gemini-x", 5), ("codex", "gpt-5-nano", 6), ("claude", "claude-sonnet-5-5", 7))]
+    policy = SimpleNamespace(criterion_for=lambda role: "provider ~ claude and price.in < 2", provider_active=lambda name: True, weights_for=lambda role: "",
+                             tools_for=lambda role: (), accepts_coarse_tool_policy=lambda role, name: False)
+    def rank(criterion, environment, *, providers, **_kwargs):
+        asked.append([item.name for item in providers])
+        return tuple(walk)
+    monkeypatch.setattr(module, "load_policy", lambda: policy)
+    monkeypatch.setattr(module, "program_providers", lambda: cli)
+    monkeypatch.setattr(module, "rank_candidates", rank)
+    models = _agents(base, tmp_path).role_models("main")
+    assert asked == [["codex", "claude", "gemini"]]  # one ranking, not one per CLI
+    assert [(item.provider, item.model) for item in models] == [("claude", "claude-haiku-5-5"), ("codex", "gpt-5-nano")]
+
+
 def test_settings_survive_a_bad_answer_and_no_pc_takes_a_program_switch(base: Path, tmp_path: Path) -> None:
     """A PC whose model read fails still answers with its providers, and says why the models are missing. Programs are
     switched for every PC of the workspace (its agent catalog, owner 2026-11-16 « the rules should be online, not local ! »):
