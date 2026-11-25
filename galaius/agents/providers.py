@@ -42,7 +42,7 @@ from galaius_core import AGENT_PROGRAMS, KEY_HARNESS, AgentMedia, AgentProgram, 
 
 from galaius import installed_version
 from galaius.agents.catalog.entries import AgentCatalog
-from galaius.agents.transport.events import AgentEvent, CompactionTrigger, RunCut, UsageLedger, instant, stream_lines
+from galaius.agents.transport.events import HARNESS_INPUT, AgentEvent, CompactionTrigger, RunCut, UsageLedger, instant, stream_lines
 from galaius.usage_dialects import UsageDialect
 from galaius.agents.limits import held
 from galaius.agents.limits.quota import OVERLOADED as _OVERLOADED, POOLS, REFUSAL, ModelPool
@@ -2003,7 +2003,7 @@ class ClaudeCodeProvider(AgentProvider):
                 # summary) `isSynthetic`: those are the harness, never the operator.
                 if block.get("type") == "text":
                     text = str(block.get("text") or "")
-                    said = "prompt" if not raw.get("isSynthetic") else (
+                    said = "prompt" if not (raw.get("isSynthetic") or text.lstrip().startswith(HARNESS_INPUT)) else (
                         "check" if text.startswith(_STOP_HOOK_FEEDBACK) else "injected")
                     return AgentEvent(kind=said, text=_clip(text, tail=_CLIP_TAIL if said == "check" else 0),
                                       session_id=sid, raw_type=kind)

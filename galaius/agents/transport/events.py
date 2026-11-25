@@ -616,11 +616,16 @@ def _who(run_id: str | None) -> str:
 #: opened the turn (a provider refuses an empty final reply).
 NO_REPLY = "[no reply]"
 
+#: How the text the harness itself writes as a user turn opens (Claude Code's notice that a background task ended, its reminders): input
+#: of the harness, never something he typed (`injected`), and the opener of a turn only it woke (`WakeReply`).
+HARNESS_INPUT = ("<task-notification", "<system-reminder")
+
 
 class WakeReply:
-    """Marks `quiet` the `NO_REPLY` reply of each turn of run `run_id` that only « no reply » reports opened: every
-    message to it since its previous turn ended is a `Relation.REPORT`, no prompt typed. A turn its stream shows no
-    opening message for (a resume, a stream read from the middle) is never quiet: shown, never hidden."""
+    """Marks `quiet` the `NO_REPLY` reply of each turn of run `run_id` that only its harness opened: every
+    message to it since its previous turn ended is a `Relation.REPORT` or a `HARNESS_INPUT` line (a background task's end),
+    no prompt typed. A turn its stream shows no opening for (a resume, a stream read from the middle) is never quiet:
+    shown, never hidden."""
 
     def __init__(self, run_id: str) -> None:
         self.run_id = run_id
@@ -633,6 +638,8 @@ class WakeReply:
             self.reports_only = None
         elif event.kind == "prompt":
             self.reports_only = False
+        elif event.kind == "injected" and event.text.lstrip().startswith(HARNESS_INPUT):
+            self.reports_only = self.reports_only is not False
         elif event.kind == "message" and event.to_run == self.run_id and event.from_run != self.run_id:
             self.reports_only = self.reports_only is not False and event.relation is Relation.REPORT
         return event.model_copy(update={"quiet": True}) if quiet else event

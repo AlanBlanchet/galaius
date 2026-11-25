@@ -1308,6 +1308,35 @@ def test_a_quiet_wake_reply_is_marked_in_every_mirror_and_says_nothing(provider,
     assert (reply.strip() in closing_parts(events)) is not quiet
 
 
+_NOTIFICATION = ('<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n'
+                 '<summary>Background command "Wait for the build" completed (exit code 0)</summary>\n</task-notification>')
+
+
+@pytest.mark.parametrize(("wake", "reply", "quiet"), [
+    # A background task's end opened the turn (Claude Code's own notification, a user line): its `NO_REPLY` reply is no answer.
+    (_NOTIFICATION, NO_REPLY, True),
+    ("<system-reminder>\nThe task tools haven't been used recently.\n</system-reminder>", NO_REPLY, True),
+    # More than the marker: shown whole.
+    (_NOTIFICATION, f"{NO_REPLY} The build failed.", False),
+    # He typed it: shown as written.
+    ("Are we done?", NO_REPLY, False),
+])
+def test_a_reply_to_a_background_task_notification_is_quiet_and_the_notification_is_no_prompt(wake, reply, quiet):
+    """Claude Code's notification (a background task ended) is a user line, never something he typed: it reads as the
+    harness's input (`injected`, not a `prompt`), and the turn it alone opened answers `NO_REPLY` as a quiet wake."""
+    register_run(run_id="note", name="note", provider="claude", task="t")
+    mirror = reg.StreamMirror("note")
+    user = lambda text: {"type": "user", "message": {"role": "user", "content": text}, "session_id": "s"}
+    reg.raw_events_path("note").open("a").write("".join(json.dumps(line) + "\n" for line in [
+        *_TURN["claude"]("First answer."), user(wake), _said(reply), {"type": "result", "subtype": "success", "is_error": False, "session_id": "s", "result": reply}]))
+    mirror.refresh()
+    events = reg.read_events("note")
+    opened = next(event for event in events if event.text.strip() == wake.strip())
+    assert opened.kind == ("prompt" if wake == "Are we done?" else "injected")
+    said = [event for event in events if event.kind in ("text", "done") and event.text.strip() == reply.strip()]
+    assert said and all(event.quiet is quiet for event in said)
+
+
 @pytest.mark.parametrize("watcher", ["mirror", "whole_read"])
 def test_a_thinking_run_shows_its_thinking_growing_throttled_then_settled_per_turn(monkeypatch, watcher):
     """Owner 2026-10-16 « show thinking tokens being accumulated ? (without saturating the network) »: the record
