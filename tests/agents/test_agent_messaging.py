@@ -893,7 +893,9 @@ def test_his_message_to_a_cut_run_asks_the_vendor_again(monkeypatch):
         asyncio.run(messaging.wait_for_reply(delivery))
 
     assert delivery.state == "replied"
-    assert [call for call in provider.calls if call[0] == "resume"][-1][3]["model"] == "opus"
+    # The login's window was noted against the run's model and the whole login: nothing of the table is open, so the vendor is asked about
+    # the table's first row (the cheapest-first value order lists haiku above opus), never refused by what this PC remembers.
+    assert [call for call in provider.calls if call[0] == "resume"][-1][3]["model"] == "haiku"
 
 
 def test_an_agents_message_to_a_cut_run_is_never_refused_by_this_pcs_memory(monkeypatch):
