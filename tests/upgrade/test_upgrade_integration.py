@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -122,7 +123,19 @@ class MachineChannel:
         self.loop.run_until_complete(main())
 
 
-def test_running_mcp_server_and_machine_connection_upgrade_themselves_from_n_to_n_plus_1(tmp_path: Path, monkeypatch) -> None:
+@pytest.fixture
+def sockets():
+    """A short folder for the shared server's socket: a Unix socket's path holds 104 bytes on macOS, which pytest's own folder there
+    (/private/var/folders/…/pytest-of-runner/…, the HOME these tests give a child) already passes: the server never listened
+    (2026-11-25 macOS runner: « no galaius MCP server answered »)."""
+    if sys.platform == "win32":
+        yield None
+        return
+    with tempfile.TemporaryDirectory(prefix="galaius-", dir="/tmp") as folder:
+        yield folder
+
+
+def test_running_mcp_server_and_machine_connection_upgrade_themselves_from_n_to_n_plus_1(tmp_path: Path, sockets: str | None, monkeypatch) -> None:
     signer = ReleaseSigner.generated()
     key = tmp_path / "signing.pem"
     key.write_bytes(signer.private_pem())
@@ -150,7 +163,7 @@ def test_running_mcp_server_and_machine_connection_upgrade_themselves_from_n_to_
     config = tmp_path / "config"
     environment = {**os.environ, "XDG_CONFIG_HOME": str(config), "XDG_DATA_HOME": str(tmp_path / "data"), "GALAIUS_RUNTIMES": str(tmp_path / "runtimes"),
                    "GALAIUS_AUTO_UPGRADE": "true", "GALAIUS_UPGRADE_CHECK_SECONDS": "30", "GALAIUS_REFRESH_LIVE_DATA": "false",
-                   "GALAIUS_SHARED_MCP_IDLE_SECONDS": "10"}  # the shared server (started detached, so it outlives its client) leaves soon after this test's last client
+                   "GALAIUS_SHARED_MCP_IDLE_SECONDS": "10", **({"XDG_RUNTIME_DIR": sockets} if sockets else {})}  # the shared server (started detached, so it outlives its client) leaves soon after this test's last client
     for name in ("GALAIUS_SUPERVISE", "GALAIUS_SUPERVISED", "VIRTUAL_ENV", "PYTHONPATH"):
         environment.pop(name, None)
     for name in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "GALAIUS_RUNTIMES"):
