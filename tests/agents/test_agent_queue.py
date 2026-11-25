@@ -888,6 +888,29 @@ def test_an_operator_message_sent_for_a_run_names_it_on_its_entry_and_in_the_rec
     assert '"for_run"' not in reg.messages_path(deployer).read_text().splitlines()[-1]   # left out when none
 
 
+@pytest.mark.parametrize(("environment", "sender"), [
+    ({"GALAIUS_RUN_ID": "run-1", "CLAUDE_CODE_SESSION_ID": "s-1"}, "run-1"),
+    ({"CLAUDE_CODE_SESSION_ID": "7c1e0b52-1111"}, "session:7c1e0b52-1111"),
+    ({"CODEX_THREAD_ID": "thread-9"}, "session:thread-9"),
+    ({}, "operator"),
+], ids=["a run", "a Claude session", "a Codex session", "the person's terminal"])
+def test_a_message_from_an_agent_session_outside_the_runs_is_never_the_persons(environment, sender):
+    """2026-11-25: a coordinator in an editor writing through `galaius agents send` was recorded as « operator » and drawn as
+    his own bubble, with « Unsend », in his conversation: who wrote it is a session unless it is the person's terminal."""
+    assert messaging.sender_id(environment) == sender
+
+
+def test_a_session_message_is_recorded_under_its_session_in_the_recipients_transcript_only(monkeypatch):
+    provider = setup_queue(monkeypatch)
+    reg.register(run_id="r2", pid=999999, provider=provider.name, name="main", task="t", agent="tester", provider_session_id="vendor")
+    sender = messaging.sender_id({"CLAUDE_CODE_SESSION_ID": "7c1e0b52-1111"})
+    assert messaging.queue_message("r2", "ship it", sender=sender).state == "queued"
+    assert [(event.from_run, event.text) for event in reg.read_messages("r2")] == [("session:7c1e0b52-1111", "ship it")]
+    assert not reg.messages_path(sender).exists()
+    assert agent_queue.items("r2")[-1].writer == "an agent session outside galaius's runs (7c1e0b52)"
+    assert reg.read_messages("r2")[-1].summary(viewer="r2").startswith("← session 7c1e0b52: ")
+
+
 @pytest.mark.parametrize("queue_kept", [True, False], ids=["queue kept", "queue file gone"])
 def test_one_message_id_records_and_queues_one_message(monkeypatch, queue_kept):
     """The web's mirror delivers its outbox row under that row's id, again on every retry: one message, one row."""

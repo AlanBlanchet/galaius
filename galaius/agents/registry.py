@@ -44,7 +44,7 @@ from galaius.usage_dialects import CountedTokens, OlderTokens
 from galaius_core import SubscriptionLimits, OPEN_MAX, OwnerQuestion, ASKED_BY_MAX, LaunchSkipReason, ReasoningLevel, RecordedReasoning, FILE_KEY, KEPT_FILE_MAX, MACHINE_AGENT_MEDIA, MEDIA_KEY, file_key, MODEL_ID_MAX, FileStory, HandedFile, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor, TokenCounts
 
 from galaius.agents.transport.events import (
-    CONTEXT_FIELDS, PERSON_SENDER, AgentEvent, MessageFields, RunCut, UsageLedger, WakeReply, answered_line, its_work, model_spoke,
+    CONTEXT_FIELDS, PERSON_SENDER, AgentEvent, SESSION_SENDER_PREFIX, is_session_sender, session_sender, MessageFields, RunCut, UsageLedger, WakeReply, answered_line, its_work, model_spoke,
     received, stream_lines,
 )
 from galaius.agents.catalog.connection import CatalogConnection
@@ -2459,8 +2459,8 @@ def _record_message_event_locked(
         return None
     message_id = event_id or secrets.token_hex(16)
     for side in (from_run, to_run):
-        if side in SYSTEM_SENDERS:
-            continue
+        if side in SYSTEM_SENDERS or is_session_sender(side):
+            continue  # the recipient's transcript alone holds a machine's or an outside session's line
         event = AgentEvent(kind="message", event_id=message_id, text=text, from_run=from_run, to_run=to_run, at=time.time(),
                            raw_index=raw_line_count(side), **fields)
         _append_private(messages_path(side), (event.model_dump_json() + "\n").encode())
