@@ -454,6 +454,32 @@ class RuntimeStore(BaseModel):
                 entry.unlink(missing_ok=True)
         PRIVATE_FILES.write_text(self.live_path / f"{pid}.json", LiveProcess(pid=pid, runtime=runtime.path, started=time.time()).model_dump_json())
 
+    @staticmethod
+    def command_of(pid: int) -> str | None:
+        """What process `pid` was started as, its program first, as exec'd (a venv's own path, never the Python it links to): `/proc` on
+        Linux, `ps` elsewhere. None when it is gone, unreadable, or the system has neither (Windows)."""
+        if sys.platform == "win32":
+            return None
+        if sys.platform == "linux":
+            try:
+                return Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0", 1)[0].decode() or None
+            except (OSError, UnicodeDecodeError):
+                return None
+        try:
+            return subprocess.run(["ps", "-ww", "-o", "args=", "-p", str(pid)], capture_output=True, text=True, timeout=5).stdout.strip() or None
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    def runtime_of(self, pid: int) -> Runtime | None:
+        """The store's runtime whose interpreter process `pid` runs, read from its command line (`command_of`): a relay of a build that
+        named no runtime in its hello. None when it runs none of the store's."""
+        if (command := self.command_of(pid)) is None:
+            return None
+        for root in dict.fromkeys((self.root, self.root.resolve())):
+            if command.startswith(prefix := f"{root}{os.sep}") and (folder := root / command[len(prefix):].split(os.sep, 1)[0]).is_dir():
+                return Runtime(path=folder)
+        return None
+
     def in_use(self) -> set[Path]:
         """Runtimes a live process runs: the ones supervisors and dispatchers registered, and on
         Linux any process whose interpreter lives in the store (older galaius that never registered)."""

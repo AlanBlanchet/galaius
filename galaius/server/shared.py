@@ -40,6 +40,15 @@ from galaius.upgrade.store import Runtime, RuntimeStore
 _log = logging.getLogger("galaius.shared")
 
 
+def listed(store: RuntimeStore, runtime: Runtime, pid: int) -> None:
+    """Record that `pid` runs `runtime` (`RuntimeStore.register`). Bookkeeping only: a store folder that cannot be written (a full disk) is
+    said and never costs a client its tools, nor stops the server."""
+    try:
+        store.register(runtime, pid)
+    except OSError as error:
+        _log.warning("could not list process %d as running %s: %s", pid, runtime.path.name, error)
+
+
 class SharedServerSettings(BaseModel):
     """How long a shared server waits; `GALAIUS_SHARED_MCP_<FIELD>` overrides one (tests)."""
 
@@ -102,8 +111,11 @@ class Connection:
 
     async def serve(self, settings: SharedServerSettings) -> None:
         caller, runtime = await self.hello(settings.hello_seconds)
-        if runtime is not None:
-            self.store.register(Runtime(path=runtime), caller.pid)  # its interpreter stays in that runtime until the client ends, which a relay that never moves (it asks nothing of galaius) would otherwise hide from a prune off Linux
+        # Its interpreter stays in that runtime until the client ends, which a relay that never moves (it asks nothing of galaius) would
+        # otherwise hide from a prune off Linux. A relay of an older build names none: read from its command line.
+        found = Runtime(path=runtime) if runtime is not None else await asyncio.to_thread(self.store.runtime_of, caller.pid)
+        if found is not None:
+            listed(self.store, found, caller.pid)
         token = CONNECTION.set(self)
         try:
             with caller.bound():
@@ -186,7 +198,7 @@ class SharedServer:
             os.chmod(self.socket, 0o600)
             bound = self.socket.stat().st_ino
             _log.info("galaius MCP server for %s listening on %s", Runtime.own().label(), self.socket)
-            self.store.register(Runtime.own(), os.getpid())  # as every supervised worker: what garbage collection and the « in use » check read where there is no /proc
+            listed(self.store, Runtime.own(), os.getpid())  # as every supervised worker: what garbage collection and the « in use » check read where there is no /proc
             try:
                 while not self.done():
                     await asyncio.sleep(self.settings.tick_seconds)

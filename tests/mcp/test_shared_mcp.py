@@ -135,6 +135,40 @@ def test_a_server_a_relay_started_is_collected_once_it_leaves(tmp_path):
         os.waitpid(pid, os.WNOHANG)
 
 
+def test_a_store_folder_that_cannot_be_written_costs_no_client_its_tools(endpoint, tmp_path):
+    (tmp_path / "runtimes").mkdir()
+    (tmp_path / "runtimes" / "live").write_text("a file where the live folder goes: no process can be listed")
+    client = Client(endpoint, {}, tmp_path)
+    try:
+        assert client.start()["result"]["serverInfo"]["name"] == "galaius"
+        assert client.tool("agent_list")
+        assert servers(endpoint)  # the server itself went on
+    finally:
+        client.close()
+
+
+def test_a_relay_of_an_older_build_that_names_no_runtime_is_listed_from_its_command_line(endpoint, tmp_path):
+    from galaius.upgrade.store import LiveProcess
+
+    runtime = tmp_path / "runtimes" / "0.0.1-older"
+    (runtime / "bin").mkdir(parents=True)
+    (runtime / "bin" / "python").symlink_to(sys.executable)  # started as the store's own path, as `galaius mcp` execs its relay
+    serve(endpoint)
+    hello = json.dumps({"jsonrpc": "2.0", "method": relay_module.HELLO, "params": {"environment": {}, "cwd": str(tmp_path), "pid": 0}})  # pid below
+    script = ("import json, os, socket, sys, time\nc = socket.socket(socket.AF_UNIX); c.connect(sys.argv[1])\n"
+              "body = json.loads(sys.argv[2]); body['params']['pid'] = os.getpid()\nc.sendall(json.dumps(body).encode() + b'\\n'); time.sleep(60)")
+    relay = subprocess.Popen([str(runtime / "bin" / "python"), "-c", script, endpoint["socket"], hello], env={**os.environ})
+    try:
+        live = tmp_path / "runtimes" / "live" / f"{relay.pid}.json"
+        deadline = time.time() + 30
+        while not live.exists() and time.time() < deadline:
+            time.sleep(0.1)
+        assert LiveProcess.model_validate_json(live.read_bytes()).runtime == runtime.resolve()
+    finally:
+        relay.kill()
+        relay.wait()
+
+
 def test_a_relay_whose_server_died_connects_again_and_answers(endpoint, tmp_path):
     client = Client(endpoint, {"GALAIUS_SESSION_ID": "conversation-a"}, tmp_path)
     try:
