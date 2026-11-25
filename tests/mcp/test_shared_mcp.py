@@ -3,7 +3,9 @@ each served as its own caller; a relay outlives its server; a server of an older
 
 import json
 import os
+import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -148,23 +150,25 @@ def test_a_store_folder_that_cannot_be_written_costs_no_client_its_tools(endpoin
 
 
 def test_a_relay_of_an_older_build_that_names_no_runtime_is_listed_from_its_command_line(endpoint, tmp_path):
+    """The process is `sleep` started under the store's own path as its program name (a Python venv on a macOS framework build re-execs
+    under another path, which would test that build, not the server): what `ps` and `/proc` list is the name it was started as."""
     from galaius.upgrade.store import LiveProcess
 
     runtime = tmp_path / "runtimes" / "0.0.1-older"
     (runtime / "bin").mkdir(parents=True)
-    (runtime / "bin" / "python").symlink_to(sys.executable)  # started as the store's own path, as `galaius mcp` execs its relay
     serve(endpoint)
-    hello = json.dumps({"jsonrpc": "2.0", "method": relay_module.HELLO, "params": {"environment": {}, "cwd": str(tmp_path), "pid": 0}})  # pid below
-    script = ("import json, os, socket, sys, time\nc = socket.socket(socket.AF_UNIX); c.connect(sys.argv[1])\n"
-              "body = json.loads(sys.argv[2]); body['params']['pid'] = os.getpid()\nc.sendall(json.dumps(body).encode() + b'\\n'); time.sleep(60)")
-    relay = subprocess.Popen([str(runtime / "bin" / "python"), "-c", script, endpoint["socket"], hello], env={**os.environ})
+    relay = subprocess.Popen([str(runtime / "bin" / "python"), "60"], executable=shutil.which("sleep"))
+    connection = socket.socket(socket.AF_UNIX)
     try:
+        connection.connect(endpoint["socket"])
+        connection.sendall(json.dumps({"jsonrpc": "2.0", "method": relay_module.HELLO, "params": {"environment": {}, "cwd": str(tmp_path), "pid": relay.pid}}).encode() + b"\n")
         live = tmp_path / "runtimes" / "live" / f"{relay.pid}.json"
         deadline = time.time() + 30
         while not live.exists() and time.time() < deadline:
             time.sleep(0.1)
         assert LiveProcess.model_validate_json(live.read_bytes()).runtime == runtime.resolve()
     finally:
+        connection.close()
         relay.kill()
         relay.wait()
 
