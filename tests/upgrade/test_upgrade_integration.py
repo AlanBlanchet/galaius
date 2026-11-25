@@ -1,7 +1,9 @@
 """A real upgrade: runtime N (0.43.0) and N+1 (0.43.1) are built from this checkout and signed with a
 test key both builds ship, served over loopback, and a running `galaius mcp` (real MCP server, real
 client pipe) and a running `galaius machine connect` (to a websocket stand-in for the server) move
-from N to N+1 by themselves: same supervisor pid, same client pipe, new worker on N+1."""
+from N to N+1 by themselves. The machine connection's supervisor keeps its pid and becomes N+1's, with a new worker; the client
+keeps its pipe and its tools: on POSIX its relay (a file of N, which stays) is moved by N's shared server to N+1's, on Windows its
+supervisor replaces itself and its worker as the machine's does. The galaius-core a release needs is the one the repository pins."""
 
 import asyncio
 import contextlib
@@ -26,17 +28,32 @@ from galaius.machine.connection.runner import MachineRunner
 from galaius.config.settings import Config
 from galaius.upgrade.check import UpgradeCheck
 from galaius.upgrade.source import ReleaseSigner
+from galaius.mcp.endpoint import SharedEndpoint
 from galaius.mcp.registry import _alive
 from galaius.upgrade.store import LiveProcess, Runtime, RuntimeStore
 from tests.support.paths import REPO
 
 CHECKOUT = REPO
-CORE = Path(os.environ.get("GALAIUS_CORE_SOURCE", CHECKOUT.parent / "galaius-core"))
+CORE_REPOSITORY = "https://github.com/AlanBlanchet/galaius-core"
 
 pytestmark = [
-    pytest.mark.skipif(shutil.which("uv") is None or not (CORE / "pyproject.toml").is_file(), reason="needs uv and a galaius-core checkout (GALAIUS_CORE_SOURCE)"),
+    pytest.mark.skipif(shutil.which("uv") is None, reason="needs uv"),
     pytest.mark.timeout(600),
 ]
+
+
+def core_source(into: Path) -> Path:
+    """galaius-core as a release is built from it: the checkout GALAIUS_CORE_SOURCE names (a developer without network), else the
+    commit this repository pins, fetched from GitHub into `into`. The same everywhere, a CI runner included: never skipped for
+    lack of a sibling checkout, never built from whatever commit a developer's sibling checkout happens to be on."""
+    if (named := os.environ.get("GALAIUS_CORE_SOURCE")) and (Path(named) / "pyproject.toml").is_file():
+        return Path(named)
+    pinned = re.search(r"galaius-core\.git@([0-9a-f]{40})", (CHECKOUT / "pyproject.toml").read_text())
+    assert pinned, "pyproject.toml pins no galaius-core commit"
+    into.mkdir(parents=True)
+    for command in (["init", "-q"], ["fetch", "-q", "--depth", "1", CORE_REPOSITORY, pinned.group(1)], ["checkout", "-q", "FETCH_HEAD"]):
+        subprocess.run(["git", "-C", str(into), *command], check=True, timeout=300)
+    return into
 
 
 def snapshot(into: Path, version: str, public_pem: bytes) -> Path:
@@ -110,7 +127,7 @@ def test_running_mcp_server_and_machine_connection_upgrade_themselves_from_n_to_
     key = tmp_path / "signing.pem"
     key.write_bytes(signer.private_pem())
     core = tmp_path / "core"
-    shutil.copytree(CORE, core, ignore=shutil.ignore_patterns(".git", ".venv", "__pycache__", "tests"))
+    shutil.copytree(core_source(tmp_path / "core-checkout"), core, ignore=shutil.ignore_patterns(".git", ".venv", "__pycache__", "tests"))
     releases = {}
     for version, minutes in (("0.43.0", 0), ("0.43.1", 5)):
         out = tmp_path / f"release-{version}"
@@ -132,7 +149,8 @@ def test_running_mcp_server_and_machine_connection_upgrade_themselves_from_n_to_
 
     config = tmp_path / "config"
     environment = {**os.environ, "XDG_CONFIG_HOME": str(config), "XDG_DATA_HOME": str(tmp_path / "data"), "GALAIUS_RUNTIMES": str(tmp_path / "runtimes"),
-                   "GALAIUS_AUTO_UPGRADE": "true", "GALAIUS_UPGRADE_CHECK_SECONDS": "30", "GALAIUS_REFRESH_LIVE_DATA": "false"}
+                   "GALAIUS_AUTO_UPGRADE": "true", "GALAIUS_UPGRADE_CHECK_SECONDS": "30", "GALAIUS_REFRESH_LIVE_DATA": "false",
+                   "GALAIUS_SHARED_MCP_IDLE_SECONDS": "10"}  # the shared server (started detached, so it outlives its client) leaves soon after this test's last client
     for name in ("GALAIUS_SUPERVISE", "GALAIUS_SUPERVISED", "VIRTUAL_ENV", "PYTHONPATH"):
         environment.pop(name, None)
     for name in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "GALAIUS_RUNTIMES"):
@@ -174,8 +192,13 @@ def test_running_mcp_server_and_machine_connection_upgrade_themselves_from_n_to_
         mcp.stdin.flush()
         tools_before = request(2, "tools/list", {})["result"]["tools"]
         until(lambda: channel.hellos == ["galaius/0.43.0"], 120, "the machine's hello from N")
-        until(lambda: list(running(store).values()).count(first.path) >= 4, 30, "two supervisors and two workers on N")
+        shared = SharedEndpoint.supported()  # POSIX: `galaius mcp` is a relay to one shared server; Windows: a supervisor and its worker, like the machine connection
+        # Everything registered on N: the machine's supervisor and worker, and for the MCP client the relay and the shared server
+        # (or its supervisor and worker): four whatever the system, read from the registrations, never /proc.
+        until(lambda: list(running(store).values()).count(first.path) >= 4, 30, "two clients' processes and two of the machine's on N")
         before = running(store)
+        if shared:
+            assert set(before) >= {mcp.pid, machine.pid} and len(before) == 4 and set(before.values()) == {first.path}
 
         # N+1 is published; the next check (due now) installs and activates it with nobody restarting anything.
         publish("0.43.1")
@@ -186,27 +209,29 @@ def test_running_mcp_server_and_machine_connection_upgrade_themselves_from_n_to_
         # A command started from N's own interpreter (an installer's `galaius`) runs N+1.
         assert reported_version(first, environment) == "0.43.1"
 
+        # What the client sees: its tools change under it (`list_changed`) and a note says why; its connection is never dropped.
         until(lambda: any(note.get("method") == "notifications/tools/list_changed" for note in notes) or (notes.append(lines.get(timeout=1)) if not lines.empty() else None), 120, "list_changed")
         tools_after = request(3, "tools/list", {})["result"]["tools"]
         assert {tool["name"] for tool in tools_after} == {tool["name"] for tool in tools_before}
-        assert any("upgraded from 0.43.0" in note.get("params", {}).get("data", "") and "0.43.1" in note["params"]["data"] for note in notes)
+        said = "moved to the galaius MCP server" if shared else "upgraded from 0.43.0"
+        until(lambda: any(said in note.get("params", {}).get("data", "") for note in notes) or (notes.append(lines.get(timeout=1)) if not lines.empty() else None), 120, f"the note « {said} »")
 
         until(lambda: channel.hellos[-1:] == ["galaius/0.43.1"], 120, "the machine's hello from N+1")
-        # EVERY galaius process ends on N+1: both workers, and both supervisors — the MCP relay
-        # replaces itself in place at its quiet point, carrying the client's session over, so nothing
-        # is left running N.
+        # Where each process ends. The machine's supervisor replaces itself in place at its quiet point (same pid, now N+1) and so does a
+        # Windows MCP supervisor. A POSIX relay is a file of N that asks nothing of galaius: its pid and pipe never change, it stays on N
+        # (and keeps N installed), while the shared server of N ends and N+1's takes its connection.
         def moved() -> dict[int, Path] | None:
             found = running(store)
-            return found if list(found.values()).count(second.path) >= 4 else None
+            return found if list(found.values()).count(first.path) == (1 if shared else 0) and list(found.values()).count(second.path) >= (3 if shared else 4) else None
 
-        after = until(moved, 120, "both workers and both supervisors on N+1")
+        after = until(moved, 120, "N's processes gone but the relay, N+1's all up")
         assert mcp.poll() is None and machine.poll() is None
-        assert list(after.values()).count(first.path) == 0  # nothing still runs N
+        if shared:
+            assert (before[mcp.pid], after[mcp.pid]) == (first.path, first.path)  # the relay, registered: N stays in use for as long as that client does
         if sys.platform != "win32":  # replaced in place: the pids a client or service manager holds never change
-            assert (after[mcp.pid], after[machine.pid]) == (second.path, second.path)
-            assert (before[mcp.pid], before[machine.pid]) == (first.path, first.path)
-        # The client's session survived that replacement: this call needs the handshake the relay
-        # carried over (a worker that never saw `initialize` answers nothing).
+            assert (before[machine.pid], after[machine.pid]) == (first.path, second.path)
+            assert shared or after[mcp.pid] == second.path
+        # The client's session survived the move: this call needs the handshake the relay carried over to N+1's server.
         assert {tool["name"] for tool in request(4, "tools/list", {})["result"]["tools"]} == {tool["name"] for tool in tools_before}
     finally:
         mcp.stdin.close()

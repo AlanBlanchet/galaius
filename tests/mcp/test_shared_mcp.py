@@ -109,6 +109,20 @@ def test_two_callers_on_one_server_each_see_their_own_identity(endpoint, tmp_pat
         second.close()
 
 
+def test_a_server_and_the_relay_connected_to_it_are_listed_as_running_their_runtime(endpoint, tmp_path):
+    from galaius.upgrade.store import LiveProcess, Runtime
+
+    client = Client(endpoint, {}, tmp_path)
+    try:
+        client.start()
+        (server,) = servers(endpoint)
+        entries = [LiveProcess.model_validate_json(path.read_bytes()) for path in (tmp_path / "runtimes" / "live").glob("*.json")]
+        # The relay names its runtime as two folders above its interpreter: `sys.prefix` may read the base Python under `-I -S`.
+        assert {entry.pid: entry.runtime for entry in entries} == {server: Runtime.own().path, client.process.pid: Runtime(path=Path(sys.executable).parent.parent).path}
+    finally:
+        client.close()
+
+
 def test_a_relay_whose_server_died_connects_again_and_answers(endpoint, tmp_path):
     client = Client(endpoint, {"GALAIUS_SESSION_ID": "conversation-a"}, tmp_path)
     try:
