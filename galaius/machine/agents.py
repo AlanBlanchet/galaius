@@ -13,6 +13,7 @@ no request ever changes this process's environment and no request waits for a co
 
 import asyncio
 import base64
+import concurrent.futures
 import functools
 import hashlib
 import itertools
@@ -1001,9 +1002,32 @@ class MachineAgents(BaseModel):
         refresh = await asyncio.to_thread(self._refresh, folder)
         environment = await asyncio.to_thread(self.launcher_environment_in, folder)
 
+        run_id = uuid4()  # named up front: the id stays the run's whichever candidate of the walk ends up running it
+        shown: concurrent.futures.Future[None] = concurrent.futures.Future()
+        recorded = threading.Event()
+
+        def record(started: UUID) -> None:
+            """Run `started` is the web's, once: what this PC answers a start asked again under its id (`runs.started_by`) by."""
+            if recorded.is_set():
+                return
+            recorded.set()
+            if review is not None:
+                self.reviews.attach(review, started)
+            self.runs.add(WebRun(run_id=started, root=request.root, path=request.path, fenced=fence is not None, request_id=request.id,
+                                 placed_by=request.placed_by.machine_id if request.placed_by is not None else None))
+            if (placed := request.placed_by) is not None:
+                PeerAudit.started(started, request.role, request.permission, placed.machine_id, placed.machine_name, placed.run_id, placed.by_verified, fence is not None, request.project)
+
+        def registered(_run: str) -> None:
+            """Its record exists (`run_agent`'s first candidate, its quota window not looked through yet): the start is answered here."""
+            record(run_id)
+            if not shown.done():
+                shown.set_result(None)
+
         async def launch() -> UUID:
             """The whole start, recorded as a web run even when the request that asked for it is
-            gone (cancelled, past its bound): a started agent is never left untracked."""
+            gone (cancelled, past its bound): a started agent is never left untracked. A walk that fails after the start
+            was answered (`registered`) ends the run as failed, with why: its record says it, never a silent run."""
             try:
                 async with AsyncExitStack() as stack:
                     pulled = await asyncio.to_thread(stack.enter_context, self._pulled(request.files)) if request.files else ()
@@ -1015,33 +1039,37 @@ class MachineAgents(BaseModel):
                             provider_for(request.provider) if request.provider is not None else None, brief,
                             cwd=str(folder), agent=str(request.role), permission_mode=self.scope(request.permission), image_paths=images,
                             quota_window=4.0, fence=fence, environment=environment, warm=self.warm, subscription=pinned, choices=request,
-                            reasoning=request.reasoning,
+                            reasoning=request.reasoning, run_id=str(run_id), registered=registered,
                         )
                     # Kept for the run the moment it exists (its agent's first call to open one comes after a model turn, never before).
                     if pulled:
                         await asyncio.to_thread(self._keep_attached, handle.run_id, pulled)
-            except BaseException:
+            except BaseException as error:
+                if shown.done() and isinstance(error, Exception):
+                    reason = self._said(str(error)) or "the agent did not start"
+                    await asyncio.to_thread(reg.fail_turn, str(run_id), reason)
+                    logger.warning("run %s started and then failed: %s", str(run_id)[:8], reason)
+                    return run_id
                 if review is not None:
                     self.reviews.discard(review)
                 raise
-            run_id = UUID(handle.run_id)
             if self.followups is not None:
                 self.followups.follow(handle.run_id, handle.process, environment=environment)
-            if review is not None:
-                self.reviews.attach(review, run_id)
-            self.runs.add(WebRun(run_id=run_id, root=request.root, path=request.path, fenced=fence is not None, request_id=request.id,
-                                 placed_by=request.placed_by.machine_id if request.placed_by is not None else None))
-            if (placed := request.placed_by) is not None:
-                PeerAudit.started(run_id, request.role, request.permission, placed.machine_id, placed.machine_name, placed.run_id, placed.by_verified, fence is not None, request.project)
-            return run_id
+            record(UUID(handle.run_id))
+            return UUID(handle.run_id)
 
+        walk = asyncio.ensure_future(AgentSpawns.run(launch))
+        walk.add_done_callback(lambda done: done.cancelled() or done.exception())
+        answered = asyncio.wrap_future(shown)
         try:
-            run_id = await asyncio.shield(AgentSpawns.run(launch))
+            await asyncio.wait({walk, answered}, return_when=asyncio.FIRST_COMPLETED)
+            # The run exists and its walk goes on: answered now, what follows is the run's own, read on its record.
+            started = run_id if not walk.done() else walk.result()
         except (ValueError, RuntimeError) as error:
             if request.lent:
                 raise SubscriptionRefused("lent", LENT_REFUSAL) from error
             raise RuntimeError(self._said(str(error)) or "the agent did not start") from error
-        return await self._answered(request, run_id, fence is not None, refresh, written)
+        return await self._answered(request, started, fence is not None, refresh, written)
 
     def _prepare_start(self, request: AgentStartRequest, pinned: RunSubscription | None) -> tuple[Path, int, FenceSpec | None, UUID | None]:
         """What a start is checked and prepared with before anything runs: its folder, how many

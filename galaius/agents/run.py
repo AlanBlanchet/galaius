@@ -1519,6 +1519,7 @@ async def run_agent(
     passed_over: tuple[tuple[str, str | None], ...] = (),
     community: CommunityAgent | None = None,
     reasoning: ReasoningLevel | None = None,
+    registered: Callable[[str], None] | None = None,
 ) -> RunHandle:
     """Spawn an agent run and register it, returning as soon as it is alive. `reasoning`: the effort a person set on this
     conversation, over its role's.
@@ -1531,6 +1532,11 @@ async def run_agent(
     fall through to the next candidate for a refusal that has not arrived yet. A human launching
     from the terminal waits; a supervisor watching in-flight work does not, so the default stays
     the short one (:func:`_quota_probe`).
+
+    ``registered`` is called with the run's id the moment its first candidate's record exists, before that candidate's quota window
+    (`_quota_probe`) is looked through: a caller that has the run to show answers there, and what follows (a refused candidate
+    giving way to the next ranked one, the end of the walk, a start that fails) is the run's own, read on its record. Called under
+    the caller's own `run_id` only (`named`): a child started ahead brings an id of its own, so no id is promised before the walk ends.
 
     ``profile`` names one of the OPERATOR's own profiles (``GALAIUS_PROFILE_*`` in config),
     deciding what this agent runs on — so the critic can sit on a local model while the reviewer
@@ -1973,6 +1979,8 @@ async def run_agent(
             lends=pinned if candidate.provider in keys else None, media=shown,
             login=login, asked_by=asked_by, inherited_asks=inherited_asks, community=community,
         )
+        if registered is not None and named:
+            registered(run_id)
         # A model coming off a block is the re-check: it gets long enough to say "still refused"
         # that the answer falls through to the next candidate instead of killing this run.
         probe_window = max(quota_window or 0.0, quota.PROBATION_WINDOW) \

@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import time
+import uuid
 import tomllib
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -635,6 +636,37 @@ async def test_a_model_under_a_quota_note_runs_last_and_a_model_refused_for_the_
     assert quota.classify("The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account.") == "model_capability_unsupported"
     assert quota.classify("You have reached your weekly limit") == "quota_exceeded"
     assert quota.classify("Selected model is at capacity") is None
+
+
+@pytest.mark.asyncio
+async def test_a_named_run_is_announced_once_its_record_exists_before_its_candidate_is_looked_through_and_keeps_its_id(tmp_path, monkeypatch):
+    """A start answers the person at `registered`, not after the 4 s quota window: the id it names stays the run's through a refused
+    first candidate, and its record exists at each call (the answer reads it)."""
+    quota.forget()
+    monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None, among=None: (
+        reg.LaunchCandidate(provider="unsupported", model="fixture-model", rank=0),
+        reg.LaunchCandidate(provider="fake", model="fixture-model", rank=1),
+    ))
+    named = str(uuid.uuid4())
+    told: list[tuple[str, str | None]] = []
+
+    def registered(run_id: str) -> None:
+        record = reg.get_run(run_id)
+        told.append((run_id, record.provider if record else None))
+
+    handle = await run_agent(None, "do a thing", agent="tester", cwd=str(tmp_path), quota_window=0.5, run_id=named, registered=registered)
+    await asyncio.wait_for(handle.wait(), 10)
+    assert handle.run_id == named
+    assert told == [(named, "unsupported"), (named, "fake")], "each candidate's record is there when it is announced, under the one id"
+
+
+@pytest.mark.asyncio
+async def test_a_run_nobody_named_is_never_announced_early(tmp_path):
+    """A child started ahead brings its own id: no id is promised before the walk ends."""
+    told: list[str] = []
+    handle = await run_agent(None, "do a thing", agent="tester", cwd=str(tmp_path), quota_window=0.2, registered=told.append)
+    await asyncio.wait_for(handle.wait(), 10)
+    assert told == []
 
 
 async def _held(warm: WarmStart) -> str:

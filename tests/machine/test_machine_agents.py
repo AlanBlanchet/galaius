@@ -1167,6 +1167,66 @@ def test_a_start_asked_again_under_its_id_is_never_a_second_agent(base: Path, tm
     assert [run.run_id for run in WebRuns(path=tmp_path / "web-runs.json").read()] == [run_id]
 
 
+def test_a_start_is_answered_once_its_run_exists_not_when_its_quota_window_ends(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Owner 2026-11-25: a send took 5.9 s to read « working » (24 s under load) because the start waited for the run's quota
+    window: the answer comes at `registered`, the run is the web's by then (asked again under its id it is the same run), and the
+    walk goes on after it."""
+    walked: list[str] = []
+
+    async def launch(provider, task, *, run_id, registered, **options):
+        reg.register(run_id=run_id, pid=None, provider="claude", name="w", agent="main", model="m", cwd=options["cwd"], task=task)
+        registered(run_id)
+        await asyncio.sleep(1.5)  # the quota window of its first candidate
+        walked.append(run_id)
+        return SimpleNamespace(run_id=run_id)
+
+    monkeypatch.setattr("galaius.machine.agents.run_agent", launch)
+    request = _request("start", root="project", role="main", text="the footer")
+
+    async def asked() -> tuple[float, MachineAgentAnswer, MachineAgentAnswer]:
+        agents = _agents(base, tmp_path)
+        began = time.monotonic()
+        first = await agents.answer(request)
+        waited = time.monotonic() - began
+        assert walked == [], "answered while its walk still runs"
+        again = await _agents(base, tmp_path).answer(request)
+        await asyncio.sleep(1.8)
+        return waited, first, again
+
+    waited, first, again = asyncio.run(asked())
+    assert waited < 1.0 and first.error is None and again.run_id == first.run_id
+    assert walked == [str(first.run_id)] and [run.run_id for run in WebRuns(path=tmp_path / "web-runs.json").read()] == [first.run_id]
+
+
+def test_a_walk_that_fails_after_its_start_was_answered_ends_the_run_failed_with_why(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def launch(provider, task, *, run_id, registered, **options):
+        reg.register(run_id=run_id, pid=None, provider="claude", name="w", agent="main", model="m", cwd=options["cwd"], task=task)
+        registered(run_id)
+        await asyncio.sleep(0.2)
+        raise ModelUnavailable(sentence="No candidate for 'main' can start on this machine")
+
+    monkeypatch.setattr("galaius.machine.agents.run_agent", launch)
+
+    async def asked() -> MachineAgentAnswer:
+        answer = await _agents(base, tmp_path).answer(_request("start", root="project", role="main", text="hi"))
+        assert reg.get_run(str(answer.run_id)).status == "running", "answered before the walk failed"
+        await asyncio.sleep(0.6)
+        return answer
+
+    answer = asyncio.run(asked())
+    failed = reg.get_run(str(answer.run_id))
+    assert answer.error is None and failed.status == "failed" and "No candidate for 'main'" in failed.last
+
+
+def test_a_walk_that_fails_before_any_run_exists_is_still_the_starts_own_refusal(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def launch(provider, task, **options):
+        raise ModelUnavailable(sentence="No candidate for 'main' can start on this machine")
+
+    monkeypatch.setattr("galaius.machine.agents.run_agent", launch)
+    with pytest.raises(RuntimeError, match="No candidate"):
+        _answer(_agents(base, tmp_path), _request("start", root="project", role="main", text="hi"))
+
+
 def test_a_cloned_workspace_start_tells_the_agent_cli_to_load_no_folder_settings() -> None:
     """The switch travels in the run's own environment, not this process's: a runner launching
     in-process for an untrusted clone still starts its CLI with the folder's settings off."""
