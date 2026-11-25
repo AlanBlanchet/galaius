@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from galaius.agents import agent_queue, messaging, registry as reg, run as run_module
+from galaius.agents import agent_queue, messaging, registry as reg, run as run_module, walk
 from galaius.agents.limits import admission, fallback, quota
 from galaius.agents.run import run_agent
 from tests.support.agents import QueueProvider, setup_queue, use_policy
@@ -52,10 +52,10 @@ class _Standin(QueueProvider):
 def standin(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     provider = setup_queue(monkeypatch, _Standin())
     use_policy(monkeypatch, agents={"tester": "queue-model"}, reasoning={"tester": "medium"}, providers={"claude": True})
-    monkeypatch.setattr(fallback, "PROVIDERS", {"claude": provider})
+    monkeypatch.setattr(walk, "PROVIDERS", {"claude": provider})
     monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None, among=None: tuple(
         reg.LaunchCandidate(provider="claude", model=name, rank=index) for index, name in enumerate(TABLE)))
-    monkeypatch.setattr(run_module, "_capability_of", lambda model, candidates: {"model-a": 90.0, "model-b": 70.0, "model-c": 50.0}.get(model))
+
     monkeypatch.setattr(run_module, "_context_of", lambda model, candidates: None)
     monkeypatch.setattr(run_module, "resolve_model", lambda model, env, *, provider, weights="": ({}, model))
     monkeypatch.setenv("STANDIN_STATE", str(tmp_path / "turns"))

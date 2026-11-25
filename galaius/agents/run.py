@@ -36,7 +36,7 @@ from pydantic import BaseModel, ConfigDict
 
 from galaius.agents.limits import admission
 from galaius.agents import agent_queue
-from galaius.agents import registry as reg
+from galaius.agents import registry as reg, walk
 from galaius.agents.limits import quota
 from galaius.agents.catalog import relations
 from galaius.agents import run_folder
@@ -359,18 +359,6 @@ def _apply_provider_constraint(
     return tuple(sorted(filtered, key=lambda c: c.provider != prefer))
 
 
-def _capability_of(model: str, candidates: Sequence[reg.LaunchCandidate]) -> float | None:
-    """The catalog's capability score for `model`, as the ranking that produced `candidates` names it;
-    None when the catalog carries no score for it, or does not know it at all.
-
-    Read through the candidate list first because a CLI's own name for a model is not the catalog's
-    (`claude-opus-5-5` is `anthropic/claude-opus-5.5`), and only a candidate carries both.
-    """
-    named = next((entry.catalog_id for entry in candidates if entry.model == model and entry.catalog_id), None)
-    row = Model.named(named) if named else Model.by_id(model)
-    return None if row is None else row.intelligence_score
-
-
 def _noted_until(provider: str, model: str, logins: Sequence[UUID | None]) -> float | None:
     """When a model the walk may put on one of `logins` is free to try again: its quota block READ AGAINST EACH login whose usage
     window is open (`admission.Hold.usage`), the earliest one, None when any of them holds none (a model refused on one login
@@ -393,57 +381,22 @@ def _own_login_takes(provider: AgentProvider, model: str, options: Sequence[RunS
 
 
 def _context_of(model: str, candidates: Sequence[reg.LaunchCandidate]) -> int | None:
-    """The catalog's context window for `model` (as `_capability_of` reads it); None when it names none."""
+    """The catalog's context window for `model`, read through the candidate list that names its catalog id; None when it names none."""
     named = next((entry.catalog_id for entry in candidates if entry.model == model and entry.catalog_id), None)
     row = Model.named(named) if named else Model.by_id(model)
     return None if row is None else context_window_of(row.catalog_id)
 
 
-def resolve_continuable_model(
-    model: str, env: dict[str, str], *, provider: AgentProvider, weights: str = "", role: str | None = None,
-    subscription: UUID | None = None, current: str | None = None, context_tokens: int | None = None,
-) -> tuple[dict[str, str], str]:
-    """Re-resolve `model` (a criterion, or a plain model id) for a RESUMED turn like a fresh spawn: the ranked list, a
-    model still in quota cooldown passed over — instead of replaying whatever model the run recorded at its original
-    spawn, which already refused a moment ago.
-
-    NEVER a refusal while this provider has a model that could answer (owner 2026-11-20: « If fable is not available it
-    should fallback. … The harness should never dissalow if i have any form of usage »). The order tried:
-    1. `current`, the model the conversation is on, while the rule still lists it and no cooldown note holds it: a
-       resume changes nothing it has no cause to change (a value-ranked rule lists the cheapest first, and put the owner's
-       main conversation on haiku-5.5);
-    2. the rule's own list;
-    3. every other model of the provider, the most capable first — a plain id that cannot run falls here, as a rule whose
-       models are all cooled does.
-    A model whose context window is below `context_tokens` (the conversation's size now) goes behind every model that
-    fits: it could not take the history (2026-10-23: a 1M-token conversation put on haiku-5.5, which Claude Code could
-    not compact with); when none fits the largest window is asked, and it compacts. Within that order the first model no
-    cooldown note holds runs; every model held: the one whose note ends first is asked (a note is a forecast, the vendor
-    decides). The vendor's own refusal is that turn's, recorded. Scoped to ONE provider: a vendor session cannot switch
-    CLI mid-conversation (a move to another login or provider is `registry.movable`'s).
-    """
-    primary = rank_candidates(model, env, providers=[provider], weights=weights, role=role)
-    try:
-        wider = rank_candidates("aa.intelligence", env, providers=[provider])
-    except (ModelUnavailable, ValueError):
-        wider = ()   # no catalog scores: the rule's own list is all there is
-    everything = tuple({c.model: c for c in (*primary, *wider)}.values())
-    by_capability = sorted(everything, key=lambda entry: -(_capability_of(entry.model, everything) or float("-inf")))
-    ordered = list(dict.fromkeys((*((current,) if current in {c.model for c in primary} else ()), *(c.model for c in primary),
-                                  *(c.model for c in by_capability))))
-    if context_tokens:
-        window = lambda name: _context_of(name, everything)   # noqa: E731
-        fits = [name for name in ordered if (size := window(name)) is None or size >= context_tokens]
-        ordered = [*fits, *sorted((name for name in ordered if name not in fits), key=lambda name: -(window(name) or 0))]
-    held: dict[str, float] = {}
-    for name in ordered:
-        until = quota.blocked_until(provider.name, name, subscription=subscription)
-        if until is None:
-            return resolve_model(name, env, provider=provider, weights=weights)
-        held[name] = until
-    if held:
-        return resolve_model(min(held, key=held.__getitem__), env, provider=provider, weights=weights)
-    raise ModelUnavailable(sentence=f"no model {provider.name!r} can run for {model!r}")
+def resume_model(run: reg.AgentRun, policy: Policy, env: dict[str, str], *, provider: AgentProvider) -> tuple[dict[str, str], str]:
+    """The model `run`'s next turn is asked for, as its role's table gives it (`walk.of_run` over its own program and the login it is
+    pinned to; the move to another login or program is made before, `agent_queue.dispatch`): the first row nothing shuts, every row shut
+    the one reopening first, asked all the same (the vendor decides, the request is never refused for what this PC remembers: owner
+    2026-11-20 « The harness should never dissalow if i have any form of usage »). A model whose window is below the conversation's
+    size goes behind every one that fits."""
+    step = walk.of_run(run, policy, env, across=False, context_tokens=run.context_tokens or None)
+    if step is None:
+        raise ModelUnavailable(sentence=f"no model {provider.name!r} can run for {run.agent!r}")
+    return resolve_model(step.unit.model, env, provider=provider, weights=policy.weights_for(run.agent))
 
 
 async def _unavailable(
@@ -567,7 +520,8 @@ def _vendor_says(line: dict) -> bool:
     if kind in _VENDOR_LINES:
         return True
     if kind == "result":
-        return bool(line.get("is_error"))  # a healthy result is the model's own final answer
+        # A healthy result is the model's own final answer, unless it is only a short refusal worded as one (`quota.refused_as_answer`).
+        return bool(line.get("is_error")) or (isinstance(line.get("result"), str) and quota.refused_as_answer(line["result"]))
     message = line.get("message")
     # Claude Code's own notice ("You've hit your limit · resets …") wears an assistant turn
     # written by the CLI, never the model: its model is "<synthetic>".
@@ -1076,8 +1030,7 @@ class ResumeLaunch(AheadLaunch):
             criterion = policy.criterion_for(run.agent)
             if not criterion:
                 raise ModelUnavailable(sentence=f"No model criterion for {run.agent!r}")
-            routed, model = resolve_continuable_model(criterion, environment, provider=provider, weights=policy.weights_for(run.agent), role=run.agent,
-                                                      subscription=run.subscription_id, current=run.model, context_tokens=run.context_tokens or None)
+            routed, model = resume_model(run, policy, environment, provider=provider)
             reasoning = policy.effort_for(run.agent, f"{provider.name}/{model}" if model else None, chosen=run.reasoning_set)
         coarse_accepted = policy.accepts_coarse_tool_policy(run.agent, provider.name) if run.agent else False
         tools = tools_of(policy, run.agent, run.community is not None)
@@ -1793,17 +1746,17 @@ async def run_agent(
     # in line (`admission.Paused`) for the one reopening first, never refused for it.
     waits: dict[int, admission.Hold] = {}
     chosen_index = -1
-    walk = deque([index for index in range(len(candidates)) if index not in noted] + list(noted))
+    pending = deque([index for index in range(len(candidates)) if index not in noted] + sorted(noted, key=noted.__getitem__))   # every unit shut: the one reopening first is asked first
     #: Candidates passed over only because this login was refused them before: asked again, once, when
     #: nothing else started — the same never-a-veto rule as a quota note, at the cost of one refused start.
     remembered: list[int] = []
     asking_again = False
-    while walk or (chosen is None and remembered and not asking_again):
-        if not walk:
+    while pending or (chosen is None and remembered and not asking_again):
+        if not pending:
             asking_again = True
-            walk.extend(remembered)
+            pending.extend(remembered)
             skipped = [entry for entry in skipped if entry.candidate not in (candidates[index] for index in remembered)]
-        index = walk.popleft()
+        index = pending.popleft()
         candidate = candidates[index]
         if (candidate.provider, candidate.model) in passed_over:
             skipped.append(_skip_record(candidate, _skip("quota_exceeded", f"{candidate.provider}/{candidate.model} refused this brief before it started; relaunched on the next ranked model")))
@@ -2041,13 +1994,13 @@ async def run_agent(
             said = _child_output(run_id)
             until = quota.remember(quota_reason, candidate.provider, candidate.model, said=said,
                                    subscription=candidate_pin_id, login=login)
-            message = _quota_message(candidate.provider, candidate.model, said, until) \
-                if quota_reason == "quota_exceeded" \
+            message = _quota_message(candidate.provider, candidate.model, said, until) if quota_reason == "quota_exceeded" \
+                else f"overload intent: {candidate.provider}/{candidate.model} is overloaded at its vendor; passed over until {datetime.fromtimestamp(until, UTC).isoformat(timespec='seconds')}." if quota_reason == "overloaded" \
                 else _unsupported_message(candidate, f"{_vendor_words(said)}; passed over for the next ranked model")
             skipped.append(_skip_record(candidate, _skip(quota_reason, message), until=until))
             if candidate.provider in offered and admission.Hold.usage(candidate.provider, candidate_pin_id) is not None \
                     and any(admission.Hold.usage(candidate.provider, login) is None for login in logins[candidate.provider]):
-                walk.appendleft(index)  # its login just reached its limit: the same model on his next one, before any lower one
+                pending.appendleft(index)  # its login just reached its limit: the same model on his next one, before any lower one
             continue
         chosen = candidate
         chosen_index = index

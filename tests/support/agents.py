@@ -180,7 +180,7 @@ def setup_queue(monkeypatch, provider=None):
     provider = provider or QueueProvider()
     install_provider(monkeypatch, provider)
     monkeypatch.setattr(messaging, "provider_for", lambda _: provider)
-    use_policy(monkeypatch, messaging, agents={"tester": "queue-model"}, providers={provider.name: True})
+    use_policy(monkeypatch, messaging, _run_module, agents={"tester": "queue-model"}, providers={provider.name: True})
     # Delivery tests run the same dispatcher entry point in-process. The child process itself is
     # still real: launch_continuation uses Popen and its reaper owns waitpid/finish.
     monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)

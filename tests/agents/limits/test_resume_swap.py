@@ -13,13 +13,13 @@ from uuid import uuid4
 import pytest
 from galaius_core import SubscriptionLimits
 
-from galaius.agents import agent_queue, messaging, registry as reg, run as run_module
+from galaius.agents import agent_queue, messaging, registry as reg, run as run_module, walk
 from galaius.agents.limits import fallback, quota
 from galaius.agents.limits.subscriptions import RunSubscription, Subscription
 from galaius.agents.providers import PROVIDERS
 from galaius.agents.transport.events import RunCut
 from galaius.usage_dialects import CountedTokens
-from tests.support.agents import QueueProvider, setup_queue
+from tests.support.agents import QueueProvider, setup_queue, use_policy
 
 FABLE_POOL = "You've reached your Fable limit. Switch to another model."
 WEEK = "You've hit your weekly limit · resets {at} (UTC)"
@@ -53,8 +53,8 @@ def _stopped_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, model: str = "
     """Run `r1` stopped on login `a`, its session held there; `b` is his other login; two models ranked, the first the run's own."""
     provider = setup_queue(monkeypatch, _Claude())
     monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None, among=None: (
-        reg.LaunchCandidate(provider="claude", model="lower-model", rank=1), reg.LaunchCandidate(provider="claude", model="fable-fixture", rank=0)))
-    monkeypatch.setattr(run_module, "_capability_of", lambda model, candidates: {"fable-fixture": 90.0, "lower-model": 50.0}.get(model))
+        reg.LaunchCandidate(provider="claude", model="fable-fixture", rank=0), reg.LaunchCandidate(provider="claude", model="lower-model", rank=1)))
+
     monkeypatch.setattr(run_module, "resolve_model", lambda model, env, *, provider, weights="": ({}, model))
     logins = {"a": Subscription.create(uuid4(), "claude"), "b": Subscription.create(uuid4(), "claude")}
     monkeypatch.setitem(PROVIDERS, "claude", provider)
@@ -96,7 +96,7 @@ def _resume() -> tuple[str | None, object]:
     ("window", ("a",), "b", "fable-fixture"),      # (b) the first login's whole usage window shut: his second takes it, a login-wide hold is no wait
     ("pool", ("a", "b", "own"), "a", "lower-model"),      # (c) the Fable pool shut on every login: the next ranked model on its own login, never a wait for the pool's reset
     ("stop", ("a", "b", "own"), "a", "lower-model"),
-    ("overload", ("a",), "b", "fable-fixture"),    # (e) overloaded twice on his first login: the same model on his second, never the overloaded one again
+    ("overload", ("a",), "a", "lower-model"),      # (e) overloaded on his first login: the vendor's API is overloaded for the model whoever asks, the next row takes it
     ("overload", ("a", "b", "own"), "a", "lower-model"),   # (f) overloaded on every login: the next ranked model, never a wait
     ("pool", ("a", "b"), None, "fable-fixture"),   # (d) shut on both subscription logins, open on the PC's own: the same model there, the session carried
 ])
@@ -121,7 +121,7 @@ def test_with_one_provider_and_every_login_overloaded_a_resume_takes_the_lower_m
     An overload bench is the vendor's, never the login's: it stands, so the resume starts at once on the lower model, never on the overloaded one again.
     The rest of the file leaves another provider installed on this PC, which hid it."""
     provider, logins, _ = _stopped_run(monkeypatch, tmp_path)
-    monkeypatch.setattr(fallback, "PROVIDERS", {"claude": provider})   # the one provider installed, as on a clean runner
+    monkeypatch.setattr(walk, "PROVIDERS", {"claude": provider})   # the one provider installed, as on a clean runner
     for login in (*logins.values(), OWN):
         _hold("overload", login)
     messaging.deliver_message("r1", "go on", sender=sender)
@@ -162,7 +162,7 @@ def test_a_turn_cut_by_one_logins_window_resumes_at_once_on_his_other_login_else
     """The account's own window (not a model pool) shut the run's login: with another login open its automatic resume is due now, never
     at the reset the refusal named (owner 2026-11-20: never stop the request, use the fallback)."""
     provider, logins, _ = _stopped_run(monkeypatch, tmp_path)
-    monkeypatch.setattr(fallback, "PROVIDERS", {"claude": provider})   # no other provider installed here: only the login rung
+    monkeypatch.setattr(walk, "PROVIDERS", {"claude": provider})   # no other provider installed here: only the login rung
     line = _week_line()
     for name in ("a", *(() if other_open else ("b", "own"))):
         quota.record_refusal("claude", "fable-fixture", said=line, subscription=({**logins, "own": OWN}[name]).id)
@@ -179,37 +179,46 @@ class _Other(QueueProvider):
     name = "other"
 
 
-@pytest.mark.parametrize(("shut_models", "open_login", "other_provider", "exhausted", "switched_on"), [
+def _table_with_other(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The role's table over every program asked: Claude's two rows, then the other program's one (the union the real ranking gives)."""
+    def rank(rule, env, *, providers, weights="", role=None, among=None):
+        rows = [("claude", "fable-fixture"), ("claude", "lower-model"), ("other", "other-model")]
+        names = {provider.name for provider in providers}
+        return tuple(reg.LaunchCandidate(provider=provider, model=model, rank=index) for index, (provider, model) in enumerate(rows) if provider in names)
+    monkeypatch.setattr(run_module, "rank_candidates", rank)
+
+
+@pytest.mark.parametrize(("shut_models", "open_login", "other_provider", "moves", "switched_on"), [
     (("fable-fixture", "lower-model"), False, True, True, True),        # every model shut on every login, another provider installed
-    (("fable-fixture", "lower-model"), True, True, False, True),        # his other login can take it (`swap_login`'s rung)
-    (("fable-fixture",), False, True, False, True),                      # one model still answers on its own login (`resolve_continuable_model`'s rung)
+    (("fable-fixture", "lower-model"), True, True, False, True),        # his other login can take it
+    (("fable-fixture",), False, True, False, True),                      # one model still answers on its own login
     (("fable-fixture", "lower-model"), False, False, False, True),       # no other provider to go to
     (("fable-fixture", "lower-model"), False, True, False, False),       # another provider installed but switched off in his policy
 ])
 def test_a_conversation_moves_to_another_provider_only_when_nothing_of_its_own_can_answer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, shut_models: tuple[str, ...],
-                                                                                         open_login: bool, other_provider: bool, exhausted: bool, switched_on: bool) -> None:
+                                                                                         open_login: bool, other_provider: bool, moves: bool, switched_on: bool) -> None:
     provider, logins, _ = _stopped_run(monkeypatch, tmp_path)
-    monkeypatch.setattr(fallback, "PROVIDERS", {"claude": provider, **({"other": _Other()} if other_provider else {})})
-    monkeypatch.setattr(fallback, "_active", lambda name: switched_on)
-    for name, login in logins.items():
+    monkeypatch.setattr(walk, "PROVIDERS", {"claude": provider, **({"other": _Other()} if other_provider else {})})
+    use_policy(monkeypatch, messaging, run_module, agents={"tester": "queue-model"}, providers={"claude": True, "other": switched_on})
+    _table_with_other(monkeypatch)
+    for name, login in {**logins, "own": OWN}.items():
         if open_login and name == "b":
             continue
         for model in shut_models:
             quota.record_refusal("claude", model, said="You've hit your weekly limit", subscription=login.id)
-    run = reg.get_run("r1")
-    assert fallback.exhausted(run, ("fable-fixture", "lower-model")) is exhausted
+    step = walk.step_of(reg.get_run("r1"))
+    assert step is not None and (step.open and step.unit.provider == "other") is moves
 
 
 @pytest.mark.parametrize("spawn_answers", [True, False])
 def test_an_exhausted_providers_waiting_message_goes_to_a_successor_on_another_provider_else_to_its_own_provider(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, spawn_answers: bool) -> None:
     provider, logins, _ = _stopped_run(monkeypatch, tmp_path)
-    monkeypatch.setattr(fallback, "PROVIDERS", {"claude": provider, "other": _Other()})
-    monkeypatch.setattr(fallback, "_active", lambda name: True)
+    monkeypatch.setattr(walk, "PROVIDERS", {"claude": provider, "other": _Other()})
+    _table_with_other(monkeypatch)
     monkeypatch.setattr(agent_queue, "_HANDOFF_REFUSED", set())
     for login in (*logins.values(), OWN):
         for model in ("fable-fixture", "lower-model"):
             quota.record_refusal("claude", model, said="You've hit your weekly limit", subscription=login.id)
-    monkeypatch.setattr(fallback, "candidates", lambda run: ("fable-fixture", "lower-model"))
     made: list[tuple[str, str]] = []
     monkeypatch.setattr(fallback, "hand_on", lambda run, message: (made.append((run.run_id, message)), "successor1" if spawn_answers else None)[1])
     messaging.deliver_message("r1", "go on", sender="operator")

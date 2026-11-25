@@ -39,7 +39,8 @@ from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, Literal, NamedTuple, 
 from uuid import UUID
 
 from pydantic import ConfigDict, BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
-from galaius.agents.limits import fallback, quota
+from galaius.agents import walk
+from galaius.agents.limits import quota
 from galaius.usage_dialects import CountedTokens, OlderTokens
 from galaius_core import SubscriptionLimits, OPEN_MAX, OwnerQuestion, ASKED_BY_MAX, LaunchSkipReason, ReasoningLevel, RecordedReasoning, FILE_KEY, KEPT_FILE_MAX, MACHINE_AGENT_MEDIA, MEDIA_KEY, file_key, MODEL_ID_MAX, FileStory, HandedFile, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor, TokenCounts
 
@@ -553,12 +554,12 @@ class AgentRun(OlderTokens, ContextGauge):
         resume`): refused, typed, only while its subscription is at one of HIS caps (`SubscriptionCapped`). A vendor's
         usage limit never refuses it: the reset it named is a forecast (2026-10-13 « session limit · resets 1:40pm » heard
         13:06, the same login answering from 13:10), so what this PC remembers against its login is dropped and the
-        vendor answers the turn itself, unless another of his logins takes it (`open_logins`); a refusal then is the run's ending again, its automatic resume rescheduled."""
+        vendor answers the turn itself, unless a unit of its table can run (`walk.open_for`); a refusal then is the run's ending again, its automatic resume rescheduled."""
         if self.status in {"running", "waiting"}:
             return
         if self.subscription is not None:
             self.subscription.check()
-        if not open_logins(self) and not fallback.moves(self):   # another login, or another provider, takes the turn (`swap_login`, `fallback`): this one's notes are true
+        if walk.open_for(self) is None:   # a unit that can run takes the turn: this one's notes are true
             quota.forget_login(self.provider, subscription=self.subscription_id, keep_pools=True)
 
     @property
@@ -1583,10 +1584,10 @@ def _remember_vendor_refusal(run: AgentRun, said: str, *, cut: RunCut | None = N
     # again (`admission`): every run resumed meanwhile would be cut the same way (2026-10-18: 8 at once).
     if cut is RunCut.login_lost:
         quota.pause_login(run.provider, "login_lost", subscription=run.subscription_id, said=said, now=now)
-    # The vendor's API overloaded twice in a row for this model on this login (the first one only waits): it is passed over there for
-    # a while, so the next resume takes his other login or the next ranked model (`swap_login`, `resolve_continuable_model`).
-    elif cut is RunCut.overloaded and run.resumed_cut == "overloaded" and run.model:
-        quota.record_refusal(run.provider, run.model, subscription=run.subscription_id, now=now, bench=OVERLOAD_BENCH)
+    # The vendor's API overloaded for this model on this login: passed over there from the FIRST refusal, whoever sent the turn
+    # (`quota.classify` reads it for a person's message too), so the next resume takes his other login or the next row of the table.
+    elif cut is RunCut.overloaded and run.model:
+        quota.record_refusal(run.provider, run.model, subscription=run.subscription_id, now=now, bench=quota.OVERLOAD_BENCH)
 
 
 def finish(
@@ -1957,53 +1958,23 @@ def carry_held(run_id: str) -> AgentRun | None:
             return hold_move(run_id, None) or run
 
 
-def _shut(provider: str, login: UUID | None, model: str | None) -> bool:
-    """Whether a turn of `model` (None: any) cannot start on `login` now: the login's usage window is shut or its sign-in lost
-    (`quota.login_pause`), or the model is passed over on it (its own block, or its family's pool, `quota.blocked_until`)."""
-    return quota.login_pause(provider, subscription=login) is not None or (model is not None and quota.blocked_until(provider, model, subscription=login) is not None)
-
-
-def open_logins(run: AgentRun) -> tuple[RunSubscription | None, ...]:
-    """The logins of this PC, each as the pin `carry` takes (None: this PC's own login), that can take the next turn of stopped
-    `run` while its own login cannot (`_shut`: its usage window shut, its sign-in lost, or its model refused there, a family's pool
-    included) and that are under their caps: the subscription logins first, this PC's own login last (a run pinned to a lost
-    subscription never waits while the PC's own login has usage). None: its login takes the turn, no other does, it is a member's
-    lent run, a run of no process or of a CLI no login runs, or the owner already holds a move for it (`pending_move`)."""
-    if run.pending_move is not None or run.kind != "process" or run.foreign or (run.subscription is not None and run.subscription.lent):
-        return ()
-    if (program := PROVIDERS.get(run.provider)) is None or not program.auth_home_env or not _shut(run.provider, run.subscription_id, run.model):
-        return ()
-    options = []
-    for other in Subscription.all():
-        if other.provider != run.provider or other.id == run.subscription_id or _shut(run.provider, other.id, run.model):
-            continue
-        option = RunSubscription(subscription_id=other.id, limits=other.limits() or SubscriptionLimits())
-        try:
-            option.check()
-        except SubscriptionRefused:
-            continue
-        options.append(option)
-    if run.subscription_id is not None and not _shut(run.provider, None, run.model):
-        options.append(None)
-    return tuple(options)
-
-
-def swap_login(run: AgentRun) -> AgentRun:
-    """`run`, stopped and about to resume, moved to another of this PC's subscription logins when the one it is pinned to cannot
-    take its turn and another one can (`open_logins`): the session carried and the run pinned there (`carry`), the same model asked
-    again, so a conversation never waits on one login while another of his still has usage (owner 2026-11-20 « swap subscriptions
-    and take another one which has the limits »). Unchanged when none can (the next model on its own login, or the wait for the
-    earliest reopening, are the caller's). One that cannot be carried (a copy that fails) is passed over for the next login."""
-    for option in open_logins(run):
-        try:
-            moved = carry(run, option)
-        except (SubscriptionRefused, PermissionError, OSError) as error:
-            log.warning("run %s could not move to %s: %s", run.run_id[:8], option.subscription_id if option else "the PC's own login", error)
-            continue
-        log.warning("run %s moved from %s to %s: its login cannot take %s now", run.run_id[:8], run.subscription_id or "the PC's own login",
-                    option.subscription_id if option else "the PC's own login", run.model or "a turn")
-        return moved
-    return run
+def carry_to(run: AgentRun, login: UUID | None) -> AgentRun:
+    """Stopped `run`, about to resume, moved to this PC's login `login` (None: its own) when the walk (`walk.of_run`) found its
+    turn can run there and not on the login it is pinned to: the session carried and the run pinned there (`carry`), so a
+    conversation never waits on one login while another of his still has usage (owner 2026-11-20 « swap subscriptions and take
+    another one which has the limits »). Unchanged when it is there already, or when the copy cannot be made (logged: the turn is
+    asked where it is, the vendor decides)."""
+    if login == run.subscription_id:
+        return run
+    pin = None if login is None else RunSubscription(subscription_id=login, limits=(Subscription.of(login).limits() or SubscriptionLimits()))
+    try:
+        moved = carry(run, pin)
+    except (SubscriptionRefused, PermissionError, OSError) as error:
+        log.warning("run %s could not move to %s: %s", run.run_id[:8], login or "the PC's own login", error)
+        return run
+    log.warning("run %s moved from %s to %s: its login cannot take %s now", run.run_id[:8], run.subscription_id or "the PC's own login",
+                login or "the PC's own login", run.model or "a turn")
+    return moved
 
 
 #: What a run carried from another PC keeps of that PC's record: what its conversation shows, never how it ran there
@@ -3343,12 +3314,6 @@ AUTO_RESUMES_PER_CUT = 2
 #: further per resume already made: a DNS or connect failure of seconds is waited out and costs one turn, one that
 #: outlasts the whole backoff is no blip and the run is left to a person. Its length bounds the retries.
 NETWORK_RESUME_BACKOFF: tuple[float, ...] = (5.0, 20.0, 60.0, 180.0)
-#: The same for a run its provider's API refused as overloaded (`overload_resume_at`): longer steps, for a vendor that needs minutes,
-#: and more of them since the second overload in a row moves the run to another login or model (`OVERLOAD_BENCH`).
-OVERLOAD_RESUME_BACKOFF: tuple[float, ...] = (15.0, 45.0, 120.0, 240.0, 480.0)
-#: How long a model overloaded twice in a row is passed over on its login (`_remember_vendor_refusal`): the resumes in between go to
-#: another login or the next ranked model, and the vendor's own recovery returns it (`quota.served` clears it at its first answer).
-OVERLOAD_BENCH = 600.0
 #: The cuts that time their own automatic resume and count their own retries (`limit_resume_at`, `network_resume_at`):
 #: the shared loop guards (`RESUME_GRACE`, `AUTO_RESUMES_PER_CUT`) would read their backoff as a resume that did not
 #: come back, since each is EXPECTED to be heard again within it while the cause lasts.
@@ -3395,14 +3360,18 @@ def limit_resume_at(run: AgentRun, *, now: float | None = None) -> float | None:
             or digest is None or digest.ending != "error" or digest.cut is not RunCut.usage_limit):
         return None
     refusal = quota.Refusal.read(digest.ending_text, now=run.finished_at)
-    if refusal is not None and refusal.pool:
-        # A model family's own pool (`quota.POOLS`): the account answers, so the next ranked model takes the turn at once (one
-        # automatic try; a launch's relaunch, `relaunch_owed`, comes first).
-        return run.finished_at if run.relaunched_at is None and (run.resumed_at is None or run.resumed_at < run.finished_at) else None
-    if refusal is not None and (open_logins(run) or fallback.moves(run)) and (run.resumed_at is None or run.resumed_at < run.finished_at):
-        # Another login of his, or another provider, takes the turn (`swap_login`, `fallback`): at once, never a wait for this one's reopening. One automatic try
-        # per refusal; refused there too, its login is shut as well and the named reset alone resumes it.
+    step = walk.step_of(run) if refusal is not None else None
+    fresh = run.relaunched_at is None and (run.resumed_at is None or run.resumed_at < run.finished_at)
+    if fresh and refusal is not None and refusal.pool and step is None:
+        return run.finished_at   # its table cannot be read now: the vendor said another model answers, and the vendor decides
+    if step is not None and step.open and fresh:
+        # A unit of its table that this refusal did not shut (another login of his, a lower model, another program, `walk`) takes the
+        # turn at once, never a wait for this one's reopening. One automatic try per refusal; refused there too, that unit is shut as well
+        # and the table's next reopening (the named reset, the earliest `until`) alone resumes it.
         return run.finished_at
+    if run.relaunched_at is None and refusal is not None and refusal.pool and refusal.reopens_at is None and step is not None \
+            and step.shut is not None and step.shut.until is not None:
+        return max(run.finished_at, step.shut.until)   # a pool that named no reset: the table's first reopening, never a stop
     if refusal is None or refusal.reopens_at is None or refusal.reopens_at - run.finished_at > quota.MAX_COOLDOWN:
         return None
     reset = refusal.reopens_at + quota.RESET_SLACK
@@ -3431,20 +3400,18 @@ def network_resume_at(run: AgentRun, *, now: float | None = None) -> float | Non
 
 
 def overload_resume_at(run: AgentRun, *, now: float | None = None) -> float | None:
-    """When `run`, whose last turn its provider's API ended as overloaded (`RunCut.overloaded`), is resumed by itself:
-    `OVERLOAD_RESUME_BACKOFF` after that end, one step further per automatic resume already made for that cut. None past the
-    last step, and not before its model's overload bench ends when nothing else can take the turn. `now` only tells whether that bench still stands."""
+    """When `run`, whose last turn its provider's API ended as overloaded (`RunCut.overloaded`), is resumed by itself: at once when a
+    unit of its table can take the turn (`walk`: the overloaded model is a shut entry from its FIRST refusal, so the next row or his
+    other login answers while the vendor recovers), else when the first unit of the table reopens (the bench the overload earned,
+    `quota.OVERLOAD_BENCH`, twice as long for each refusal in a row). Never None: a run cut by an overload comes back until the
+    window of a stale cut (`CUT_RESUME_WINDOW`) passes, a person's hand is no part of it (run 54a62ee1 stayed down after a 529: its
+    resume was timed by five fixed backoffs and none left was `None`, and a person's message was the only thing that resumed it)."""
     if run.finished_at is None:
         return None
-    made = run.resumed_cuts if run.resumed_cut == "overloaded" else 0
-    if made >= len(OVERLOAD_RESUME_BACKOFF):
-        return None
-    due = run.finished_at + OVERLOAD_RESUME_BACKOFF[made]
-    # Its model benched on its login (`OVERLOAD_BENCH`) with no other login or provider to take the turn: the vendor's API is the
-    # one thing left to wait for, so the automatic try comes when the bench ends, never into the overload again. A person's message
-    # (his « Continuer ») never waits: the next ranked model takes it at once (`quota.forget_login` leaves the bench standing).
-    bench = quota.overload_until(run.provider, run.model, subscription=run.subscription_id, now=now)
-    return due if bench is None or open_logins(run) or fallback.moves(run) else max(due, bench)
+    step = walk.step_of(run)
+    if step is None:   # its table cannot be read now (the service is down): the vendor's own recovery time
+        return run.finished_at + quota.OVERLOAD_BENCH
+    return run.finished_at if step.open else max(run.finished_at, step.shut.until if step.shut.until is not None else run.finished_at + quota.OVERLOAD_BENCH)
 
 
 def cut_cause(run: AgentRun) -> CutCause | None:
@@ -3530,7 +3497,11 @@ def cut_resume(run: AgentRun, *, now: float | None = None) -> CutOwed | None:
     if cause not in SELF_TIMED_CUTS and run.resumed_cut == cause and run.resumed_cuts >= AUTO_RESUMES_PER_CUT:
         return None
     if cause == "login_lost":
-        return None if aged else CutOwed(cause, "sign_in", None)
+        # A unit of its table that is not that login (his other login, a lower model of another program) takes the turn at once; with none
+        # the run waits for a sign-in, and says so (`CutOwed.resumes`).
+        if aged:
+            return None
+        return CutOwed(cause, "itself", run.finished_at) if walk.open_for(run) is not None else CutOwed(cause, "sign_in", None)
     if cause in SELF_TIMED_CUTS:
         at = {"usage_limit": limit_resume_at, "network_lost": network_resume_at, "overloaded": overload_resume_at}[cause](run, now=now)
         # A resume nobody took within `CUT_RESUME_WINDOW` of falling due is as stale as a process cut: the pool refusal or another

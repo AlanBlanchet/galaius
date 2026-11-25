@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from galaius.agents import registry as reg, run as run_module
+from galaius.agents import registry as reg, run as run_module, walk
 from galaius.agents.limits import fallback, quota
 from galaius.agents.run import run_agent
 from galaius.agents.transport.events import RunCut
@@ -113,7 +113,7 @@ def test_resume_when_the_table_gains_a_model_while_the_run_is_down_takes_it_if_i
     scores = {"fable-fixture": 90.0, "new-model": 80.0, "lower-model": 50.0}
     monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None, among=None: tuple(
         reg.LaunchCandidate(provider="claude", model=name, rank=index) for index, name in enumerate(scores)))
-    monkeypatch.setattr(run_module, "_capability_of", lambda model, candidates: scores.get(model))
+
     for login in (*logins.values(), OWN):
         _hold("pool", login)
     model, _ = _resume()
@@ -124,7 +124,7 @@ def test_resume_when_the_table_gains_a_model_while_the_run_is_down_takes_it_if_i
 
 def _cut(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cut: RunCut, said: str, *, resumed_cut: str | None = None) -> tuple[reg.AgentRun, dict]:
     provider, logins, _ = _stopped_run(monkeypatch, tmp_path)
-    monkeypatch.setattr(fallback, "PROVIDERS", {"claude": provider})   # the one provider installed: only logins and the lower model can take it
+    monkeypatch.setattr(walk, "PROVIDERS", {"claude": provider})   # the one provider installed: only logins and the lower model can take it
     reg.cut_resume_since(now=0.0)
     run = reg.get_run("r1")
     digest = reg.StreamDigest(source="x", ending="error", ending_text=said, cut=cut, usage=CountedTokens())

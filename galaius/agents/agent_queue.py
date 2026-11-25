@@ -29,6 +29,7 @@ from galaius_core import AGENT_IMAGES_MAX, MEDIA_KEY, OWNER_MAKER, AgentRevision
 from galaius_core.wire import readable
 from pydantic import BaseModel, ConfigDict, Field
 
+from galaius.agents import walk
 from galaius.agents.limits import fallback, quota
 from galaius.agents.catalog.connection import CatalogAuthenticationError, CatalogConnectionError, CatalogOffline
 from galaius.agents import registry as reg
@@ -51,7 +52,7 @@ MAX_PENDING = 128
 #: simply work ». A refusal waiting cannot change (`_permanent`) is not tried again.
 RESUME_BACKOFF: tuple[float, ...] = (5.0, 20.0)
 #: How many times ONE turn a provider limit refused is sent again at once, each time on what the refusals before it left open
-#: (the next model, then the next login: `registry.swap_login`): every model of the run's provider is benched by the fifth.
+#: (the table's next unit, `walk`): a loop guard, the walk itself ends it as soon as no unit can run.
 LIMIT_FALLBACKS = 6
 _POLL_SECONDS = 0.1
 #: Runs whose hand-off to another provider was refused (`fallback.hand_on`) in this dispatcher: their turn goes to their own provider.
@@ -1131,6 +1132,8 @@ def _fall_back_locked(run_id: str, item: QueueItem, run: "reg.AgentRun | None", 
         return False
     if run is not None and (kind := quota.classify(refusal)) is not None:
         quota.remember(kind, run.provider, run.model, said=refusal, subscription=run.subscription_id, login=run.login)
+        if walk.open_for(run) is None:
+            return False   # every unit of its table is shut now: the turn is never asked of one again, it ends saying what the vendor said
         if run.model:
             named = quota.Refusal.read(refusal, now=time.time())
             reg.note_fell_back_locked(run_id, reg.FellBack(model=run.model, pool=(named.pool or None) if named else None,
@@ -1167,8 +1170,10 @@ def settle(run_id: str, item: QueueItem, code: int) -> None:
     # A limit is the vendor's word on the result line, whatever the exit code (the CLI's recorded refusals all exit 1; a wrapper or a
     # CLI version that exits 0 on one must not leave it as the turn's reply).
     said = events[-1] if events else None
-    limited = said is not None and said.kind == "error" and quota.classify(said.text) is not None
-    if (code or limited) and attempt_state != "replied":
+    # A refusal worded as the turn's finished answer is no answer either (`quota.refused_as_answer`).
+    worded = said is not None and said.kind == "done" and quota.refused_as_answer(said.text)
+    limited = worded or (said is not None and said.kind == "error" and quota.classify(said.text) is not None)
+    if (code or limited) and (attempt_state != "replied" or worded):
         # The provider's own last word in this attempt (a quota refusal, a vendor error, a compaction that failed)
         # outranks the exit code; a child that died saying nothing gets the exit code and its stderr as the run's last line.
         error = f"resumed provider exited {code}"
@@ -1256,7 +1261,9 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
 
                     # His message is this PC's from now: the run reads at work through its wait for a place or for the
                     # service and every try, until its turn starts or its last try fails.
-                    run = reg.swap_login(run)   # a login that cannot take it, another of his that can: before the turn is begun
+                    step = walk.open_for(run)   # where the table's first unit that can run is: its login, before the turn is begun
+                    if step is not None and step.unit.provider == run.provider:
+                        run = reg.carry_to(run, step.unit.login)
                     run = reg.begin_resume_locked(run_id) or run
                     # A resumed turn is a run at work like a spawn: it waits for a place on this computer.
                     with SpawnLine.here().resuming(run) as admitted:
@@ -1273,8 +1280,8 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                                 )
                                 reg.end_resume_locked(run_id)
                                 item = None
-                            elif isinstance(item.turn, MessageTurn) and run_id not in _HANDOFF_REFUSED and fallback.exhausted(run, fallback.candidates(run)):
-                                # Its provider answers nothing on any login of his: another provider takes the conversation on (`fallback`).
+                            elif isinstance(item.turn, MessageTurn) and run_id not in _HANDOFF_REFUSED and step is not None and step.unit.provider != run.provider:
+                                # The table's first unit that can run is another program's: it takes the conversation on (`fallback`).
                                 handoff, item = (item, run, prompt), None
                             else:
                                 try:

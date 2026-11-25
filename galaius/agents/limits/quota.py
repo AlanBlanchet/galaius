@@ -38,7 +38,7 @@ from typing import Any, Literal, Self
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from galaius_core import POOL_WINDOWS, UsageWindow
+from galaius_core import POOL_WINDOWS, ShutEntry, ShutReason, UsageWindow
 from pydantic import BaseModel, ConfigDict, Field
 
 from galaius.agents.transport.events import instant
@@ -197,7 +197,16 @@ CONTEXT_FULL = re.compile(
 #: What a vendor refusal IS, as `classify` reads it: a fact about the account's quota, about this
 #: login's access to that model, or about this conversation's own size. Each is recorded in its own
 #: place and for its own length — the last in no place at all, there being no model to remember it against.
-RefusalKind = Literal["quota_exceeded", "model_capability_unsupported", "context_exhausted"]
+RefusalKind = Literal["quota_exceeded", "model_capability_unsupported", "context_exhausted", "overloaded"]
+
+#: A vendor API that answered it could not take the turn now (`RunCut.overloaded`): the CLI's own sentence (Claude Code, recorded
+#: 2026-11-23: « API Error: 529 Overloaded. This is a server-side issue, usually temporary ») or the vendor's error type. Never the
+#: bare word « overloaded »: a tool's or a worker pool's own message says it too.
+OVERLOADED = re.compile(r"\bAPI Error: (?:500|502|503|529)\b|\boverloaded_error\b", re.IGNORECASE)
+#: How long a model the vendor's API overloaded is passed over on its login: the first refusal, then twice as long for each one in a
+#: row, never past `OVERLOAD_BENCH_MAX`. A bench, never the earned hour (`Block.length`): the vendor recovers in minutes.
+OVERLOAD_BENCH = 120.0
+OVERLOAD_BENCH_MAX = 1800.0
 
 #: Every key any of these vendors uses to say WHEN the exhausted period reopens, as an absolute
 #: instant. Verified against primary sources 2026-09-22 (`.github/research/
@@ -451,9 +460,10 @@ class Block(BaseModel):
     #: The instant the vendor named that period reopening at; None when it named none. `until` is what this PC passes over
     #: for, never past it (`Refusal.latest`): a rolling window reopens before the instant it names.
     reopens_at: float | None = None
-    #: True for the short bench an overloaded API earned (`record_refusal`'s `bench`): the vendor's, not the login's, so
-    #: forgetting the login (`forget_login`) never ends it. Written only when set.
-    overload: bool = Field(default=False, exclude_if=lambda value: not value)
+    #: What shut it (`ShutReason`): a usage window (`limit`), a model family's pool (`pool`), the vendor's API overloaded
+    #: (`overload`: the vendor's, not the login's, so forgetting the login never ends it), a model the vendor refuses this
+    #: account kind (`unsupported`).
+    reason: ShutReason = "limit"
 
     @staticmethod
     def length(count: int) -> float:
@@ -598,11 +608,50 @@ def blocked_until(provider: str, model: str | None, *, subscription: UUID | None
     return max(untils, default=None)
 
 
+def shut(provider: str, model: str | None, *, subscription: UUID | None = None, now: float | None = None) -> ShutEntry | None:
+    """What holds `model` back on this login at `now`, or None when it can take a turn: the login's own sign-in lost or usage
+    window shut (every model of it), else the model's own block or its family's pool (`POOLS`) — the one that ends last. The one
+    read the model walk (`agents.walk`) takes a row's state from, never a second reading of the blocks."""
+    moment = time.time() if now is None else now
+    login = str(subscription) if subscription is not None else ""
+    if (pause := login_pause(provider, subscription=subscription, now=moment)) is not None:
+        return ShutEntry(provider=provider, login=login, reason="login_lost" if pause.reason == "login_lost" else "limit", until=pause.until)
+    # The vendor's API overloaded for a model is the vendor's, whichever login asked: the bench on any login of this program shuts it on all.
+    overloaded = [block for name, usage in _read(moment).items() if name.partition("#")[0] == provider
+                  if (block := usage.blocks.get(model or "")) is not None and block.reason == "overload" and block.until > moment]
+    blocks = _blocks(provider, subscription, moment)
+    held = [(key, block) for key in [model or "", *(_family(token) for token in sorted(POOL_TOKENS) if token in (model or "").lower())]
+            if (block := blocks.get(key)) is not None and block.until > moment]
+    if overloaded:
+        held.append((model or "", max(overloaded, key=lambda block: block.until)))
+    if not held:
+        return None
+    key, block = max(held, key=lambda found: found[1].until)
+    return ShutEntry(provider=provider, login=login, reason=block.reason, until=block.until, count=block.count,
+                     **({"family": key.removeprefix("~")} if key.startswith("~") else {"model": model}))
+
+
+def shut_entries(now: float | None = None) -> list[ShutEntry]:
+    """Every entry standing at `now` on every login of this PC: what the PC reports to the server, which merges them per login."""
+    moment = time.time() if now is None else now
+    found: list[ShutEntry] = []
+    for login, usage in _read(moment).items():
+        provider, _, subscription = login.partition("#")
+        for reason, pause in usage.pauses.items():
+            if pause.live(provider, UUID(subscription) if subscription else None, moment):
+                found.append(ShutEntry(provider=provider, login=subscription, reason="login_lost" if reason == "login_lost" else "limit", until=pause.until))
+        for key, block in usage.blocks.items():
+            if block.until > moment and "@" not in key:
+                found.append(ShutEntry(provider=provider, login=subscription, reason=block.reason, until=block.until, count=block.count,
+                                       **({"family": key.removeprefix("~")} if key.startswith("~") else {"model": key})))
+    return found
+
+
 def overload_until(provider: str, model: str | None, *, subscription: UUID | None = None, now: float | None = None) -> float | None:
-    """When the overload bench (`Block.overload`) this model earned on this login ends, None when it is under none."""
+    """When the overload bench (`Block.reason` overload) this model earned on this login ends, None when it is under none."""
     moment = time.time() if now is None else now
     block = _blocks(provider, subscription, moment).get(model or "")
-    return block.until if block is not None and block.overload and block.until > moment else None
+    return block.until if block is not None and block.reason == "overload" and block.until > moment else None
 
 
 def pool_blocked_until(provider: str, model: str | None, *, subscription: UUID | None = None, now: float | None = None) -> float | None:
@@ -623,7 +672,7 @@ def hold_pool(provider: str, pool: str, *, until: float, subscription: UUID | No
         blocks = entries.setdefault(_login(provider, subscription), LoginUsage()).blocks
         previous = blocks.get(_family(pool))
         blocks[_family(pool)] = Block(until=max(until, previous.until) if previous is not None else until,
-                                      count=previous.count if previous is not None else 1, at=moment)
+                                      count=previous.count if previous is not None else 1, at=moment, reason="pool")
 
 
 def release_pool(provider: str, pool: str, *, subscription: UUID | None = None, now: float | None = None) -> None:
@@ -647,8 +696,9 @@ def on_probation(provider: str, model: str | None, *, subscription: UUID | None 
 
 def record_refusal(provider: str, model: str | None, *, said: str = "", subscription: UUID | None = None, now: float | None = None,
                    bench: float | None = None) -> float:
-    """Remember that this model refused; returns when it may be tried again. `bench`: how long to pass it over when the
-    vendor named no reset (an overload: seconds, not the earned hour).
+    """Remember that this model refused; returns when it may be tried again. `bench`: the vendor's API overloaded it (the first
+    refusal is enough): it is passed over for `bench` seconds, twice as long for each refusal in a row (`OVERLOAD_BENCH_MAX`), never
+    the earned hour (`Block.length`).
 
     `said` is whatever the vendor wrote — the child's raw stream, an exception message, one
     event's text. A reset it STATES holds the block until then; without one the length is earned by refusals in a row
@@ -672,7 +722,7 @@ def record_refusal(provider: str, model: str | None, *, said: str = "", subscrip
             count = previous.count
         else:
             count = previous.count + 1
-        until = moment + (Block.length(count) if bench is None else bench)
+        until = moment + (Block.length(count) if bench is None else min(bench * 2 ** min(count - 1, 32), max(bench, OVERLOAD_BENCH_MAX)))
         latest = refusal.latest(now=moment) if refusal is not None else None
         if refusal is not None and refusal.reopens_at is not None and latest is not None:
             # The vendor STATED when it reopens: the block lasts until then, never a shorter default window (owner 2026-11-20:
@@ -685,8 +735,9 @@ def record_refusal(provider: str, model: str | None, *, said: str = "", subscrip
             # A weaker signal never shortens a live block; clearing one early is `served`'s job.
             until = max(until, previous.until)
         # An overload bench is marked only when it is the whole block: one over a usage limit still standing stays that limit's.
-        overload = bench is not None and (previous is None or moment >= previous.until or previous.overload)
-        blocks[key] = Block(until=until, count=count, at=max(moment, previous.at) if previous else moment, overload=overload, **named)
+        standing = previous is not None and moment < previous.until
+        reason: ShutReason = ("pool" if family is not None else "limit") if bench is None else (previous.reason if standing else "overload")
+        blocks[key] = Block(until=until, count=count, at=max(moment, previous.at) if previous else moment, reason=reason, **named)
         if family is not None and model and refusal.pool not in model.lower():
             # A model id that carries no family token (an alias) is not reached by the pool's key: it is noted itself.
             blocks[model] = blocks[key]
@@ -724,7 +775,7 @@ def record_unsupported(provider: str, model: str | None, *, login: str, now: flo
         # A later reader hearing the same refusal with an EARLIER instant (`_derive` times it when the
         # vendor wrote it) never shortens what is already remembered, as a quota block is never lowered.
         until = max(moment + UNSUPPORTED_RECHECK, previous.until if previous is not None else 0.0)
-        blocks[key] = Block(until=until, count=1, at=max(moment, previous.at) if previous is not None else moment)
+        blocks[key] = Block(until=until, count=1, at=max(moment, previous.at) if previous is not None else moment, reason="unsupported")
     return until
 
 
@@ -743,11 +794,26 @@ def classify(said: str) -> RefusalKind | None:
         return "quota_exceeded"
     if CONTEXT_FULL.search(said):
         return "context_exhausted"
+    if OVERLOADED.search(said):
+        return "overloaded"
     if UNSUPPORTED.search(said):
         return "model_capability_unsupported"
     if REFUSAL.search(said):
         return "quota_exceeded"
     return None
+
+
+#: The longest a vendor's refusal worded as the turn's own FINISHED answer is (`refused_as_answer`): a refusal is a sentence, and a long
+#: answer quoting the same words is the model's.
+REFUSAL_ANSWER_MAX = 600
+
+
+def refused_as_answer(text: str) -> bool:
+    """Whether `text`, the whole of a turn that ended as an answer (exit 0, no error flagged), is the vendor's refusal worded as one:
+    short, and read by `classify` as a quota, an unsupported model or an overloaded API. Never a conversation too long for its window
+    (`context_exhausted`: that one is no model's refusal). A long answer quoting such words is the model's, never read here. Whether a
+    real CLI ends a refused turn this way is not shown by a recorded run: the stand-in vendor does it (`tests/agents/limits`)."""
+    return 0 < len(text.strip()) <= REFUSAL_ANSWER_MAX and classify(text) in ("quota_exceeded", "model_capability_unsupported", "overloaded")
 
 
 def remember(kind: RefusalKind, provider: str, model: str | None, *, login: str, said: str = "",
@@ -760,6 +826,8 @@ def remember(kind: RefusalKind, provider: str, model: str | None, *, login: str,
         if model and WITHDRAWN.search(said):
             withdraw(provider, model, said=said, now=now)
         return record_unsupported(provider, model, login=login, now=now)
+    if kind == "overloaded":
+        return record_refusal(provider, model, said=said, subscription=subscription, now=now, bench=OVERLOAD_BENCH)
     if kind == "context_exhausted":
         # No model to remember it against: every other one has the same window or a smaller one.
         # Only the pool those words named is held, and only against the login (`hold_named_window`).
@@ -892,7 +960,7 @@ def forget_login(provider: str, *, subscription: UUID | None = None, now: float 
     `keep_pools`: a model family's pool the vendor refused (`POOLS`) stays: asking again cannot reopen it before its reset,
     only another account does (`note_login`).
 
-    An overload bench (`Block.overload`) always stays: the vendor's API was overloaded for that model, whoever asks and
+    An overload bench (`Block.reason` overload) always stays: the vendor's API was overloaded for that model, whoever asks and
     whichever login: his « Continuer » or message is taken at once by the next ranked model, never by the overloaded one.
 
     Blocks are ended, never dropped: the answer that follows still notes the login's lift (`served`) for its
@@ -906,7 +974,7 @@ def forget_login(provider: str, *, subscription: UUID | None = None, now: float 
         if usage is None:
             return
         for key, block in usage.quota_blocks().items():
-            if block.until > moment and not block.overload and not (keep_pools and key.startswith("~")):
+            if block.until > moment and block.reason != "overload" and not (keep_pools and key.startswith("~")):
                 usage.blocks[key] = block.model_copy(update={"until": moment})
         usage.pauses.pop("usage_limit", None)
 

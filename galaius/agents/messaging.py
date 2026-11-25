@@ -26,7 +26,7 @@ from galaius.agents.limits import fallback
 from galaius.agents.transport.events import Relation
 from galaius.agents.policy import PolicyError
 from galaius.agents.providers import PROVIDERS, AgentProvider, provider_for
-from galaius.agents.run import ModelUnavailable, load_policy, resolve_continuable_model
+from galaius.agents.run import ModelUnavailable, load_policy, resume_model
 from galaius.agents.catalog.connection import RoleAbsent
 
 logger = logging.getLogger(__name__)
@@ -170,8 +170,7 @@ def policy_for_continuation(run, provider: AgentProvider, environment: Mapping[s
                 sentence=f"Recorded permission intent {run.permission_mode!r} is not accepted by "
                 f"{provider.name!r}; refusing continuation"
             ) from error
-        model = resolve_continuable_model(criterion, dict(Caller.environ(environment)), provider=provider, weights=policy.weights_for(run.agent), role=run.agent,
-                                          subscription=run.subscription_id, current=run.model, context_tokens=run.context_tokens or None)[1]
+        model = resume_model(run, policy, dict(Caller.environ(environment)), provider=provider)[1]
         return policy, criterion, model, policy.effort_for(run.agent, chosen=run.reasoning_set)
     except CatalogOffline:
         raise

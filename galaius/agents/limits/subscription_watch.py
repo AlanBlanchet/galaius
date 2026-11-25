@@ -14,7 +14,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from galaius_core import AgentProvider, LoginIdentity, LoginUsage, SubscriptionUsageReport, UsageWindow
+from galaius_core import AgentProvider, LoginIdentity, LoginUsage, ShutEntry, SubscriptionUsageReport, UsageWindow
 from pydantic import BaseModel, PrivateAttr
 
 from galaius.agents import registry as reg
@@ -60,6 +60,8 @@ class SubscriptionWatch(BaseModel):
     _logins: dict[AgentProvider, LoginReading] = PrivateAttr(default_factory=dict)
     #: `ask` writes `_logins` on the runner's loop; `report`, `sent` and the program states read it from threads.
     _lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
+    #: The shut entries the server last heard from this runner (`SubscriptionUsageReport.shut`); None: none yet since it started.
+    _shut_reported: tuple[ShutEntry, ...] | None = PrivateAttr(default=None)
 
     async def ask(self, environment: dict[str, str]) -> None:
         """Each program's default login (`environment`: the system variables), then each subscription in its own folder:
@@ -173,9 +175,12 @@ class SubscriptionWatch(BaseModel):
         due = tuple(usage for subscription in Subscription.all() if (usage := subscription.report_due(now)) is not None)
         with self._lock:
             logins = tuple(reading.report(name) for name, reading in self._logins.items() if reading.due(now))
-        return SubscriptionUsageReport(usage=due, logins=logins) if due or logins else None
+        shut = tuple(quota.shut_entries(now.timestamp()))
+        moved = bool(shut) if self._shut_reported is None else shut != self._shut_reported
+        return SubscriptionUsageReport(usage=due, logins=logins, shut=shut) if due or logins or moved else None
 
     def sent(self, report: SubscriptionUsageReport, now: datetime) -> None:
+        self._shut_reported = report.shut
         for usage in report.usage:
             Subscription.of(usage.subscription_id).reported(usage, now)
         with self._lock:

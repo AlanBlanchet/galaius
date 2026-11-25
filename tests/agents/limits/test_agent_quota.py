@@ -658,12 +658,12 @@ def test_forgetting_a_login_never_ends_an_overload_bench_but_ends_a_usage_block_
     assert quota.blocked_until("claude", "claude-fable-5-2", now=now + 601) is None, "the bench ends by itself"
 
 
-def test_an_overload_bench_is_written_only_when_set_and_read_back() -> None:
+def test_a_block_says_what_shut_it_and_reads_back() -> None:
     now = 1795200861.0
     quota.record_refusal("claude", "m-overloaded", now=now, bench=600.0)
     quota.record_refusal("claude", "m-limited", said="Error: usage limit reached", now=now)
     blocks = {key: block.model_dump(exclude_none=True) for key, block in quota._read(now).get("claude", quota.LoginUsage()).blocks.items()}
-    assert blocks["m-overloaded"]["overload"] is True and "overload" not in blocks["m-limited"]
+    assert blocks["m-overloaded"]["reason"] == "overload" and blocks["m-limited"]["reason"] == "limit"
 
 
 def test_every_pool_the_pc_reads_has_its_window_on_the_wire() -> None:

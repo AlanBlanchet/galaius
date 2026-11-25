@@ -31,7 +31,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from galaius_core import StopActor, TokenCounts
-from galaius.agents import registry as reg
+from galaius.agents import registry as reg, walk
 from galaius.agents.limits import quota
 from galaius.agents.transport.events import NO_REPLY, AgentEvent, Relation
 from galaius.host.pinned_directory import DescriptorDirectory
@@ -2264,7 +2264,14 @@ def resuming(monkeypatch) -> None:
     from galaius.agents.limits import fallback
     from galaius.agents.providers import PROVIDERS
 
-    monkeypatch.setattr(fallback, "PROVIDERS", {"claude": PROVIDERS["claude"]})
+    from galaius.agents import run as run_module
+    from tests.support.agents import use_policy
+
+    monkeypatch.setattr(walk, "PROVIDERS", {"claude": PROVIDERS["claude"]})
+    # The role's table: two Claude rows, the run's own model first (`walk.of_run` reads it through `run.rank_candidates`).
+    monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None, among=None: tuple(
+        reg.LaunchCandidate(provider="claude", model=name, rank=index) for index, name in enumerate(("claude-opus-5-5", "claude-sonnet-5-5"))))
+    use_policy(monkeypatch, run_module, agents={"app-engineer": "table"})
     reg.cut_resume_since(now=0.0)
 
 
@@ -2324,7 +2331,8 @@ def test_a_paused_run_resumes_once_its_login_answers_again_before_the_named_rese
 
     reg.schedule_resumes(now=run.finished_at + after + 1)
 
-    assert reg.get_run("lim-lift").resume_at == (run.finished_at + after if early else reset)
+    # The login answering again is a unit of the table that can run: due at once, never a wait for the reset it named.
+    assert reg.get_run("lim-lift").resume_at == (run.finished_at if early else reset)
 
 
 def test_his_press_keeps_the_lift_for_other_paused_runs_and_a_refused_early_resume_keeps_the_named_reset(resuming):
@@ -2337,14 +2345,17 @@ def test_his_press_keeps_the_lift_for_other_paused_runs_and_a_refused_early_resu
     answered = first.finished_at + 30
     quota.served("claude", "claude-opus-5-5", at=answered)  # A answers
     reg.schedule_resumes(now=answered + 1)
-    assert reg.get_run("lim-b").resume_at == answered, "B waits for the named reset though its login answered"
+    assert reg.get_run("lim-b").resume_at == other.finished_at, "B waits for the named reset though its login answered"
     assert reg.claim_resume("lim-b", now=answered + 2) is not None
     reg._update_fields("lim-b", {"finished_at": answered + 60})  # its early resume refused again within RESUME_GRACE
+    quota.record_refusal("claude", "claude-opus-5-5", said=_SESSION_LIMIT, now=answered + 60)   # and that refusal heard: the login is shut again
     reg.schedule_resumes(now=answered + 61)
     assert reg.get_run("lim-b").resume_at == reset, "a refused early resume lost the resume at the named reset"
     quota.served("claude", "claude-sonnet-5", at=answered + 90)  # another model's pool keeps answering
     reg.schedule_resumes(now=answered + 91)
-    assert reg.get_run("lim-b").resume_at == reset, "resumed and refused again at every answer of another model"
+    # Another model of his login answers: the table's next row can run, so its resume is due at once on it (one try, `fresh`), and the
+    # opus row stays shut until its own reopening: no resume is timed at the answer of a model that is still shut.
+    assert reg.get_run("lim-b").resume_at == answered + 60
 
 
 def test_a_paused_run_is_claimed_once_from_its_reset_on_and_its_sub_run_resumes_too_before_it(resuming):
@@ -2512,6 +2523,8 @@ def test_a_cut_that_keeps_coming_back_is_resumed_twice_then_left_to_a_person_unt
 
 
 def test_a_resumed_turn_refused_again_right_away_is_left_to_reprendre(resuming, monkeypatch):
+    from galaius.agents.limits import quota
+
     """The resumed turn hears the same « resets 5:20pm » just after 17:20: read then, it names TOMORROW's
     17:20 (code-reviewer r1) — the window did not reopen, so it is never paused for a day, nor looped."""
     _ended_on("lim-again", _SESSION_LIMIT, pid=404)
@@ -2522,6 +2535,9 @@ def test_a_resumed_turn_refused_again_right_away_is_left_to_reprendre(resuming, 
         stream.write(_claude_error_stream(_SESSION_LIMIT))
     monkeypatch.setattr(reg.time, "time", lambda: claimed.resumed_at + 10)
     assert reg.finish("lim-again", exit_code=1, first=0, expected_pid=405, expected_lifecycle_token=resumed.lifecycle_token)
+    # The refusal is the login's window as a whole: the table's other row refused as well, nothing of it can run and the read « tomorrow's
+    # 17:20 » is never scheduled.
+    quota.record_refusal("claude", "claude-sonnet-5-5", said=_SESSION_LIMIT)
     assert reg.schedule_resumes() == [] and reg.get_run("lim-again").resume_at is None
 
 
@@ -2577,51 +2593,48 @@ def test_a_run_ended_on_an_overload_is_woken_only_within_a_day_of_its_end(resumi
     assert [value.run_id for value, _ in written] == (["ovl-old"] if resumes else [])
 
 
-def test_a_run_an_overload_cut_comes_back_by_itself_until_its_backoff_runs_out(resuming):
-    """A vendor 529 / 5xx never answered the turn: the run is CUT, not failed, and comes back by itself after a short backoff, each
-    try further from its end (owner 2026-11-23 « We should NEVER stop the user request and instead use a fallback »)."""
+def test_a_run_an_overload_cut_comes_back_by_itself_every_time_never_left_to_a_person_after_a_count(resuming):
+    """A vendor 529 / 5xx never answered the turn: the run is CUT, not failed, and comes back by itself on the table's next unit at once
+    (the overloaded model is a shut entry from its first refusal). The cause of run 54a62ee1, down after a 529 until a person resumed
+    it: `overload_resume_at` timed each resume by five fixed backoffs and returned None past the fifth, so the sixth cut stayed down;
+    here the eighth cut in a row is resumed as the first (owner 2026-11-23 « We should NEVER stop the user request and instead use a fallback »)."""
     run = _ended_on("ovl1", _OVERLOADED, pid=511)
     assert reg.cut_cause(run) == "overloaded"
     ended_at = run.finished_at
-    for pause in reg.OVERLOAD_RESUME_BACKOFF:
+    for _ in range(8):
         written = reg.schedule_resumes(now=ended_at + 1)
-        assert [(value.run_id, value.resumes, value.resume_at) for value, _ in written] == [("ovl1", "itself", ended_at + pause)]
-        assert reg.claim_resume("ovl1", now=ended_at + pause - 1) is None, "never before its pause has passed"
-        assert reg.claim_resume("ovl1", now=ended_at + pause) is not None
-        ended_at += pause + 2   # its resumed turn is overloaded too
+        assert [(value.run_id, value.resumes, value.resume_at) for value, _ in written] == [("ovl1", "itself", ended_at)], "due at once: the next row takes it"
+        assert reg.claim_resume("ovl1", now=ended_at) is not None
+        ended_at += 2   # its resumed turn is cut too
         reg._update_fields("ovl1", {"finished_at": ended_at})
-    assert reg.schedule_resumes(now=ended_at + 1) == [], "an overload longer than the whole backoff is left to a person"
-    assert reg.get_run("ovl1").resume_at is None and reg.get_run("ovl1").resumed_cuts == len(reg.OVERLOAD_RESUME_BACKOFF)
 
 
-@pytest.mark.parametrize(("resumed_cut", "benched"), [(None, False), ("network_lost", False), ("overloaded", True)])
-def test_a_model_overloaded_twice_in_a_row_is_passed_over_on_that_login_so_the_next_resume_goes_elsewhere(resuming, resumed_cut, benched):
-    """The first overload waits and asks the same model again; the same cut heard again right after an automatic resume for it benches the model on
-    this login (`quota.blocked_until`), so the resume that follows runs on his other login or the next ranked model, as after a limit refusal."""
+@pytest.mark.parametrize("resumed_cut", [None, "network_lost", "overloaded"])
+def test_a_model_overloaded_is_passed_over_on_that_login_from_its_first_refusal_whoever_sent_the_turn(resuming, resumed_cut):
+    """The first 529 benches the model on this login (`quota.shut`), so the resume that follows, a person's message or the automatic one,
+    runs on the table's next unit: his other login or the next ranked model, as after a limit refusal."""
     from galaius.agents.limits import quota
     from galaius.agents.transport.events import RunCut
 
     reg.register(run_id="ovl2", pid=512, provider="claude", name="w", agent="app-engineer", model="claude-opus-5-5")
     reg._update_fields("ovl2", {"resumed_cut": resumed_cut})
     reg._remember_vendor_refusal(reg.get_run("ovl2"), _OVERLOADED, cut=RunCut.overloaded)
-    assert (quota.blocked_until("claude", "claude-opus-5-5") is not None) is benched
+    assert quota.shut("claude", "claude-opus-5-5") is not None and quota.shut("claude", "claude-opus-5-5").reason == "overload"
     assert quota.login_pause("claude") is None, "an overloaded vendor is no login's usage window: nothing else is held"
 
 
-@pytest.mark.parametrize(("other_takes_it", "waits"), [(False, True), (True, False)], ids=["alone", "another-login-or-provider"])
-def test_a_run_whose_model_is_benched_by_an_overload_resumes_when_the_bench_ends_unless_something_else_takes_the_turn(resuming, monkeypatch, other_takes_it, waits):
-    """One login, one provider, the model overloaded twice in a row: the automatic resume comes when the 600 s bench ends, not into the overload again after
-    its short backoff; with another login or provider to take the turn it is due after the backoff as before."""
+@pytest.mark.parametrize(("lower_row_open", "waits"), [(True, False), (False, True)], ids=["a-lower-row-answers", "every-row-benched"])
+def test_a_run_cut_by_an_overload_resumes_at_once_where_a_row_answers_else_when_the_first_bench_ends(resuming, lower_row_open, waits):
+    """The table's first reopening is when a run waits, never longer: every row benched by the vendor's overload, the resume comes
+    when the earliest bench ends; one row answering, it is due at its cut."""
     from galaius.agents.limits import quota
 
     run = _ended_on("ovl4", _OVERLOADED, pid=514)
-    reg._update_fields("ovl4", {"resumed_cut": "overloaded", "resumed_cuts": 1})
-    quota.record_refusal("claude", run.model, now=run.finished_at, bench=reg.OVERLOAD_BENCH)
-    monkeypatch.setattr(reg, "open_logins", lambda run: (object(),) if other_takes_it else ())
-    monkeypatch.setattr(reg.fallback, "moves", lambda run: False)
-    backoff = run.finished_at + reg.OVERLOAD_RESUME_BACKOFF[1]
-    assert reg.overload_resume_at(reg.get_run("ovl4"), now=run.finished_at + 1) == (run.finished_at + reg.OVERLOAD_BENCH if waits else backoff)
-    assert reg.overload_resume_at(reg.get_run("ovl4"), now=run.finished_at + reg.OVERLOAD_BENCH + 1) == backoff, "the bench over: the backoff alone"
+    quota.record_refusal("claude", "claude-opus-5-5", now=run.finished_at, bench=quota.OVERLOAD_BENCH)
+    if not lower_row_open:
+        quota.record_refusal("claude", "claude-sonnet-5-5", now=run.finished_at, bench=quota.OVERLOAD_BENCH * 4)
+    due = reg.overload_resume_at(reg.get_run("ovl4"), now=run.finished_at + 1)
+    assert due == (run.finished_at + quota.OVERLOAD_BENCH if waits else run.finished_at)
 
 
 def test_one_run_is_read_along_its_own_launch_links_as_the_forest_lists_it():

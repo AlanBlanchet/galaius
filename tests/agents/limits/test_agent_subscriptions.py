@@ -496,7 +496,7 @@ def test_continuing_on_another_subscription_carries_the_session_never_a_credenti
     assert (stopped.value.code, said["refusal"]["kind"], said["refusal"]["reason"]) == (1, "subscription", "capped")
     # A vendor's usage limit never refuses it (2026-10-13: « resumes at 13:40 » refused while the login answered from 13:10):
     # what this PC remembers against that login is dropped, the vendor answers the turn.
-    # With another login of his open, its turn goes there instead (`registry.swap_login`) and this one's notes stand.
+    # With another login of his open, its turn goes there instead (`registry.carry_to`) and this one's notes stand.
     unpinned = moved.model_copy(update={"subscription": None})
     refused = "You've hit your session limit · resets 1:40pm (Europe/Paris)"
     for login in (None, a.id, b.id):
@@ -1126,34 +1126,36 @@ _POOL = "You've reached your Fable limit. Switch to another model."
     pytest.param([_HAIKU, _SONNET, _OPUS, _FABLE], _FABLE, {_FABLE: _POOL}, None, _HAIKU, id="a-family-pool-shut-the-rules-next-model"),
     pytest.param([_HAIKU, _SONNET, _OPUS, _FABLE], _FABLE, {_FABLE: _FAIR}, None, _HAIKU, id="an-account-limit-on-its-model-never-a-refusal"),
     pytest.param([_SONNET, _OPUS, _FABLE], _FABLE, {_FABLE: _POOL}, None, _SONNET, id="a-coding-rule-falls-to-its-own-next-model"),
-    pytest.param([_FABLE], _FABLE, {_FABLE: _POOL}, None, _OPUS, id="a-plain-model-id-falls-to-the-most-capable-other"),
+    pytest.param([_FABLE], _FABLE, {_FABLE: _POOL}, None, _FABLE, id="a-one-row-table-all-shut-asks-the-vendor-never-a-refusal"),
     pytest.param([_HAIKU, _SONNET, _OPUS, _FABLE], _FABLE, {_FABLE: _POOL}, 267_450, _SONNET, id="a-conversation-too-big-for-haiku-skips-it"),
-    pytest.param([_HAIKU, _SONNET, _OPUS, _FABLE], _OPUS, {}, 267_450, _OPUS, id="an-open-model-it-is-on-is-kept-whatever-the-rule-lists-first"),
+    pytest.param([_HAIKU, _SONNET, _OPUS, _FABLE], _OPUS, {}, 267_450, _SONNET, id="the-top-row-that-fits-runs-whatever-model-it-was-on"),
     pytest.param([_OPUS, _FABLE], _HAIKU, {}, None, _OPUS, id="a-rule-that-no-longer-lists-its-model-moves-it"),
-    pytest.param([_HAIKU, _SONNET, _OPUS, _FABLE], _FABLE, {_FABLE: _POOL, _HAIKU: _FAIR, _SONNET: _FAIR, _OPUS: _FAIR}, None, _FABLE, id="every-model-held-the-vendor-is-asked-never-a-refusal"),
+    pytest.param([_HAIKU, _SONNET, _OPUS, _FABLE], _FABLE, {_FABLE: _POOL, _HAIKU: _FAIR, _SONNET: _FAIR, _OPUS: _FAIR}, None, _HAIKU, id="every-model-held-the-one-reopening-first-is-asked"),
 ])
 def test_a_resumed_conversation_is_never_refused_while_a_model_could_answer(
-    monkeypatch: pytest.MonkeyPatch, rule: list[str], current: str, held: dict[str, str], context: int | None, goes_to: str,
+    monkeypatch: pytest.MonkeyPatch, tmp_path, rule: list[str], current: str, held: dict[str, str], context: int | None, goes_to: str,
 ) -> None:
-    """Owner 2026-11-20 « The harness should never dissalow if i have any form of usage »: a resume asks its own model while it
-    answers, else the rule's next model that holds the history, else the most capable other of its provider, else the vendor
-    about the model whose note ends first. The rating « floor » that refused is gone (`context_tokens` replaces it)."""
+    """Owner 2026-11-20 « The harness should never dissalow if i have any form of usage »: a resume takes the table's first row nothing
+    shuts that holds the history (`resume_model`: strictly top-down, the model it was on has no claim), else the vendor is asked about the
+    row that reopens first. The rating « floor » that refused is gone (`context_tokens` replaces it), and no row outside the rule is added."""
+    from tests.support.agents import setup_queue, use_policy
+
+    setup_queue(monkeypatch)
     login = uuid4()
     # A fixed noon in Paris: « resets 9pm » is read against the clock, and at 8:30 pm it ended before the pool's own block did, which made
     # the choice depend on the hour the suite ran (2026-11-21 20:2x: red on main).
     noon = datetime(2026, 11, 20, 12, 0, tzinfo=ZoneInfo("Europe/Paris")).timestamp()
     monkeypatch.setattr(quota, "time", SimpleNamespace(time=lambda: noon))
     monkeypatch.setattr(run_module, "rank_candidates", lambda rule_text, env, *, providers, weights="", role=None, among=None: tuple(
-        reg.LaunchCandidate(provider="claude", model=name, rank=index)
-        for index, name in enumerate(rule if rule_text != "aa.intelligence" else list(_SCORES))))
-    monkeypatch.setattr(run_module, "_capability_of", lambda name, candidates: _SCORES.get(name))
+        reg.LaunchCandidate(provider="claude", model=name, rank=index) for index, name in enumerate(rule)))
     monkeypatch.setattr(run_module, "_context_of", lambda name, candidates: _WINDOWS.get(name))
     monkeypatch.setattr(run_module, "resolve_model", lambda name, env, *, provider, weights="": ({}, name))
+    policy = use_policy(monkeypatch, run_module, agents={"tester": "crit"})
     for index, (name, said) in enumerate(held.items()):
         quota.record_refusal("claude", name, said=said, subscription=login, now=noon - 60 * (len(held) - index))
-    chosen = run_module.resolve_continuable_model("crit" if len(rule) > 1 else _FABLE, {}, provider=PROVIDERS["claude"], subscription=login,
-                                                  current=current, context_tokens=context)[1]
-    assert chosen == goes_to
+    run = reg.get_run("r1").model_copy(update={"provider": "claude", "model": current, "context_tokens": context or 0,
+                                               "subscription": RunSubscription(subscription_id=login, limits=SubscriptionLimits())})
+    assert run_module.resume_model(run, policy, {}, provider=PROVIDERS["claude"])[1] == goes_to
 
 
 @pytest.mark.parametrize(("model", "window"), [
