@@ -904,7 +904,10 @@ def test_a_session_message_is_recorded_under_its_session_in_the_recipients_trans
     provider = setup_queue(monkeypatch)
     reg.register(run_id="r2", pid=999999, provider=provider.name, name="main", task="t", agent="tester", provider_session_id="vendor")
     sender = messaging.sender_id({"CLAUDE_CODE_SESSION_ID": "7c1e0b52-1111"})
+    locked, record_lock = [], reg.record_lock
+    monkeypatch.setattr(reg, "record_lock", lambda run_id: (locked.append(run_id), record_lock(run_id))[1])
     assert messaging.queue_message("r2", "ship it", sender=sender).state == "queued"
+    assert "r2" in locked and sender not in locked  # a session has no record, and `:` is no file name on Windows (2026-11-25 lab)
     assert [(event.from_run, event.text) for event in reg.read_messages("r2")] == [("session:7c1e0b52-1111", "ship it")]
     assert not reg.messages_path(sender).exists()
     assert agent_queue.items("r2")[-1].writer == "an agent session outside galaius's runs (7c1e0b52)"

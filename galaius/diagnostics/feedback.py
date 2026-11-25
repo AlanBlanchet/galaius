@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from galaius.host.paths import UserPaths
+from galaius.host.private_files import PRIVATE_FILES
 
 REPO = "AlanBlanchet/galaius"
 KINDS = ("bug", "limitation", "feedback")
@@ -180,11 +181,9 @@ def _open_browser(url: str) -> bool:
 
 def _record(title: str, full: str) -> Path:
     """Save the report as a private file under ``FEEDBACK_DIR`` (owner-only) and return its path."""
-    FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     path = FEEDBACK_DIR / f"{stamp}-{_slug(title)}.md"
-    path.write_text(f"# {title}\n\n{full}\n")
-    path.chmod(0o600)
+    PRIVATE_FILES.write_text(path, f"# {title}\n\n{full}\n")  # private from its creation, on every system (never written open, then restricted)
     return path
 
 

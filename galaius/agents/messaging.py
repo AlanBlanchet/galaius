@@ -330,7 +330,7 @@ def _queue_message(
     if refused := turn.refusal(message, provider):
         return Delivery(state="error", text=f"ERROR: {refused}", run_id=run.run_id)
     with ExitStack() as locks:
-        for locked_run in sorted({run.run_id, speaker}):
+        for locked_run in sorted({run.run_id, speaker} - ({speaker} if reg.is_session_sender(speaker) else set())):  # a session outside the runs has no record to lock (and `:` is no file name on Windows)
             locks.enter_context(reg.record_lock(locked_run))
         run = reg.get_run(run.run_id)
         if run is None:

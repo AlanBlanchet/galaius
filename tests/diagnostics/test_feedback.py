@@ -5,6 +5,7 @@ issue link, else a local file + link. And it must NEVER raise — reporting a bu
 import pytest
 
 import galaius.diagnostics.feedback as fb
+from galaius.host.private_files import PRIVATE_FILES
 
 
 @pytest.fixture(autouse=True)
@@ -309,7 +310,7 @@ def test_a_default_report_is_recorded_privately_and_never_reaches_github(monkeyp
     assert len(files) == 1 and str(files[0]) in out
     assert "github.com" not in out and "issues/new" not in out
     assert "click times out" in files[0].read_text() and "steps to reproduce" in files[0].read_text()
-    assert files[0].stat().st_mode & 0o077 == 0  # owner-only
+    PRIVATE_FILES.check(files[0])  # owner-only, as each system says it (a mode on POSIX, the ACL on Windows)
 
 
 def test_a_default_report_naming_private_terms_is_kept_here_not_refused(monkeypatch, tmp_path):
