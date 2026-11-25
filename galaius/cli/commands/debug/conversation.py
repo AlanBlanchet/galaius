@@ -153,7 +153,8 @@ def last(run_id: list[str], *, chars: Annotated[int, Parameter(help="Clip the re
         print(f"===== {run.run_id[:8]} {run.role} · {run.status} · {run.provider}/{run.model} · login {(run.login or '-')[:8]} · "
               f"started {_when(run.started_at)} · ran {_span(run.seconds(time.time()))}")
         for label, value in (("cut", run.cut), ("exit code", "" if run.exit_code in (None, 0) else str(run.exit_code)), ("relaunched from", run.relaunched_from),
-                             ("successor run", run.successor), ("resumed after cuts", str(run.resumed_cuts) if run.resumed_cuts else "")):
+                             ("successor run", run.successor), ("resumed after cuts", str(run.resumed_cuts) if run.resumed_cuts else ""),
+                             ("resumed by a person", str(run.hand_resumes) if run.hand_resumes else "")):
             if value:
                 print(f"{label}: {value}")
         if ending.text:
@@ -202,8 +203,8 @@ def stats_command(*, conversation: Annotated[str | None, Parameter(help="A conve
     _table("role", done.by_role)
     _table("model", done.by_model)
     _table("login", done.by_login)
-    if done.cuts or done.relaunched or done.resumed:
-        print("cut: " + ", ".join(f"{reason} {count}" for reason, count in done.cuts.items()) + f" · relaunched on another model {done.relaunched} · resumed after a cut {done.resumed}")
+    if done.cuts or done.relaunched or done.resumed or done.resumed_by_person:
+        print("cut: " + ", ".join(f"{reason} {count}" for reason, count in done.cuts.items()) + f" · relaunched on another model {done.relaunched} · resumed after a cut {done.resumed} by itself, {done.resumed_by_person} by a person")
     if state is not None:
         print(f"this PC now: {state.running} runs at work, {state.places_taken}/{state.places_max} places taken, {len(state.waiting)} waiting, {len(state.failed)} failed to start")
         for kind, entries in (("waiting", state.waiting), ("failed", state.failed)):

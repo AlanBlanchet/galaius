@@ -327,6 +327,21 @@ def test_a_crashed_or_finished_run_resumes_with_full_context(monkeypatch, record
     assert reg.get_run("r1").status == "done"
 
 
+@pytest.mark.parametrize("sender,status,counted", [
+    (reg.PERSON_SENDER, "failed", 1), (reg.CUT_RESUME_SENDER, "failed", 0), (reg.PERSON_SENDER, "done", 0),
+])
+def test_only_a_persons_message_to_a_run_that_needed_him_counts_as_his_resume_and_once_per_ending(monkeypatch, sender, status, counted):
+    _continuation_policy(monkeypatch)
+    register_run("hand-run", name="reviewer", provider="fake", task="t", pid=1234, agent="tester", provider_session_id="vendor-thread")
+    reg._merge_record_locked("hand-run", {"status": status, "exit_code": 0 if status == "done" else 1, "finished_at": time.time() - 5})
+    monkeypatch.setattr(reg, "_alive", lambda pid: False)
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda *args, **kwargs: 1)
+
+    for _ in range(2):  # a second message before its turn begins answers the same ending
+        assert messaging.queue_message("hand-run", "continue", sender=sender).state == "queued"
+    assert reg.get_run("hand-run").hand_resumes == counted
+
+
 def test_a_vendor_session_that_no_longer_exists_fails_with_its_own_message_not_silently(monkeypatch):
     """The provider's own refusal (an expired/deleted vendor session, an unknown id) must reach
     the caller as a named failure — never swallowed, never reported as a successful reply."""

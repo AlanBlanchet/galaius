@@ -92,6 +92,7 @@ class Ended(BaseModel):
     relaunch_refused: str = ""
     successor: str = ""
     resumed_cuts: int = 0
+    hand_resumes: int = 0
     exit_code: int | None = None
 
 
@@ -162,7 +163,7 @@ def ended(raw: dict, row: RunRow) -> Ended:
     who = f"{stopped.get('kind')} {stopped.get('name') or ''} {str(stopped.get('run_id') or '')[:8]}".strip() if stopped else ""
     return Ended(cut=row.cut, cut_source=_text(interruption.get("source")), cut_at=interruption.get("at") if isinstance(interruption.get("at"), (int, float)) else None,
                  stopped_by=who, relaunched_from=_line(f"{relaunched.get('provider')}/{relaunched.get('model')} {relaunched.get('cause') or ''}: {relaunched.get('said') or ''}", 240) if relaunched else "",
-                 relaunch_refused=_line(raw.get("relaunch_refused"), 240), successor=successor[:8], resumed_cuts=row.resumed_cuts, exit_code=row.exit_code)
+                 relaunch_refused=_line(raw.get("relaunch_refused"), 240), successor=successor[:8], resumed_cuts=row.resumed_cuts, hand_resumes=row.hand_resumes, exit_code=row.exit_code)
 
 
 def queue_of(run_id: str, root=None) -> Queue:

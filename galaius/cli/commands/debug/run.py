@@ -73,7 +73,8 @@ def _print(report: RunDescription, chars: int) -> None:
     end = report.ended
     for label, value in (("cut", f"{end.cut}{f' ({end.cut_source}' + (f' at {_when(end.cut_at)}' if end.cut_at else '') + ')' if end.cut_source else ''}" if end.cut else ""),
                          ("exit code", "" if end.exit_code in (None, 0) else str(end.exit_code)), ("stopped by", end.stopped_by), ("relaunched from", end.relaunched_from),
-                         ("relaunch refused", end.relaunch_refused), ("successor run", end.successor), ("resumed after cuts", str(end.resumed_cuts) if end.resumed_cuts else "")):
+                         ("relaunch refused", end.relaunch_refused), ("successor run", end.successor), ("resumed after cuts", str(end.resumed_cuts) if end.resumed_cuts else ""),
+                         ("resumed by a person", str(end.hand_resumes) if end.hand_resumes else "")):
         if value:
             print(f"{label}: {value}")
     if report.ancestors:

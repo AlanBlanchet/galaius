@@ -135,6 +135,19 @@ def test_a_cut_is_a_filter_and_a_count(folder: Path) -> None:
     assert done.tokens.output == 20 and {group.name: group.runs for group in done.by_status} == {"done": 2, "failed": 1}
 
 
+def test_a_run_resumed_by_a_person_and_one_resumed_by_itself_count_apart_and_an_older_record_is_no_guess(folder: Path, monkeypatch, capsys) -> None:
+    put(folder, CHILD, parent_run_id=ROOT, agent="builder", hand_resumes=1)
+    put(folder, GRAND, parent_run_id=CHILD, agent="critic", resumed_cuts=1)
+    done = stats(RunLedger(folder).rows(RunQuery(conversation=ROOT)))
+    assert (done.resumed, done.resumed_by_person) == (1, 1), "the runtime's own resume and his are two counts, a run in one is never in the other"
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(folder))
+    cli.stats_command(conversation=ROOT)
+    assert "resumed after a cut 1 by itself, 1 by a person" in capsys.readouterr().out
+    cli.stats_command(conversation=ROOT, json_out=True)
+    assert json.loads(capsys.readouterr().out)["stats"]["resumed_by_person"] == 1
+    assert {row.run_id: row.hand_resumes for row in RunLedger(folder).rows(RunQuery(conversation=ROOT))}[ROOT] == 0, "a record that holds no such field reads none: never guessed"
+
+
 def test_a_system_cut_reads_from_the_interruption_when_the_stream_named_none(folder: Path) -> None:
     put(folder, CHILD, parent_run_id=ROOT, status="interrupted", interruption={"cause": "out_of_memory", "at": 1.0, "source": "journal"})
     assert RunLedger(folder).rows(RunQuery(statuses=frozenset({"interrupted"})))[0].cut == "out_of_memory"

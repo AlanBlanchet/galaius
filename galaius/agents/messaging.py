@@ -396,6 +396,8 @@ def _queue_message(
                 state="error", text=f"ERROR: {run.name}'s message queue is full.",
                 run_id=run.run_id,
             )
+        if speaker == reg.PERSON_SENDER:  # not the runtime's own resume (`reg.SYSTEM_SENDERS`), not a run
+            reg.note_hand_resume_locked(run)  # his message answers an ending that needed him
         if run.held_at is not None and (origin is None or (origin.held_at is None and speaker in run.askers)):
             # A person's message (his « Continuer » included), or work from a run it works for that runs, releases a
             # stop's hold: what waited is delivered first, then this. Anything else waits with it.

@@ -477,6 +477,11 @@ class AgentRun(OlderTokens, ContextGauge):
     #: Automatic resumes in a row for `resumed_cut` (`claim_resume`), back to 0 once a turn ends done: past
     #: `AUTO_RESUMES_PER_CUT`, a cut that keeps coming back (the same memory peak, a time limit) is left to a person.
     resumed_cuts: int = 0
+    #: Times a PERSON resumed it after an ending that needed one (`note_hand_resume_locked`: his « Continuer », a message he sent a run
+    #: that had been cut or had failed), never reset: the runtime's own resumes count in `resumed_cuts`. A record written before this
+    #: field holds none: those resumes are unknown, never guessed. `hand_resumed_at`: the ending (`finished_at`) his latest answered.
+    hand_resumes: int = 0
+    hand_resumed_at: float | None = None
     #: The model a usage limit refused the latest turn on, which then ran on another (`FellBack`): written when the turn is
     #: sent again, kept through its fall-backs (the model he asked for, never an intermediate one), cleared by the next message
     #: this run takes. None: the latest turn was never refused by a limit.
@@ -2966,6 +2971,18 @@ def begin_resume_locked(run_id: str) -> AgentRun | None:
     if run is None or run.kind != "process" or run.process_running():
         return run
     return run if run.status == "starting" else _merge_record_locked(run_id, {"status": "starting", "finished_at": None, "woken_from": run.finished_at})
+
+
+def note_hand_resume_locked(run: AgentRun) -> AgentRun | None:
+    """A person's message reached `run`, while the caller owns its lock: when it had ended in a way that needed him (not done, not
+    stopped or held by someone, not replaced: a cut, a failure) and he has not answered that ending yet, count his resume once
+    (`AgentRun.hand_resumes`; a second message before its turn begins answers the same ending). Whether the run was cut by the runtime's
+    own hand never matters: the runtime counts its resumes apart (`claim_resume`). The record as written, else None."""
+    if (run.foreign or run.kind != "process" or run.finished_at is None or run.status == "done" or run.stopped_by is not None
+            or run.held_at is not None or run.replaced_by is not None or run.successor is not None
+            or (run.hand_resumed_at is not None and run.hand_resumed_at >= run.finished_at)):
+        return None
+    return _merge_record_locked(run.run_id, {"hand_resumes": run.hand_resumes + 1, "hand_resumed_at": run.finished_at})
 
 
 def note_fell_back_locked(run_id: str, refused: FellBack) -> None:

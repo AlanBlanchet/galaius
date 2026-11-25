@@ -48,12 +48,12 @@ GONE = "gone"
 SAID_CHARS = 240
 #: The cache of trimmed records, beside the registry's files: a dot name, which the registry's own listings skip.
 CACHE = ".run-ledger.cache"
-CACHE_VERSION = 3
+CACHE_VERSION = 4
 #: What the engine reads of a record, by type; everything else (prompts, candidate lists, lifecycle tokens) never enters the cache.
 _TEXT = ("run_id", "name", "agent", "status", "kind", "provider", "model", "login", "subscription_id", "parent_run_id", "root_run_id", "session_id",
          "project", "last")
 _NUMBER = ("started_at", "finished_at", "cost_usd")
-_WHOLE = ("exit_code", "resumed_cuts", "pid", "pid_started")
+_WHOLE = ("exit_code", "resumed_cuts", "hand_resumes", "pid", "pid_started")
 _SINCE = re.compile(r"^(\d+(?:\.\d+)?)\s*([smhdw])$")
 _UNIT = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 
@@ -94,6 +94,8 @@ class RunRow(BaseModel):
     cut: str = ""
     exit_code: int | None = None
     resumed_cuts: int = 0
+    #: Times a person resumed it (`AgentRun.hand_resumes`); 0 for a record that predates the field: unknown, never guessed.
+    hand_resumes: int = 0
     #: The vendor's words for a refusal that sent the brief to another model (`relaunched_from`), "" for none.
     relaunched_from: str = ""
     successor: str = ""
@@ -604,7 +606,7 @@ def _row(run_id: str, raw: dict, conversation: str, status: str) -> RunRow:
         cost_usd=float(cost) if isinstance(cost, (int, float)) else None,
         tokens=Tokens(**{name: _int(usage.get(name)) for name in Tokens.model_fields}),
         cut=cut or str(interruption.get("cause") or ""), exit_code=raw.get("exit_code") if isinstance(raw.get("exit_code"), int) else None,
-        resumed_cuts=_int(raw.get("resumed_cuts")),
+        resumed_cuts=_int(raw.get("resumed_cuts")), hand_resumes=_int(raw.get("hand_resumes")),
         relaunched_from=_line(relaunched.get("said")) if relaunched else "",
         successor=str(successor.get("run_id") or "")[:8] if successor else "",
         task=_line(str(raw.get("task") or "").lstrip().split("\n", 1)[0], 160),
@@ -641,7 +643,10 @@ class Stats(BaseModel):
     #: Runs cut short by a limit or the system, by reason (`usage_limit`, `out_of_memory`, ...), and runs relaunched on another model.
     cuts: dict[str, int]
     relaunched: int
+    #: Runs the runtime resumed by itself after a cut, still counting (`resumed_cuts` is back to 0 once a turn ends done).
     resumed: int
+    #: Runs a person resumed (`hand_resumes`), counted from when the record holds it: older resumes are not told, never guessed.
+    resumed_by_person: int
 
 
 def stats(rows: Iterable[RunRow]) -> Stats:
@@ -661,5 +666,5 @@ def stats(rows: Iterable[RunRow]) -> Stats:
         cost_usd=total, unpriced=sum(row.cost_usd is None for row in rows), tokens=tokens,
         by_status=ranked("status"), by_role=ranked("role"), by_model=ranked("model"), by_login=ranked("login"),
         cuts=dict(Counter(row.cut for row in rows if row.cut).most_common()), relaunched=sum(bool(row.relaunched_from) for row in rows),
-        resumed=sum(row.resumed_cuts > 0 for row in rows),
+        resumed=sum(row.resumed_cuts > 0 for row in rows), resumed_by_person=sum(row.hand_resumes > 0 for row in rows),
     )
