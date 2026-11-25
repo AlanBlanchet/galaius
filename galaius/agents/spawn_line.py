@@ -809,12 +809,15 @@ class SpawnLine(BaseModel):
     waiting_gap_seconds: float = Field(ge=0)
     #: The agents' soft memory limit: past it no turn starts here (`admission.SoftMemory`); None: none.
     memory: SoftMemory | None = None
+    #: Roles that never wait for a place (`Config.agent_runs_unqueued_roles`): only the memory hold can hold them.
+    unqueued_roles: frozenset[str] = frozenset()
 
     @classmethod
     def here(cls) -> SpawnLine:
         config = Config()
         return cls(limit=config.agent_runs_max, waiting_flag_minutes=config.agent_waiting_flag_minutes,
-                   waiting_gap_seconds=config.agent_waiting_gap_seconds, memory=SoftMemory.here(config))
+                   waiting_gap_seconds=config.agent_waiting_gap_seconds, memory=SoftMemory.here(config),
+                   unqueued_roles=frozenset(config.agent_runs_unqueued_roles))
 
     def _memory_hold(self) -> Hold | None:
         return self.memory.hold() if self.memory is not None else None
@@ -1099,7 +1102,7 @@ class SpawnLine(BaseModel):
                 raise RelationRefused(refused)
             ahead = sum(place.queued() for place in places)
             load = self.load(places)
-            starts = (self._memory_hold() is None if spawn.light(resolved)
+            starts = (self._memory_hold() is None if spawn.light(resolved) or role in self.unqueued_roles
                       else self._admits(places, spawn.parent_run_id, first=ahead == 0))
             places.append(Place(run_id=run_id, asked_at=time.time(), state="starting" if starts else "waiting", holder=me,
                                 holder_started=process_started(me), parent_run_id=spawn.parent_run_id, spawn=spawn, role=role))
@@ -1213,8 +1216,9 @@ class SpawnLine(BaseModel):
                     places[index] = place.model_copy(update={"state": "failed", "said": said[:500]})
 
     def _exempt(self, run: reg.AgentRun) -> bool:
-        """The owner's own runs (`_owners`), what is not a galaius process here, and a light run (`takes_place`): never held."""
-        return run.kind != "process" or run.foreign or run.run_id in self._owners() or not takes_place(run)
+        """The owner's own runs (`_owners`), what is not a galaius process here, a light run (`takes_place`) and a run of an unqueued role: never held."""
+        return (run.kind != "process" or run.foreign or run.run_id in self._owners() or not takes_place(run)
+                or run.agent in self.unqueued_roles)
 
     @contextmanager
     def resuming(self, run: reg.AgentRun) -> Iterator[bool]:

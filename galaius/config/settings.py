@@ -391,6 +391,9 @@ class Config(BaseSettings):
     # How many agent runs may work on this computer at once, every conversation's; one more spawn waits
     # in line until one ends (`galaius.agents.spawn_line`). The owner's own conversations are not counted.
     agent_runs_max: Annotated[int, Field(ge=1)] = 6
+    # Roles whose runs never wait for a place (spawned or resumed): they are counted, never held. The deploy owner behind builders
+    # waited 50 min twice (2026-11-24) while the slices it ships waited on it; a deployer's own memory is the memory hold's to refuse.
+    agent_runs_unqueued_roles: tuple[str, ...] = ("deployer",)
     # Minutes a run's only activity may be waiting on other runs (`galaius agents wait`) before the run list flags it
     # (« attend 83da9bab depuis 14 min »): waiting on another agent, a run ends its turn and the reply resumes it.
     agent_waiting_flag_minutes: Annotated[float, Field(gt=0)] = 5.0
