@@ -183,7 +183,7 @@
   "server": "galaius",
   "name": "report_issue",
   "category": "feedback",
-  "description": "Report a problem, missing capability, or feedback about GALAIUS ITSELF \u2014 not the site/app you're automating \u2014 to its maintainers, so it gets fixed. Use when galaius errors in a way that blocks you, behaves unexpectedly, or is missing something you needed."
+  "description": "Record a problem, missing capability, or feedback about GALAIUS ITSELF \u2014 not the site/app you're automating \u2014 for the person to read and pass on if they choose. Use when galaius errors in a way that blocks you, behaves unexpectedly, or is missing something you needed."
  },
  {
   "server": "galaius",

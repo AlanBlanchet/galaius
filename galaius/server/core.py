@@ -518,8 +518,8 @@ def _instructions(version: str | None = None) -> str:
         "is respawned automatically on the next `launch_app`, or call `reset_sandbox` to force a clean "
         "one — keep using the sandbox, don't switch to driving the real desktop. "
         "If galaius itself errors in a way that blocks you, behaves unexpectedly, or is missing a "
-        "capability you needed, call `report_issue` — it records the problem privately on this computer for galaius's "
-        "maintainers. That's the channel for feedback about the tool (not about the site you automate). "
+        "capability you needed, call `report_issue` — it records the problem privately on this computer, for the person to "
+        "read and pass on if they choose. That's the channel for feedback about the tool (not about the site you automate). "
         "It never files a public issue unless the person asked for one (`public=True`); "
         "never copy report files into repos."
     )

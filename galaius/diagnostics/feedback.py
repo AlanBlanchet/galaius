@@ -1,5 +1,5 @@
 """Let an agent (or user) report a problem / missing capability / feedback about galaius ITSELF
-back to the maintainers, so issues hit in the wild actually surface.
+on this computer, where the person can read it and pass it on, so issues hit in the wild do not go unrecorded.
 
 Deliberately AGENT-INITIATED, not automatic telemetry: the caller composes the report, so no
 surprise data collection and no secret leakage by default. By default a report is recorded in a

@@ -48,9 +48,10 @@ async def _subscription_provider_state(provider: AgentProvider) -> dict:
 
 @mcp.tool(category="feedback")
 async def report_issue(title: str, body: str, kind: str = "bug", public: bool = False) -> str:
-    """Report a problem, missing capability, or feedback about GALAIUS ITSELF — not the
-    site/app you're automating — to its maintainers, so it gets fixed. Use when galaius errors
-    in a way that blocks you, behaves unexpectedly, or is missing something you needed.
+    """Record a problem, missing capability, or feedback about GALAIUS ITSELF — not the
+    site/app you're automating — for the person to read and pass on if they choose. Use when
+    galaius errors in a way that blocks you, behaves unexpectedly, or is missing something you
+    needed.
 
     The report is saved in a private file on this computer and the answer says where; nothing
     goes to GitHub or any public place. Set public=True only when the person told you to file

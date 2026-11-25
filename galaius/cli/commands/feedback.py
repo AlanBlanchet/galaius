@@ -1,4 +1,4 @@
-"""`galaius report`: tell galaius's maintainers about a problem or an idea."""
+"""`galaius report`: record a problem or an idea about galaius, privately on this computer."""
 
 from typing import Annotated
 from cyclopts import Parameter
