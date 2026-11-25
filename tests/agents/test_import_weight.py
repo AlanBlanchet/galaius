@@ -14,5 +14,5 @@ def test_the_agent_dispatcher_loads_no_screen_library():
     the model registry, none of them used to deliver a message."""
     code = ("import sys, galaius.agents.agent_queue, galaius.agents.run, galaius.agents.spawn_line;"
             "print(sorted(name for name in ('numpy', 'PIL', 'playwright') if name in sys.modules))")
-    out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, check=True, env={"PYTHONPATH": str(ROOT), **{name: os.environ[name] for name in ("SYSTEMROOT",) if name in os.environ}}).stdout  # Windows cannot start sockets without SYSTEMROOT
+    out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, check=True, env={**os.environ, "PYTHONPATH": str(ROOT)}).stdout  # Windows starts no interpreter without SYSTEMROOT and its home variables
     assert out.strip() == "[]"
