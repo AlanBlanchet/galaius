@@ -1132,7 +1132,7 @@ def _fall_back_locked(run_id: str, item: QueueItem, run: "reg.AgentRun | None", 
         return False
     if run is not None and (kind := quota.classify(refusal)) is not None:
         quota.remember(kind, run.provider, run.model, said=refusal, subscription=run.subscription_id, login=run.login)
-        if walk.open_for(run) is None:
+        if walk.nothing_can_run(run):
             return False   # every unit of its table is shut now: the turn is never asked of one again, it ends saying what the vendor said
         if run.model:
             named = quota.Refusal.read(refusal, now=time.time())

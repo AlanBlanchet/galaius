@@ -173,3 +173,9 @@ def open_for(run: "reg.AgentRun", *, now: float | None = None) -> Step | None:
     """`step_of(run)` when a unit can take its next turn, None when nothing can or its table cannot be read."""
     step = step_of(run, now=now)
     return step if step is not None and step.open else None
+
+
+def nothing_can_run(run: "reg.AgentRun") -> bool:
+    """Whether every unit of `run`'s table is shut now (a table that cannot be read is no proof: False): its turn is never asked of one."""
+    step = step_of(run)
+    return step is not None and not step.open
