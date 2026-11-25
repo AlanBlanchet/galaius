@@ -47,19 +47,21 @@ async def _subscription_provider_state(provider: AgentProvider) -> dict:
 
 
 @mcp.tool(category="feedback")
-async def report_issue(title: str, body: str, kind: str = "bug") -> str:
+async def report_issue(title: str, body: str, kind: str = "bug", public: bool = False) -> str:
     """Report a problem, missing capability, or feedback about GALAIUS ITSELF — not the
     site/app you're automating — to its maintainers, so it gets fixed. Use when galaius errors
     in a way that blocks you, behaves unexpectedly, or is missing something you needed.
 
-    Files a GitHub issue on galaius's repo when gh is authed; otherwise opens the prefilled
-    issue page in the user's browser (they just press Submit — tell them). Don't include
-    secrets/credentials; galaius appends its version + platform itself.
+    The report is saved in a private file on this computer and the answer says where; nothing
+    goes to GitHub or any public place. Set public=True only when the person told you to file
+    a public issue: then galaius files it on its public tracker when gh is authed, otherwise it
+    returns a prefilled issue link for them to open (tell them). Don't include secrets or
+    credentials; galaius appends its version + platform itself.
     kind: bug | limitation | feedback.
     """
     from galaius.diagnostics.feedback import report
 
-    return report(title, body, kind)
+    return report(title, body, kind, public)
 
 
 @mcp.tool(category="vision", read_only=True)

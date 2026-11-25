@@ -2,11 +2,13 @@
 back to the maintainers, so issues hit in the wild actually surface.
 
 Deliberately AGENT-INITIATED, not automatic telemetry: the caller composes the report, so no
-surprise data collection and no secret leakage by default. Delivery ladder: a GitHub issue via
-`gh` when available + authed; otherwise save locally and return a prefilled new-issue link the
-user may explicitly open. galaius's version + platform append automatically (safe, useful
-triage context). The tracker is public: a report naming anything listed in the user's untracked
-private-terms file (one case-insensitive regex per line) is refused before it leaves.
+surprise data collection and no secret leakage by default. By default a report is recorded in a
+private file on this computer and goes nowhere else. Only a call that says the person asked for a
+public issue (``public=True``) reaches the public tracker: a GitHub issue via `gh` when available +
+authed; otherwise save locally and return a prefilled new-issue link the user may explicitly open.
+galaius's version + platform append automatically (safe, useful triage context). The tracker is
+public: a public report naming anything listed in the user's untracked private-terms file (one
+case-insensitive regex per line) is refused before it leaves.
 """
 
 from __future__ import annotations
@@ -176,13 +178,34 @@ def _open_browser(url: str) -> bool:
         return False
 
 
-def report(title: str, body: str, kind: str = "bug") -> str:
-    """File the report and say what happened. Delivery ladder: an authed ``gh`` files the
-    issue outright; otherwise the report is saved locally and an explicit prefilled submission
-    link is returned. Never opens an external application and never raises."""
+def _record(title: str, full: str) -> Path:
+    """Save the report as a private file under ``FEEDBACK_DIR`` (owner-only) and return its path."""
+    FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    path = FEEDBACK_DIR / f"{stamp}-{_slug(title)}.md"
+    path.write_text(f"# {title}\n\n{full}\n")
+    path.chmod(0o600)
+    return path
+
+
+def report(title: str, body: str, kind: str = "bug", public: bool = False) -> str:
+    """Record the report and say where it went. By default it stays on this computer, in a private file:
+    nothing reaches GitHub (no ``gh`` call, no issue link). ``public=True`` — only when the person asked
+    for a public issue — files it on the public tracker: an authed ``gh`` files it outright, otherwise
+    the report is saved and an explicit prefilled submission link is returned. Never opens an external
+    application and never raises."""
     kind = kind if kind in KINDS else "feedback"
     title = f"[{kind}] {title.strip()}" if not title.lower().startswith(f"[{kind}]") else title.strip()
     full = _stale_warning() + body.strip() + _footer()
+    if not public:
+        try:
+            path = _record(title, full)
+        except OSError as e:
+            return f"Could not record the report on this computer ({e}); nothing was sent anywhere."
+        return (
+            f"Recorded privately on this computer: {path}. Not sent to any public tracker. Publish it "
+            f"only if the person asks for a public issue: call again with public=True."
+        )
     private = _private_matches(f"{title}\n{full}")
     if private:
         return (
@@ -198,10 +221,7 @@ def report(title: str, body: str, kind: str = "bug") -> str:
     submit = _prefilled_url(title, full)
     # Preserve the draft without stealing focus. Following the returned link is an explicit action.
     try:
-        FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        path = FEEDBACK_DIR / f"{stamp}-{_slug(title)}.md"
-        path.write_text(f"# {title}\n\n{full}\n")
+        path = _record(title, full)
         return (
             f"Saved feedback locally to {path} — couldn't file to GitHub ({reason}). "
             f"Open this link to review and submit it: {submit}"
