@@ -3,12 +3,13 @@
 `python model_table_standin.py --model M` prints one turn of stream-json and exits as the plan says. The plan is the JSON file
 named by `STANDIN_PLAN`: `{"<model or *>": {"<turn>": "<cause>"}}`; a turn is counted per session folder (`STANDIN_STATE`), so « the
 Nth turn » is the Nth time any model was asked in that run. Causes: `pool` (a Fable-pool limit), `week` (the login's own window),
-`overloaded` (a 529), `login_lost`, `refusal0` (the limit said as a finished answer, exit 0). A turn the plan does not name works.
+`overloaded` (a 529), `login_lost`, `refusal0` (the limit said as a finished answer, exit 0). A turn the plan does not name works. `STANDIN_DELAY` seconds pass before a turn answers; with `STANDIN_WORK` it speaks first, so a refusal after it cuts a run that worked.
 Never a real vendor, never an account: it reads and writes nothing but those two paths."""
 
 import json
 import os
 import sys
+import time
 from datetime import UTC, datetime, timedelta
 
 SAID = {
@@ -30,12 +31,15 @@ def main() -> int:
     open(state, "w").write(str(turn))
     open(state + ".log", "a").write(f"{turn} {model}\n")
     plan = json.load(open(os.environ["STANDIN_PLAN"]))
+    time.sleep(float(os.environ.get("STANDIN_DELAY", "0")))   # a refusal that comes after the launch's own probe window: the run is cut mid-work
     cause = (plan.get(model) or {}).get(str(turn)) or (plan.get("*") or {}).get(str(turn))
     sys.stdout.write(json.dumps({"type": "system", "subtype": "init", "session_id": "vendor"}) + "\n")
     if cause is None:
         sys.stdout.write(json.dumps({"type": "assistant", "session_id": "vendor", "message": {"content": [{"type": "text", "text": f"turn {turn} on {model}"}]}}) + "\n")
         sys.stdout.write(json.dumps({"type": "result", "subtype": "success", "is_error": False, "session_id": "vendor", "result": f"turn {turn} on {model}"}) + "\n")
         return 0
+    if os.environ.get("STANDIN_WORK"):   # it spoke before it was refused: a run that worked, resumed (never relaunched as a refused first turn)
+        sys.stdout.write(json.dumps({"type": "assistant", "session_id": "vendor", "message": {"model": model, "content": [{"type": "text", "text": "working"}]}}) + "\n")
     said = _week() if cause == "week" else SAID.get(cause, SAID["pool"])
     sys.stdout.write(json.dumps({"type": "result", "subtype": "success" if cause == "refusal0" else "error", "is_error": cause != "refusal0",
                                  "session_id": "vendor", "result": said}) + "\n")

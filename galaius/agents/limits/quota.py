@@ -21,7 +21,7 @@ serves again (a turn it wrote, a run that finishes) clears the memory at once.
 
 All of it is kept in ONE typed record per provider login (`LoginUsage`, file `quota-usage.json`): what the vendor refused for
 that login's models and model families, whether the login as a whole takes turns, and when it last answered — so a resume asks
-one place which of his logins can take a turn (`registry.open_logins`).
+one place which of his logins can take a turn (`agents.walk`).
 """
 
 from __future__ import annotations

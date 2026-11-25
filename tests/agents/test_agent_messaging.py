@@ -369,7 +369,7 @@ def test_a_vendor_session_that_no_longer_exists_fails_with_its_own_message_not_s
 # "the resumed turn launched on that same dead model and died immediately with 'reached your
 # Fable limit'" — a fresh spawn passes a quota-cooled candidate over BEFORE it ever runs
 # (`run_agent`'s own `cooled` filter); resume replayed `run.model` untouched instead. Fixed by
-# routing continuation through `resolve_continuable_model`, which walks the SAME ranked list
+# routing continuation through `resume_model`, which walks the SAME ranked list
 # scoped to the run's own provider (a vendor session cannot switch CLI mid-conversation) and
 # skips anything `quota.blocked_until` still remembers.
 
@@ -799,7 +799,7 @@ def _cut_run_on(monkeypatch, provider, model: str):
 def test_a_resumed_turn_whose_model_is_held_goes_on_with_the_rules_next_model(monkeypatch):
     """Its own model held and only a SMALLER one live: the turn is never refused here (owner 2026-11-20 « never dissalow if i
     have any form of usage »); the rule's next model takes it. The size of the history, not a rating floor, keeps a model
-    that cannot hold it out (`resolve_continuable_model`, its engine row in test_agent_subscriptions)."""
+    that cannot hold it out (`resume_model`, its engine row in test_agent_subscriptions)."""
     from galaius.agents import agent_queue
     from galaius.agents.limits import quota
 

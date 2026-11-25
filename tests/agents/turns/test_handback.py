@@ -861,7 +861,7 @@ def test_a_hand_back_to_a_run_holding_context_resolves_its_model_against_the_rea
     """2026-11-22 17:37-19:10: every hand-back and every send on a PC failed `'Model' object has no attribute 'context_length'`:
     the resume path read the window from the registry row, which carries none, while every row above stubbed
     `policy_for_continuation` and the rows that did reach the window faked `_context_of` itself. Here `hand_back`, the delivery,
-    the continuation policy, `resolve_continuable_model`, `_context_of` and the registry `Model` are the real ones; only the
+    the continuation policy, `resume_model`, `_context_of` and the registry `Model` are the real ones; only the
     ranking's candidate list, the policy file and the catalog's rows are fixed."""
     from types import SimpleNamespace
 
