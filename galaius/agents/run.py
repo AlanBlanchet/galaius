@@ -393,7 +393,7 @@ def resume_model(run: reg.AgentRun, policy: Policy, env: dict[str, str], *, prov
     the one reopening first, asked all the same (the vendor decides, the request is never refused for what this PC remembers: owner
     2026-11-20 « The harness should never dissalow if i have any form of usage »). A model whose window is below the conversation's
     size goes behind every one that fits."""
-    step = walk.of_run(run, policy, env, across=False, context_tokens=run.context_tokens or None)
+    step = walk.of_run(run, policy, env, across=False, context_tokens=run.context_tokens or None, own=provider)
     if step is None:
         raise ModelUnavailable(sentence=f"no model {provider.name!r} can run for {run.agent!r}")
     return resolve_model(step.unit.model, env, provider=provider, weights=policy.weights_for(run.agent))

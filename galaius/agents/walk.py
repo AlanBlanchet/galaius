@@ -26,6 +26,7 @@ from galaius.agents.providers import PROVIDERS
 if TYPE_CHECKING:
     from galaius.agents import registry as reg
     from galaius.agents.policy import Policy
+    from galaius.agents.providers import AgentProvider
 
 log = logging.getLogger(__name__)
 
@@ -132,10 +133,11 @@ def _programs(run: "reg.AgentRun", policy: "Policy", *, across: bool) -> list[st
 
 
 def of_run(run: "reg.AgentRun", policy: "Policy | None", environment: Mapping[str, str], *, across: bool = True,
-           context_tokens: int | None = None, now: float | None = None) -> Step | None:
+           context_tokens: int | None = None, now: float | None = None, own: "AgentProvider | None" = None) -> Step | None:
     """Where the next turn of stopped `run` goes: the walk over its role's table (`policy`'s rule for it). `across` False: its
     own program and the login it is pinned to alone, the model that turn is asked for (the move to another login or program is
-    already made, `agent_queue.dispatch`). A conversation of no role (his own, begun in an editor) has the table of its one model: only
+    already made, `agent_queue.dispatch`). `own`: the program object `run` is on, when the caller holds it (a test double or a CLI not in the
+    registry); else the registry's. A conversation of no role (his own, begun in an editor) has the table of its one model: only
     its logins are walked. A rule that cannot be read raises, as `rank` does."""
     from galaius.agents import run as run_module   # noqa: PLC0415 — circular: run imports the registry
 
@@ -143,8 +145,10 @@ def of_run(run: "reg.AgentRun", policy: "Policy | None", environment: Mapping[st
     if not criterion or policy is None:
         return walk((Unit(run.provider, run.model or "", login) for login in (logins_of(run, run.provider) if across else [run.subscription_id])), now=now)
     names = _programs(run, policy, across=across)
-    table = run_module.rank_candidates(criterion, dict(environment), providers=[PROVIDERS[name] for name in names],
+    table = run_module.rank_candidates(criterion, dict(environment), providers=[own if name == run.provider and own is not None else PROVIDERS[name] for name in names],
                                        weights=policy.weights_for(run.agent), role=run.agent)
+    # A row two programs can run shares one rank (`run.rank`): the conversation's own program takes it, its session stays where it is.
+    table = tuple(sorted(table, key=lambda row: (row.rank, row.provider != run.provider)))
     if context_tokens:
         window = lambda row: run_module._context_of(row.model, table)   # noqa: E731
         fits = [row for row in table if (size := window(row)) is None or size >= context_tokens]

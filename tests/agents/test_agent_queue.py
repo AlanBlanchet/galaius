@@ -487,15 +487,21 @@ _LIMITED = _stream({"type": "assistant", "session_id": "vendor", "message": {"mo
                    {**_DONE, "is_error": True, "result": _POOL_LIMIT}, code=1)
 
 
+def _two_models(monkeypatch):
+    """The role's table: two rows of the one program (`queue-model`, then `queue-lower`)."""
+    monkeypatch.setattr(agent_run, "rank_candidates", lambda rule, env, *, providers, weights="", role=None, among=None: tuple(
+        reg.LaunchCandidate(provider="queue-fake", model=name, rank=index) for index, name in enumerate(("queue-model", "queue-lower"))))
+
+
 @pytest.mark.parametrize(("streams", "state", "launched"), [
-    pytest.param([_LIMITED, _stream(_TEXT, _DONE)], "replied", 2, id="refused by a limit, the same turn runs again at once and replies"),
-    pytest.param([_LIMITED, _LIMITED, _LIMITED], "failed", 3, id="refused on every model it is sent to: failed only when the fallbacks are spent"),
+    pytest.param([_LIMITED, _stream(_TEXT, _DONE)], "replied", 2, id="refused by a limit, the same turn runs again at once on the next row and replies"),
+    pytest.param([_LIMITED, _LIMITED, _LIMITED], "failed", 2, id="refused on every row of the table: failed once none can run, never asked a shut row again"),
 ])
 def test_a_turn_a_provider_limit_refused_is_sent_again_at_once_never_failed_or_parked(monkeypatch, streams, state, launched):
     """Owner 2026-11-20: « We should NEVER stop the user request and instead use a fallback ». A refusal before the turn
     answered or acted benches the model it refused (`quota.remember`: until the vendor's stated reset) and re-dispatches the
-    SAME item, whose model is chosen anew; only once `LIMIT_FALLBACKS` are spent does the item fail."""
-    monkeypatch.setattr(agent_queue, "LIMIT_FALLBACKS", 2)
+    SAME item, whose model is chosen anew by the walk; once no row of the table can run it fails, saying what the vendor said."""
+    _two_models(monkeypatch)
     scripts = iter(streams)
 
     class Provider(QueueProvider):
@@ -524,6 +530,7 @@ def test_the_next_message_a_run_takes_clears_the_last_turns_fall_back(monkeypatc
 
     scripts = iter([_LIMITED, _stream(_TEXT, _DONE), _stream(_TEXT, _DONE)])
     setup_queue(monkeypatch, Provider())
+    _two_models(monkeypatch)
     messaging.deliver_message("r1", "do it", sender="operator")
     agent_queue.dispatch("r1")
     assert reg.get_run("r1").fell_back_from is not None
