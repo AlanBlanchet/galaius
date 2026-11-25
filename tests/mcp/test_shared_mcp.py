@@ -123,6 +123,18 @@ def test_a_server_and_the_relay_connected_to_it_are_listed_as_running_their_runt
         client.close()
 
 
+def test_a_server_a_relay_started_is_collected_once_it_leaves(tmp_path):
+    """Its parent is the relay: uncollected it stays a zombie, which a liveness probe off Linux reads as running (its runtime stays in use)."""
+    log, path = tmp_path / "server.log", tmp_path / "s" / "mcp.sock"
+    serves_once = "import os, socket, sys; s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(); print(os.getpid(), flush=True); s.accept()"
+    started = relay_module.Endpoint(socket=str(path), start=[sys.executable, "-c", serves_once, str(path)], log=str(log))
+    started.connect(30).close()  # listening: the connection is accepted, and the server leaves
+    pid = int(log.read_text())
+    time.sleep(1)
+    with pytest.raises(ChildProcessError):  # no child of this process is left to collect: the reaper already did
+        os.waitpid(pid, os.WNOHANG)
+
+
 def test_a_relay_whose_server_died_connects_again_and_answers(endpoint, tmp_path):
     client = Client(endpoint, {"GALAIUS_SESSION_ID": "conversation-a"}, tmp_path)
     try:

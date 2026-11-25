@@ -122,6 +122,9 @@ class Endpoint:
             with open(self.log, "ab") as log:
                 server = subprocess.Popen(self.start, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, cwd=os.path.expanduser("~"),
                                           env={name: value for name, value in os.environ.items() if name in STARTER or name.startswith(STARTER_PREFIXES)})
+            # Its parent is this process until this process ends: left uncollected, it stays a zombie once it leaves, which off Linux
+            # reads as running to a liveness probe, so the runtime it ran would stay in use (2026-11-25 macOS runner).
+            threading.Thread(target=server.wait, daemon=True, name="relay-reaper").start()
             deadline = time.monotonic() + wait
             while time.monotonic() < deadline:
                 try:
