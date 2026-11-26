@@ -24,12 +24,11 @@ from galaius.cli.commands.agents.app import agents_app
 from galaius.cli.commands.agents.providers import modes_by_provider
 
 
-def _spawn_on_machine(machine: str, project: str | None, folder: str | None, task: str, *, agent: str | None, provider: str | None, model: str | None, permission: str | None) -> None:
+def _spawn_on_machine(machine: str, project: str | None, folder: str | None, task: str, *, agent: str | None, provider: str | None, model: str | None, permission: str | None,
+                      here: str | None = None) -> None:
     """`agents spawn --machine`: the run id of an agent started on another PC of yours (through this PC's own link, no second sign-in), or one line why not."""
     try:
-        if project is None:
-            raise ValueError("--machine needs --project: the project (name or id) the run works on there")
-        print(place(PeerClient(), machine, project, task, role=agent, path=folder, permission=permission, provider=provider, model=model))
+        print(place(PeerClient(), machine, project, task, role=agent, path=folder, permission=permission, provider=provider, model=model, here=here or os.getcwd()))
     except (ValueError, PeerError, PeerUnavailable) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         raise SystemExit(2) from None
@@ -75,9 +74,10 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
 
     --machine <name, id or auto> starts it on another of your PCs instead (auto: the other PC with the most free
     places), through this PC's own link: no second sign-in. --project <name or id> is the project it works on there
-    (its folder is the one that PC already holds; a project not on it yet is put there once from the web), --folder a
-    folder beneath it, --agent the role. The run is isolated in that PC's fence (a PC that cannot build one takes it only when its owner
-    allowed that), takes the model its rule picks, and gets at most
+    (default: the one named like the current folder's repository, else like the conversation's; a PC that does not hold
+    it gets it first, unless that needs your yes), --folder a folder beneath it, --agent the role (default: main). A
+    start still on its way is waited for up to 5 minutes. The run is isolated in that PC's fence (a PC that cannot
+    build one takes it only when its owner allowed that), takes the model its rule picks, and gets at most
     workspace_write (--permission-mode read_only narrows it). Follow it with
     `galaius agents events <run id> --machine <name>`.
 
@@ -141,7 +141,7 @@ def agents_spawn(task: str, provider: str | None = None, agent: str | None = Non
             raise SystemExit(2)
         continues = predecessor
     if machine is not None:
-        _spawn_on_machine(machine, project, folder, task, agent=agent, provider=provider, model=model, permission=permission_mode)
+        _spawn_on_machine(machine, project, folder, task, agent=agent, provider=provider, model=model, permission=permission_mode, here=cwd)
         return
     try:
         if read and community is None:
