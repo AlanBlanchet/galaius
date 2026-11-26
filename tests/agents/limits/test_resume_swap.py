@@ -13,7 +13,9 @@ from uuid import uuid4
 import pytest
 from galaius_core import SubscriptionLimits
 
-from galaius.agents import agent_queue, messaging, registry as reg, run as run_module, walk
+from galaius.agents import agent_queue, messaging, registry as reg, run as run_module
+
+from galaius.agents.limits import walk
 from galaius.agents.limits import fallback, quota
 from galaius.agents.limits.subscriptions import RunSubscription, Subscription
 from galaius.agents.providers import PROVIDERS

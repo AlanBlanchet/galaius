@@ -1,9 +1,9 @@
 """GUARD cells the first living file lacked (tester aa8f5f6b, 2026-11-25): a shut login is asked a BOUNDED number of times, and a refusal
-never repeats the same (model, login) turn. Same stand-in, same fixture as `test_model_table_living`."""
+never repeats the same (model, login) turn. Same stand-in, same fixture as `test_walk_living`."""
 
 import pytest
 
-from tests.agents.limits.test_model_table_living import (  # noqa: F401 — the fixture is reused by name
+from tests.agents.limits.test_walk_living import (  # noqa: F401 — the fixture is reused by name
     TABLE, _continue, _launch, _out, standin,
 )
 
@@ -36,11 +36,13 @@ import asyncio
 import sys
 from pathlib import Path
 
-from galaius.agents import agent_queue, messaging, registry as reg, run as run_module, walk
+from galaius.agents import agent_queue, messaging, registry as reg, run as run_module
+
+from galaius.agents.limits import walk
 from galaius.agents.limits import quota
 from galaius.agents.limits.subscriptions import RunSubscription, Subscription
 from galaius.agents.run import run_agent
-from tests.agents.limits.test_model_table_living import STANDIN, _Standin
+from tests.agents.limits.test_walk_living import STANDIN, _Standin
 from tests.agents.limits.test_resume_swap import _Claude, _stopped_run
 from tests.machine.test_machine_agents import _agents, base  # noqa: F401 — the fixture
 from tests.support.agents import install_provider, use_policy

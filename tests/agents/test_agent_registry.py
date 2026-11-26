@@ -31,7 +31,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from galaius_core import StopActor, TokenCounts
-from galaius.agents import registry as reg, walk
+from galaius.agents import registry as reg
+from galaius.agents.limits import walk
 from galaius.agents.limits import quota
 from galaius.agents.transport.events import NO_REPLY, AgentEvent, Relation
 from galaius.host.pinned_directory import DescriptorDirectory

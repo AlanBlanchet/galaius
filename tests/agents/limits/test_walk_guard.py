@@ -10,7 +10,7 @@ Decision points are driven where the code can be driven in-process:
 - start: `run.run_agent` on scripted CLIs (this file);
 - resume: `messaging.deliver_message` + `agent_queue.dispatch` on a stopped run (`test_resume_swap._stopped_run`);
 - mid-work: the run's own cut as its program said it, read by `registry.cut_resume` (when it comes back, never whether the vendor's
-  CLI is really refused: that is the living-run stand-in's, `tests/agents/limits/model_table_standin.py`).
+  CLI is really refused: that is the living-run stand-in's, `tests/agents/limits/standin_vendor.py`).
 
 Rows marked RED-<n> fail on e31c445d: each names the line behind it (the cause is the point, never a skip).
 """
@@ -21,7 +21,9 @@ from pathlib import Path
 
 import pytest
 
-from galaius.agents import registry as reg, run as run_module, walk
+from galaius.agents import registry as reg, run as run_module
+
+from galaius.agents.limits import walk
 from galaius.agents.limits import fallback, quota
 from galaius.agents.run import run_agent
 from galaius.agents.transport.events import RunCut

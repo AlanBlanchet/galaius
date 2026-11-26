@@ -1,4 +1,4 @@
-"""The model walk (`galaius.agents.walk`) and the entries it reads (`quota.shut`): strictly top-down over (model, login), the first unit
+"""The model walk (`galaius.agents.limits.walk`) and the entries it reads (`quota.shut`): strictly top-down over (model, login), the first unit
 nothing shuts, else the one reopening first, asked all the same; a member's lent run walks models alone; a program shut on every
 login hands the conversation to the next program of the table."""
 
@@ -10,10 +10,12 @@ from uuid import UUID, uuid4
 import pytest
 from galaius_core import SubscriptionLimits
 
-from galaius.agents import registry as reg, run as run_module, walk
+from galaius.agents import registry as reg, run as run_module
+
+from galaius.agents.limits import walk
 from galaius.agents.limits import quota
 from galaius.agents.limits.subscriptions import RunSubscription
-from galaius.agents.walk import Unit
+from galaius.agents.limits.walk import Unit
 from tests.agents.limits.test_resume_swap import FABLE_POOL, OWN, _hold, _stopped_run, _week_line
 from tests.support.agents import QueueProvider, use_policy
 

@@ -1,6 +1,6 @@
 """The stand-in vendor program: answers like the Claude CLI's stream, and refuses on demand.
 
-`python model_table_standin.py --model M` prints one turn of stream-json and exits as the plan says. The plan is the JSON file
+`python standin_vendor.py --model M` prints one turn of stream-json and exits as the plan says. The plan is the JSON file
 named by `STANDIN_PLAN`: `{"<model or *>": {"<turn>": "<cause>"}}`; a turn is counted per session folder (`STANDIN_STATE`), so « the
 Nth turn » is the Nth time any model was asked in that run. Causes: `pool` (a Fable-pool limit), `week` (the login's own window),
 `overloaded` (a 529), `login_lost`, `network` (the CLI never reached the API), `refusal0` (the limit said as a finished answer, exit 0). A turn the plan does not name works. `STANDIN_DELAY` seconds pass before a turn answers; with `STANDIN_WORK` it speaks first, so a refusal after it cuts a run that worked.

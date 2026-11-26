@@ -45,7 +45,8 @@ from galaius_core import (
     AgentAllowanceRequest, AgentMoveRequest, AgentExportRequest, AgentImportRequest, AgentReleaseRequest, AgentProgramInstallRequest, AgentProgramsRequest, AgentToolInstallRequest, AgentToolsRequest, AgentProviderState, AgentSignInCodeRequest, AgentSignOutRequest, AgentHeldTakeRequest, AgentHeldPutRequest, AgentRetractRequest, RetractOutcome, SubscriptionAllowance, Lent, AgentRunKind, AgentRunsRequest, AgentSettingsRequest, ToolRoleModels, AgentSendRequest, AgentSessionsRequest, AgentStartRequest, AgentStopRequest, AgentTailRequest, AgentTouchScope,
     WorkspaceFailure, WorkspaceUpload, FailedMessage, MachineAgentAnswer, MachineAgentModel, MachineAgentRequest, MachineAgentRun, PassedOverCandidate, ReadsAt, media_key, media_paths, MachineFileEntry, WorkspaceCreateRequest, WorkspacePack, WorkspacePackRequest, WorkspacePrepareRequest, WorkspaceRefresh, WorkspacesRequest, ProjectFilesBase, ProjectFilePart,
 )
-from galaius.agents import agent_queue, walk
+from galaius.agents import agent_queue
+from galaius.agents.limits import walk
 from galaius.agents.limits import quota
 from galaius.agents import registry as reg
 from galaius.agents.assembly import _TransportRegistry

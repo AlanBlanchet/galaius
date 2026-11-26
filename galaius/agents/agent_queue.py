@@ -30,7 +30,7 @@ from galaius_core import AGENT_IMAGES_MAX, MEDIA_KEY, OWNER_MAKER, AgentRevision
 from galaius_core.wire import readable
 from pydantic import BaseModel, ConfigDict, Field
 
-from galaius.agents import walk
+from galaius.agents.limits import walk
 from galaius.agents.limits import fallback, quota
 from galaius.agents.catalog.connection import CatalogAuthenticationError, CatalogConnectionError, CatalogOffline
 from galaius.agents import registry as reg

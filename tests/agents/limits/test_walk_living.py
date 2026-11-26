@@ -1,4 +1,4 @@
-"""GUARD, driven: each cell decision point × cause run through the REAL lifecycle on a stand-in vendor (`model_table_standin.py`):
+"""GUARD, driven: each cell decision point × cause run through the REAL lifecycle on a stand-in vendor (`standin_vendor.py`):
 a real subprocess per turn, `run_agent` walking the table at the start, the stream read as the vendor's own, `registry.finish` recording
 the cut, `registry.schedule_resumes` / `claim_resume` timing the automatic resume, `agent_queue.dispatch` running the resumed turn.
 Not the owner's galaius process and not a real vendor: the PC-level service loop that calls those functions is not run (its own tests).
@@ -22,12 +22,14 @@ from pathlib import Path
 
 import pytest
 
-from galaius.agents import agent_queue, messaging, registry as reg, run as run_module, walk
+from galaius.agents import agent_queue, messaging, registry as reg, run as run_module
+
+from galaius.agents.limits import walk
 from galaius.agents.limits import admission, fallback, quota
 from galaius.agents.run import run_agent
 from tests.support.agents import QueueProvider, setup_queue, use_policy
 
-STANDIN = Path(__file__).with_name("model_table_standin.py")
+STANDIN = Path(__file__).with_name("standin_vendor.py")
 TABLE = ("model-a", "model-b", "model-c")
 WHOLE_LOGIN = {"week", "login_lost"}   # every model of the one login is out with the cause
 

@@ -1,5 +1,5 @@
 """The PC's own loop (`MachineAgents.resume_paused`: schedule, claim, resume, the dispatcher's turn) on the stand-in vendor
-(`tests/agents/limits/model_table_standin.py`): a run cut in the middle of its work by a refusal that came after the launch's own probe
+(`tests/agents/limits/standin_vendor.py`): a run cut in the middle of its work by a refusal that came after the launch's own probe
 window comes back with NO hand, on the table's next unit, the turn a real subprocess. The runner's service loop that calls
 `resume_paused` on a timer is not run here (its own tests); everything it calls is."""
 
@@ -11,7 +11,7 @@ import pytest
 from galaius.agents import agent_queue, registry as reg
 from galaius.agents.limits import quota
 from galaius.agents.run import run_agent
-from tests.agents.limits.test_model_table_living import _out, standin   # noqa: F401 — the fixture
+from tests.agents.limits.test_walk_living import _out, standin   # noqa: F401 — the fixture
 from tests.machine.test_machine_agents import _agents, base   # noqa: F401 — the fixture
 
 
@@ -68,10 +68,11 @@ async def test_a_run_cut_mid_work_on_every_model_of_its_login_waits_for_the_reop
 async def test_member_3_claude_shut_on_every_login_the_conversation_is_continued_by_another_program_on_the_stand_in(standin, monkeypatch: pytest.MonkeyPatch) -> None:
     """Member 3 (owner 2026-11-20 « any form of usage »): the run's program refuses every model with its login's whole window; another signed-in
     program is in the table: his message to the run is answered by a successor run there, a real subprocess, with no hand."""
-    from galaius.agents import messaging, walk
+    from galaius.agents import messaging
+    from galaius.agents.limits import walk
     from galaius.agents.run import run_agent as launch
     from tests.support.agents import install_provider, use_policy
-    from tests.agents.limits.test_model_table_living import _Standin, _continue
+    from tests.agents.limits.test_walk_living import _Standin, _continue
     from galaius.agents import run as run_module
 
     class _OtherStandin(_Standin):
@@ -101,10 +102,11 @@ async def test_member_3_claude_shut_on_every_login_the_conversation_is_continued
 async def test_member_6_a_lent_run_steps_down_models_of_its_one_program_on_the_stand_in_and_is_never_handed_on(standin, monkeypatch: pytest.MonkeyPatch) -> None:
     """Member 6: a run lent to a member (it runs on none of this PC's logins). Its model is refused, a lower row of its own program answers; another
     program is in the table and open, yet the lent run is never handed on to it, and its login never moves."""
-    from galaius.agents import messaging, run as run_module, walk
+    from galaius.agents import messaging, run as run_module
+    from galaius.agents.limits import walk
     from galaius.agents.limits.subscriptions import RunSubscription
     from galaius.agents.run import run_agent as launch
-    from tests.agents.limits.test_model_table_living import _Standin, _continue
+    from tests.agents.limits.test_walk_living import _Standin, _continue
     from tests.support.agents import install_provider, use_policy
 
     class _OtherStandin(_Standin):

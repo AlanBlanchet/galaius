@@ -14,7 +14,9 @@ import time
 
 import pytest
 
-from galaius.agents import messaging, walk
+from galaius.agents import messaging
+
+from galaius.agents.limits import walk
 from galaius.agents import agent_queue
 from galaius.agents import registry as reg
 from galaius.agents.providers import PermissionMode

@@ -21,7 +21,7 @@ serves again (a turn it wrote, a run that finishes) clears the memory at once.
 
 All of it is kept in ONE typed record per provider login (`LoginUsage`, file `quota-usage.json`): what the vendor refused for
 that login's models and model families, whether the login as a whole takes turns, and when it last answered — so a resume asks
-one place which of his logins can take a turn (`agents.walk`).
+one place which of his logins can take a turn (`agents.limits.walk`).
 """
 
 from __future__ import annotations
@@ -611,7 +611,7 @@ def blocked_until(provider: str, model: str | None, *, subscription: UUID | None
 def shut(provider: str, model: str | None, *, subscription: UUID | None = None, now: float | None = None) -> ShutEntry | None:
     """What holds `model` back on this login at `now`, or None when it can take a turn: the login's own sign-in lost or usage
     window shut (every model of it), else the model's own block or its family's pool (`POOLS`) — the one that ends last. The one
-    read the model walk (`agents.walk`) takes a row's state from, never a second reading of the blocks."""
+    read the model walk (`agents.limits.walk`) takes a row's state from, never a second reading of the blocks."""
     moment = time.time() if now is None else now
     login = str(subscription) if subscription is not None else ""
     if (pause := login_pause(provider, subscription=subscription, now=moment)) is not None:

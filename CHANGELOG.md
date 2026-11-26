@@ -6,7 +6,7 @@ maintenance branches) — see [RELEASING.md](RELEASING.md).
 
 ## Unreleased
 
-- Agent runs: one model walk (`galaius.agents.walk`) decides where every turn runs: a launch, a resume, a refusal in the middle of work, an overloaded API and a lost
+- Agent runs: one model walk (`galaius.agents.limits.walk`) decides where every turn runs: a launch, a resume, a refusal in the middle of work, an overloaded API and a lost
   login all take the first row of the role's table that nothing shuts (a usage window, a model pool, an overload, a lost sign-in; each a shut entry with its reason and the instant
   it can be asked again), on the first login of his that can run it, else the next program of the table; a request is never refused for what this computer remembers.
   A vendor 529 shuts that model from its first refusal, whoever sent the turn; a cut run comes back at once where a unit can run and otherwise when the first one reopens,

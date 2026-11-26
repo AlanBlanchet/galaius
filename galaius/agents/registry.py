@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, Literal, NamedTuple, 
 from uuid import UUID
 
 from pydantic import ConfigDict, BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
-from galaius.agents import walk
+from galaius.agents.limits import walk
 from galaius.agents.limits import quota
 from galaius.usage_dialects import CountedTokens, OlderTokens
 from galaius_core import SubscriptionLimits, OPEN_MAX, OwnerQuestion, ASKED_BY_MAX, LaunchSkipReason, ReasoningLevel, RecordedReasoning, FILE_KEY, KEPT_FILE_MAX, MACHINE_AGENT_MEDIA, MEDIA_KEY, file_key, MODEL_ID_MAX, FileStory, HandedFile, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor, TokenCounts

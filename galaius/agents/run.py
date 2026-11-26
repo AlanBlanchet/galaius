@@ -36,7 +36,8 @@ from pydantic import BaseModel, ConfigDict
 
 from galaius.agents.limits import admission
 from galaius.agents import agent_queue
-from galaius.agents import registry as reg, walk
+from galaius.agents import registry as reg
+from galaius.agents.limits import walk
 from galaius.agents.limits import quota
 from galaius.agents.catalog import relations
 from galaius.agents import run_folder

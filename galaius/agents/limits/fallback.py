@@ -1,4 +1,4 @@
-"""A step of the model walk (`agents.walk`) that leaves a conversation's program: the table's first open unit is another program's,
+"""A step of the model walk (`agents.limits.walk`) that leaves a conversation's program: the table's first open unit is another program's,
 and a session is its CLI's own format, so the conversation continues as a SUCCESSOR run there (`SpawnLine.hand_on`: the ranked walk
 across programs, `relations.succeed`), carrying the message that was waiting and where it can be read; and the fresh run that takes
 over a resume a bug of this computer's own code broke (`relaunch_fresh`).
