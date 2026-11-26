@@ -597,7 +597,7 @@ class RunSubscription(WireRunSubscription):
         held, lost, ready, refused = [], [], [], []
         for option in offered:
             pause = quota.login_pause(provider, subscription=option.subscription_id)
-            if pause is None and model is not None and quota.blocked_until(provider, model, subscription=option.subscription_id) is not None:
+            if pause is None and model is not None and quota.shut(provider, model, subscription=option.subscription_id) is not None:
                 refused.append(option)
                 continue
             (ready if pause is None else held if pause.reason == "usage_limit" else lost).append(option)

@@ -99,14 +99,14 @@ def _says(run: reg.AgentRun) -> str:
 CAUSES = ["pool", "week", "overloaded", "login_lost", "refusal0"]
 
 
-#: A refusal worded as the turn's finished answer is read by the dispatcher's end of a turn (`quota.refused_as_answer`), never by the launch's probe: the
-#: probe reads a stream's first seconds and a healthy first answer quoting the same words must not be refused (`test_agent_selection`); no
-#: recorded run of the real CLI ends a refused turn that way, so the launch's row stays red until one is shown.
-START_CAUSES = [pytest.param(cause, marks=pytest.mark.xfail(strict=True, reason="a limit worded as an answer is not shown real: the probe never reads it"))
-                if cause == "refusal0" else cause for cause in CAUSES]
+#: A limit worded as the turn's finished answer (exit 0, no error flagged) is read nowhere: no recorded run of the real CLI ends a refused turn
+#: that way, and a reader of the answer's words would let an agent's own text (a page it quotes) shut a model on a login. The cell stays red,
+#: strict, until a recorded run shows it.
+UNSHOWN = "a limit worded as a finished answer is not shown real: no answer's words are read as a vendor refusal"
+CELLS = [pytest.param(cause, marks=pytest.mark.xfail(strict=True, reason=UNSHOWN)) if cause == "refusal0" else cause for cause in CAUSES]
 
 
-@pytest.mark.parametrize("cause", START_CAUSES)
+@pytest.mark.parametrize("cause", CELLS)
 async def test_start_a_refused_first_turn_ends_on_the_next_model_of_the_table(standin, cause: str) -> None:
     plan, asked, tmp_path = standin
     plan(**_out(cause, 1))
@@ -121,7 +121,7 @@ async def test_start_a_refused_first_turn_ends_on_the_next_model_of_the_table(st
     assert run.model == "model-b" and run.status == "done", f"asked {asked()}, ended {run.status} on {run.model}"
 
 
-@pytest.mark.parametrize("cause", CAUSES)
+@pytest.mark.parametrize("cause", CELLS)
 async def test_midwork_a_refused_turn_comes_back_at_once_on_the_next_model(standin, cause: str) -> None:
     """The turn after work is refused; the run is then what the system leaves it (the dispatcher's own retry, then the cut scheduler's
     automatic resume): done on the next model, or due NOW; never a wait while model-b answers."""
@@ -143,7 +143,7 @@ async def test_midwork_a_refused_turn_comes_back_at_once_on_the_next_model(stand
     assert state.status == "done" and state.model == "model-b", f"asked {asked()}, ended {state.status} on {state.model}"
 
 
-@pytest.mark.parametrize("cause", CAUSES)
+@pytest.mark.parametrize("cause", CELLS)
 async def test_resume_his_message_after_a_refused_turn_runs_on_the_next_model(standin, cause: str) -> None:
     plan, asked, tmp_path = standin
     plan(**_out(cause, 2))

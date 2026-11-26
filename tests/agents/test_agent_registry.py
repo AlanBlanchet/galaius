@@ -2331,8 +2331,9 @@ def test_a_paused_run_resumes_once_its_login_answers_again_before_the_named_rese
 
     reg.schedule_resumes(now=run.finished_at + after + 1)
 
-    # The login answering again is a unit of the table that can run: due at once, never a wait for the reset it named.
-    assert reg.get_run("lim-lift").resume_at == (run.finished_at if early else reset)
+    # Another model of the login answering makes the table's next row a unit that can run: due at once, never a wait for the lift's instant.
+    expected = reset if not early else run.finished_at if answered_by != "claude-opus-5-5" else run.finished_at + after
+    assert reg.get_run("lim-lift").resume_at == expected
 
 
 def test_his_press_keeps_the_lift_for_other_paused_runs_and_a_refused_early_resume_keeps_the_named_reset(resuming):
@@ -2345,17 +2346,14 @@ def test_his_press_keeps_the_lift_for_other_paused_runs_and_a_refused_early_resu
     answered = first.finished_at + 30
     quota.served("claude", "claude-opus-5-5", at=answered)  # A answers
     reg.schedule_resumes(now=answered + 1)
-    assert reg.get_run("lim-b").resume_at == other.finished_at, "B waits for the named reset though its login answered"
+    assert reg.get_run("lim-b").resume_at == answered, "B waits for the named reset though its login answered"
     assert reg.claim_resume("lim-b", now=answered + 2) is not None
     reg._update_fields("lim-b", {"finished_at": answered + 60})  # its early resume refused again within RESUME_GRACE
-    quota.record_refusal("claude", "claude-opus-5-5", said=_SESSION_LIMIT, now=answered + 60)   # and that refusal heard: the login is shut again
     reg.schedule_resumes(now=answered + 61)
     assert reg.get_run("lim-b").resume_at == reset, "a refused early resume lost the resume at the named reset"
     quota.served("claude", "claude-sonnet-5", at=answered + 90)  # another model's pool keeps answering
     reg.schedule_resumes(now=answered + 91)
-    # Another model of his login answers: the table's next row can run, so its resume is due at once on it (one try, `fresh`), and the
-    # opus row stays shut until its own reopening: no resume is timed at the answer of a model that is still shut.
-    assert reg.get_run("lim-b").resume_at == answered + 60
+    assert reg.get_run("lim-b").resume_at == reset, "resumed and refused again at every answer of another model"
 
 
 def test_a_paused_run_is_claimed_once_from_its_reset_on_and_its_sub_run_resumes_too_before_it(resuming):
@@ -2535,8 +2533,8 @@ def test_a_resumed_turn_refused_again_right_away_is_left_to_reprendre(resuming, 
         stream.write(_claude_error_stream(_SESSION_LIMIT))
     monkeypatch.setattr(reg.time, "time", lambda: claimed.resumed_at + 10)
     assert reg.finish("lim-again", exit_code=1, first=0, expected_pid=405, expected_lifecycle_token=resumed.lifecycle_token)
-    # The refusal is the login's window as a whole: the table's other row refused as well, nothing of it can run and the read « tomorrow's
-    # 17:20 » is never scheduled.
+    # The table's other row refused as well (one refusal is kept per model): nothing of it can run, so the read « tomorrow's 17:20 » is
+    # never scheduled.
     quota.record_refusal("claude", "claude-sonnet-5-5", said=_SESSION_LIMIT)
     assert reg.schedule_resumes() == [] and reg.get_run("lim-again").resume_at is None
 
@@ -2635,6 +2633,21 @@ def test_a_run_cut_by_an_overload_resumes_at_once_where_a_row_answers_else_when_
         quota.record_refusal("claude", "claude-sonnet-5-5", now=run.finished_at, bench=quota.OVERLOAD_BENCH * 4)
     due = reg.overload_resume_at(reg.get_run("ovl4"), now=run.finished_at + 1)
     assert due == (run.finished_at + quota.OVERLOAD_BENCH if waits else run.finished_at)
+
+
+def test_an_overload_cut_that_recorded_nothing_against_another_row_is_never_due_at_once_twice(resuming):
+    """A run with no model (his own conversation) cut by a 529: the bench is recorded under its one unit, so its resume waits it out; the unit
+    it is on, open again, is never an at-once resume (code review: an unrecorded refusal looped against a 529)."""
+    from galaius.agents.limits import quota
+    from galaius.agents.transport.events import RunCut
+
+    reg.register(run_id="ovl-bare", pid=515, provider="claude", name="w", agent=None, model=None)
+    reg._remember_vendor_refusal(reg.get_run("ovl-bare"), _OVERLOADED, cut=RunCut.overloaded)
+    assert quota.shut("claude", "") is not None
+    ended = reg.get_run("ovl-bare").model_copy(update={"status": "failed", "finished_at": time.time()})
+    assert reg.overload_resume_at(ended) >= ended.finished_at + quota.OVERLOAD_BENCH - 1
+    quota.forget()   # nothing recorded at all: still never at once into the unit it was cut on
+    assert reg.overload_resume_at(ended) == ended.finished_at + quota.OVERLOAD_BENCH
 
 
 def test_one_run_is_read_along_its_own_launch_links_as_the_forest_lists_it():

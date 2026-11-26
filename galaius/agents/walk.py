@@ -18,9 +18,11 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Literal, NamedTuple
 from uuid import UUID
 
-from galaius_core import ShutEntry
+from galaius_core import ShutEntry, SubscriptionLimits
 
+from galaius.account.caller import Caller
 from galaius.agents.limits import quota
+from galaius.agents.limits.subscriptions import RunSubscription, Subscription, SubscriptionRefused
 from galaius.agents.providers import PROVIDERS
 
 if TYPE_CHECKING:
@@ -64,7 +66,7 @@ class Step(NamedTuple):
             return "successor"
         if self.unit.login != run.subscription_id:
             return "login"
-        return "model" if self.unit.model != run.model else "same"
+        return "model" if self.unit.model != (run.model or "") else "same"
 
 
 def _reopens(entry: ShutEntry) -> float:
@@ -85,35 +87,35 @@ def walk(units: Iterable[Unit], *, now: float | None = None) -> Step | None:
     return Step(first.unit, first.shut, tuple(passed))
 
 
-def units_of(table: Sequence["reg.LaunchCandidate"], logins: Mapping[str, Sequence[UUID | None]]) -> list[Unit]:
-    """The table's rows, each on every login its program may run on, in the table's order."""
-    return [Unit(row.provider, row.model, login) for row in table for login in logins.get(row.provider, ())]
-
-
 def logins_of(run: "reg.AgentRun", provider: str) -> list[UUID | None]:
-    """The logins of this PC `provider`'s next turn of `run` may run on, the run's own first. A member's lent run runs on its one;
-    a CLI no login runs (a key program, one with no login folder) has this PC's own. Subscription logins before this PC's own login
-    (a run pinned to a lost subscription never waits while the own login has usage); a subscription at one of his caps is no login
-    to walk."""
-    from galaius_core import SubscriptionLimits   # noqa: PLC0415
-
-    from galaius.agents.limits.subscriptions import RunSubscription, Subscription, SubscriptionRefused   # noqa: PLC0415
-    own = run.subscription_id if provider == run.provider else None
+    """The logins of this PC `provider`'s next turn of `run` may run on: on the run's own program the one it is pinned to first
+    (None: this PC's own login), then his other subscription logins in his order, then this PC's own (a run pinned to a lost
+    subscription never waits while the own login has usage); on another program his subscription logins, then this PC's own. A
+    member's lent run runs on its one; a CLI no login runs (a key program, one with no login folder) has this PC's own; a
+    subscription at one of his caps is no login to walk."""
+    pinned = run.subscription_id if provider == run.provider else None
     if run.pending_move is not None or run.kind != "process" or run.foreign or (run.subscription is not None and run.subscription.lent):
-        return [own]
+        return [pinned]
     program = PROVIDERS.get(provider)
     if program is None or not program.auth_home_env:
-        return [own]
+        return [pinned]
     others: list[UUID | None] = []
     for subscription in Subscription.all():
-        if subscription.provider != provider or subscription.id == own:
+        if subscription.provider != provider or subscription.id == pinned:
             continue
         try:
             RunSubscription(subscription_id=subscription.id, limits=subscription.limits() or SubscriptionLimits()).check()
         except SubscriptionRefused:
             continue
         others.append(subscription.id)
-    return [own, *others, None] if own is not None else [None, *others]
+    if provider != run.provider:
+        return [*others, None]
+    return [None, *others] if pinned is None else [pinned, *others, None]
+
+
+def units_of(table: Sequence["reg.LaunchCandidate"], logins: Mapping[str, Sequence[UUID | None]]) -> list[Unit]:
+    """The table's rows, each on every login its program may run on, in the table's order."""
+    return [Unit(row.provider, row.model, login) for row in table for login in logins.get(row.provider, ())]
 
 
 def _programs(run: "reg.AgentRun", policy: "Policy", *, across: bool) -> list[str]:
@@ -162,7 +164,6 @@ def of_run(run: "reg.AgentRun", policy: "Policy | None", environment: Mapping[st
 def step_of(run: "reg.AgentRun", *, now: float | None = None) -> Step | None:
     """The step of `run` (`of_run` over the policy as it reads now): open, or asking when nothing is. None when its rule cannot be read
     now: nothing is claimed open, the turn is asked as before."""
-    from galaius.account.caller import Caller   # noqa: PLC0415
     from galaius.agents import run as run_module   # noqa: PLC0415
 
     try:
@@ -179,7 +180,15 @@ def open_for(run: "reg.AgentRun", *, now: float | None = None) -> Step | None:
     return step if step is not None and step.open else None
 
 
-def nothing_can_run(run: "reg.AgentRun") -> bool:
-    """Whether every unit of `run`'s table is shut now (a table that cannot be read is no proof: False): its turn is never asked of one."""
+def cannot_step(run: "reg.AgentRun") -> bool:
+    """Whether `run`'s turn, just refused, has nowhere else to go: every unit of its table shut, or the first open one the very unit that
+    refused it (a refusal nothing recorded: asking it again at once would loop). A table that cannot be read is no proof: False."""
     step = step_of(run)
-    return step is not None and not step.open
+    return step is not None and (not step.open or step.how(run) == "same")
+
+
+def elsewhere(run: "reg.AgentRun") -> Step | None:
+    """A unit other than the one `run` is on that can take its next turn at once (another model, login or program), else None. The one it
+    is on, open again, is no step: a refusal that shut nothing leaves it open, and an at-once resume into it would repeat for ever."""
+    step = open_for(run)
+    return step if step is not None and step.how(run) != "same" else None

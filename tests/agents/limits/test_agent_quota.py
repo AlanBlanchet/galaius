@@ -613,7 +613,7 @@ def test_a_model_familys_own_pool_benches_that_family_alone_whatever_else_the_li
     quota.remember(quota.classify(said), "claude", "claude-fable-5-2", said=said, login="", now=now)
 
     assert quota.blocked_until("claude", "claude-fable-5-2", now=now) is not None
-    assert quota.pool_blocked_until("claude", "claude-fable-5-1", now=now) is not None
+    assert (held := quota.shut("claude", "claude-fable-5-1", now=now)) is not None and held.family == "fable"
     assert quota.blocked_until("claude", "claude-opus-5-5", now=now) is None
     assert quota.login_pause("claude", now=now) is None
 

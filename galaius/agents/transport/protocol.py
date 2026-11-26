@@ -113,7 +113,7 @@ class ConversationRoute(BaseModel):
 
     def resolve(self, selection: ModelSelection) -> Model:
         """Resolve one exact model or route-bound criterion without crossing routes — skipping
-        anything `quota.blocked_until` still remembers, so a FRESH start and a RESUMED turn never
+        anything `quota.shut` still holds, so a FRESH start and a RESUMED turn never
         re-offer a model that already refused for quota a moment ago. This is the ONE place both
         call it (`host.py`'s `_start` and `_send`), so both share the fix rather than one route
         re-implementing the walk and drifting from the other.
@@ -121,8 +121,8 @@ class ConversationRoute(BaseModel):
         if self.availability != "available":
             raise ValueError(self.reason or f"route {self.id!r} is unavailable")
         cooled_until = {
-            model.id: until for model in self.models
-            if (until := quota.blocked_until(self.provider, model.id)) is not None
+            model.id: entry.until for model in self.models
+            if (entry := quota.shut(self.provider, model.id)) is not None and entry.until is not None
         }
         live = [model for model in self.models if model.id not in cooled_until]
         if selection.model is not None:

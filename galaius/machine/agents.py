@@ -1345,10 +1345,9 @@ class MachineAgents(BaseModel):
                     relaunching.append(taken)
                 continue
             ready = False
-            if cut.cause == "login_lost" and cut.resumes == "itself":
-                if (moved := await self._login_taking(run, signed_in)) is None:
-                    continue   # every login the walk offered is signed out: each is now paused, the next pass reads « sign in »
-                run = moved
+            taking = None
+            if cut.cause == "login_lost" and cut.resumes == "itself" and (taking := await self._login_taking(run, signed_in)) is None:
+                continue   # every login the walk offered is signed out: each is now paused, the next pass reads « sign in »
             if cut.resumes == "sign_in":
                 login = run.provider, run.subscription_id
                 if self.programs is not None and login not in signed_in:
@@ -1357,7 +1356,9 @@ class MachineAgents(BaseModel):
                     if (carried := await asyncio.to_thread(self._to_account_login, run, accounts)) is None:
                         continue
                     run, ready = carried, True
-            if await asyncio.to_thread(reg.claim_resume, run.run_id, signed_in=ready) is not None:
+            if (took := await asyncio.to_thread(reg.claim_resume, run.run_id, signed_in=ready)) is not None:
+                if taking is not None and taking.unit.provider == run.provider:   # claimed first: on its new login the run reads cut no longer
+                    run = await asyncio.to_thread(reg.carry_to, took, taking.unit.login)
                 claimed.append((run, *_RESUMED_AFTER[cut.cause]))
         resumed: list[str] = [run.run_id for run in relaunching if await self._relaunch(run)]
         for run, sender, after in claimed:  # deepest first, as scheduled
@@ -1365,22 +1366,20 @@ class MachineAgents(BaseModel):
                 resumed.append(run.run_id)
         return resumed
 
-    async def _login_taking(self, run: reg.AgentRun, signed_in: dict[tuple[str, UUID | None], bool | None]) -> reg.AgentRun | None:
-        """Cut `run` (its login lost) on the login of this PC the model walk offers it (its lost one is shut), that login being signed in
-        (asked of its program once per login in a pass; one that is not is paused as lost, `quota.pause_login`, so the walk offers the
-        next), its session carried there (`registry.carry_to`). None when no login takes it; the run unchanged when the walk's step is
-        another program's row (a successor, started signed in by its own check)."""
+    async def _login_taking(self, run: reg.AgentRun, signed_in: dict[tuple[str, UUID | None], bool | None]) -> walk.Step | None:
+        """The model walk's step for cut `run` (its login lost, so shut) once the login it offers is not signed out (asked of its program once
+        per login in a pass; one signed out is paused as lost, `quota.pause_login`, so the walk offers the next; one whose program cannot say
+        is taken, the vendor decides on the turn). None when no login takes it; a step to another program's row is a successor, started
+        signed in by its own check."""
         for _ in range(8):   # his logins, a few: each turn pauses one
-            step = await asyncio.to_thread(walk.open_for, run)
-            if step is None:
-                return None
-            if step.unit.provider != run.provider or self.programs is None:
-                return run
+            step = await asyncio.to_thread(walk.elsewhere, run)
+            if step is None or step.unit.provider != run.provider or self.programs is None:
+                return step
             login = run.provider, step.unit.login
             if login not in signed_in:
                 signed_in[login] = await asyncio.to_thread(self.programs.signed_in, *login)
-            if signed_in[login]:
-                return await asyncio.to_thread(reg.carry_to, run, step.unit.login)
+            if signed_in[login] is not False:
+                return step
             await asyncio.to_thread(quota.pause_login, run.provider, "login_lost", subscription=step.unit.login, said="not signed in")
         return None
 

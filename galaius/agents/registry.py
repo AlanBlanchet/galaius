@@ -1591,8 +1591,8 @@ def _remember_vendor_refusal(run: AgentRun, said: str, *, cut: RunCut | None = N
         quota.pause_login(run.provider, "login_lost", subscription=run.subscription_id, said=said, now=now)
     # The vendor's API overloaded for this model on this login: passed over there from the FIRST refusal, whoever sent the turn
     # (`quota.classify` reads it for a person's message too), so the next resume takes his other login or the next row of the table.
-    elif cut is RunCut.overloaded and run.model:
-        quota.record_refusal(run.provider, run.model, subscription=run.subscription_id, now=now, bench=quota.OVERLOAD_BENCH)
+    elif cut is RunCut.overloaded:
+        quota.record_refusal(run.provider, run.model or "", subscription=run.subscription_id, now=now, bench=quota.OVERLOAD_BENCH)
 
 
 def finish(
@@ -3381,10 +3381,10 @@ def limit_resume_at(run: AgentRun, *, now: float | None = None) -> float | None:
     fresh = run.relaunched_at is None and (run.resumed_at is None or run.resumed_at < run.finished_at)
     if fresh and refusal is not None and refusal.pool and step is None:
         return run.finished_at   # its table cannot be read now: the vendor said another model answers, and the vendor decides
-    if step is not None and step.open and fresh:
-        # A unit of its table that this refusal did not shut (another login of his, a lower model, another program, `walk`) takes the
-        # turn at once, never a wait for this one's reopening. One automatic try per refusal; refused there too, that unit is shut as well
-        # and the table's next reopening (the named reset, the earliest `until`) alone resumes it.
+    if step is not None and step.open and step.how(run) != "same" and fresh:
+        # Another unit of its table (another login of his, a lower model, another program, `walk`) takes the turn at once, never a wait for
+        # this one's reopening. One automatic try per refusal; refused there too, that unit is shut as well and the table's next reopening
+        # (the named reset, the earliest `until`) alone resumes it. The unit it is on, open again, is the lift below, never this.
         return run.finished_at
     if run.relaunched_at is None and refusal is not None and refusal.pool and refusal.reopens_at is None and step is not None \
             and step.shut is not None and step.shut.until is not None:
@@ -3417,18 +3417,20 @@ def network_resume_at(run: AgentRun, *, now: float | None = None) -> float | Non
 
 
 def overload_resume_at(run: AgentRun, *, now: float | None = None) -> float | None:
-    """When `run`, whose last turn its provider's API ended as overloaded (`RunCut.overloaded`), is resumed by itself: at once when a
-    unit of its table can take the turn (`walk`: the overloaded model is a shut entry from its FIRST refusal, so the next row or his
-    other login answers while the vendor recovers), else when the first unit of the table reopens (the bench the overload earned,
-    `quota.OVERLOAD_BENCH`, twice as long for each refusal in a row). Never None: a run cut by an overload comes back until the
-    window of a stale cut (`CUT_RESUME_WINDOW`) passes, a person's hand is no part of it (run 54a62ee1 stayed down after a 529: its
-    resume was timed by five fixed backoffs and none left was `None`, and a person's message was the only thing that resumed it)."""
+    """When `run`, whose last turn its provider's API ended as overloaded (`RunCut.overloaded`), is resumed by itself: at once when
+    another unit of its table can take the turn (`walk`: the overloaded model is a shut entry from its FIRST refusal, so the next row or
+    his other login answers while the vendor recovers), else when the first unit of the table reopens, and never sooner than the vendor's
+    own bench when the unit it is on reads open (`quota.OVERLOAD_BENCH`: a refusal nothing recorded never loops at once). Never None: a run
+    cut by an overload comes back until the window of a stale cut (`CUT_RESUME_WINDOW`) passes, a person's hand is no part of it (run
+    54a62ee1 stayed down after a 529: five fixed backoffs, then None, and a person's message was the only thing that resumed it)."""
     if run.finished_at is None:
         return None
     step = walk.step_of(run)
     if step is None:   # its table cannot be read now (the service is down): the vendor's own recovery time
         return run.finished_at + quota.OVERLOAD_BENCH
-    return run.finished_at if step.open else max(run.finished_at, step.shut.until if step.shut.until is not None else run.finished_at + quota.OVERLOAD_BENCH)
+    if step.open:
+        return run.finished_at if step.how(run) != "same" else run.finished_at + quota.OVERLOAD_BENCH
+    return max(run.finished_at, step.shut.until if step.shut.until is not None else run.finished_at + quota.OVERLOAD_BENCH)
 
 
 def cut_cause(run: AgentRun) -> CutCause | None:
@@ -3518,7 +3520,7 @@ def cut_resume(run: AgentRun, *, now: float | None = None) -> CutOwed | None:
         # the run waits for a sign-in, and says so (`CutOwed.resumes`).
         if aged:
             return None
-        return CutOwed(cause, "itself", run.finished_at) if walk.open_for(run) is not None else CutOwed(cause, "sign_in", None)
+        return CutOwed(cause, "itself", run.finished_at) if walk.elsewhere(run) is not None else CutOwed(cause, "sign_in", None)
     if cause in SELF_TIMED_CUTS:
         at = {"usage_limit": limit_resume_at, "network_lost": network_resume_at, "overloaded": overload_resume_at}[cause](run, now=now)
         # A resume nobody took within `CUT_RESUME_WINDOW` of falling due is as stale as a process cut: the pool refusal or another

@@ -141,7 +141,7 @@ def test_an_unrecognised_model_or_a_full_context_holds_no_login_and_benches_no_m
     assert kind in {None, "context_exhausted", "model_capability_unsupported"}
     quota.remember(kind, "claude", "fable-fixture", login="", said=line) if kind is not None else None
     assert quota.blocked_until("claude", "fable-fixture") is None and quota.login_pause("claude") is None
-    assert quota.pool_blocked_until("claude", "fable-fixture") is None
+    assert quota.shut("claude", "fable-fixture") is None
 
 
 def test_every_part_of_a_logins_usage_is_one_record_in_one_file() -> None:

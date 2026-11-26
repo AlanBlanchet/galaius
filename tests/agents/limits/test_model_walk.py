@@ -84,16 +84,24 @@ def test_the_entries_a_pc_reports_are_what_its_walk_reads() -> None:
     assert reported == {(str(A), "pool", "fable"), (str(A), "pool", "top"), (str(B), "overload", "mid"), ("", "login_lost", None)}
 
 
-@pytest.mark.parametrize(("text", "refusal"), [
-    ("You've reached your Fable limit. Switch to another model.", True),
-    ("API Error: 529 Overloaded. This is a server-side issue, usually temporary.", True),
-    ("Done. The build passes and the limit of 3 retries was never reached.", False),
-    ("Prompt is too long", False),
-    ("You've hit your weekly limit · resets 9pm (UTC)" + " " * 700 + "and then a long answer", False),
-    ("", False),
-])
-def test_a_refusal_worded_as_a_finished_answer_is_read_only_when_it_is_nothing_but_the_refusal(text: str, refusal: bool) -> None:
-    assert quota.refused_as_answer(text) is refusal
+def test_a_model_that_answers_ends_its_overload_bench_on_every_login_of_the_program() -> None:
+    """The overload is the API's: it answered the model on one login, so no login's bench of it still stands."""
+    quota.forget()
+    now = time.time()
+    for login in (A, B):
+        quota.record_refusal("claude", "fable", bench=quota.OVERLOAD_BENCH, subscription=login, now=now - 5)
+    quota.served("claude", "fable", subscription=B, at=now)
+    assert quota.shut("claude", "fable", subscription=A) is None and quota.shut("claude", "fable", subscription=B) is None
+
+
+def test_the_answers_own_words_never_shut_a_model() -> None:
+    """A finished answer quoting a vendor's limit (a page, an issue it read) is the model's text: the end of a turn reads its vendor's error
+    alone (`agent_queue.settle`)."""
+    from galaius.agents.transport.events import AgentEvent
+
+    quota.forget()
+    said = AgentEvent(kind="done", text="You've hit your weekly limit · resets Monday 9am (UTC)")
+    assert not (said.kind == "error" and quota.classify(said.text) is not None)
 
 
 class _Other(QueueProvider):

@@ -365,8 +365,10 @@ def _noted_until(provider: str, model: str, logins: Sequence[UUID | None]) -> fl
     runs on his next, 2026-11-20: Fable noted on his first login ranked it after Sonnet while his second one served it). Every
     login held: the first's note stands, as it did."""
     open_logins = [login for login in logins if admission.Hold.usage(provider, login) is None] or list(logins[:1])
-    untils = [quota.blocked_until(provider, model, subscription=login) for login in open_logins]
-    return None if not untils or any(until is None for until in untils) else min(until for until in untils if until is not None)
+    entries = [quota.shut(provider, model, subscription=login) for login in open_logins]
+    if not entries or any(entry is None for entry in entries):
+        return None
+    return min((entry.until for entry in entries if entry is not None and entry.until is not None), default=None)
 
 
 def _own_login_takes(provider: AgentProvider, model: str, options: Sequence[RunSubscription]) -> bool:
@@ -377,7 +379,7 @@ def _own_login_takes(provider: AgentProvider, model: str, options: Sequence[RunS
     his has usage."""
     return (bool(options) and not _keyed(provider) and bool(provider.auth_home_env)
             and all(quota.login_pause(provider.name, subscription=option.subscription_id) is not None for option in options)
-            and quota.login_pause(provider.name) is None and quota.blocked_until(provider.name, model) is None)
+            and quota.shut(provider.name, model) is None)
 
 
 def _context_of(model: str, candidates: Sequence[reg.LaunchCandidate]) -> int | None:

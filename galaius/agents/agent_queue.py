@@ -1133,8 +1133,8 @@ def _fall_back_locked(run_id: str, item: QueueItem, run: "reg.AgentRun | None", 
         return False
     if run is not None and (kind := quota.classify(refusal)) is not None:
         quota.remember(kind, run.provider, run.model, said=refusal, subscription=run.subscription_id, login=run.login)
-        if walk.nothing_can_run(run):
-            return False   # every unit of its table is shut now: the turn is never asked of one again, it ends saying what the vendor said
+        if walk.cannot_step(run):
+            return False   # every unit of its table is shut, or the refusal shut none: never asked of the same one again, it ends saying what the vendor said
         if run.model:
             named = quota.Refusal.read(refusal, now=time.time())
             reg.note_fell_back_locked(run_id, reg.FellBack(model=run.model, pool=(named.pool or None) if named else None,
@@ -1171,10 +1171,8 @@ def settle(run_id: str, item: QueueItem, code: int) -> None:
     # A limit is the vendor's word on the result line, whatever the exit code (the CLI's recorded refusals all exit 1; a wrapper or a
     # CLI version that exits 0 on one must not leave it as the turn's reply).
     said = events[-1] if events else None
-    # A refusal worded as the turn's finished answer is no answer either (`quota.refused_as_answer`).
-    worded = said is not None and said.kind == "done" and quota.refused_as_answer(said.text)
-    limited = worded or (said is not None and said.kind == "error" and quota.classify(said.text) is not None)
-    if (code or limited) and (attempt_state != "replied" or worded):
+    limited = said is not None and said.kind == "error" and quota.classify(said.text) is not None
+    if (code or limited) and attempt_state != "replied":
         # The provider's own last word in this attempt (a quota refusal, a vendor error, a compaction that failed)
         # outranks the exit code; a child that died saying nothing gets the exit code and its stderr as the run's last line.
         error = f"resumed provider exited {code}"

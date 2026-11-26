@@ -647,23 +647,6 @@ def shut_entries(now: float | None = None) -> list[ShutEntry]:
     return found
 
 
-def overload_until(provider: str, model: str | None, *, subscription: UUID | None = None, now: float | None = None) -> float | None:
-    """When the overload bench (`Block.reason` overload) this model earned on this login ends, None when it is under none."""
-    moment = time.time() if now is None else now
-    block = _blocks(provider, subscription, moment).get(model or "")
-    return block.until if block is not None and block.reason == "overload" and block.until > moment else None
-
-
-def pool_blocked_until(provider: str, model: str | None, *, subscription: UUID | None = None, now: float | None = None) -> float | None:
-    """When this model's FAMILY pool (`POOLS`) is open again on this login (refused, or past his stop), None when it is not
-    shut: the vendor said « Switch to another model » for exactly this family, unlike a model blocked by an account-level limit."""
-    moment = time.time() if now is None else now
-    blocks = _blocks(provider, subscription, moment)
-    untils = [block.until for token in sorted(POOL_TOKENS) if token in (model or "").lower()
-              and (block := blocks.get(_family(token))) is not None and block.until > moment]
-    return max(untils, default=None)
-
-
 def hold_pool(provider: str, pool: str, *, until: float, subscription: UUID | None = None, now: float | None = None) -> None:
     """Pass this family's models over on this login until `until` (a pool at his stop, `ModelPool`): every other model and
     every other login of his still runs. Never shortens a block already standing; clearing one early is `release_pool`'s job."""
@@ -803,19 +786,6 @@ def classify(said: str) -> RefusalKind | None:
     return None
 
 
-#: The longest a vendor's refusal worded as the turn's own FINISHED answer is (`refused_as_answer`): a refusal is a sentence, and a long
-#: answer quoting the same words is the model's.
-REFUSAL_ANSWER_MAX = 600
-
-
-def refused_as_answer(text: str) -> bool:
-    """Whether `text`, the whole of a turn that ended as an answer (exit 0, no error flagged), is the vendor's refusal worded as one:
-    short, and read by `classify` as a quota, an unsupported model or an overloaded API. Never a conversation too long for its window
-    (`context_exhausted`: that one is no model's refusal). A long answer quoting such words is the model's, never read here. Whether a
-    real CLI ends a refused turn this way is not shown by a recorded run: the stand-in vendor does it (`tests/agents/limits`)."""
-    return 0 < len(text.strip()) <= REFUSAL_ANSWER_MAX and classify(text) in ("quota_exceeded", "model_capability_unsupported", "overloaded")
-
-
 def remember(kind: RefusalKind, provider: str, model: str | None, *, login: str, said: str = "",
              subscription: UUID | None = None, now: float | None = None) -> float:
     """Record what `classify` read against what it is a fact about, and return when this model may be
@@ -894,6 +864,18 @@ def _unwithdraw(provider: str, model: str | None, *, at: float) -> None:
             _write_json(path, entries)
 
 
+def _overload_answered(provider: str, model: str, *, at: float) -> None:
+    """The vendor's API answered `model` at `at`: its overload bench, whichever login heard it, is over (the overload is the API's, `shut`)."""
+    def benched(entries: dict[str, LoginUsage]) -> list[LoginUsage]:
+        return [usage for name, usage in entries.items() if name.partition("#")[0] == provider
+                and (block := usage.blocks.get(model)) is not None and block.reason == "overload" and block.at <= at]
+
+    if benched(_read(time.time())):   # every answer asks: the lock only when there is a bench to end
+        with _usage(time.time()) as entries:
+            for usage in benched(entries):
+                del usage.blocks[model]
+
+
 def served(provider: str, model: str | None, *, subscription: UUID | None = None, at: float | None = None) -> None:
     """This model answered (a turn it wrote, a run that finishes) at `at` (default now): whatever
     was remembered against it BEFORE that is over, and its login answered past every refusal
@@ -902,6 +884,7 @@ def served(provider: str, model: str | None, *, subscription: UUID | None = None
     moment = time.time() if at is None else at
     _unwithdraw(provider, model, at=moment)
     login_back(provider, subscription=subscription, at=moment)
+    _overload_answered(provider, model or "", at=moment)
     login = _login(provider, subscription)
     if login not in _read(time.time()):   # every answer asks: the lock only when there is something remembered
         return
