@@ -191,3 +191,51 @@ def test_each_connection_sends_what_cannot_run_here_whole_once_then_only_when_it
     watch.connected()
     again = watch.report(datetime.now(UTC))
     assert again is not None and again.shut == changed.shut
+
+
+def test_a_pool_refusal_that_named_no_reset_is_resumed_once_its_bench_is_over(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """One row, shut by a pool that named no reset: the resume is timed at the bench's end, and past it the same row, open again, is still
+    due (code review r2: it read as « the unit it is on » and was never resumed)."""
+    provider, logins, _ = _stopped_run(monkeypatch, tmp_path)
+    monkeypatch.setattr(walk, "PROVIDERS", {"claude": provider})
+    _table(monkeypatch, ("claude", "fable-fixture"))
+    reg.cut_resume_since(now=0.0)
+    ended = time.time()
+    for login in (*logins.values(), OWN):
+        quota.record_refusal("claude", "fable-fixture", said=FABLE_POOL, subscription=login.id, now=ended)
+    from galaius.agents.transport.events import RunCut
+    from galaius.usage_dialects import CountedTokens
+
+    digest = reg.StreamDigest(source="x", ending="error", ending_text=FABLE_POOL, cut=RunCut.usage_limit, usage=CountedTokens())
+    cut = reg.get_run("r1").model_copy(update={"status": "failed", "finished_at": ended, "stream_digest": digest})
+    bench = quota.Block.length(1)
+    assert reg.limit_resume_at(cut) == pytest.approx(ended + bench, abs=1)
+    quota.forget()   # the bench over: nothing holds the row any more
+    owed = reg.cut_resume(cut, now=ended + bench + 1)
+    assert owed is not None and owed.at is not None and owed.at <= ended + bench + 1, f"never resumed past its reopening: {owed}"
+
+
+def test_a_preferred_programs_row_stays_ahead_of_a_better_ranked_one_when_a_conversation_resumes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A rule that prefers a program orders its rows first (`_apply_provider_constraint`): the walk keeps that order, its tie-break between two
+    programs of ONE rank alone (code review r2: sorting the whole table by rank moved the conversation to the program not preferred)."""
+    provider, _, _ = _stopped_run(monkeypatch, tmp_path)
+    monkeypatch.setattr(walk, "PROVIDERS", {"claude": provider, "other": _Other()})
+    use_policy(monkeypatch, run_module, agents={"tester": "table"}, providers={"claude": True, "other": True})
+    preferred = (reg.LaunchCandidate(provider="claude", model="fable-fixture", rank=1), reg.LaunchCandidate(provider="other", model="other-model", rank=0))
+    monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None, among=None: preferred)
+    elsewhere = reg.get_run("r1")
+    step = walk.step_of(elsewhere)
+    assert step is not None and (step.unit.provider, step.unit.model) == ("claude", "fable-fixture")
+    tied = (reg.LaunchCandidate(provider="other", model="same-model", rank=0), reg.LaunchCandidate(provider="claude", model="same-model", rank=0))
+    monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None, among=None: tied)
+    assert walk.step_of(elsewhere).unit.provider == "claude", "two programs of one row: the conversation's own keeps its session"
+
+
+def test_a_step_reads_the_same_table_as_the_resume_a_model_too_small_for_the_conversation_behind_those_that_fit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    provider, _, _ = _stopped_run(monkeypatch, tmp_path)
+    monkeypatch.setattr(walk, "PROVIDERS", {"claude": provider})
+    _table(monkeypatch, ("claude", "small-model"), ("claude", "fable-fixture"))
+    monkeypatch.setattr(run_module, "_context_of", lambda model, candidates: {"small-model": 200_000, "fable-fixture": 1_000_000}[model])
+    long = reg.get_run("r1").model_copy(update={"context_tokens": 500_000})
+    step = walk.step_of(long)
+    assert step is not None and step.unit.model == "fable-fixture" and step.how(long) == "same"

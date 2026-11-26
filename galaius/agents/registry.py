@@ -3386,9 +3386,12 @@ def limit_resume_at(run: AgentRun, *, now: float | None = None) -> float | None:
         # this one's reopening. One automatic try per refusal; refused there too, that unit is shut as well and the table's next reopening
         # (the named reset, the earliest `until`) alone resumes it. The unit it is on, open again, is the lift below, never this.
         return run.finished_at
-    if run.relaunched_at is None and refusal is not None and refusal.pool and refusal.reopens_at is None and step is not None \
-            and step.shut is not None and step.shut.until is not None:
-        return max(run.finished_at, step.shut.until)   # a pool that named no reset: the table's first reopening, never a stop
+    if run.relaunched_at is None and refusal is not None and refusal.pool and refusal.reopens_at is None and step is not None:
+        # A pool that named no reset: the table's first reopening, never a stop.
+        if step.shut is not None and step.shut.until is not None:
+            return max(run.finished_at, step.shut.until)
+        if fresh and step.open:   # the unit it is on, its bench over: due one bench after the cut (an at-once resume into it would loop)
+            return run.finished_at + quota.Block.length(1)
     if refusal is None or refusal.reopens_at is None or refusal.reopens_at - run.finished_at > quota.MAX_COOLDOWN:
         return None
     reset = refusal.reopens_at + quota.RESET_SLACK

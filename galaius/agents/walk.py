@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Iterable, Mapping, Sequence
+from itertools import groupby
 from typing import TYPE_CHECKING, Literal, NamedTuple
 from uuid import UUID
 
@@ -149,8 +150,9 @@ def of_run(run: "reg.AgentRun", policy: "Policy | None", environment: Mapping[st
     names = _programs(run, policy, across=across)
     table = run_module.rank_candidates(criterion, dict(environment), providers=[own if name == run.provider and own is not None else PROVIDERS[name] for name in names],
                                        weights=policy.weights_for(run.agent), role=run.agent)
-    # A row two programs can run shares one rank (`run.rank`): the conversation's own program takes it, its session stays where it is.
-    table = tuple(sorted(table, key=lambda row: (row.rank, row.provider != run.provider)))
+    # A row two programs can run shares one rank (`run.rank`), side by side: the conversation's own program takes it, its session stays
+    # where it is. Only inside such a tie: the table's order (a preferred program's rows first, `_apply_provider_constraint`) stands.
+    table = tuple(row for _, tied in groupby(table, key=lambda row: row.rank) for row in sorted(tied, key=lambda row: row.provider != run.provider))
     if context_tokens:
         window = lambda row: run_module._context_of(row.model, table)   # noqa: E731
         fits = [row for row in table if (size := window(row)) is None or size >= context_tokens]
@@ -168,7 +170,7 @@ def step_of(run: "reg.AgentRun", *, now: float | None = None) -> Step | None:
 
     try:
         policy = run_module.load_policy().for_launch(run.agent, reference=run.agent_ref)[0] if run.agent else None
-        return of_run(run, policy, dict(Caller.environ()), now=now)
+        return of_run(run, policy, dict(Caller.environ()), context_tokens=run.context_tokens or None, now=now)
     except Exception as error:   # noqa: BLE001 — a rule that cannot be read is no reason to move a conversation
         log.info("run %s: its model table could not be read for a step: %s", run.run_id[:8], error)
         return None
