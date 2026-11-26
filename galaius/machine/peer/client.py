@@ -129,8 +129,8 @@ class PeerClient:
         try:
             return self._of(PeerStarted, PeerStart(key=key or self.key(*parts), target=target, project=project, path=path, role=role, text=text, permission=permission, reasoning=reasoning))
         except PeerError as refused:
-            if refused.refusal.code in {"cannot_fence", "key_reused"} and "ask again with a new key" in refused.refusal.message:
-                self.forget(*parts)          # the next attempt with these words is a new request
+            if refused.refusal.code == "needs_owner" or refused.refusal.code in {"cannot_fence", "key_reused"} and "ask again with a new key" in refused.refusal.message:
+                self.forget(*parts)          # this start is over (`needs_owner`: nothing runs under it): the next attempt with these words is a new request
             raise
 
     def message(self, machine: UUID, run_id: UUID, text: str, key: str | None = None, files: tuple[HandedFile, ...] = ()) -> PeerSent:
