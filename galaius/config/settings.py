@@ -137,7 +137,7 @@ class Repeats(BaseModel):
     ignored: frozenset[str] = frozenset({
         "have", "still", "what", "good", "this", "that", "with", "also", "please", "could", "would", "should", "there", "their", "about", "these", "those", "which",
         "where", "when", "they", "been", "from", "your", "just", "really", "very", "does", "into", "more", "some", "than", "then", "them", "only", "even", "like",
-        "want", "need", "make", "know", "think", "much", "many", "will", "were", "here", "thing", "things", "normal", "again", "avec", "pour", "dans", "mais", "plus",
+        "everything", "always", "before", "otherwise", "something", "anything", "want", "need", "make", "know", "think", "much", "many", "will", "were", "here", "thing", "things", "normal", "again", "avec", "pour", "dans", "mais", "plus",
         "tout", "tous", "cette", "comme", "faire", "peut", "veux", "dont", "sont", "être", "aussi", "alors"})
 
     def words(self, text: str) -> frozenset[str]:
@@ -161,12 +161,20 @@ class Repeats(BaseModel):
 #: made every dictated message read as an ask raised again.
 _DICTATED = re.compile(r"Dict(?:ated by voice|é (?:par|à) la voix)[^\n]*", re.I)
 #: A line he pasted rather than wrote: a trace, a log line with its time, a diff, a shell prompt, JSON. « terrible state » in an exception is no complaint of his.
-_PASTED = re.compile(r"^[ \t]*(?:Traceback \(|File \".*\", line \d+|at [\w.$<>]+ \(|[\w.]*(?:Error|Exception|Warning)\b.*:|\d{4}-\d\d-\d\d[ T]\d\d:\d\d|\[?\d\d:\d\d:\d\d|[+-]{3} |@@ |\$ |>>> |\{\"|[\w.-]+@[\w.-]+:[~/]).*$", re.M)
+_PASTED = re.compile(r"^(?:[ ]{4,}|\t|[ \t]*>).*$|^[ \t]*(?:Traceback \(|File \".*\", line \d+|at [\w.$<>]+ \(|[\w.]*(?:Error|Exception|Warning)\b.*:|\d{4}-\d\d-\d\d[ T]\d\d:\d\d|\[?\d\d:\d\d:\d\d|[+-]{3} |@@ |\$ |>>> |\{\"|[\w.-]+@[\w.-]+:[~/]).*$", re.M)
+
+
+#: A unified diff's own markers: once one is in the message, its `+` / `-` body lines are pasted too (a bullet list of his has no such marker).
+_DIFF = re.compile(r"^(?:diff --git |@@ |\+\+\+ |--- )", re.M)
+_DIFF_BODY = re.compile(r"^[+-](?![+-]).*$", re.M)
 
 
 def own_words(text: str) -> str:
-    """`text` without code, what dictation appended and the lines he pasted: what he wrote."""
-    return _PASTED.sub(" ", _DICTATED.sub(" ", re.sub(r"```.*?```|`[^`\n]*`", " ", text, flags=re.S)))
+    """`text` without code, what dictation appended and the lines he pasted (traces, logs, indented blocks, quotes, a diff): what he wrote."""
+    prose = _DICTATED.sub(" ", re.sub(r"```.*?```|`[^`\n]*`", " ", text, flags=re.S))
+    if _DIFF.search(prose):
+        prose = _DIFF_BODY.sub(" ", prose)
+    return _PASTED.sub(" ", prose)
 
 
 class MessageSignal(BaseModel):
@@ -221,14 +229,15 @@ FRUSTRATION = MessageSignal(exclamations=2, repeats=Repeats(), patterns=(
     r"\b(wtf|bullshit|shit|shitty|merde|putain|bordel|connard\w*|fuck\w*|f\*+k\w*|damn|crap)\b",
     # What he writes when it is not a clear case (2026-11-24: « big problem UX wise », « No further errors would be tolerated », « Fuck you, it should always be
     # working », « I'm fed up » read as none): exasperation, fatigue, fear, a problem named big, a demand that it never happens again, a slow feel.
-    r"\bjesus( christ)?\b|\bwhat the (hell|heck)\b|\bfreaking\b|\bfed up\b|\b(sick|tired) of\b|\bi hate\b|\bannoy\w+|\bfrustrat\w+|\bunacceptable\b|\b(is|are|so|too|really|that['’]?s|it['’]?s|you['’]?re) (terrible|awful|stupid|ridiculous|pathetic)\b",
+    r"\bjesus( christ)?\b|\bwhat the (hell|heck)\b|\bfreaking\b|\bfed up\b|\b(sick|tired) of\b|\bi (really )?hate (it|this|that|when|how|the way|having|seeing|to|being|everything)\b|\bannoy\w+|\bfrustrating\b|\bi['’]?m (so |really |very )?frustrated\b|\b(so|very|really|too) frustrated\b|\bunacceptable\b|\b(is|are|so|too|really|that['’]?s|it['’]?s|you['’]?re) (terrible|awful|stupid|ridiculous|pathetic)\b",
     r"\bj['’]en ai (marre|assez)\b|\bras[- ]le[- ]bol\b|\bça (me )?saoule\b|\binadmissible\b|\bn['’]importe quoi\b|\bpas normal\b|\bc['’]est (nul|pourri)\b",
-    r"\b(should|must) never (be able to|happen|have happened|put|get us|stop|break|fail|lose|disallow)\b|\bnever again\b|\b(no further|no more) (errors?|bugs?|issues?|failures?|crash\w*)\b|\bnot be tolerated\b|\bwould be tolerated\b|\bshould always be working\b",
+    r"\b(should|must) never (be able to|happen|have happened)\b|\bnever again\b|\b(no further|no more) (errors?|bugs?|issues?|failures?|crash\w*)\b|\bnot be tolerated\b|\bwould be tolerated\b|\bshould always be working\b",
     r"\bi['’]?m (so |really |very )?(scared|worried|afraid|sad|angry|upset|disappointed)\b",
-    r"\b(big|huge|major|serious|critical)\s+(problem|issue|bug|mess)s?\b|\bi(['’]| a)m having (a )?(problem|issue)\b",
+    r"\b(big|huge|major|serious|critical)\s+(problem|issue|bug|mess)s?(?! (for|with|in|of|on) the)\b|\bi(['’]| a)m having (a )?(problem|issue)\b",
     r"\b(laggy|sluggish|(so|too|very|really) slow)\b|\bfeels? (laggy|slow|bad|wrong|broken)\b|\b(isn['’]?t|is not|not) well thought\b",
     r"\bi (already|just|literally) (asked|said|told|mentioned)\b|\bhow many times\b|\bagain and again\b|\b(keep|keeps|kept) (asking|telling|saying|having|failing|crashing|breaking|doing|giving)\b|\bplease just\b|\bjust make (it|things)\b",
-    r"\bpf+f+\b|\bugh+\b|\bargh+\b|\?{3,}|\b\d+ times\b|\bplz\b|\b(i don[’]?t think you|you (didn[’]?t|don[’]?t|did not)) (understood?|get|listen|read)\b|\bstop (fixing|doing|putting|adding|asking|changing)\b|\binfinite(ly)?\b",
+    r"\bpf+f+\b|\bugh+\b|\bargh+\b|\?{3,}|\b\d+ times\b|\bplz\b|\b(i don['’]?t think you|you (didn['’]?t|don['’]?t|did not)) (understand|understood|get|listen|read)\b|\bstop (fixing|doing|putting|adding|asking|changing)\b|\binfinite(ly)?\b",
+    r"\bmerdier\b|\bfoutu\b|\bred flag\b|\bi (really |still )?(do not|don['’]?t)( very much| really)? like\b|\bje (te |t['’])?(l['’])?ai (pas |déjà )?(demand|dit)\w*|\bje t['’]ai pas demand\w+|\bplease get\b.{0,12}\bworking\b|\bget (it )?working\b|\bvery very\b|\bi still (do not|don['’]?t|can['’]?t|cannot)\b|\bstill (ask|say|show)\w*\b|\bstill (very )?(long|slow|laggy)\b",
 ))
 
 
