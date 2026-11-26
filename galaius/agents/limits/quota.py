@@ -462,8 +462,8 @@ class Block(BaseModel):
     reopens_at: float | None = None
     #: What shut it (`ShutReason`): a usage window (`limit`), a model family's pool (`pool`), the vendor's API overloaded
     #: (`overload`: the vendor's, not the login's, so forgetting the login never ends it), a model the vendor refuses this
-    #: account kind (`unsupported`).
-    reason: ShutReason = "limit"
+    #: account kind (`unsupported`: keyed `<model>@<login>`, read by the launch alone, never a shut entry).
+    reason: ShutReason | Literal["unsupported"] = "limit"
 
     @staticmethod
     def length(count: int) -> float:
