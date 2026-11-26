@@ -22,6 +22,7 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Self
 
@@ -1265,8 +1266,11 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                     if step is not None and step.unit.provider == run.provider:
                         run = reg.carry_to(run, step.unit.login)
                     run = reg.begin_resume_locked(run_id) or run
+                    # A turn the table moves to another program starts none here: its successor takes a place of its own, and what holds this
+                    # run's login (the window that shut it) holds nothing of it (an automatic resume waited on that hold for ever).
+                    moving = step is not None and step.unit.provider != run.provider and run_id not in _HANDOFF_REFUSED and isinstance(pending.turn, MessageTurn)
                     # A resumed turn is a run at work like a spawn: it waits for a place on this computer.
-                    with SpawnLine.here().resuming(run) as admitted:
+                    with nullcontext(True) if moving else SpawnLine.here().resuming(run) as admitted:
                         pause = _POLL_SECONDS if admitted else POLL_SECONDS
                         item = claim_next_locked(run_id) if admitted else None
                         if item is not None:
@@ -1280,7 +1284,7 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                                 )
                                 reg.end_resume_locked(run_id)
                                 item = None
-                            elif isinstance(item.turn, MessageTurn) and run_id not in _HANDOFF_REFUSED and step is not None and step.unit.provider != run.provider:
+                            elif moving:
                                 # The table's first unit that can run is another program's: it takes the conversation on (`fallback`).
                                 handoff, item = (item, run, prompt), None
                             else:
