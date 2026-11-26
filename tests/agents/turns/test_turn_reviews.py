@@ -117,6 +117,8 @@ def test_the_open_rows_reach_the_coordinators_next_card_and_the_durable_ones_the
     ((), "it keeps saying slow connection, loading infinitely", True),
     ((), "see:\nTraceback (most recent call last):\n  File \"a.py\", line 3, in run\nRuntimeError: terrible state\n2026-11-24 10:00:01 stupid retry\nthanks", False),   # pasted, not his
     ((), "the agent report says it had a real problem with the build", False),
+    (("I want to collapse the agent tasks back easily and see the shared project fix",), "I will scroll the tasks again, and see them. Dicté à la voix : mots peut-être mal transcrits, déduis le sens voulu.", False),
+    (("I still do not have the background in the app and the scroll is bad",), "The other user still doesn't have the conversations, please look", False),             # « have still »: no ask raised again
     (("what did I ask before about the library? Dictated by voice: words may be misheard; infer what was meant.",),
      "Could you tell me what I asked? Dictated by voice: words may be misheard; infer what was meant.", False),                  # the dictation's own words are no raise
     ((), "the function should never return None; add a test for it", False),                                      # design talk, not him complaining

@@ -133,8 +133,15 @@ class Repeats(BaseModel):
     cues: tuple[str, ...] = ("asked", "said", "told", "again", "still", "yesterday", "already",
                              "demandé", "dit", "déjà", "encore", "toujours", "hier")
 
+    #: Words every message holds (4+ letters, so `letters` keeps them): sharing « have still » or « good what » with an earlier message is no ask raised again.
+    ignored: frozenset[str] = frozenset({
+        "have", "still", "what", "good", "this", "that", "with", "also", "please", "could", "would", "should", "there", "their", "about", "these", "those", "which",
+        "where", "when", "they", "been", "from", "your", "just", "really", "very", "does", "into", "more", "some", "than", "then", "them", "only", "even", "like",
+        "want", "need", "make", "know", "think", "much", "many", "will", "were", "here", "thing", "things", "normal", "again", "avec", "pour", "dans", "mais", "plus",
+        "tout", "tous", "cette", "comme", "faire", "peut", "veux", "dont", "sont", "être", "aussi", "alors"})
+
     def words(self, text: str) -> frozenset[str]:
-        return frozenset(word.lower() for word in re.findall(rf"[^\W\d_]{{{self.letters},}}", text))
+        return frozenset(word for word in (found.lower() for found in re.findall(rf"[^\W\d_]{{{self.letters},}}", text)) if word not in self.ignored)
 
     def matched(self, text: str, earlier: Sequence[str]) -> str | None:
         """The words `text` shares with the earlier message it raises again, quoted; None when it raises none."""
@@ -152,7 +159,7 @@ class Repeats(BaseModel):
 
 #: What the voice input adds to a message (`Dictated by voice: words may be misheard…`): his words are not in it, and its words (« asked », « said », « infer »)
 #: made every dictated message read as an ask raised again.
-_DICTATED = re.compile(r"Dictated by voice:[^\n]*", re.I)
+_DICTATED = re.compile(r"Dict(?:ated by voice|é (?:par|à) la voix)[^\n]*", re.I)
 #: A line he pasted rather than wrote: a trace, a log line with its time, a diff, a shell prompt, JSON. « terrible state » in an exception is no complaint of his.
 _PASTED = re.compile(r"^[ \t]*(?:Traceback \(|File \".*\", line \d+|at [\w.$<>]+ \(|[\w.]*(?:Error|Exception|Warning)\b.*:|\d{4}-\d\d-\d\d[ T]\d\d:\d\d|\[?\d\d:\d\d:\d\d|[+-]{3} |@@ |\$ |>>> |\{\"|[\w.-]+@[\w.-]+:[~/]).*$", re.M)
 
