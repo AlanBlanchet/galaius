@@ -101,7 +101,9 @@ class Watches(Runs):
 
     async def _report_usage(self, socket) -> None:
         """Every `subscription_seconds` while connected, the subscriptions whose usage moved enough
-        (`SubscriptionWatch.report`), marked reported once sent; a pass that fails is tried again next time."""
+        (`SubscriptionWatch.report`), marked reported once sent; a pass that fails is tried again next time. The first report of a
+        connection carries what cannot run here, whole (`SubscriptionWatch.connected`)."""
+        self._subscriptions.connected()
         while True:
             await asyncio.sleep(self.subscription_seconds)
             try:

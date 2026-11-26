@@ -173,3 +173,21 @@ def test_the_provider_going_out_in_the_middle_of_work_moves_the_next_turn_to_the
     cut = reg.get_run("r1").model_copy(update={"status": "failed", "finished_at": time.time(), "stream_digest": digest})
     assert reg.limit_resume_at(cut) == cut.finished_at
     assert reg.get_run("r1").provider == "claude" and datetime.fromtimestamp(cut.finished_at, UTC) > datetime.now(UTC) - timedelta(seconds=5)
+
+
+def test_each_connection_sends_what_cannot_run_here_whole_once_then_only_when_it_changed() -> None:
+    from galaius.agents.limits.subscription_watch import SubscriptionWatch
+
+    quota.forget()
+    watch, now = SubscriptionWatch(), datetime.now(UTC)
+    first = watch.report(now)
+    assert first is not None and first.shut == (), "a server that restarted learns that nothing is shut here"
+    watch.sent(first, now)
+    assert watch.report(now) is None
+    quota.record_refusal("claude", "fable", bench=quota.OVERLOAD_BENCH)
+    changed = watch.report(datetime.now(UTC))
+    assert changed is not None and [entry.reason for entry in changed.shut] == ["overload"]
+    watch.sent(changed, now)
+    watch.connected()
+    again = watch.report(datetime.now(UTC))
+    assert again is not None and again.shut == changed.shut
