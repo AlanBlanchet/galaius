@@ -150,6 +150,18 @@ class Repeats(BaseModel):
         return None
 
 
+#: What the voice input adds to a message (`Dictated by voice: words may be misheard…`): his words are not in it, and its words (« asked », « said », « infer »)
+#: made every dictated message read as an ask raised again.
+_DICTATED = re.compile(r"Dictated by voice:[^\n]*", re.I)
+#: A line he pasted rather than wrote: a trace, a log line with its time, a diff, a shell prompt, JSON. « terrible state » in an exception is no complaint of his.
+_PASTED = re.compile(r"^[ \t]*(?:Traceback \(|File \".*\", line \d+|at [\w.$<>]+ \(|[\w.]*(?:Error|Exception|Warning)\b.*:|\d{4}-\d\d-\d\d[ T]\d\d:\d\d|\[?\d\d:\d\d:\d\d|[+-]{3} |@@ |\$ |>>> |\{\"|[\w.-]+@[\w.-]+:[~/]).*$", re.M)
+
+
+def own_words(text: str) -> str:
+    """`text` without code, what dictation appended and the lines he pasted: what he wrote."""
+    return _PASTED.sub(" ", _DICTATED.sub(" ", re.sub(r"```.*?```|`[^`\n]*`", " ", text, flags=re.S)))
+
+
 class MessageSignal(BaseModel):
     """What in the person's message calls for a review (`TurnReview.signal`): any of `patterns` (regular expressions,
     case-insensitive), at least `exclamations` « ! » in his own words (never inside code, nor `!=` or `![`), or an ask
@@ -171,7 +183,8 @@ class MessageSignal(BaseModel):
     def matched(self, text: str, earlier: Sequence[str] = ()) -> str | None:
         """What in `text` calls for the review, quoted (the brief names it), `earlier` being what the person said before
         in the conversation; None when nothing does."""
-        prose = re.sub(r"```.*?```|`[^`\n]*`", " ", text, flags=re.S)
+        prose = own_words(text)
+        earlier = [own_words(other) for other in earlier]
         for pattern in self.patterns:
             if (found := re.search(pattern, prose, re.I)) is not None:
                 return f"« {found.group(0)} »"
@@ -201,13 +214,14 @@ FRUSTRATION = MessageSignal(exclamations=2, repeats=Repeats(), patterns=(
     r"\b(wtf|bullshit|shit|shitty|merde|putain|bordel|connard\w*|fuck\w*|f\*+k\w*|damn|crap)\b",
     # What he writes when it is not a clear case (2026-11-24: « big problem UX wise », « No further errors would be tolerated », « Fuck you, it should always be
     # working », « I'm fed up » read as none): exasperation, fatigue, fear, a problem named big, a demand that it never happens again, a slow feel.
-    r"\bjesus( christ)?\b|\bwhat the (hell|heck)\b|\bfreaking\b|\bfed up\b|\b(sick|tired) of\b|\bi hate\b|\bannoy\w+|\bfrustrat\w+|\bridiculous\b|\bunacceptable\b|\bstupid\b|\bpathetic\b|\bterrible\b|\bawful\b",
+    r"\bjesus( christ)?\b|\bwhat the (hell|heck)\b|\bfreaking\b|\bfed up\b|\b(sick|tired) of\b|\bi hate\b|\bannoy\w+|\bfrustrat\w+|\bunacceptable\b|\b(is|are|so|too|really|that['’]?s|it['’]?s|you['’]?re) (terrible|awful|stupid|ridiculous|pathetic)\b",
     r"\bj['’]en ai (marre|assez)\b|\bras[- ]le[- ]bol\b|\bça (me )?saoule\b|\binadmissible\b|\bn['’]importe quoi\b|\bpas normal\b|\bc['’]est (nul|pourri)\b",
     r"\b(should|must) never (be able to|happen|have happened|put|get us|stop|break|fail|lose|disallow)\b|\bnever again\b|\b(no further|no more) (errors?|bugs?|issues?|failures?|crash\w*)\b|\bnot be tolerated\b|\bwould be tolerated\b|\bshould always be working\b",
     r"\bi['’]?m (so |really |very )?(scared|worried|afraid|sad|angry|upset|disappointed)\b",
-    r"\b(big|huge|major|serious|real|critical|terrible|horrible|awful)\s+(problem|issue|bug|mess)s?\b|\bi(['’]| a)m having (a )?(problem|issue)\b",
+    r"\b(big|huge|major|serious|critical)\s+(problem|issue|bug|mess)s?\b|\bi(['’]| a)m having (a )?(problem|issue)\b",
     r"\b(laggy|sluggish|(so|too|very|really) slow)\b|\bfeels? (laggy|slow|bad|wrong|broken)\b|\b(isn['’]?t|is not|not) well thought\b",
-    r"\bi (already|just|literally) (asked|said|told|mentioned)\b|\bhow many times\b|\bagain and again\b|\bkeep (asking|telling|saying)\b|\bplease just\b|\bjust make (it|things)\b",
+    r"\bi (already|just|literally) (asked|said|told|mentioned)\b|\bhow many times\b|\bagain and again\b|\b(keep|keeps|kept) (asking|telling|saying|having|failing|crashing|breaking|doing|giving)\b|\bplease just\b|\bjust make (it|things)\b",
+    r"\bpf+f+\b|\bugh+\b|\bargh+\b|\?{3,}|\b\d+ times\b|\bplz\b|\b(i don[’]?t think you|you (didn[’]?t|don[’]?t|did not)) (understood?|get|listen|read)\b|\bstop (fixing|doing|putting|adding|asking|changing)\b|\binfinite(ly)?\b",
 ))
 
 

@@ -108,6 +108,17 @@ def test_the_open_rows_reach_the_coordinators_next_card_and_the_durable_ones_the
     ((), "Please think logically.... I'm scared by all the vocabulary and ugly things you're ready to do to make things work.", True),
     ((), "Je n\u2019en peux plus, c\u2019est nul, j\u2019en ai marre", True),
     ((), "we should never be able to put outselves in these situations...", True),
+    # the tester's misses and false alarms (2026-11-26): what he writes without a curse, and what is not his
+    ((), "hein ? Pourquoi tu me sors un mail ??? ", True),
+    ((), "asked for like 50 times", True),
+    ((), "plz fix, says this pc is offline in galaius", True),
+    ((), "I don\u2019t think you understood what I want", True),
+    ((), "stop fixing limits everywhere", True),
+    ((), "it keeps saying slow connection, loading infinitely", True),
+    ((), "see:\nTraceback (most recent call last):\n  File \"a.py\", line 3, in run\nRuntimeError: terrible state\n2026-11-24 10:00:01 stupid retry\nthanks", False),   # pasted, not his
+    ((), "the agent report says it had a real problem with the build", False),
+    (("what did I ask before about the library? Dictated by voice: words may be misheard; infer what was meant.",),
+     "Could you tell me what I asked? Dictated by voice: words may be misheard; infer what was meant.", False),                  # the dictation's own words are no raise
     ((), "the function should never return None; add a test for it", False),                                      # design talk, not him complaining
     ((), "Go ahead and see all the flaws of the current system, in the meantime, i will look into the code", False),
     ((), "Could you also check if we are correctly using a form of intelligence / cost graph to know what model to automatically select ?", False),

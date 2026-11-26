@@ -6,7 +6,9 @@ session galaius started never read as a copy. This module reads those rows with 
 marks as quoted (a launch brief an agent was handed, a `[Galaius: …]` block) or a harness notice is no word of his. The index lags the files by what has not
 been read yet: `refresh_index` brings it up to date for a bounded time and says how much is still pending."""
 
+import hashlib
 import json
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -83,10 +85,53 @@ def _moment(text: object) -> float | None:
         return None
 
 
+CARD_CACHE = ".card-answers.cache"
+#: What the cache holds of a session file before the offset it was read to: this many bytes, hashed, say the file only grew since.
+CACHE_TAIL = 64
+
+
+def _answer_text(value: object) -> str:
+    """One answer of a question card as words: a string; a list of picked options (several allowed) joined; an object (an answer with notes) by its `answer` / `text` /
+    `label`. A decline (`User declined to answer`) is no word of his."""
+    if isinstance(value, dict):
+        value = next((value[key] for key in ("answer", "text", "label", "value") if key in value), "")
+    if isinstance(value, (list, tuple)):
+        value = ", ".join(str(item) for item in value if isinstance(item, (str, int, float)))
+    text = value.strip() if isinstance(value, str) else ""
+    return "" if text.lower().startswith("user declined") else text
+
+
+def _read_answers(path: Path, start: int, secrets: tuple[str, ...], mask) -> tuple[int, list[list]]:
+    """The answers a session file holds from byte `start` on, as [at, session, text, cwd] lists, and the offset after its last whole line."""
+    found: list[list] = []
+    offset = start
+    with path.open("rb") as lines:
+        lines.seek(start)
+        for line in lines:
+            if not line.endswith(b"\n"):
+                break   # a line still being written: read once it is whole
+            offset += len(line)
+            if CARD_ANSWER not in line:
+                continue
+            try:
+                turn = json.loads(line)
+            except ValueError:
+                continue
+            result = turn.get("toolUseResult") if isinstance(turn, dict) else None
+            if (turn.get("type") != "user" or turn.get("isSidechain") or turn.get("entrypoint") not in TYPED_ORIGINS or not isinstance(result, dict)
+                    or not isinstance(result.get("answers"), dict) or (at := _moment(turn.get("timestamp"))) is None):
+                continue
+            for value in result["answers"].values():
+                if text := _answer_text(value):
+                    found.append([at, str(turn.get("sessionId") or path.stem), mask(text, secrets), str(turn.get("cwd") or "")])
+    return offset, found
+
+
 def card_answers(folder: Path, since: float) -> list[Typed]:
     """His answers to question cards (`AskUserQuestion`) in Claude Code sessions since `since`: the transcript keeps them as a tool result
     (`toolUseResult.answers`, question -> answer), which the index never reads (it keeps a tool call's lead only). Files read are Claude's saved sessions
-    changed since `since` (`ConversationIndex.files`); a line is looked at only when it holds the answer marker; credentials are masked as the index masks them.
+    changed since `since` (`ConversationIndex.files`), each from where the last call stopped (a cache of offsets and answers beside the registry: a session
+    file runs to hundreds of megabytes, and only its end changes); a line is looked at only when it holds the answer marker; credentials are masked as the index masks them.
     Imported here only: the registry's import costs seconds the other verbs never pay."""
     from galaius.agents.conversations import ConversationIndex
 
@@ -96,27 +141,42 @@ def card_answers(folder: Path, since: float) -> list[Typed]:
         secrets = index.secrets
     except (OSError, ValueError):
         return []
+    cache_path = folder / CARD_CACHE
+    try:
+        loaded = json.loads(cache_path.read_text(encoding="utf-8"))
+        kept = loaded.get("files", {}) if isinstance(loaded, dict) and loaded.get("version") == 1 else {}
+    except (OSError, ValueError):
+        kept = {}
+    changed = False
     answered: list[Typed] = []
     for found in files:
         try:
-            with found.path.open("rb") as lines:
-                for line in lines:
-                    if CARD_ANSWER not in line:
-                        continue
-                    try:
-                        turn = json.loads(line)
-                    except ValueError:
-                        continue
-                    result = turn.get("toolUseResult") if isinstance(turn, dict) else None
-                    if (turn.get("type") != "user" or turn.get("isSidechain") or turn.get("entrypoint") not in TYPED_ORIGINS or not isinstance(result, dict)
-                            or not isinstance(result.get("answers"), dict) or (at := _moment(turn.get("timestamp"))) is None or at < since):
-                        continue
-                    for answer in result["answers"].values():
-                        if isinstance(answer, str) and answer.strip():
-                            answered.append(Typed(at=at, conversation=str(turn.get("sessionId") or found.conversation), to_run="", role="you",
-                                                  text=ConversationIndex.masked(answer.strip(), secrets), source="claude", project=Path(str(turn.get("cwd") or "")).name, kind="answer"))
+            entry = kept.get(str(found.path))
+            start, before = 0, []
+            if isinstance(entry, dict) and isinstance(entry.get("offset"), int) and 0 < entry["offset"] <= found.size and isinstance(entry.get("answers"), list):
+                with found.path.open("rb") as handle:
+                    handle.seek(max(0, entry["offset"] - CACHE_TAIL))
+                    if hashlib.sha256(handle.read(min(entry["offset"], CACHE_TAIL))).hexdigest() == entry.get("tail"):
+                        start, before = entry["offset"], entry["answers"]
+            if start != found.size or not before and start == 0:
+                offset, fresh = _read_answers(found.path, start, secrets, ConversationIndex.masked)
+                with found.path.open("rb") as handle:
+                    handle.seek(max(0, offset - CACHE_TAIL))
+                    tail = hashlib.sha256(handle.read(min(offset, CACHE_TAIL))).hexdigest()
+                before = [*before, *fresh]
+                kept[str(found.path)] = {"offset": offset, "tail": tail, "answers": before}
+                changed = True
         except OSError:
             continue
+        answered += [Typed(at=at, conversation=conversation, to_run="", role="you", text=text, source="claude", project=Path(cwd).name, kind="answer")
+                     for at, conversation, text, cwd in before if at >= since]
+    if changed:
+        try:
+            temporary = cache_path.with_name(f"{CARD_CACHE}.{os.getpid()}.tmp")
+            temporary.write_text(json.dumps({"version": 1, "files": kept}, separators=(",", ":")), encoding="utf-8")
+            os.replace(temporary, cache_path)
+        except OSError:
+            pass
     return answered
 
 

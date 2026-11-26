@@ -758,3 +758,28 @@ def test_the_origins_a_card_answer_is_read_from_are_the_providers_typed_ones() -
     from galaius.agents.history import editor_words
     from galaius.agents.providers import ClaudeCodeProvider
     assert editor_words.TYPED_ORIGINS == ClaudeCodeProvider.typed_origins
+
+
+def test_card_answers_of_every_shape_are_read_a_decline_is_not_and_a_session_is_read_again_only_from_where_it_grew(folder: Path, monkeypatch, capsys) -> None:
+    from galaius.agents.history import editor_words
+    home = folder.parent / "claude-home"
+    monkeypatch.setenv("GALAIUS_AGENTS_DIR", str(folder))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
+    session = "99999999-0000-4000-8000-000000000041"
+    _card_answer(home, session, {"Which models?": ["Opus", "Sonnet"]}, seconds_ago=900)                       # several options picked
+    _card_answer(home, session, {"Why?": {"answer": "because it is slow", "notes": "n"}}, seconds_ago=800)     # an answer with notes
+    _card_answer(home, session, {"Ok?": "User declined to answer questions"}, seconds_ago=700)                 # a decline
+    _card_answer(home, session, {"Plain?": "yes"}, seconds_ago=600)
+    cli.messages(since="2h", source="editor", json_out=True)
+    first = [m["text"] for m in json.loads(capsys.readouterr().out)["messages"]]
+    assert first == ["Opus, Sonnet", "because it is slow", "yes"], first
+    reads: list[int] = []
+    real = editor_words._read_answers
+    monkeypatch.setattr(editor_words, "_read_answers", lambda path, start, *rest: (reads.append(start), real(path, start, *rest))[1])
+    cli.messages(since="2h", source="editor", json_out=True)
+    capsys.readouterr()
+    assert reads == [], "an unchanged session file is not read again"
+    _card_answer(home, session, {"More?": "one more"}, seconds_ago=60)
+    cli.messages(since="2h", source="editor", json_out=True)
+    texts = [m["text"] for m in json.loads(capsys.readouterr().out)["messages"]]
+    assert texts == [*first, "one more"] and len(reads) == 1 and reads[0] > 0, (texts, reads)
