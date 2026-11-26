@@ -141,3 +141,20 @@ async def test_every_launched_agent_goes_through_the_ceiling(tmp_path, monkeypat
     await asyncio.wait_for(run.wait(), timeout=30)
 
     assert wrapped and wrapped[0][0] == sys.executable
+
+
+@pytest.mark.parametrize(("probe_registry", "limits_set"), [(None, True), ("/tmp/probe-agents", False)])
+def test_a_probe_registry_never_rewrites_the_persons_slice_limits(monkeypatch, probe_registry, limits_set):
+    """2026-11-24 22:13: a test PC's launch applied its own defaults (45 % cap, no soft limit) over the person's 40 % / 30 %
+    while his agents ran. A process in a probe registry starts the slice and sets none of its limits."""
+    calls = []
+    monkeypatch.setattr(ceiling_module.subprocess, "run", lambda argv, **kwargs: calls.append(argv))
+    if probe_registry is None:
+        monkeypatch.delenv("GALAIUS_AGENTS_DIR", raising=False)
+    else:
+        monkeypatch.setenv("GALAIUS_AGENTS_DIR", probe_registry)
+
+    ceiling_module._prepare_slice("/usr/bin/systemctl", CEILING)
+
+    assert any("start" in call for call in calls)
+    assert any("set-property" in call for call in calls) is limits_set

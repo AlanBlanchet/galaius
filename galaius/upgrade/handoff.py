@@ -88,8 +88,11 @@ class Handoff(BaseModel):
         """`own` (an install line run again, uv's tool install) is a newer build than the active
         runtime, which a person did not choose, and not older than the newest this computer ran: it
         becomes the active one. Otherwise the reinstall would keep running the older active runtime's
-        code, a broken one included, which then never upgrades either (its supervisor no longer starts)."""
+        code, a broken one included, which then never upgrades either (its supervisor no longer starts). Never a runtime a store installed
+        (it has a receipt): its install line is that store's, so a runtime of another store, a test build, or one rolled back stays out of this pointer."""
         mine, theirs, pointer = own.order(), active.order(), self.store.pointer()
+        if own.receipt() is not None:   # a runtime a store installed is promoted by that store's own activation, never by being run: a test build in another store reached this one that way
+            return False
         if mine is None or theirs is None or pointer.chosen or not theirs < mine:
             return False
         return pointer.floor is None or pointer.floor <= mine

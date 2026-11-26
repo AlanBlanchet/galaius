@@ -51,49 +51,69 @@ def _per_vendor(ranking: Ranking, policy: Policy) -> dict[str, str | None]:
 
 
 @agents_app.command(name="criterion")
-def agents_criterion(criterion: str, json_out: bool = False) -> None:
-    """Resolve current model: bare benchmarks rank; comparison terms filter.
+def agents_criterion(criterion: str, json_out: bool = False, role: str | None = None) -> None:
+    """Resolve what a criterion runs as: the first of the ONE ranked list a spawn walks.
 
     "We shouldn't write a model, but resolve a model from the constraints." A pinned id freezes
     when typed; a criterion is that claim written down instead, re-read every time it's asked.
-    Nothing could ASK one what it currently picks, so every surface that helped choose could only
-    offer a pinned id — the thing criteria exist to replace.
 
-    Refuses loudly rather than falling back: silently resolving to some other model is worse than
-    none — it looks like it worked.
+    The answer is `rank`'s — the call `agents policy` and every spawn make: the models a switched-on CLI can
+    run, the provider terms (`provider ~ claude`) applied, ordered by the cost relation of `--role` (none: the
+    default relation), a model the vendor refused out of it. A rule this galaius cannot rank says so and names
+    no model: silently answering with some other model looks like it worked.
     """
+    answer: dict[str, object] = {"criterion": criterion, "model": None, "role": role}
+
+    def refuse(why: str) -> None:
+        if json_out:
+            print(json.dumps({**answer, "why": why}))
+            return
+        print(f"nothing resolves {criterion!r}: {why}")
+        raise SystemExit(1)
+
     try:
         parsed = Criteria.parse(criterion)
     except CriteriaError as err:
         if json_out:
-            print(json.dumps({"criterion": criterion, "model": None, "why": str(err)}))
+            print(json.dumps({**answer, "why": str(err)}))
             return
         print(f"that criterion cannot be evaluated: {err}")
         raise SystemExit(1)
-    chosen = parsed.choose()
-    why = parsed.explain()
-    if json_out:
-        policy = Policy.load()
-        try:
-            ranking = rank(criterion, dict(os.environ), providers=list(agent_providers.PROVIDERS.values()), policy=policy)
-        except ModelUnavailable:
-            ranking = Ranking(candidates=())
-        print(json.dumps({
-            "criterion": criterion,
-            "model": chosen.id if chosen else None,
-            "score": chosen.intelligence_score if chosen else None,
-            "competence": chosen.competence() if chosen else None,
-            # What each switched-on CLI would run: the answer a spawn will actually get.
-            "providers": _per_vendor(ranking, policy),
-            "why": why,
-        }))
+    if not is_criterion(criterion):
+        # A spawn reads this text as a model id, so no ranking is made of it (`is_criterion`'s shape test, the spawn's own).
+        refuse("a spawn reads this as a model id, not a criterion: add a bar or a measure (`aa.intelligence and provider ~ claude`)")
         return
-    if chosen is None:
-        print(f"nothing clears {parsed} right now.\n{why}")
-        raise SystemExit(1)
-    print(f"{parsed}  →  {chosen.id}")
-    print(f"  {chosen.competence()}")
-    print(f"  {why}")
+    policy = Policy.load()
+    try:
+        ranking = rank(criterion, dict(os.environ), providers=list(agent_providers.PROVIDERS.values()),
+                       weights=policy.weights_for(role) if role else "", role=role, policy=policy)
+    except ModelUnavailable as err:
+        refuse(str(err))
+        return
+    first = ranking.candidates[0]
+    row = Model.named(first.catalog_id) if first.catalog_id else Model.by_id(first.model)
+    valued = next((item for item in ranking.valued if item.model.catalog_id == first.catalog_id), None)
+    answer.update({
+        "model": first.model,
+        "provider": first.provider,
+        "score": valued.score if valued is not None else (row.intelligence_score if row is not None else None),
+        "competence": row.competence() if row is not None else None,
+        "ranked": [candidate.model_dump() for candidate in ranking.candidates[:3]],
+        "valued": [{"model": item.model.id, "score": item.score, "cost": round(item.cost, 4), "value": round(item.value, 2)}
+                   for item in ranking.valued[:3]],
+        # What each switched-on CLI would run: the answer a spawn will actually get.
+        "providers": _per_vendor(ranking, policy),
+        "why": f"{len(ranking.candidates)} candidate(s) clear {parsed}; first of the list a spawn walks is {first.provider}/{first.model}",
+    })
+    if json_out:
+        print(json.dumps(answer))
+        return
+    print(f"{parsed}  →  {first.provider}/{first.model}")
+    if row is not None:
+        print(f"  {row.competence()}")
+    for item in ranking.valued[:3]:
+        print(f"  {item}")
+    print(f"  {answer['why']}")
 
 
 @agents_app.command(name="models")

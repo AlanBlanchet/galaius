@@ -330,7 +330,7 @@ def _queue_message(
     if refused := turn.refusal(message, provider):
         return Delivery(state="error", text=f"ERROR: {refused}", run_id=run.run_id)
     with ExitStack() as locks:
-        for locked_run in sorted({run.run_id, speaker}):
+        for locked_run in sorted({run.run_id, speaker} - ({speaker} if reg.is_session_sender(speaker) else set())):  # a session outside the runs has no record to lock (and `:` is no file name on Windows)
             locks.enter_context(reg.record_lock(locked_run))
         run = reg.get_run(run.run_id)
         if run is None:
@@ -560,12 +560,17 @@ UNOWNED = ("this command runs in a unit systemd-run started, outside every run: 
 
 
 def sender_id(environment: Mapping[str, str] | None = None) -> str:
-    """Who a message from this caller is from: the run it acts as (`Caller`: its run scope first), else the person; a
-    process `systemd-run` started is neither (`ValueError`, `UNOWNED`)."""
-    if (run := Caller.environ(environment).get("GALAIUS_RUN_ID")) is not None and run:
+    """Who a message from this caller is from: the run it acts as (`Caller`: its run scope first), else an agent CLI's
+    session outside galaius's runs (`reg.session_sender`: a coordinator in an editor writing through `galaius agents send`
+    is never the person), else the person; a process `systemd-run` started is none of these (`ValueError`, `UNOWNED`)."""
+    environ = Caller.environ(environment)
+    if (run := environ.get("GALAIUS_RUN_ID")) is not None and run:
         return run
     if environment is None and Caller.current().unowned():
         raise ValueError(UNOWNED)
+    # Read from the process when it is this one's own (`Asker`: an agent CLI among its ancestors), else from the environment named.
+    if (Asker.here().kind == "anonymous") if environment is None else any(environ.get(name) for name in Caller.THREAD):
+        return reg.session_sender(next((value for name in Caller.THREAD if (value := environ.get(name))), ""))
     return reg.PERSON_SENDER
 
 

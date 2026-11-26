@@ -1,6 +1,7 @@
 """`galaius run <id>` (`galaius.agents.run_describe`): a run read whole from its record, in a fake registry folder written the way the registry writes it."""
 
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -125,8 +126,8 @@ def test_the_command_errors_with_exit_2_for_an_unknown_id_and_reads_its_own_run_
 # --- is its slice live -------------------------------------------------------------------------------------------------
 
 
-def git(repo: Path, *args: str) -> str:
-    return subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", *args], check=True, capture_output=True, text=True).stdout.strip()
+def git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
+    return subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", *args], check=True, capture_output=True, text=True, env={**os.environ, **(env or {})}).stdout.strip()
 
 
 @pytest.fixture
@@ -135,11 +136,14 @@ def repo(tmp_path: Path) -> dict[str, str]:
     folder.mkdir()
     git(folder, "init", "-q", "-b", "main")
     shas = {}
-    for name in ("first", "live", "later"):
+    for stamp, name in enumerate(("first", "live", "later")):
         (folder / "f").write_text(name)
         git(folder, "add", "f")
-        git(folder, "commit", "-q", "-m", name)
+        # fixed dates make the hashes fixed: a clock-dependent hash whose first 9 characters are all digits (1 in 70) is no commit shape
+        when = f"2026-01-0{stamp + 1}T00:00:00+0000"
+        git(folder, "commit", "-q", "-m", name, "--date", when, env={"GIT_COMMITTER_DATE": when})
         shas[name] = git(folder, "rev-parse", "HEAD")
+        assert run_describe._COMMIT.fullmatch(shas[name][:9]), f"{name} {shas[name][:9]} has no letter: pick another fixed date"
     return {"cwd": str(folder), **shas}
 
 

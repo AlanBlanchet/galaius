@@ -40,6 +40,15 @@ from galaius.upgrade.store import Runtime, RuntimeStore
 _log = logging.getLogger("galaius.shared")
 
 
+def listed(store: RuntimeStore, runtime: Runtime, pid: int) -> None:
+    """Record that `pid` runs `runtime` (`RuntimeStore.register`). Bookkeeping only: a store folder that cannot be written (a full disk) is
+    said and never costs a client its tools, nor stops the server."""
+    try:
+        store.register(runtime, pid)
+    except OSError as error:
+        _log.warning("could not list process %d as running %s: %s", pid, runtime.path.name, error)
+
+
 class SharedServerSettings(BaseModel):
     """How long a shared server waits; `GALAIUS_SHARED_MCP_<FIELD>` overrides one (tests)."""
 
@@ -67,8 +76,8 @@ class Connection:
     """One relay's connection: its MCP session bound to its caller, and what of it is in flight
     (requests either way not answered yet), which decides when it may move."""
 
-    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        self.reader, self.writer = reader, writer
+    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, store: RuntimeStore) -> None:
+        self.reader, self.writer, self.store = reader, writer, store
         self.in_flight: set[str] = set()
         self.moving = False
         self.inbound: anyio.abc.ObjectSendStream | None = None
@@ -89,17 +98,24 @@ class Connection:
         own = _auto_session_names.get(self)
         return (own is not None and _sessions.peek(own) is not None) or browser_sandbox._sandbox is not None
 
-    async def hello(self, seconds: float) -> Caller:
+    async def hello(self, seconds: float) -> tuple[Caller, Path | None]:
+        """Who calls, and the runtime the relay runs from (None from a relay that names none)."""
         raw = await asyncio.wait_for(self.reader.readline(), seconds)
         if not raw:
             raise EOFError  # a look whether this server answers (`SharedServer.follow_active`), not a client
         body = json.loads(raw)
         if body.get("method") != HELLO:
             raise ValueError(f"expected {HELLO}, got {body.get('method')!r}")
-        return Caller.model_validate(body["params"])
+        runtime = body["params"].get("runtime")
+        return Caller.model_validate(body["params"]), (Path(runtime) if isinstance(runtime, str) and runtime else None)
 
     async def serve(self, settings: SharedServerSettings) -> None:
-        caller = await self.hello(settings.hello_seconds)
+        caller, runtime = await self.hello(settings.hello_seconds)
+        # Its interpreter stays in that runtime until the client ends, which a relay that never moves (it asks nothing of galaius) would
+        # otherwise hide from a prune off Linux. A relay of an older build names none: read from its command line.
+        found = Runtime(path=runtime) if runtime is not None else await asyncio.to_thread(self.store.runtime_of, caller.pid)
+        if found is not None:
+            listed(self.store, found, caller.pid)
         token = CONNECTION.set(self)
         try:
             with caller.bound():
@@ -182,6 +198,7 @@ class SharedServer:
             os.chmod(self.socket, 0o600)
             bound = self.socket.stat().st_ino
             _log.info("galaius MCP server for %s listening on %s", Runtime.own().label(), self.socket)
+            listed(self.store, Runtime.own(), os.getpid())  # as every supervised worker: what garbage collection and the « in use » check read where there is no /proc
             try:
                 while not self.done():
                     await asyncio.sleep(self.settings.tick_seconds)
@@ -231,7 +248,7 @@ class SharedServer:
             await connection.move(endpoint)
 
     async def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        connection = Connection(reader, writer)
+        connection = Connection(reader, writer, self.store)
         self.connections.add(connection)
         try:
             await connection.serve(self.settings)

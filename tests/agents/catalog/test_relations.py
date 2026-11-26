@@ -348,3 +348,18 @@ def test_the_turn_card_names_the_project_of_each_run_it_lists(two_projects):
     assert relations.card(unread).splitlines()[1].startswith(f"You are {ROLES['eng']}-{unread.run_id[:8]} (project: {site}).")
     tags = re.findall(r"\b[a-z][a-z-]*-[0-9a-f]{8}\b", card)
     assert len(tags) >= 3 and len(tags) == len(re.findall(r"\b[a-z][a-z-]*-[0-9a-f]{8} \(project: ", card)), card   # each run it lists
+
+
+@pytest.mark.parametrize("parent, refused", [
+    pytest.param("lead", False, id="the-asking-run-itself"),
+    pytest.param("eng", False, id="a-run-of-its-own-conversation"),
+    pytest.param("coordinator", True, id="another-conversations-run-would-take-the-report-and-the-briefer-hear-nothing"),
+])
+def test_a_spawn_never_names_a_parent_outside_the_conversation_of_the_run_asking(team, monkeypatch, parent, refused):
+    """2026-11-24: `--parent-run-id` of another conversation sent the child's report there and the briefing session heard
+    nothing for 93 min (third time: 10-16, 11-20)."""
+    monkeypatch.setattr(messaging, "asking_run", lambda: IDS["lead"])
+    said = Spawn(task="t", cwd=".", agent="librarian", parent_run_id=IDS[parent]).naming_refusal()
+    assert (said is not None) is refused
+    if refused:
+        assert "Spawn it without --parent-run-id" in said

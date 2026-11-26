@@ -990,6 +990,35 @@ def test_options_for_a_role_ask_the_pc_what_its_rule_picks(base: Path, tmp_path:
     assert [(item.provider, item.model) for item in _answer(agents, _request("options", role="source-validator")).models] == [("claude", "claude-sonnet-5")]
 
 
+def test_a_roles_models_are_the_first_of_the_one_list_a_start_walks(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The box's model is the start's first candidate: ONE ranking over every CLI (a rank only compares inside one list: a list
+    per CLI put each CLI's best at rank 0 and the CLI listed first won — box « Codex », start « Claude »), each CLI's first
+    candidate in that order, a CLI refusing the role's tool rules left out."""
+    from types import SimpleNamespace
+    from galaius.machine import agents as module
+
+    asked: list[list[str]] = []
+    def provider(name: str, refuses: bool = False):
+        def validate(*_args, **_kwargs):
+            if refuses:
+                raise ValueError("tools")
+        return SimpleNamespace(name=name, available=lambda: True, validate_tool_policy=validate)
+    cli = [provider("codex"), provider("claude"), provider("gemini", refuses=True)]
+    walk = [SimpleNamespace(provider=name, model=model, rank=rank) for name, model, rank in
+            (("claude", "claude-haiku-5-5", 4), ("gemini", "gemini-x", 5), ("codex", "gpt-5-nano", 6), ("claude", "claude-sonnet-5-5", 7))]
+    policy = SimpleNamespace(criterion_for=lambda role: "provider ~ claude and price.in < 2", provider_active=lambda name: True, weights_for=lambda role: "",
+                             tools_for=lambda role: (), accepts_coarse_tool_policy=lambda role, name: False)
+    def rank(criterion, environment, *, providers, **_kwargs):
+        asked.append([item.name for item in providers])
+        return tuple(walk)
+    monkeypatch.setattr(module, "load_policy", lambda: policy)
+    monkeypatch.setattr(module, "program_providers", lambda: cli)
+    monkeypatch.setattr(module, "rank_candidates", rank)
+    models = _agents(base, tmp_path).role_models("main")
+    assert asked == [["codex", "claude", "gemini"]]  # one ranking, not one per CLI
+    assert [(item.provider, item.model) for item in models] == [("claude", "claude-haiku-5-5"), ("codex", "gpt-5-nano")]
+
+
 def test_settings_survive_a_bad_answer_and_no_pc_takes_a_program_switch(base: Path, tmp_path: Path) -> None:
     """A PC whose model read fails still answers with its providers, and says why the models are missing. Programs are
     switched for every PC of the workspace (its agent catalog, owner 2026-11-16 « the rules should be online, not local ! »):
@@ -1585,13 +1614,22 @@ def test_a_copy_of_a_folder_with_no_file_arrives_as_an_empty_folder(tmp_path: Pa
 
 _REVOKED = {"type": "result", "subtype": "success", "is_error": True, "api_error_status": 401, "session_id": "SID",
             "result": "Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator."}
-_LIMITED = {"type": "result", "is_error": True, "session_id": "SID", "result": "You've hit your session limit · resets 5:20pm (Europe/Paris)"}
+
+
+def _limited(at: float) -> dict:
+    """A session limit heard at `at` that reopens an hour later, spoken in UTC: the reset is past whatever the hour of the day the test runs
+    (a fixed « 5:20pm » was a day-time lottery once the cut was only hours old)."""
+    reset = datetime.fromtimestamp(at + 3600, UTC)
+    return {"type": "result", "is_error": True, "session_id": "SID",
+            "result": f"You've hit your session limit · resets {reset.hour % 12 or 12}:{reset.minute:02d}{'am' if reset.hour < 12 else 'pm'} (UTC)"}
+
+
 _BROKEN = {"type": "result", "is_error": True, "session_id": "SID", "result": "Error: the build failed"}
 
 
 def _cut(run_id: str, kind: str, *, pid: int, at: float) -> None:
     """Run `run_id` cut by `kind` as its PC records it, ended at `at`."""
-    stream = {"login_lost": _REVOKED, "usage_limit": _LIMITED, "error": _BROKEN}.get(kind)
+    stream = {"login_lost": _REVOKED, "usage_limit": _limited(at), "error": _BROKEN}.get(kind)
     reg.raw_events_path(run_id).write_text(json.dumps(stream) + "\n" if stream else "")
     exit_code = {"killed": -9, "sigterm": -15, "stopped": -15}.get(kind, 1)
     if kind not in ("process_gone", "out_of_memory"):
@@ -1614,12 +1652,12 @@ def _cut(run_id: str, kind: str, *, pid: int, at: float) -> None:
 def test_a_tree_any_cut_stopped_resumes_whole_by_itself_deepest_first_once(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
                                                                            kind: str, resumes: str, sender: str) -> None:
     """Owner 2026-10-19 « I'm having to click on the continue the 4 stopped agents manually », 2026-10-20 « Shouldn't things
-    continue on their own ? »: a 3-level tree any cut stopped (a day ago: no window lapses) resumes by itself, each agent
+    continue on their own ? »: a 3-level tree any cut stopped (five hours ago, inside `CUT_RESUME_WINDOW`: no window lapses) resumes by itself, each agent
     before its launcher, the launcher's brief naming its agents; a lost login waits for its sign-in alone. Its sibling
     that failed on its own error, the one he stopped, and a cut from before this PC resumed cuts stay as they are; a
     second cut by the same cause right after the resume is left to him."""
     reg.cut_resume_since(now=1000.0)
-    day_ago = time.time() - 86400
+    day_ago = time.time() - 5 * 3600
     tree = (("tree-main", None, kind), ("tree-lead", "tree-main", kind), ("tree-maker", "tree-lead", kind),
             ("tree-broken", "tree-lead", "error"), ("tree-his", "tree-lead", "stopped"), ("tree-old", "tree-lead", "process_gone"))
     for pid, (run_id, parent, cut) in enumerate(tree, start=431):
@@ -1672,7 +1710,7 @@ def test_a_run_its_login_lost_resumes_on_any_login_of_its_account_signed_in_here
     run_id, cwd = "cut-login", base / "project"
     reg.register(run_id=run_id, pid=431, provider="claude", name="w", agent="app-engineer", model="claude-opus-5-5", cwd=str(cwd), login=ACCOUNT,
                  subscription=RunSubscription(subscription_id=dead.id, limits=SubscriptionLimits(weekly_percent=80)))
-    _cut(run_id, "login_lost", pid=431, at=time.time() - 86400)
+    _cut(run_id, "login_lost", pid=431, at=time.time() - 5 * 3600)
     session = ClaudeCodeProvider().session_files(dead.folder, cwd, reg.get_run(run_id).provider_session_id or run_id)[0]
     session.parent.mkdir(parents=True)
     session.write_text('{"type": "user"}\n')

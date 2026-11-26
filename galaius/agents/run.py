@@ -298,7 +298,7 @@ def _ranked_candidates(
             for rank, row in enumerate(named) for p in universe if p.name in allowed and runs(p, row)
         )
         if served:
-            return _apply_provider_constraint(criteria, served), ()
+            return _apply_provider_constraint(criteria, _without_withdrawn(served)), ()
     candidates = tuple(
         reg.LaunchCandidate(provider=p.name, model=launched(p, row),
                             catalog_id=row.catalog_id, rank=rank)
@@ -310,7 +310,16 @@ def _ranked_candidates(
         raise ModelUnavailable(
             sentence=f"no model the {names} CLIs can run clears {criteria}:\n{criteria.explain(True, pool)}"
         )
-    return _apply_provider_constraint(criteria, candidates), tuple(valued)
+    return _apply_provider_constraint(criteria, _without_withdrawn(candidates)), tuple(valued)
+
+
+def _without_withdrawn(candidates: tuple[reg.LaunchCandidate, ...]) -> tuple[reg.LaunchCandidate, ...]:
+    """A criterion's list less every model the vendor said may not exist, while its catalogue entry is the one it said it of
+    (`quota.withdrawn`): such a model is no fallback, it only costs a refused start per walk (claude-opus-4-7-20260416,
+    2026-09-22). The memory is never why nothing runs: were every candidate withdrawn, the list stays whole."""
+    gone = quota.withdrawn()
+    kept = tuple(c for c in candidates if (c.provider, c.model) not in gone)
+    return kept or candidates
 
 
 def _apply_provider_constraint(
@@ -749,10 +758,11 @@ def _galaius_command() -> tuple[str, list[str]]:
     return console_python(), ["-m", "galaius", "mcp"]
 
 
-def _fenced(argv: list[str], fence: FenceSpec | None, provider: AgentProvider) -> list[str]:
+def _fenced(argv: list[str], fence: FenceSpec | None, provider: AgentProvider, run_id: str) -> list[str]:
     """`argv`, a turn of `provider`, inside `fence` with the galaius its server starts (`mesh_config`, or its CLI's own
-    entry) as this process finds it now (`fenced`)."""
-    return fenced(argv, fence, provider, (_galaius_command()[0],))
+    entry) as this process finds it now, and every image run `run_id` was shown readable (`RunMedia.held`: the paths its
+    messages name, in a folder the fence otherwise hides) (`fenced`)."""
+    return fenced(argv, fence, provider, (_galaius_command()[0],), reg.RunMedia.held(run_id) if fence is not None else ())
 
 
 #: How every brief the launcher hands a role begins: a session that opens with it is agent work
@@ -798,6 +808,12 @@ def mesh_handed(provider: AgentProvider, environment: Mapping[str, str], *, mesh
     his) or its CLI's config, the one `environment` makes it read, registers none (`AgentProvider.meshed`). Once, never
     twice: a doubled registration is what this skips."""
     return mesh and (alone or not provider.meshed(environment))
+
+
+def grants_galaius(tools: list[str] | None) -> bool:
+    """Whether a role's tools (`Policy.tools_for`) include galaius's: unrestricted (None: every tool is its own) or naming one.
+    Such a role's every turn reaches galaius's server, whatever its record says of the launcher's mesh."""
+    return tools is None or any(tool.startswith(TOOL_PREFIX) for tool in tools)
 
 
 class RoleToolMissing(RuntimeError):
@@ -927,7 +943,7 @@ class AheadLaunch(BaseModel):
         stderr = stderr if later else reg.open_stderr(run_id, append=False)
         try:
             return await asyncio.create_subprocess_exec(
-                *contained(_fenced(spawnable(argv, env), self.fence, self.provider), run_id=run_id), cwd=self.cwd, env=env,
+                *contained(_fenced(spawnable(argv, env), self.fence, self.provider, run_id), run_id=run_id), cwd=self.cwd, env=env,
                 # Never the launcher's own stdin: Claude Code waits 3 s for input on one that is no
                 # terminal, and an MCP server's stdin carries its protocol.
                 stdin=asyncio.subprocess.PIPE if ahead else asyncio.subprocess.DEVNULL,
@@ -1078,7 +1094,7 @@ class ResumeLaunch(AheadLaunch):
             agent_prompt=(run.community.prompt(run.agent, run.parent_run_id or "") if run.community is not None
                           else _role_prompt(catalog, run.agent, provider, env) if catalog is not None else None),
             mcp_config=mesh_config(run_id=run.run_id, role=run.agent, fence=run.fence)
-            if mesh_handed(provider, environment, mesh=run.mesh_enabled, alone=decides or run.community is not None) else None,
+            if mesh_handed(provider, environment, mesh=run.mesh_enabled or grants_galaius(tools), alone=decides or run.community is not None) else None,
             coarse_accepted=coarse_accepted, base_url=routed.get("OPENAI_BASE_URL"),
             **AheadLaunch.turn_arguments(provider, run.run_id, run.fence, role=run.agent,
                                          isolated=run.community is not None,
@@ -1302,7 +1318,7 @@ def _spawn_turn(
     stderr_file = tempfile.TemporaryFile()
     try:
         process = subprocess.Popen(
-            contained(_fenced(spawnable(argv, env), run.fence, provider), run_id=run.run_id), cwd=run.cwd or ".", env=env,
+            contained(_fenced(spawnable(argv, env), run.fence, provider, run.run_id), run_id=run.run_id), cwd=run.cwd or ".", env=env,
             stdin=subprocess.DEVNULL if stdin is None else subprocess.PIPE, stdout=sink, stderr=stderr_file,  # never the launcher's stdin (`AheadLaunch.start`)
             **process_group_options(),
         )
@@ -1489,16 +1505,24 @@ def resolve_role(policy: Policy, agent: str | None, *, reference: AgentRevisionR
     two facts is missing; a launch naming a `delegate` capability resolves it from the catalog itself
     (`CatalogSnapshot.delegated`), so an unreadable parent record never costs a run its critic."""
     parent_run = reg.get_run(parent) if parent is not None else None
+    parent_ref = parent_run.agent_ref if parent_run is not None else None
+    if parent_ref is None and parent_run is not None and parent_run.agent and policy.catalog is not None:
+        # A conversation begun before its role was pinned (the editor's, forked into the app) runs the role's latest revision
+        # at each turn (`ResumeLaunch.of`): its children resolve from that one, never from nothing.
+        try:
+            latest = policy.catalog.snapshot.role(parent_run.agent)
+            parent_ref = AgentRevisionRef(id=latest.id, revision=latest.revision)
+        except RoleAbsent:
+            pass
     if policy.catalog is not None and parent is not None and delegate is None:
         if parent_run is None:
             raise ModelUnavailable(
                 sentence=f"Parent run {parent} is not among this computer's run records ({reg.agents_dir()}); "
                 "launch with `--delegate ask_<role>` (agent_spawn: `delegate=ask_<role>`), which needs no parent record")
-        if parent_run.agent_ref is None:
+        if parent_ref is None:
             raise ModelUnavailable(sentence=f"Parent run {parent} ran without a server revision, so a role cannot resolve from it; "
                 "launch with `--delegate ask_<role>` (agent_spawn: `delegate=ask_<role>`), which needs none")
-    policy, role = policy.for_launch(agent, reference=reference, parent=parent_run.agent_ref if parent_run is not None else None,
-                                     capability=delegate)
+    policy, role = policy.for_launch(agent, reference=reference, parent=parent_ref, capability=delegate)
     if not role:
         raise ModelUnavailable(sentence="Choose a named agent role; anonymous delegation bypasses role criteria")
     if policy.catalog is None:

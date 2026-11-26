@@ -285,7 +285,9 @@ def test_separate_process_enqueue_calls_are_serialized(monkeypatch, tmp_path):
     assert {item.message_id for item in agent_queue.items("r1")} == {"message-a", "message-b"}
 
 
-def test_killed_provider_turn_becomes_uncertain_without_automatic_replay(monkeypatch):
+def _cut_mid_delivery(monkeypatch, raw_lines: list[dict]):
+    """Two messages queued, the first claimed (its turn started), the PC's process cut before any end was recorded: the queue's
+    state after a power-off. `raw_lines`: what the vendor's stream held of that turn by then."""
     provider = setup_queue(monkeypatch)
     first_id = reg.record_message_event(from_run="operator", to_run="r1", text="send once")
     second_id = reg.record_message_event(from_run="operator", to_run="r1", text="send twice")
@@ -295,7 +297,8 @@ def test_killed_provider_turn_becomes_uncertain_without_automatic_replay(monkeyp
     with reg.record_lock("r1"):
         item = agent_queue.claim_next_locked("r1")
     assert item is not None and item.raw_index is not None and item.attempt_token
-
+    if raw_lines:
+        reg.raw_events_path("r1").write_text("\n".join(json.dumps(line) for line in raw_lines) + "\n")
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
         assert reg.begin_turn("r1", pid=child.pid) is not None
@@ -306,11 +309,23 @@ def test_killed_provider_turn_becomes_uncertain_without_automatic_replay(monkeyp
         if child.poll() is None:
             child.kill()
             child.wait(timeout=10)
+    return provider
 
-    item = agent_queue.items("r1")[0]
-    assert item.state == "uncertain"
-    assert "resend explicitly" in item.error
-    assert agent_queue.items("r1")[1].state == "replied"
+
+def test_a_turn_cut_before_it_answered_or_acted_is_sent_again_once(monkeypatch):
+    """Owner 2026-11-23: messages cut by a power-off read « uncertain … resend explicitly » and were never tried again: delivered once
+    or reported, never left."""
+    provider = _cut_mid_delivery(monkeypatch, [])
+    assert sorted(provider.messages) == ["send once", "send twice"]   # each reached its agent exactly once
+    assert [item.state for item in agent_queue.items("r1")] == ["replied", "replied"]
+
+
+def test_a_turn_cut_after_it_acted_is_never_replayed(monkeypatch):
+    """Its tool calls would run twice: it was taken (replied), the run's own resume continues it."""
+    provider = _cut_mid_delivery(monkeypatch, [
+        {"type": "assistant", "session_id": "vendor", "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}]}}])
+    first = agent_queue.items("r1")[0]
+    assert first.state == "replied" and "resume continues it" in first.error
     assert provider.messages == ["send twice"]
 
 
@@ -873,6 +888,32 @@ def test_an_operator_message_sent_for_a_run_names_it_on_its_entry_and_in_the_rec
     assert '"for_run"' not in reg.messages_path(deployer).read_text().splitlines()[-1]   # left out when none
 
 
+@pytest.mark.parametrize(("environment", "sender"), [
+    ({"GALAIUS_RUN_ID": "run-1", "CLAUDE_CODE_SESSION_ID": "s-1"}, "run-1"),
+    ({"CLAUDE_CODE_SESSION_ID": "7c1e0b52-1111"}, "session:7c1e0b52-1111"),
+    ({"CODEX_THREAD_ID": "thread-9"}, "session:thread-9"),
+    ({}, "operator"),
+], ids=["a run", "a Claude session", "a Codex session", "the person's terminal"])
+def test_a_message_from_an_agent_session_outside_the_runs_is_never_the_persons(environment, sender):
+    """2026-11-25: a coordinator in an editor writing through `galaius agents send` was recorded as « operator » and drawn as
+    his own bubble, with « Unsend », in his conversation: who wrote it is a session unless it is the person's terminal."""
+    assert messaging.sender_id(environment) == sender
+
+
+def test_a_session_message_is_recorded_under_its_session_in_the_recipients_transcript_only(monkeypatch):
+    provider = setup_queue(monkeypatch)
+    reg.register(run_id="r2", pid=999999, provider=provider.name, name="main", task="t", agent="tester", provider_session_id="vendor")
+    sender = messaging.sender_id({"CLAUDE_CODE_SESSION_ID": "7c1e0b52-1111"})
+    locked, record_lock = [], reg.record_lock
+    monkeypatch.setattr(reg, "record_lock", lambda run_id: (locked.append(run_id), record_lock(run_id))[1])
+    assert messaging.queue_message("r2", "ship it", sender=sender).state == "queued"
+    assert "r2" in locked and sender not in locked  # a session has no record, and `:` is no file name on Windows (2026-11-25 lab)
+    assert [(event.from_run, event.text) for event in reg.read_messages("r2")] == [("session:7c1e0b52-1111", "ship it")]
+    assert not reg.messages_path(sender).exists()
+    assert agent_queue.items("r2")[-1].writer == "an agent session outside galaius's runs (7c1e0b52)"
+    assert reg.read_messages("r2")[-1].summary(viewer="r2").startswith("← session 7c1e0b52: ")
+
+
 @pytest.mark.parametrize("queue_kept", [True, False], ids=["queue kept", "queue file gone"])
 def test_one_message_id_records_and_queues_one_message(monkeypatch, queue_kept):
     """The web's mirror delivers its outbox row under that row's id, again on every retry: one message, one row."""
@@ -976,3 +1017,148 @@ def _wrapped(cause: Exception) -> Exception:
 ], ids=["policy-no", "access-refused", "catalog-5xx", "os"])
 def test_only_a_refusal_waiting_cannot_change_is_never_tried_again(error, permanent):
     assert agent_queue._permanent(error) is permanent
+
+
+def test_a_message_pending_after_a_power_off_is_handed_to_a_dispatcher_again(monkeypatch):
+    """2026-11-23: a tester's report to a run sat pending 7 h behind a dispatcher the power-off took, the run reading `done`."""
+    setup_queue(monkeypatch)
+    handed: list[str] = []
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda run_id, **rest: handed.append(run_id) or 1)
+    message_id = reg.record_message_event(from_run="operator", to_run="r1", text="waiting for a dispatcher")
+    assert message_id and agent_queue.enqueue("r1", message_id=message_id, sender="operator")
+    handed.clear()   # the enqueue's own hand-over is not what is tested
+    assert agent_queue.revive_orphans() == ["r1"] and handed == ["r1"]
+    assert reg.get_run("r1").status == "starting"   # every reader, the web's mirror included, sees it coming back
+    # a queue whose dispatcher lives, or holding nothing active, is left alone
+    monkeypatch.setattr(agent_queue, "_dispatcher_matches", lambda state: True)
+    assert agent_queue.revive_orphans() == []
+
+
+@pytest.fixture
+def at_work_process():
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    yield child
+    child.kill()
+    child.wait()
+
+
+def test_a_run_a_person_stopped_is_not_handed_a_dispatcher_by_the_sweep(monkeypatch):
+    """What waits for a held run goes once he releases it (`dispatch`), never by the sweep after a power-off."""
+    setup_queue(monkeypatch)
+    handed: list[str] = []
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda run_id, **rest: handed.append(run_id) or 1)
+    message_id = reg.record_message_event(from_run="operator", to_run="r1", text="held")
+    assert message_id and agent_queue.enqueue("r1", message_id=message_id, sender="operator")
+    with reg.record_lock("r1"):
+        reg._merge_record_locked("r1", {"held_at": time.time()})
+    handed.clear()
+    assert agent_queue.revive_orphans() == [] and handed == []
+
+
+def test_a_stopped_run_whose_process_still_runs_is_not_handed_a_dispatcher_either(monkeypatch, at_work_process):
+    """Tester c59ce571: a held run with a live process (its stop still ending) is skipped too, not only an ended one."""
+    setup_queue(monkeypatch)
+    handed: list[str] = []
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda run_id, **rest: handed.append(run_id) or 1)
+    message_id = reg.record_message_event(from_run="operator", to_run="r1", text="held, process alive")
+    assert message_id and agent_queue.enqueue("r1", message_id=message_id, sender="operator")
+    with reg.record_lock("r1"):
+        reg._merge_record_locked("r1", {"held_at": time.time(), "pid": at_work_process.pid, "status": "running"})
+    handed.clear()
+    assert reg.get_run("r1").working() and agent_queue.revive_orphans() == [] and handed == []
+
+
+def test_the_sweep_never_wakes_a_run_for_a_message_older_than_its_bound(monkeypatch):
+    """2026-11-24: the first sweep of a PC woke 11 runs ended since 10-26 to 11-23 for messages still pending. An ended run
+    never starts by itself: a message older than `agent_message_expiry_hours` is told expired (`failed`, its reason), whatever the
+    run reads (`done`, or `running` with its dispatcher gone) and wherever the sweep runs (the first look at boot included); a young one is still handed on."""
+    from galaius.config.settings import Config
+
+    provider = setup_queue(monkeypatch)
+    handed: list[str] = []
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda run_id, **rest: handed.append(run_id) or 1)
+    bound = Config().agent_message_expiry_hours * 3600
+    for run_id in ("old-done", "old-running", "young"):
+        reg.register(run_id=run_id, pid=999999, provider=provider.name, name=run_id, task="t", agent="tester", provider_session_id=f"vendor-{run_id}")
+    items: dict[str, str] = {}
+    for run_id in ("old-done", "old-running", "young"):
+        message_id = reg.record_message_event(from_run="operator", to_run=run_id, text=f"for {run_id}")
+        assert message_id and agent_queue.enqueue(run_id, message_id=message_id, sender="operator")
+        items[run_id] = agent_queue.items(run_id)[0].id
+    with reg.record_lock("old-done"):
+        reg._merge_record_locked("old-done", {"status": "done", "finished_at": time.time() - 10 * 86400})
+        agent_queue._replace_item_locked("old-done", items["old-done"], enqueued_at=time.time() - 10 * 86400)
+    with reg.record_lock("old-running"):
+        agent_queue._replace_item_locked("old-running", items["old-running"], state="running", enqueued_at=time.time() - 20 * 86400,
+                                         started_at=time.time() - 20 * 86400)
+    with reg.record_lock("young"):
+        agent_queue._replace_item_locked("young", items["young"], enqueued_at=time.time() - bound / 2)
+    handed.clear()
+    assert agent_queue.revive_orphans() == ["young"] and handed == ["young"]
+    for run_id in ("old-done", "old-running"):
+        (item,) = agent_queue.items(run_id)
+        assert item.state == "failed" and "expired" in item.error and item.finished_at is not None
+    assert reg.get_run("old-done").status == "done" and agent_queue.items("young")[0].state == "pending"
+    handed.clear()
+    assert agent_queue.revive_orphans() == ["young"] and handed == ["young"], "an expired message is not swept twice"
+
+
+def test_the_sweep_for_orphaned_queues_runs_at_the_first_look_then_every_few_minutes(monkeypatch):
+    """Reading every queue file costs 3-4 s at 5,000 runs: never at each look."""
+    from galaius.agents.turns import handback
+
+    swept: list[int] = []
+    monkeypatch.setattr(agent_queue, "revive_orphans", lambda: swept.append(1) or [])
+    watch = handback.EndWatch()
+    watch.tick(), watch.tick()
+    assert len(swept) == 1
+    watch.queues_swept -= handback.QUEUES_SWEPT_SECONDS
+    watch.tick()
+    assert len(swept) == 2
+
+
+def _in_flight(monkeypatch, *, hours: float, acted: bool, sender: str = "operator") -> str:
+    """Run `r1` with one message its turn took `hours` ago (`running`), its dispatcher gone; `acted`: its attempt shows a tool call."""
+    from galaius.agents.transport.events import AgentEvent
+
+    setup_queue(monkeypatch)
+    monkeypatch.setattr(agent_queue, "ensure_dispatcher_locked", lambda run_id, **rest: 1)
+    message_id = reg.record_message_event(from_run=sender, to_run="r1", text="in flight")
+    assert message_id and agent_queue.enqueue("r1", message_id=message_id, sender=sender)
+    taken = time.time() - hours * 3600
+    with reg.record_lock("r1"):
+        reg._merge_record_locked("r1", {"status": "done", "finished_at": taken + 300})
+        agent_queue._replace_item_locked("r1", agent_queue.items("r1")[0].id, state="running", enqueued_at=taken, started_at=taken, raw_index=0)
+    monkeypatch.setattr(agent_queue, "_attempt_events", lambda run_id, item: [AgentEvent(kind="tool", text="Bash")] if acted else [])
+    return message_id
+
+
+def test_a_message_in_flight_when_the_pc_went_off_is_not_told_undelivered_inside_the_cut_resume_window(monkeypatch):
+    """17:00 a message starts a turn, 17:05 the power goes, 20:30 the PC is back: its run's own cut resume continues it (inside
+    `CUT_RESUME_WINDOW`), so the message is never reported « not delivered » there (a second send acts twice)."""
+    _in_flight(monkeypatch, hours=3.5, acted=True)
+    agent_queue.revive_orphans()
+    (item,) = agent_queue.items("r1")
+    assert item.state == "running", "its turn is classified by its dispatcher (`replied` when it acted), never expired by the 2 h bound"
+    assert not agent_queue.failed_items("r1")
+
+
+@pytest.mark.parametrize(("acted", "state"), [(True, "replied"), (False, "failed")])
+def test_a_message_in_flight_past_the_window_is_settled_by_what_its_turn_did(monkeypatch, acted, state):
+    _in_flight(monkeypatch, hours=reg.CUT_RESUME_WINDOW / 3600 + 1, acted=acted)
+    agent_queue.revive_orphans()
+    (item,) = agent_queue.items("r1")
+    assert item.state == state and (state == "replied") == (item.error == agent_queue.TOO_OLD_TO_RESUME)
+
+
+def test_a_persons_expired_message_is_logged_and_shown_in_the_runs_transcript_with_its_status_kept(monkeypatch, caplog):
+    """Sent from the CLI or the editor, it has no web row to say « not delivered »: the transcript and the log do."""
+    message_id = _in_flight(monkeypatch, hours=0.1, acted=False)
+    with reg.record_lock("r1"):
+        agent_queue._replace_item_locked("r1", agent_queue.items("r1")[0].id, state="pending", enqueued_at=time.time() - 5 * 3600, started_at=None, raw_index=None)
+    with caplog.at_level("WARNING"):
+        agent_queue.revive_orphans()
+    assert agent_queue.items("r1")[0].state == "failed"
+    assert any("r1" in record.getMessage() and message_id in record.getMessage() and "5.0 h" in record.getMessage() for record in caplog.records)
+    told = [event for event in reg.read_messages("r1") if event.kind == "error" and "not delivered" in (event.text or "")]
+    assert len(told) == 1 and reg.get_run("r1").status == "done"

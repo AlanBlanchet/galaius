@@ -1,12 +1,16 @@
+from __future__ import annotations
+
 import difflib
 import logging
 from enum import StrEnum
-from typing import ClassVar, Self
+from typing import TYPE_CHECKING, ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict
 
-from galaius.desktop.accessibility.element import DesktopElement
 from galaius.vision.parsing import Parse
+
+if TYPE_CHECKING:
+    from galaius.desktop.accessibility.element import DesktopElement
 
 _log = logging.getLogger(__name__)
 
@@ -138,6 +142,10 @@ class CoordFormat(BaseModel):
         self, response: str, img_w: int, img_h: int
     ) -> list[DesktopElement] | None:
         """Parse VLM response into elements in pixel coords of the VLM image."""
+        # Here, not at import: the model registry imports this module, and every agent process (a queue dispatcher, a spawn
+        # waiter) imports the registry, none of them reading a screen: numpy, PIL and playwright came with the element type.
+        from galaius.desktop.accessibility.element import DesktopElement
+
         raw_list = CoordFormat.extract_json_list(response)
         if raw_list is None:
             fallback = DesktopElement.parse_vlm(response)

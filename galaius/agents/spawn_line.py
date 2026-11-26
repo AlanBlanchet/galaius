@@ -23,6 +23,10 @@ critic verdicts they waited for queued behind them. Its first child takes the pl
 when that place is still free. Woken, it counts again at once, never waiting (a message for it is read at once): the
 line is over the limit by the runs woken while it was full, and no spawn starts until it is below again.
 
+A run whose agent wrote nothing for a minute while its tool call only sleeps (a poll loop, a timer: `SpawnLine._resting`)
+gives its place back the same way, counting again the moment a command runs (2026-11-23: 4 of 8 holders slept in loops
+for an hour while 17 starts waited).
+
 A turn also waits while this computer may not start it (`admission`): its login's usage window shut until the reopening
 it named, its login lost, the agents' memory past its soft limit. It starts once that clears, with no click, its line
 saying why meanwhile. His « Continuer » during a usage pause goes through alone, as the one try asking the vendor again
@@ -64,7 +68,7 @@ from galaius.config.settings import Config
 from galaius.isolation.fence import FenceSpec
 from galaius.machine.web_runs import WebRuns
 from galaius.host.paths import UserPaths
-from galaius.host.processes import process_exited, process_started, share_malloc_arenas
+from galaius.host.processes import process_exited, process_started, share_malloc_arenas, sleeps_in_shell
 from galaius.upgrade.store import Runtime, RuntimeStore, active_interpreter
 
 #: Said of a run waiting when every place is held by a team with a run waiting in line (`SpawnLine._stuck`).
@@ -77,6 +81,9 @@ WAITED_NAMED_MAX = 3
 ASIDE = f"attend {ITS_AGENTS}, place rendue"
 #: How long after stepping aside a run's agent may still write (the call it waits in, flushed) and stay aside (`Aside.stands_aside`).
 ASIDE_GRACE_SECONDS = 15.0
+#: How long a run's agent writes nothing, its tool call only a `sleep`, before its place is given back (`SpawnLine._resting`).
+REST_SECONDS = 60.0
+RESTING = "dort dans un sleep, place rendue"
 #: How long a spawn that could not start stays readable (`agents list`, `agents events`) before it is forgotten.
 FAILED_KEPT_SECONDS = 24 * 3600.0
 #: How much of a lost spawn's task its parent's message quotes (`SpawnLine.report_lost`).
@@ -240,6 +247,13 @@ class Spawn(BaseModel):
             return elsewhere
         if self.parent_run_id is None:
             return None
+        asking = messaging.asking_run()
+        if asking is not None and self.parent_run_id != asking and reg.get_run(self.parent_run_id) is not None \
+                and reg.conversation_of(self.parent_run_id) != reg.conversation_of(asking):
+            # Refused, never sent to both: its report wakes the conversation named, and the session that briefed it hears nothing
+            # (2026-10-16, 11-20, 11-24: silence 20:25 to 21:58 on the third).
+            return (f"--parent-run-id {self.parent_run_id[:8]} is a run of another conversation than yours ({asking[:8]}): the "
+                    f"report of this run would wake that conversation and none of yours. Spawn it without --parent-run-id: it reports to {asking[:8]}.")
         if (caller := reg.get_run(self.parent_run_id)) is None:
             return f"the run asking ({self.parent_run_id}) has no record on this computer" if self.continues or self.for_run else None
         if (nested := self._nested_coordinator()) is not None:
@@ -654,6 +668,8 @@ class Place(Held):
     #: `SpawnLine.report_lost`; `told`: it did, once.
     lost: bool = False
     told: bool = False
+    #: Its asker was told it has waited past `Config.agent_pause_notice_minutes` (`SpawnLine.report_slow`), once.
+    warned: bool = False
     #: How many times its holder went away and it was put back in line, in its place, for `SpawnLine.revive` to hold again.
     revivals: int = 0
 
@@ -763,6 +779,8 @@ class AtWork(BaseModel):
     aside: dict[str, str | None] = Field(default_factory=dict)
     #: The entry each run set aside stands under (`Aside.stands_aside`).
     entries: dict[str, Aside] = Field(default_factory=dict)
+    #: The runs in `aside` that wait on a timer, not on their agents (`SpawnLine._resting`).
+    resting: frozenset[str] = frozenset()
 
     def giving(self) -> frozenset[str]:
         """The runs set aside whose place is free: each one back at work alone would take a place. One whose child works
@@ -791,12 +809,15 @@ class SpawnLine(BaseModel):
     waiting_gap_seconds: float = Field(ge=0)
     #: The agents' soft memory limit: past it no turn starts here (`admission.SoftMemory`); None: none.
     memory: SoftMemory | None = None
+    #: Roles that never wait for a place (`Config.agent_runs_unqueued_roles`): only the memory hold can hold them.
+    unqueued_roles: frozenset[str] = frozenset()
 
     @classmethod
     def here(cls) -> SpawnLine:
         config = Config()
         return cls(limit=config.agent_runs_max, waiting_flag_minutes=config.agent_waiting_flag_minutes,
-                   waiting_gap_seconds=config.agent_waiting_gap_seconds, memory=SoftMemory.here(config))
+                   waiting_gap_seconds=config.agent_waiting_gap_seconds, memory=SoftMemory.here(config),
+                   unqueued_roles=frozenset(config.agent_runs_unqueued_roles))
 
     def _memory_hold(self) -> Hold | None:
         return self.memory.hold() if self.memory is not None else None
@@ -865,14 +886,51 @@ class SpawnLine(BaseModel):
                 places[:] = [place.model_copy(update={"told": True}) if place.run_id in sent else place for place in places]
         return deliveries
 
+    def report_slow(self, *, now: float | None = None) -> list[messaging.Delivery]:
+        """Tell the run that asked each run held in line past `Config.agent_pause_notice_minutes` that it waits and why, once:
+        the line `agents list` shows (« en pause : mémoire des agents à 103 % de leur plafond (dont … : 2.9 Go, hors agents) »),
+        so who holds what is named where the asker reads, not only on a screen (2026-11-24: 3 spawns held 2.1 h and 4 resumed
+        runs « en pause », nothing reached their parents). Recipient and delivery as `report_lost`, a working asker only (`_asker_of`); `warned` written once it went through."""
+        minutes = Config().agent_pause_notice_minutes
+        moment = time.time() if now is None else now
+        deliveries, sent = [], []
+        for place in self._places_seen():
+            if place.state != "waiting" or not place.said or place.warned or moment - place.asked_at < minutes * 60:
+                continue
+            recipient = self._asker_of(place, only_working=True)
+            if recipient is None:
+                continue
+            delivery = messaging.deliver_message(
+                recipient, self._slow_sentence(place, moment), sender=reg.SPAWN_LOST_SENDER, message_id=f"spawn-slow-{place.run_id}",
+                turn=agent_queue.MessageTurn(fyi=True))
+            deliveries.append(delivery)
+            if delivery.state != "error":
+                sent.append(place.run_id)
+        if sent:
+            with self._places() as places:
+                places[:] = [place.model_copy(update={"warned": True}) if place.run_id in sent else place for place in places]
+        return deliveries
+
     @staticmethod
-    def _asker_of(place: Place) -> str | None:
-        """The run `place`'s loss is told to: its parent while at work, else the top of its tree (its coordinator), else the
-        parent when only its record is left; None when it has none."""
+    def _slow_sentence(place: Place, now: float) -> str:
+        what = (f"{named(place.spawn.agent, place.spawn.community, place.spawn.name)}, task « {gist(place.spawn.task, LOST_TASK_CHARS)} »"
+                if place.spawn is not None else "a resumed turn")
+        return (f"Run {place.run_id[:8]} ({what}) has waited {(now - place.asked_at) / 60:.0f} min to start: {place.said}. "
+                "It starts by itself once that clears; whoever holds the memory named there can free it sooner.")
+
+    @staticmethod
+    def _asker_of(place: Place, *, only_working: bool = False) -> str | None:
+        """The run `place`'s loss or delay is told to: its parent while at work, else the top of its tree (its coordinator), else
+        the parent when only its record is left; None when it has none. `only_working`: the note is a courtesy that never starts
+        an ended run (`deliver_message` wakes one), so an asker not at work is none: nothing is written and the place stays untold
+        until one works again (`handback.SilenceWatch` keeps the same rule). A spawn LOST is told to an ended asker all the same: it
+        reads that the work it waited on will not come, on resuming."""
         if place.parent_run_id is None:
             return None
         chain = reg.ancestors(place.parent_run_id)
         runs = [run for run_id in dict.fromkeys((place.parent_run_id, chain[-1])) if (run := reg.get_run(run_id)) is not None]
+        if only_working:
+            return next((run.run_id for run in runs if run.working()), None)
         return next((run.run_id for run in runs if run.working()), runs[-1].run_id if runs else None)
 
     @staticmethod
@@ -951,8 +1009,20 @@ class SpawnLine(BaseModel):
         listed = asides
         entries = {run.run_id: entry for run in runs for entry in listed if entry.run_id == run.run_id and entry.stands_aside(run)}
         aside = {run.run_id: run.parent_run_id for run in runs if run.run_id in entries}
+        resting = self._resting([run for run in runs if run.run_id not in aside])
+        aside |= {run.run_id: run.parent_run_id for run in runs if run.run_id in resting}
         taken = {run.run_id: run.parent_run_id for run in runs if run.run_id not in aside}
-        return AtWork(taken=taken | {place.run_id: place.parent_run_id for place in places if place.state == "starting"}, aside=aside, entries=entries)
+        return AtWork(taken=taken | {place.run_id: place.parent_run_id for place in places if place.state == "starting"}, aside=aside, entries=entries,
+                      resting=resting)
+
+    @staticmethod
+    def _resting(runs: list[reg.AgentRun]) -> frozenset[str]:
+        """The runs whose agent wrote nothing for `REST_SECONDS` and whose tool call only sleeps (`sleeps_in_shell`: a poll loop
+        or a timer): their place is free like a run waiting on its agents', and counts again the moment a command runs.
+        2026-11-23: 4 of the 8 runs holding the 6 places sat in a `sleep` loop for an hour while 17 starts waited."""
+        now = time.time()
+        return frozenset(run.run_id for run in runs
+                         if now - (reg.vendor_said_at(run) or run.started_at) >= REST_SECONDS and run.pid and sleeps_in_shell(run.pid))
 
     def set_aside(self) -> frozenset[str]:
         """The runs at work here whose place is free while they wait on their agents (`aside`, `AtWork.giving`)."""
@@ -969,8 +1039,9 @@ class SpawnLine(BaseModel):
         giving = at_work.giving()
         # a resumed turn held (`resuming`): why, in place of its last activity
         held = {place.run_id: place.said for place in self._places_seen() if place.spawn is None and place.state == "waiting" and place.said}
-        return held | {run_id: entry.said(now) if entry.waited(now) >= flag else ASIDE
-                       for run_id, entry in at_work.entries.items() if run_id in giving or entry.waited(now) >= flag}
+        return held | {run_id: RESTING for run_id in at_work.resting if run_id in giving} | {
+            run_id: entry.said(now) if entry.waited(now) >= flag else ASIDE
+            for run_id, entry in at_work.entries.items() if run_id in giving or entry.waited(now) >= flag}
 
     def _admits(self, places: list[Place], parent: str | None, *, first: bool) -> bool:
         """Whether a run of `parent` starts now: it shares its parent's place, or a place is free and it is `first` in line
@@ -1031,7 +1102,7 @@ class SpawnLine(BaseModel):
                 raise RelationRefused(refused)
             ahead = sum(place.queued() for place in places)
             load = self.load(places)
-            starts = (self._memory_hold() is None if spawn.light(resolved)
+            starts = (self._memory_hold() is None if spawn.light(resolved) or role in self.unqueued_roles
                       else self._admits(places, spawn.parent_run_id, first=ahead == 0))
             places.append(Place(run_id=run_id, asked_at=time.time(), state="starting" if starts else "waiting", holder=me,
                                 holder_started=process_started(me), parent_run_id=spawn.parent_run_id, spawn=spawn, role=role))
@@ -1145,8 +1216,9 @@ class SpawnLine(BaseModel):
                     places[index] = place.model_copy(update={"state": "failed", "said": said[:500]})
 
     def _exempt(self, run: reg.AgentRun) -> bool:
-        """The owner's own runs (`_owners`), what is not a galaius process here, and a light run (`takes_place`): never held."""
-        return run.kind != "process" or run.foreign or run.run_id in self._owners() or not takes_place(run)
+        """The owner's own runs (`_owners`), what is not a galaius process here, a light run (`takes_place`) and a run of an unqueued role: never held."""
+        return (run.kind != "process" or run.foreign or run.run_id in self._owners() or not takes_place(run)
+                or run.agent in self.unqueued_roles)
 
     @contextmanager
     def resuming(self, run: reg.AgentRun) -> Iterator[bool]:

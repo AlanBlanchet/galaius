@@ -29,8 +29,8 @@ HoldReason = Literal["usage_limit", "login_lost", "memory"]
 
 class MemoryReading(BaseModel):
     """The agents' memory past its soft limit (`SoftMemory.hold`): since when, the working set's share of the slice's cap,
-    the share it waits under, and the slice's largest tenant that is no agent run (a browser venue, a shared server)
-    with its working set in GB — waiting frees none of it, so the line names it for someone to stop."""
+    the share it waits under, and the slice's largest tenants that are no agent run (a browser venue, a shared server)
+    with their working sets in GB — waiting frees none of it, so the line names them for someone to stop."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -38,7 +38,7 @@ class MemoryReading(BaseModel):
     at: float
     used_percent: float | None
     release_percent: int
-    tenant: tuple[str, float] | None = None
+    holders: tuple[tuple[str, float], ...] = ()
     #: The PC's free memory (`MemAvailable`) in GB and the amount it waits for, when the PC as a whole is short: the
     #: agents' own share can be low while other programs (a container stack, the browser) hold the rest.
     pc_available_gb: float | None = None
@@ -106,7 +106,7 @@ class Hold(BaseModel):
             at = _moment(datetime.fromtimestamp(self.until)) if self.until is not None else "sa réouverture"
             return f"en pause : limite d'usage {self.provider} jusqu'à {at}" + (", reprise sans clic" if promise else "")
         if self.reason == "login_lost":
-            return f"en pause : connexion {self.provider} perdue" + (", reprise sans clic une fois reconnectée sur ce PC" if promise else "")
+            return f"en pause : connexion {self.provider} perdue" + (", reprise sans clic une fois reconnectée sur ce PC (dans les 24 h : au-delà, « Continuer »)" if promise else "")
         memory = self.cause
         assert isinstance(memory, MemoryReading)
         if memory.pc_stall_percent is not None and memory.pc_stall_release_percent is not None:
@@ -115,7 +115,7 @@ class Hold(BaseModel):
         if memory.pc_available_gb is not None and memory.pc_release_gb is not None:
             return (f"en pause : mémoire du PC à {memory.pc_available_gb:.1f} Go libres"
                     + (f", reprise au-dessus de {memory.pc_release_gb:.1f} Go" if promise else ""))
-        held_by = f" (dont {memory.tenant[0]} : {memory.tenant[1]:.1f} Go, hors agents)" if memory.tenant is not None else ""
+        held_by = (" (dont " + ", ".join(f"{name} : {gb:.1f} Go" for name, gb in memory.holders) + ", hors agents)") if memory.holders else ""
         return (f"en pause : mémoire des agents à {memory.used_percent:.0f} % de leur plafond{held_by}"
                 + (f", reprise sous {memory.release_percent} %" if promise else ""))
 
@@ -146,7 +146,13 @@ class SoftMemory(BaseModel):
     The PC as `MemAvailable`: on 2026-11-09 the slice stood at 10 of its 18.4 GB while a container stack held 8.4 GB and
     the full swap, and the kernel's OOM killer took the person's own browser. The stall: on 2026-11-16 his browser froze
     (full avg300 17 %) while `MemAvailable` still read ~3 GB, the compressed swap full. No cgroup (no user manager), one
-    without a cap, no `meminfo` or no `pressure` file (not Linux, a kernel without PSI): that limit holds nothing."""
+    without a cap, no `meminfo` or no `pressure` file (not Linux, a kernel without PSI): that limit holds nothing.
+
+    The cap is the slice's own `min(MemoryHigh, MemoryMax)`: the kernel throttles every task of the slice at `MemoryHigh`,
+    long before 85 % of `MemoryMax`. And a stall the slice's own tasks suffer (its `memory.pressure`, over the same limit)
+    is no pressure of the PC: waiting for it to clear never ends, the throttle being what keeps it up (2026-11-24 20:00 to
+    22:05: three spawns queued 2.1 h, the PC with 8 GB free, the slice at 9.7 GB over its 9.35 GB `MemoryHigh`). Past the
+    cap the hold names the slice's tenants instead, for someone to stop."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -207,26 +213,45 @@ class SoftMemory(BaseModel):
             return None
 
     def used_percent(self) -> float | None:
-        """The working set's share of the cap now, in percent; None when not measurable."""
+        """The working set's share of the cap now (`cap`), in percent; None when not measurable."""
+        cap = self.cap()
+        used = _working_set(self.cgroup) if cap is not None else None
+        return None if used is None or cap is None else 100.0 * used / cap
+
+    def cap(self) -> int | None:
+        """The slice's cap in bytes: the lower of `memory.max` and `memory.high`; None when it has none or is not measurable."""
+        if self.cgroup is None:
+            return None
+        caps = []
+        for name in ("memory.max", "memory.high"):
+            try:
+                value = (self.cgroup / name).read_text().strip()
+            except OSError:
+                continue
+            if value.isdigit() and int(value) > 0:
+                caps.append(int(value))
+        return min(caps) if caps else None
+
+    def group_stall(self) -> float | None:
+        """The share of time every task of the slice stalled on memory over the last 10 s (its own PSI `full`), in percent;
+        None when not measurable."""
         if self.cgroup is None:
             return None
         try:
-            cap = (self.cgroup / "memory.max").read_text().strip()
-        except OSError:
+            line = next(line for line in (self.cgroup / "memory.pressure").read_text().splitlines() if line.startswith("full "))
+            return float(dict(field.split("=") for field in line.split()[1:])["avg10"])
+        except (OSError, ValueError, StopIteration, KeyError):
             return None
-        used = _working_set(self.cgroup)
-        if used is None or cap == "max" or not cap.isdigit() or int(cap) == 0:
-            return None
-        return 100.0 * used / int(cap)
 
-    def tenant(self) -> tuple[str, float] | None:
-        """The slice's largest child that is no run's own scope, and its working set in GB; None when there is none."""
+    def holders(self, count: int = 3) -> tuple[tuple[str, float], ...]:
+        """The slice's `count` largest children that are no run's own scope, each with its working set in GB (those holding
+        0.1 GB or more); none when there is none."""
         if self.cgroup is None:
-            return None
-        sizes = [(child.name, used) for child in self.cgroup.iterdir()
-                 if child.is_dir() and not child.name.startswith(RUN_SCOPE_PREFIX) and (used := _working_set(child))]
-        name, used = max(sizes, key=lambda size: size[1], default=(None, 0))
-        return (name, used / 1e9) if name is not None else None
+            return ()
+        sizes = sorted(((child.name, used) for child in self.cgroup.iterdir()
+                        if child.is_dir() and not child.name.startswith(RUN_SCOPE_PREFIX) and (used := _working_set(child)) and used >= 1e8),
+                       key=lambda size: size[1], reverse=True)
+        return tuple((name, used / 1e9) for name, used in sizes[:count])
 
     def hold(self, *, now: float | None = None) -> Hold | None:
         """The memory hold now: from crossing `soft_percent` until back under `release_percent` (`#memory-hold.state`
@@ -239,8 +264,11 @@ class SoftMemory(BaseModel):
         slice_clear = used is None or used < self.release_percent
         pc_clear = pc_percent is None or pc_percent >= self.pc_release_percent
         stall = self.pc_stall() if self.stall_percent else None
-        stalled = stall is not None and stall[0] >= self.stall_percent
-        stall_clear = stall is None or stall[1] < self.stall_release_percent
+        own = self.group_stall() if stall is not None else None
+        # The slice's own stall is the PC's too, and only freeing the slice ends it: it holds through `used` above, never here.
+        ours = own is not None and own >= self.stall_percent
+        stalled = stall is not None and stall[0] >= self.stall_percent and not ours
+        stall_clear = stall is None or stall[1] < self.stall_release_percent or ours
         moment = time.time() if now is None else now
         with reg.shared_state("memory-hold") as (raw, write, _keep):
             since = _since(raw)
@@ -256,7 +284,7 @@ class SoftMemory(BaseModel):
                    if pc is not None and not pc_clear else {})
         if stall is not None and not stall_clear:
             pc_said |= dict(pc_stall_percent=max(stall), pc_stall_release_percent=self.stall_release_percent)
-        return Hold(cause=MemoryReading(at=since, used_percent=used, release_percent=self.release_percent, tenant=self.tenant(),
+        return Hold(cause=MemoryReading(at=since, used_percent=used, release_percent=self.release_percent, holders=self.holders(),
                                         **pc_said))
 
 

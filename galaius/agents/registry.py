@@ -13,6 +13,7 @@ killed agent reports as interrupted instead of spinning forever in the UI.
 
 import faulthandler
 import functools
+import gc
 import hashlib
 import inspect
 import json
@@ -34,7 +35,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, BinaryIO, ClassVar, Literal, NamedTuple, Self, Unpack
+from typing import TYPE_CHECKING, Any, BinaryIO, ClassVar, Literal, NamedTuple, Self, Unpack
 from uuid import UUID
 
 from pydantic import ConfigDict, BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
@@ -43,7 +44,7 @@ from galaius.usage_dialects import CountedTokens, OlderTokens
 from galaius_core import SubscriptionLimits, OPEN_MAX, OwnerQuestion, ASKED_BY_MAX, LaunchSkipReason, ReasoningLevel, RecordedReasoning, FILE_KEY, KEPT_FILE_MAX, MACHINE_AGENT_MEDIA, MEDIA_KEY, file_key, MODEL_ID_MAX, FileStory, HandedFile, AgentMedia, AgentRevisionRef, ContextGauge, PromptExecutionRef, RunReplacement, StopActor, TokenCounts
 
 from galaius.agents.transport.events import (
-    CONTEXT_FIELDS, PERSON_SENDER, AgentEvent, MessageFields, RunCut, UsageLedger, WakeReply, answered_line, its_work, model_spoke,
+    CONTEXT_FIELDS, PERSON_SENDER, AgentEvent, SESSION_SENDER_PREFIX, is_session_sender, session_sender, MessageFields, RunCut, UsageLedger, WakeReply, answered_line, its_work, model_spoke,
     received, stream_lines,
 )
 from galaius.agents.catalog.connection import CatalogConnection
@@ -58,7 +59,7 @@ from galaius.host.file_lock import LockTimeout, SoleHolder, exclusive
 from galaius.host.file_stamp import FileStamp
 from galaius.host.pinned_directory import DescriptorDirectory, PinnedDirectory
 from galaius.host.private_files import PRIVATE_FILES
-from galaius.host.processes import detached_options, end_process_tree, platform_signals, process_ancestry, process_started, process_unit
+from galaius.host.processes import detached_options, end_process_tree, platform_signals, process_ancestry, process_started, process_unit, return_free_memory
 from galaius.upgrade.store import active_interpreter
 from galaius.mcp.registry import (
     _alive,  # generic pid liveness (Windows-safe, no signal sent)
@@ -85,7 +86,15 @@ TERMINAL_STATUSES: frozenset[str] = frozenset(
 RunKind = Literal["process", "conversation", "provider_child"]
 #: What cut a run from outside its work (`cut_cause`): its program's word (`RunCut`), its process gone with no word of
 #: its own, or a signal nobody it answers to sent.
-CutCause = Literal["login_lost", "usage_limit", "network_lost", "process_gone", "killed"]
+CutCause = Literal["login_lost", "usage_limit", "network_lost", "overloaded", "process_gone", "killed"]
+#: A cut the build before it cannot read, written as the nearest cut that build reads, its own word kept beside in `<field>_exact`
+#: (`AgentRun.written`, read back by `AgentRun._older`): a rolled-back runtime still lists, stops and resumes a run cut by an
+#: overloaded API instead of dropping its record as unreadable. Goes with `OlderTokens` once no PC runs the older build.
+OLDER_READER_CUT: dict[str, str] = {"overloaded": "network_lost"}
+#: Where a record holds a cut: the field, and the nested record it sits in (None: the run's own).
+CUT_FIELDS: tuple[tuple[str | None, str], ...] = (None, "resumed_cut"), ("stream_digest", "cut")
+#: The suffix of the field beside a cut written as an older word.
+EXACT = "_exact"
 #: How a cut run comes back (`cut_resume`): `itself` with no one's action, `sign_in` once its login is signed in again.
 CutResumes = Literal["itself", "sign_in", "relaunch"]
 ConnectionMode = Literal["local_session", "api"]
@@ -118,6 +127,12 @@ class LaunchCandidate(BaseModel):
     #: `<catalog provider>/<id>`; None when a plain id outside the catalog is passed through.
     catalog_id: str | None = None
     rank: int = Field(ge=0)
+
+
+#: The `LaunchCandidate` values records name, one instance each: a record lists the ranked candidates of its launch
+#: (14 on average, 10 of a record's 23 KB), and the cached records of 5.4k runs held 55 MB of equal frozen copies in every
+#: process that lists runs (2026-11-24, dispatcher 435 MB at rest).
+_CANDIDATES: dict[LaunchCandidate, LaunchCandidate] = {}
 
 
 class SkippedCandidate(BaseModel):
@@ -423,6 +438,12 @@ class AgentRun(OlderTokens, ContextGauge):
     #: Records written before ranking existed load as empty tuples.
     candidates: tuple[LaunchCandidate, ...] = ()
     skipped: tuple[SkippedCandidate, ...] = ()
+
+    @field_validator("candidates", mode="after")
+    @classmethod
+    def _shared_candidates(cls, candidates: tuple[LaunchCandidate, ...]) -> tuple[LaunchCandidate, ...]:
+        return tuple(_CANDIDATES.setdefault(candidate, candidate) for candidate in candidates)
+
     denied_tools: tuple[DeniedTool, ...] = ()
     #: The tools its CLI serves it, when that CLI enforces the list exactly (`AgentProvider.exact_tools`); None: not
     #: limited, or limited only by a coarser sandbox. What the line reads to know a run can start no process (`takes_place`).
@@ -436,6 +457,9 @@ class AgentRun(OlderTokens, ContextGauge):
     tools: list[str] = Field(default_factory=list)
     started_at: float = 0.0
     finished_at: float | None = None
+    #: When the run had ended, while a message wakes it (`begin_resume_locked`) and no turn has started yet: a stop then puts this
+    #: back as its end (`stop`), so a run that never worked again hands nothing back to its askers. Cleared as a turn begins.
+    woken_from: float | None = None
     exit_code: int | None = None
     #: How this PC's runner resumes it by itself, a cut having stopped it (`cut_resume`): `itself` from `resume_at` on,
     #: `sign_in` once its login is signed in again here. Written and cleared by the runner only (`schedule_resumes`,
@@ -589,6 +613,38 @@ class AgentRun(OlderTokens, ContextGauge):
     def settled_word(cls, value: object) -> object:
         """One word for "gone without saying how it ended", whatever a record on disk spells."""
         return "interrupted" if value == _LEGACY_INTERRUPTED else value
+
+    @classmethod
+    def _older(cls, data: dict[str, Any]) -> dict[str, Any]:
+        """A cut written as an older word with its own beside it (`OLDER_READER_CUT`) read as its own."""
+        data = dict(data)
+        for holder, field in CUT_FIELDS:
+            target = data if holder is None else data.get(holder)
+            if isinstance(target, dict) and f"{field}{EXACT}" in target:
+                target = dict(target)
+                target[field] = target.pop(f"{field}{EXACT}")
+                if holder is None:
+                    data = target
+                else:
+                    data[holder] = target
+        return data
+
+    @classmethod
+    def written(cls, data: dict[str, Any]) -> dict[str, Any]:
+        """`data` as it is written back: tokens in the one spelling, a cut the older build cannot read as the nearest it can."""
+        data = dict(super().written(data))
+        for holder, field in CUT_FIELDS:
+            target = data if holder is None else data.get(holder)
+            if not isinstance(target, dict):
+                continue
+            target = {key: value for key, value in target.items() if key != f"{field}{EXACT}"}
+            if target.get(field) in OLDER_READER_CUT:
+                target[f"{field}{EXACT}"], target[field] = target[field], OLDER_READER_CUT[target[field]]
+            if holder is None:
+                data = target
+            else:
+                data[holder] = target
+        return data
     #: API-equivalent value of observed usage. The actual account impact is represented separately
     #: by ``charge_path`` and ``cost_certainty`` and remains unknown without provider evidence.
     cost_usd: float | None = None
@@ -1032,6 +1088,13 @@ class RunMedia:
                 _replace_private(cls.path(run_id, image.name), image.content)
             names.append(image.name)
         return tuple(dict.fromkeys(names))
+
+    @classmethod
+    def held(cls, run_id: str) -> tuple[Path, ...]:
+        """The files of every image kept for run `run_id` so far, whichever message showed it: a turn names the images of the
+        messages before it too, and a fenced agent opens only the files its fence shows (`FenceSpec.build`, `shown`)."""
+        prefix = f"{_safe_run_id(run_id)}.media."
+        return tuple(sorted(path for path in agents_dir().glob(f"{prefix}*") if re.fullmatch(MEDIA_KEY, path.name[len(prefix):]) and path.is_file()))
 
     @classmethod
     def keep_files(cls, run_id: str, paths: Iterable[Path]) -> tuple[str, ...]:
@@ -1520,6 +1583,10 @@ def _remember_vendor_refusal(run: AgentRun, said: str, *, cut: RunCut | None = N
     # again (`admission`): every run resumed meanwhile would be cut the same way (2026-10-18: 8 at once).
     if cut is RunCut.login_lost:
         quota.pause_login(run.provider, "login_lost", subscription=run.subscription_id, said=said, now=now)
+    # The vendor's API overloaded twice in a row for this model on this login (the first one only waits): it is passed over there for
+    # a while, so the next resume takes his other login or the next ranked model (`swap_login`, `resolve_continuable_model`).
+    elif cut is RunCut.overloaded and run.resumed_cut == "overloaded" and run.model:
+        quota.record_refusal(run.provider, run.model, subscription=run.subscription_id, now=now, bench=OVERLOAD_BENCH)
 
 
 def finish(
@@ -1628,6 +1695,18 @@ def fail_turn_locked(
     })
 
 
+def note_error_locked(run_id: str, text: str, *, now: float | None = None) -> None:
+    """An `error` line in `run_id`'s transcript (its messages file, anchored at the end of the stream) that leaves the run's status
+    as it is: what a reader of the transcript (the CLI, the editor panel) sees of something that went wrong around an ended run, such
+    as a message of the person's that was not delivered. While the caller owns ``record_lock(run_id)``."""
+    if _read_record(run_id) is None:
+        return
+    event = AgentEvent(kind="error", event_id=secrets.token_hex(16), text=text, at=time.time() if now is None else now,
+                       raw_index=raw_line_count(run_id))
+    _append_private(messages_path(run_id), (event.model_dump_json() + "\n").encode())
+    _merge_record_locked(run_id, {"last": event.summary(viewer=run_id)})
+
+
 def fail_turn(run_id: str, reason: str, *, exit_code: int = 1, now: float | None = None) -> AgentRun | None:
     """:func:`fail_turn_locked` for a caller not holding the run's lock."""
     with record_lock(run_id):
@@ -1707,8 +1786,19 @@ def stop(run_id: str, *, by: StopActor | None, expected_lifecycle_token: str | N
             return False
         if stored.process_running():
             _terminate(stored.pid)
+        # A run a message woke and no turn began on (`woken_from`) ends as it had ended, whoever stops it: nothing new happened, so
+        # nothing is dated now and nothing is handed back; a person's stop still holds it (`held_at`). Its status is read again from
+        # its kept ending (`_derive`), never `stopped` over an old end date.
+        unstarted = stored.status == "starting" and stored.woken_from is not None and not stored.process_running()
+        held = {"held_at": time.time()} if holds(by) and not waiting else {}
+        if unstarted:
+            updated = _merge_record_locked(run_id, {**held, "woken_from": None, "finished_at": stored.woken_from})
+            if updated is not None:
+                _derive(updated)
+            return updated is not None
         updated = _merge_record_locked(run_id, {
-            **({"held_at": time.time()} if holds(by) and not waiting else {}),
+            **held,
+            "woken_from": None,
             "finished_at": stored.finished_at if idle and stored.finished_at else time.time(),
             "exit_code": 0 if idle else -signal.SIGTERM,
             "status": "done" if idle else "stopped",
@@ -1975,7 +2065,7 @@ def _merge_record_locked(run_id: str, updates: dict) -> AgentRun | None:
         raw = json.loads(payload)
         if not isinstance(raw, dict) or raw.get("run_id") != run_id:
             return None
-        merged = AgentRun.written({**raw, **updates})  # an older record is written back in the one spelling
+        merged = AgentRun.written({**AgentRun._older(raw), **updates})  # an older record is written back in the one spelling; a stored cut as its own word first, so the update replaces it
         validated = AgentRun.model_validate(merged)
     except (TypeError, ValueError, json.JSONDecodeError):
         return None
@@ -2088,7 +2178,7 @@ def _write(run: AgentRun) -> None:
             raw = json.loads(payload)
         except (TypeError, ValueError, json.JSONDecodeError):
             raw = {}
-        merged = AgentRun.written({**raw, **run.model_dump(mode="json")})
+        merged = AgentRun.written({**AgentRun._older(raw), **run.model_dump(mode="json")})
         _replace_private(_record_path(run.run_id), json.dumps(merged, ensure_ascii=False).encode())
 
 
@@ -2100,7 +2190,7 @@ def save_run(run: AgentRun) -> None:
 #: Record fields that describe how the run's PREVIOUS turn ended, cleared when it starts another
 #: one: a cause and hour kept from an earlier cut were read as this turn's, so a run cut off today
 #: was shown as cut off yesterday, and the one that ended cleanly after it inherited that cause.
-PREVIOUS_ENDING: dict[str, None] = dict.fromkeys(("exit_code", "finished_at", "stopped_by", "held_at", "replaced_by", "interruption", "resumes", "resume_at"))
+PREVIOUS_ENDING: dict[str, None] = dict.fromkeys(("exit_code", "finished_at", "woken_from", "stopped_by", "held_at", "replaced_by", "interruption", "resumes", "resume_at"))
 
 
 def begin_turn(
@@ -2376,8 +2466,8 @@ def _record_message_event_locked(
         return None
     message_id = event_id or secrets.token_hex(16)
     for side in (from_run, to_run):
-        if side in SYSTEM_SENDERS:
-            continue
+        if side in SYSTEM_SENDERS or is_session_sender(side):
+            continue  # the recipient's transcript alone holds a machine's or an outside session's line
         event = AgentEvent(kind="message", event_id=message_id, text=text, from_run=from_run, to_run=to_run, at=time.time(),
                            raw_index=raw_line_count(side), **fields)
         _append_private(messages_path(side), (event.model_dump_json() + "\n").encode())
@@ -2696,6 +2786,23 @@ def events_from(run_id: str, first: int) -> list[AgentEvent]:
     return StreamReader(run_id, first).past()
 
 
+class BlockClock:
+    """When each text block was first seen: the instant of its first `partial` event. Every later `partial` of the block and
+    the `text` event closing it take it (`settle`), so the block's row keeps its stamp from its first words to its last
+    (the web keys a row by it)."""
+
+    def __init__(self, events: Iterable[AgentEvent] = ()) -> None:
+        self.first: dict[str, float] = {}
+        for event in events:
+            self.settle(event)
+
+    def settle(self, event: AgentEvent) -> None:
+        if event.kind == "partial" and event.at is not None:
+            event.at = self.first.setdefault(event.provider_cursor, event.at)
+        elif event.kind == "text" and event.provider_cursor in self.first:
+            event.at = self.first[event.provider_cursor]
+
+
 def _carry_observed_at(path: Path, events: list[AgentEvent]) -> None:
     """Stamp when each event was first seen, keeping the stamps already on record; an event that
     carries its own time (a message or a refused resume from the run's messages file) keeps it.
@@ -2717,11 +2824,12 @@ def _carry_observed_at(path: Path, events: list[AgentEvent]) -> None:
     except ValueError:
         pass  # a line still being appended (`StreamMirror`): the stamps before it hold
     now = time.time()
+    clock = BlockClock()
     for i, event in enumerate(events):
-        if event.at is not None:
-            continue  # its own time (a message, a refused resume, written with its moment): never when its line was first seen
-        prior = seen[i] if i < len(seen) else None
-        event.at = prior if isinstance(prior, (int, float)) else now
+        if event.at is None:  # else its own time (a message, a refused resume, written with its moment): never when its line was first seen
+            prior = seen[i] if i < len(seen) else None
+            event.at = prior if isinstance(prior, (int, float)) else now
+        clock.settle(event)
 
 
 def _mirror_normalised(run_id: str, events: list[AgentEvent]) -> FileStamp | None:
@@ -2855,9 +2963,12 @@ class StreamMirror:
                 return False
             if fresh:
                 now = time.time()
+                # The blocks seen so far are read only for a batch holding words of a block (the clock's first sight of each).
+                clock = BlockClock(self.written) if any(event.provider_cursor for event in fresh) else BlockClock()
                 for event in fresh:
                     if event.at is None:
                         event.at = now  # as `_carry_observed_at` stamps a line it has not seen
+                    clock.settle(event)
                 payload = "".join(event.model_dump_json() + "\n" for event in fresh).encode()
                 if os.write(descriptor, payload) != len(payload):
                     raise OSError("short agent-registry append")
@@ -2883,7 +2994,7 @@ def begin_resume_locked(run_id: str) -> AgentRun | None:
     run = _read_record(run_id)
     if run is None or run.kind != "process" or run.process_running():
         return run
-    return run if run.status == "starting" else _merge_record_locked(run_id, {"status": "starting", "finished_at": None})
+    return run if run.status == "starting" else _merge_record_locked(run_id, {"status": "starting", "finished_at": None, "woken_from": run.finished_at})
 
 
 def note_fell_back_locked(run_id: str, refused: FellBack) -> None:
@@ -3215,6 +3326,15 @@ def settle_gone() -> list[AgentRun]:
 #: How soon after an automatic resume the same cut means it did not come back (`cut_resume`'s loop guard): the run is
 #: then left to a person; a usage refusal heard this soon after its resume means the window did not reopen.
 RESUME_GRACE = 300.0
+#: How long after its end a run cut with its process or by a back-off (`WINDOWED_CUTS`) still comes back by itself: a few hours of a
+#: restarted PC, never weeks. A record older than that is abandoned work: resuming it re-runs a stale brief against a repository
+#: that moved on (2026-11-24: 37 old runs woke at once). Left to a person: « Continuer » still resumes it. A lost login and a
+#: usage limit already due are bound by it too (`cut_resume`).
+CUT_RESUME_WINDOW = 24 * 3600.0
+#: The cuts that resume the moment they are seen, with nothing external to wait for (a limit's reset, a sign-in): the ones the
+#: window above bounds, with the cuts that wait only minutes (an overloaded API, a lost network: a runner looking days late
+#: would find them already due).
+WINDOWED_CUTS: frozenset[CutCause] = frozenset({"process_gone", "killed", "overloaded", "network_lost"})
 #: How many times in a row a run cut by the same cause (its usage limit apart: each reset is a new window) is resumed by
 #: itself before it is left to a person (`cut_resume`): a cut that comes back later than `RESUME_GRACE` each time (an
 #: OOM at the same peak, a time limit) never loops paid turns.
@@ -3223,10 +3343,16 @@ AUTO_RESUMES_PER_CUT = 2
 #: further per resume already made: a DNS or connect failure of seconds is waited out and costs one turn, one that
 #: outlasts the whole backoff is no blip and the run is left to a person. Its length bounds the retries.
 NETWORK_RESUME_BACKOFF: tuple[float, ...] = (5.0, 20.0, 60.0, 180.0)
+#: The same for a run its provider's API refused as overloaded (`overload_resume_at`): longer steps, for a vendor that needs minutes,
+#: and more of them since the second overload in a row moves the run to another login or model (`OVERLOAD_BENCH`).
+OVERLOAD_RESUME_BACKOFF: tuple[float, ...] = (15.0, 45.0, 120.0, 240.0, 480.0)
+#: How long a model overloaded twice in a row is passed over on its login (`_remember_vendor_refusal`): the resumes in between go to
+#: another login or the next ranked model, and the vendor's own recovery returns it (`quota.served` clears it at its first answer).
+OVERLOAD_BENCH = 600.0
 #: The cuts that time their own automatic resume and count their own retries (`limit_resume_at`, `network_resume_at`):
 #: the shared loop guards (`RESUME_GRACE`, `AUTO_RESUMES_PER_CUT`) would read their backoff as a resume that did not
 #: come back, since each is EXPECTED to be heard again within it while the cause lasts.
-SELF_TIMED_CUTS: frozenset[CutCause] = frozenset({"usage_limit", "network_lost"})
+SELF_TIMED_CUTS: frozenset[CutCause] = frozenset({"usage_limit", "network_lost", "overloaded"})
 #: Exit codes of a signal sent from outside the program (SIGHUP, SIGKILL, SIGTERM; `-N` as the launcher records them,
 #: `128 + N` through a shell): a kill. Any other (SIGABRT, SIGSEGV…) is the program's own crash, never resumed by itself.
 _KILLED_EXITS = frozenset(code for sig in platform_signals("SIGHUP", "SIGKILL", "SIGTERM") for code in (-sig, 128 + sig))
@@ -3304,6 +3430,23 @@ def network_resume_at(run: AgentRun, *, now: float | None = None) -> float | Non
     return None if made >= len(NETWORK_RESUME_BACKOFF) else run.finished_at + NETWORK_RESUME_BACKOFF[made]
 
 
+def overload_resume_at(run: AgentRun, *, now: float | None = None) -> float | None:
+    """When `run`, whose last turn its provider's API ended as overloaded (`RunCut.overloaded`), is resumed by itself:
+    `OVERLOAD_RESUME_BACKOFF` after that end, one step further per automatic resume already made for that cut. None past the
+    last step, and not before its model's overload bench ends when nothing else can take the turn. `now` only tells whether that bench still stands."""
+    if run.finished_at is None:
+        return None
+    made = run.resumed_cuts if run.resumed_cut == "overloaded" else 0
+    if made >= len(OVERLOAD_RESUME_BACKOFF):
+        return None
+    due = run.finished_at + OVERLOAD_RESUME_BACKOFF[made]
+    # Its model benched on its login (`OVERLOAD_BENCH`) with no other login or provider to take the turn: the vendor's API is the
+    # one thing left to wait for, so the automatic try comes when the bench ends, never into the overload again. A person's message
+    # (his « Continuer ») never waits: the next ranked model takes it at once (`quota.forget_login` leaves the bench standing).
+    bench = quota.overload_until(run.provider, run.model, subscription=run.subscription_id, now=now)
+    return due if bench is None or open_logins(run) or fallback.moves(run) else max(due, bench)
+
+
 def cut_cause(run: AgentRun) -> CutCause | None:
     """What cut `run` from outside its work, None when nothing did: its program's word (`RunCut`: a lost login, a
     usage limit, its provider's API never reached), its process gone without a word of its own (`process_gone`: a
@@ -3370,10 +3513,14 @@ def cut_resume(run: AgentRun, *, now: float | None = None) -> CutOwed | None:
     cut (`cut_cause`) that ended since this PC resumes cuts (`cut_resume_since`), once per cut, whatever time since —
     a process cut at once, a usage limit at its reset (`limit_resume_at`), a network failure after a bounded backoff
     (`network_resume_at`), a lost login once signed in again. None when nothing resumes it but a person: no cut,
-    resumed for it already, or cut again by the same cause within `RESUME_GRACE` of its last automatic resume (it did
-    not come back) — a cut that times its own resume (`SELF_TIMED_CUTS`) counts its own retries instead."""
+    resumed for it already, a process or back-off cut (`WINDOWED_CUTS`), a lost login, or a usage limit whose resume fell due more than `CUT_RESUME_WINDOW` ago (a weekend longer than that resumes by his « Continuer »), or cut again by the same
+    cause within `RESUME_GRACE` of its last automatic resume (it did not come back) — a cut that times its own resume (`SELF_TIMED_CUTS`) counts its own retries instead."""
     cause = cut_cause(run)
     if cause is None or run.finished_at is None or run.finished_at < _cut_since():
+        return None
+    moment = time.time() if now is None else now
+    aged = moment - run.finished_at > CUT_RESUME_WINDOW
+    if aged and cause in WINDOWED_CUTS:
         return None
     if relaunch_owed(run, now=now):
         return CutOwed(cause, "relaunch", run.finished_at)
@@ -3383,10 +3530,12 @@ def cut_resume(run: AgentRun, *, now: float | None = None) -> CutOwed | None:
     if cause not in SELF_TIMED_CUTS and run.resumed_cut == cause and run.resumed_cuts >= AUTO_RESUMES_PER_CUT:
         return None
     if cause == "login_lost":
-        return CutOwed(cause, "sign_in", None)
+        return None if aged else CutOwed(cause, "sign_in", None)
     if cause in SELF_TIMED_CUTS:
-        at = limit_resume_at(run, now=now) if cause == "usage_limit" else network_resume_at(run, now=now)
-        return None if at is None else CutOwed(cause, "itself", at)
+        at = {"usage_limit": limit_resume_at, "network_lost": network_resume_at, "overloaded": overload_resume_at}[cause](run, now=now)
+        # A resume nobody took within `CUT_RESUME_WINDOW` of falling due is as stale as a process cut: the pool refusal or another
+        # login open is due at the cut itself, a named reset at that instant (a reset a day away still resumes on time).
+        return None if at is None or moment - at > CUT_RESUME_WINDOW else CutOwed(cause, "itself", at)
     return CutOwed(cause, "itself", run.finished_at)
 
 
@@ -3625,6 +3774,28 @@ def session_ids() -> frozenset[str]:
 _RECORD_CACHE: dict[str, tuple[FileStamp, AgentRun | None]] = {}
 
 
+#: A record cache nobody read for this long is dropped (`_trim_idle_record_cache`).
+RECORD_CACHE_IDLE_SECONDS = 120.0
+_cache_read_at = 0.0
+_cache_trimmer: threading.Thread | None = None
+
+
+def _trim_idle_record_cache() -> None:
+    """Drop the cache of 5.4k records (118 MB, 23 KB each) once no listing read it for `RECORD_CACHE_IDLE_SECONDS`, and
+    return the pages: a dispatcher or a spawn waiter listed the runs once and held it for its life (435 MB at rest,
+    three of them, 2026-11-24 when the agents' memory group sat at its ceiling). A poller reading every tick keeps it
+    hot; the first listing after the drop re-reads the files (2.6 s for 5.4k records). Ends once it has dropped it."""
+    global _cache_trimmer
+    while True:
+        time.sleep(max(1.0, RECORD_CACHE_IDLE_SECONDS / 4))
+        if time.monotonic() - _cache_read_at >= RECORD_CACHE_IDLE_SECONDS:
+            _RECORD_CACHE.clear()
+            gc.collect()
+            return_free_memory()
+            _cache_trimmer = None
+            return
+
+
 def _stat_cached_record(path: Path | os.DirEntry) -> AgentRun | None:
     key = os.fspath(path)
     stamp = FileStamp.at(path)
@@ -3642,7 +3813,13 @@ def _stat_cached_record(path: Path | os.DirEntry) -> AgentRun | None:
 def _stored_records() -> list[AgentRun]:
     """Every readable run record, by file name, each re-read only when its file moved. One
     `scandir` and no `Path` per file: over 3k records, globbing then sorting `Path` objects was
-    most of a poller's 150 ms tick."""
+    most of a poller's 150 ms tick. Each listing marks the cache read (`_trim_idle_record_cache`): one run's own record
+    read every 100 ms by its dispatcher does not."""
+    global _cache_read_at, _cache_trimmer
+    _cache_read_at = time.monotonic()
+    if _cache_trimmer is None:
+        _cache_trimmer = threading.Thread(target=_trim_idle_record_cache, name="record-cache-trim", daemon=True)
+        _cache_trimmer.start()
     try:
         with os.scandir(agents_dir()) as scan:
             entries = sorted((entry for entry in scan if entry.name.endswith(".json") and not entry.name.endswith(QUEUE_SUFFIX)
@@ -3650,7 +3827,9 @@ def _stored_records() -> list[AgentRun]:
     except FileNotFoundError:
         return []
     with _pinned_registry():   # the folder checked once, not once per record (~a quarter of a listing, 2026-11-16)
-        return [run for run in map(_stat_cached_record, entries) if run is not None]
+        records = [run for run in map(_stat_cached_record, entries) if run is not None]
+    _cache_read_at = time.monotonic()   # a cold listing takes seconds: idle counts from its end
+    return records
 
 
 def forget(run_id: str) -> bool:

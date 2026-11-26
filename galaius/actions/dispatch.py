@@ -27,6 +27,7 @@ from galaius.actions.models import (
     HandleDialogAction,
     HoverAction,
     NewTabAction,
+    PressAction,
     ScreenshotAction,
     SwitchTabAction,
     TypeTextAction,
@@ -1081,7 +1082,7 @@ async def _run_actions_browser(
     # circular: server imports dispatch
     from galaius.server.capture import _annotate_and_describe, _capture, _element_screenshot, _wait as _wait_fn  # noqa: PLC0415
     from galaius.server.core import _save_to_path, _saved_note, _session_response  # noqa: PLC0415
-    from galaius.server.vlm import _analyze, _run_compare  # noqa: PLC0415
+    from galaius.server.vlm import _analyze, _run_compare, _run_observe  # noqa: PLC0415
 
     current_tab = mgr.active_tab  # the tab the prior tab-less scan acted on, so its refs resolve (#34)
     page = await mgr.get_page(current_tab)
@@ -1285,6 +1286,14 @@ async def _run_actions_browser(
                 entry = _step(i, action.type, _button_prefix(action) + desc)
                 if result is not None:
                     entry += f"\n  result: {result}"
+                if isinstance(action, PressAction) and action._frame is not None:
+                    # The frame taken while the pointer was still down: kept for `compare`, saved
+                    # to `path`, described by `query` — the settled capture above is after release.
+                    snapshots[step_idx] = action._frame
+                    if action.path:
+                        entry += f"\n  held frame: {_saved_note(_save_to_path(action.path, action._frame), action._frame)}"
+                    if action.query:
+                        entry += f"\n  held frame: {await _run_observe(action._frame, action.query, 'the page at the end of the hold')}"
                 step_reports.append(entry)
 
             if action.wait and not wait_consumed:

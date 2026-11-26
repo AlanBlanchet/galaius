@@ -3,7 +3,9 @@ each served as its own caller; a relay outlives its server; a server of an older
 
 import json
 import os
+import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -107,6 +109,68 @@ def test_two_callers_on_one_server_each_see_their_own_identity(endpoint, tmp_pat
     finally:
         first.close()
         second.close()
+
+
+def test_a_server_and_the_relay_connected_to_it_are_listed_as_running_their_runtime(endpoint, tmp_path):
+    from galaius.upgrade.store import LiveProcess, Runtime
+
+    client = Client(endpoint, {}, tmp_path)
+    try:
+        client.start()
+        (server,) = servers(endpoint)
+        entries = [LiveProcess.model_validate_json(path.read_bytes()) for path in (tmp_path / "runtimes" / "live").glob("*.json")]
+        # The relay names its runtime as two folders above its interpreter: `sys.prefix` may read the base Python under `-I -S`.
+        assert {entry.pid: entry.runtime for entry in entries} == {server: Runtime.own().path, client.process.pid: Runtime(path=Path(sys.executable).parent.parent).path}
+    finally:
+        client.close()
+
+
+def test_a_server_a_relay_started_is_collected_once_it_leaves(tmp_path):
+    """Its parent is the relay: uncollected it stays a zombie, which a liveness probe off Linux reads as running (its runtime stays in use)."""
+    log, path = tmp_path / "server.log", tmp_path / "s" / "mcp.sock"
+    serves_once = "import os, socket, sys; s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(); print(os.getpid(), flush=True); s.accept()"
+    started = relay_module.Endpoint(socket=str(path), start=[sys.executable, "-c", serves_once, str(path)], log=str(log))
+    started.connect(30).close()  # listening: the connection is accepted, and the server leaves
+    pid = int(log.read_text())
+    time.sleep(1)
+    with pytest.raises(ChildProcessError):  # no child of this process is left to collect: the reaper already did
+        os.waitpid(pid, os.WNOHANG)
+
+
+def test_a_store_folder_that_cannot_be_written_costs_no_client_its_tools(endpoint, tmp_path):
+    (tmp_path / "runtimes").mkdir()
+    (tmp_path / "runtimes" / "live").write_text("a file where the live folder goes: no process can be listed")
+    client = Client(endpoint, {}, tmp_path)
+    try:
+        assert client.start()["result"]["serverInfo"]["name"] == "galaius"
+        assert client.tool("agent_list")
+        assert servers(endpoint)  # the server itself went on
+    finally:
+        client.close()
+
+
+def test_a_relay_of_an_older_build_that_names_no_runtime_is_listed_from_its_command_line(endpoint, tmp_path):
+    """The process is `sleep` started under the store's own path as its program name (a Python venv on a macOS framework build re-execs
+    under another path, which would test that build, not the server): what `ps` and `/proc` list is the name it was started as."""
+    from galaius.upgrade.store import LiveProcess
+
+    runtime = tmp_path / "runtimes" / "0.0.1-older"
+    (runtime / "bin").mkdir(parents=True)
+    serve(endpoint)
+    relay = subprocess.Popen([str(runtime / "bin" / "python"), "60"], executable=shutil.which("sleep"))
+    connection = socket.socket(socket.AF_UNIX)
+    try:
+        connection.connect(endpoint["socket"])
+        connection.sendall(json.dumps({"jsonrpc": "2.0", "method": relay_module.HELLO, "params": {"environment": {}, "cwd": str(tmp_path), "pid": relay.pid}}).encode() + b"\n")
+        live = tmp_path / "runtimes" / "live" / f"{relay.pid}.json"
+        deadline = time.time() + 30
+        while not live.exists() and time.time() < deadline:
+            time.sleep(0.1)
+        assert LiveProcess.model_validate_json(live.read_bytes()).runtime == runtime.resolve()
+    finally:
+        connection.close()
+        relay.kill()
+        relay.wait()
 
 
 def test_a_relay_whose_server_died_connects_again_and_answers(endpoint, tmp_path):

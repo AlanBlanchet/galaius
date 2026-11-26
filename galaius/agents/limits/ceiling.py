@@ -40,6 +40,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from galaius.config.settings import Config
+from galaius.host.paths import UserPaths
 from galaius.host.processes import RUN_SCOPE_PREFIX
 
 #: How a scope working for no one run is named (`task_scope_name`).
@@ -185,9 +186,14 @@ def is_run_scope(unit: str | None, run_id: str) -> bool:
 
 
 def _prepare_slice(systemctl: str, ceiling: Ceiling) -> None:
-    """Start the slice and apply the ceiling for this boot only; nothing is written to disk."""
+    """Start the slice and apply the ceiling for this boot only; nothing is written to disk. A process working in a probe
+    registry (`UserPaths.AGENTS_OVERRIDE`: a test PC, a harness, a load run) starts the slice and leaves its limits alone:
+    it carries none of the person's settings, and its defaults (45 % cap, no soft limit) replaced his 40 % / 30 % while his
+    agents were running (2026-11-24 22:13)."""
     run = dict(check=True, capture_output=True, timeout=_SYSTEMCTL_TIMEOUT)
     subprocess.run([systemctl, "--user", "start", SLICE], **run)
+    if os.environ.get(UserPaths.AGENTS_OVERRIDE):
+        return
     assignments = [f"{key}={value}" for key, value in ceiling.properties(os.cpu_count() or 1).items()]
     subprocess.run([systemctl, "--user", "set-property", "--runtime", SLICE, *assignments], **run)
 

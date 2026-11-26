@@ -117,6 +117,32 @@ def test_runs_waiting_on_their_agents_give_their_place_back_until_they_wake(at_w
         "en file : 0 avant elle (7 agents au travail sur ce PC, 6 places prises sur 6, 3 rendues par des runs qui attendent leurs agents)"
 
 
+@pytest.mark.skipif(sys.platform in ("win32", "darwin"), reason="reads /proc")
+def test_a_run_sleeping_in_its_tool_call_gives_its_place_back_until_a_command_runs(started, monkeypatch):
+    """2026-11-23: 4 of the 8 runs holding the 6 places sat in `sleep` poll loops, an hour, while 17 starts waited."""
+    line = SpawnLine(limit=2, waiting_flag_minutes=5, waiting_gap_seconds=60)
+    monkeypatch.setattr(reg, "vendor_said_at", lambda run: time.time() - 120)  # its agent wrote nothing for two minutes
+    cli = subprocess.Popen([sys.executable, "-c", "import subprocess, time; subprocess.Popen(['bash', '-c', 'sleep 60; true']); time.sleep(60)"], start_new_session=True)
+    busy = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        register_run(run_id="sleeper", pid=cli.pid)
+        register_run(run_id="worker", pid=busy.pid)
+        deadline = time.time() + 10
+        while not line.set_aside() and time.time() < deadline:
+            time.sleep(0.1)
+        assert line.set_aside() == frozenset({"sleeper"})
+        assert line.waiting_said()["sleeper"] == spawn_line.RESTING
+        with line._places() as places:
+            assert (line.load(places).places, line.load(places).aside) == (1, 1)
+        monkeypatch.setattr(reg, "vendor_said_at", lambda run: time.time())  # it wrote: at work again
+        assert line.set_aside() == frozenset()
+    finally:
+        os.killpg(cli.pid, 9)  # the shell and its sleep go with it
+        busy.kill()
+        for child in (cli, busy):
+            child.wait()
+
+
 @pytest.mark.parametrize(("waits_on", "said"), [
     pytest.param(["83da9bab-0000-4000-8000-000000000000", "5c0ffee1-0000-4000-8000-000000000000", "ended"], "attend 83da9bab, 5c0ffee1 depuis 14 min", id="names-the-runs-still-to-end"),
     pytest.param([], "attend ses agents depuis 14 min", id="a-wait-naming-none"),
@@ -213,6 +239,19 @@ def test_the_owners_own_web_runs_are_not_counted(at_work, started):
     UserPaths.config().mkdir(parents=True)
     WebRuns.in_folder(UserPaths.config()).add(WebRun(run_id=uuid.UUID(owners), root="/w"))
     assert line.enter(_spawn()).ahead is None  # counted, it would fill the one place
+
+
+def test_an_unqueued_role_never_waits_for_a_place_behind_builders(at_work, started):
+    """The deployer behind six builders waited 50 min twice (2026-11-24) while every slice waited on it."""
+    line = SpawnLine(limit=1, waiting_flag_minutes=5, waiting_gap_seconds=60, unqueued_roles=frozenset({"deployer"}))
+    at_work("builder", served_tools=None)                                                    # the one place taken
+    assert line.enter(_spawn()).ahead is not None                                            # another builder-like role waits
+    assert line.enter(_spawn().model_copy(update={"agent": "deployer"})).ahead is None       # the deployer starts at once
+    owner = at_work("deployer-run", agent="deployer", served_tools=None)
+    with line.resuming(reg.get_run("deployer-run")) as may:                                  # and its resumed turn is never held
+        assert may is True
+    owner.kill()
+    owner.wait()
 
 
 READING = ("Read", "Grep", "Glob", "SendMessage", "mcp__galaius__conversation_read", "mcp__galaius__ext__galaius__note_save")

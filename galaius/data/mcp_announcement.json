@@ -20,7 +20,7 @@
    "listChanged": false
   }
  },
- "instructions": "galaius v{version} — drives a browser and desktop windows by vision/refs over MCP. Act by `ref` (from get_interactive_elements / get_page_state / screenshot), a CSS `selector`, accessible `name`, or `x,y` — whichever fits. Browser automation works on Linux, macOS and Windows. THE DESKTOP ITSELF works on all three too (Linux = X11): target=\"screen\", or one monitor target=\"screen:<n>\" (list_desktop_windows lists monitors with geometry, and windows). On it, run_actions key_press sends OS keys and chords — \"super\" (the Windows key; the Linux launcher), \"cmd+space\" (Spotlight), \"alt+tab\", \"Escape\" — type_text types into whatever has focus, click/scroll act at x,y; screenshot takes region=[x,y,w,h] and max_width= to keep one area of one monitor at a readable size; wait_for window=\"<title>\" or text=\"<words>\" (READ by OCR in the ACTIVE window by default, region=\"screen\" or [x,y,w,h] to widen or narrow; whole words only, never the echo of what you just typed; state visible/hidden) waits for a window or a launcher's result row instead of a sleep. Per-window targets and launch_app's sandbox are Linux-only. SEEING & MEDIA — pick the cheapest tool that answers your question: a FACT about the page (element present, text, count, attribute, URL) → get_page_state / get_interactive_elements / evaluate_js, no pixels needed. How it LOOKS → screenshot (add query= only when you need an interpretation, it costs a VLM call). Judging quality → review_ui (find defects) / verify_ui (PASS-FAIL your requirements) / measure_ui (deterministic contrast, free). BATCHING — reading or clicking over MANY elements is ONE run_actions evaluate_js step (a JS program run against the live page: query → filter → loop → read/act, args + return value, browser-isolated), NOT N get_interactive_elements→act round-trips. MOTION & VIDEO — an animation, a transition, 'did it move smoothly', or WHAT HAPPENED over time is invisible to a still screenshot: record it (start=True → act → start=False, browser AND desktop; duration= for a fixed clip), then pass query= to have the video model EXPLAIN the sequence (a native video model watches it; others sample frames). HEARING — galaius can HEAR, not only see: transcribe(path, query=…) turns any local audio OR video file (a download_asset clip, a record(path=…) capture, any mp3/wav/mp4/mov) into text, or ANSWERS a question about the sound — speakers, tone, music, spoken words — acoustically when the audio model can listen (Gemini, gpt-4o-audio). Sandbox recordings carry the launched app's own audio, so record(path=…) then transcribe(path=…) hears what a native app said or played. DRAWING — a generated picture comes from generate_image (the company's image model on the Galaius platform, charged to the person you work for and shown in their Facturation), never from an image API called with a key found on this computer. FILES FOR THE PERSON — a document, a spreadsheet, a deck, a PDF or a mail draft they asked for comes from create_file (docx, xlsx, pptx, pdf, csv, md, json, txt, eml), never a script of your own: it writes the file in your working folder AND offers it in their chat as a file to download, which a file you write yourself never is. A video they asked to cut, join or caption comes from edit_video (on this PC, at no cost), never ffmpeg of your own: its result plays in their chat. MEDIA JOBS — a translation comes from translate, a 3D model from generate_3d, spoken audio from generate_speech, music from generate_music, a sound effect from generate_sound (the company's models on the Galaius platform, charged to the person you work for): ask once without max_cost_usd for the price, then again with it to make it; the files they make show in the person's chat like create_file's. SESSIONS: omit `session` and you get your OWN isolated browser session — every reply names it in its `[session: …]` prefix, and it stays yours for this whole connection, so there is no name to invent and nothing to remember. Pass `session=\"default\"` only when you deliberately want to SHARE tabs with other callers on this connection. DESKTOP: use galaius's own tools — never shell out to xdotool/wmctrl, crop with ImageMagick, or `sleep` between steps: each has an equivalent above. For an app that fights the window manager, runs in the background, or is GPU-rendered and screen-grabs black (Flutter/Electron/games/emulators), launch it with `launch_app(\"<cmd>\")` — just the binary/command, no env tricks needed (the sandbox forces software GL itself so a GPU app renders instead of capturing black) — and drive it via `target=\"nested:<title>\"`, an isolated, occlusion-proof display. If `launch_app` isn't in your tool list, your galaius server is out of date: it moves to the newest installed version by itself once no browser session or sandbox is open (`galaius upgrade` shows its state); don't fall back to raw shell automation. If sandbox launches start failing (e.g. rc=1 for every app after many launches), the display is respawned automatically on the next `launch_app`, or call `reset_sandbox` to force a clean one — keep using the sandbox, don't switch to driving the real desktop. If galaius itself errors in a way that blocks you, behaves unexpectedly, or is missing a capability you needed, call `report_issue` — it sends the problem to galaius's maintainers so it gets fixed. That's the channel for feedback about the tool (not about the site you automate). If its result says a prefilled issue page was opened in the browser, tell the user to press Submit there; never copy report files into repos.",
+ "instructions": "galaius v{version} — drives a browser and desktop windows by vision/refs over MCP. Act by `ref` (from get_interactive_elements / get_page_state / screenshot), a CSS `selector`, accessible `name`, or `x,y` — whichever fits. Browser automation works on Linux, macOS and Windows. THE DESKTOP ITSELF works on all three too (Linux = X11): target=\"screen\", or one monitor target=\"screen:<n>\" (list_desktop_windows lists monitors with geometry, and windows). On it, run_actions key_press sends OS keys and chords — \"super\" (the Windows key; the Linux launcher), \"cmd+space\" (Spotlight), \"alt+tab\", \"Escape\" — type_text types into whatever has focus, click/scroll act at x,y; screenshot takes region=[x,y,w,h] and max_width= to keep one area of one monitor at a readable size; wait_for window=\"<title>\" or text=\"<words>\" (READ by OCR in the ACTIVE window by default, region=\"screen\" or [x,y,w,h] to widen or narrow; whole words only, never the echo of what you just typed; state visible/hidden) waits for a window or a launcher's result row instead of a sleep. Per-window targets and launch_app's sandbox are Linux-only. SEEING & MEDIA — pick the cheapest tool that answers your question: a FACT about the page (element present, text, count, attribute, URL) → get_page_state / get_interactive_elements / evaluate_js, no pixels needed. How it LOOKS → screenshot (add query= only when you need an interpretation, it costs a VLM call). Judging quality → review_ui (find defects) / verify_ui (PASS-FAIL your requirements) / measure_ui (deterministic contrast, free). BATCHING — reading or clicking over MANY elements is ONE run_actions evaluate_js step (a JS program run against the live page: query → filter → loop → read/act, args + return value, browser-isolated), NOT N get_interactive_elements→act round-trips. MOTION & VIDEO — an animation, a transition, 'did it move smoothly', or WHAT HAPPENED over time is invisible to a still screenshot: record it (start=True → act → start=False, browser AND desktop; duration= for a fixed clip), then pass query= to have the video model EXPLAIN the sequence (a native video model watches it; others sample frames). HEARING — galaius can HEAR, not only see: transcribe(path, query=…) turns any local audio OR video file (a download_asset clip, a record(path=…) capture, any mp3/wav/mp4/mov) into text, or ANSWERS a question about the sound — speakers, tone, music, spoken words — acoustically when the audio model can listen (Gemini, gpt-4o-audio). Sandbox recordings carry the launched app's own audio, so record(path=…) then transcribe(path=…) hears what a native app said or played. DRAWING — a generated picture comes from generate_image (the company's image model on the Galaius platform, charged to the person you work for and shown in their Facturation), never from an image API called with a key found on this computer. FILES FOR THE PERSON — a document, a spreadsheet, a deck, a PDF or a mail draft they asked for comes from create_file (docx, xlsx, pptx, pdf, csv, md, json, txt, eml), never a script of your own: it writes the file in your working folder AND offers it in their chat as a file to download, which a file you write yourself never is. A video they asked to cut, join or caption comes from edit_video (on this PC, at no cost), never ffmpeg of your own: its result plays in their chat. MEDIA JOBS — a translation comes from translate, a 3D model from generate_3d, spoken audio from generate_speech, music from generate_music, a sound effect from generate_sound (the company's models on the Galaius platform, charged to the person you work for): ask once without max_cost_usd for the price, then again with it to make it; the files they make show in the person's chat like create_file's. SESSIONS: omit `session` and you get your OWN isolated browser session — every reply names it in its `[session: …]` prefix, and it stays yours for this whole connection, so there is no name to invent and nothing to remember. Pass `session=\"default\"` only when you deliberately want to SHARE tabs with other callers on this connection. DESKTOP: use galaius's own tools — never shell out to xdotool/wmctrl, crop with ImageMagick, or `sleep` between steps: each has an equivalent above. For an app that fights the window manager, runs in the background, or is GPU-rendered and screen-grabs black (Flutter/Electron/games/emulators), launch it with `launch_app(\"<cmd>\")` — just the binary/command, no env tricks needed (the sandbox forces software GL itself so a GPU app renders instead of capturing black) — and drive it via `target=\"nested:<title>\"`, an isolated, occlusion-proof display. If `launch_app` isn't in your tool list, your galaius server is out of date: it moves to the newest installed version by itself once no browser session or sandbox is open (`galaius upgrade` shows its state); don't fall back to raw shell automation. If sandbox launches start failing (e.g. rc=1 for every app after many launches), the display is respawned automatically on the next `launch_app`, or call `reset_sandbox` to force a clean one — keep using the sandbox, don't switch to driving the real desktop. If galaius itself errors in a way that blocks you, behaves unexpectedly, or is missing a capability you needed, call `report_issue` — it records the problem privately on this computer, for the person to read and pass on if they choose. That's the channel for feedback about the tool (not about the site you automate). It never files a public issue unless the person asked for one (`public=True`); never copy report files into repos.",
  "lists": {
   "tools/list": {
    "tools": [
@@ -2292,7 +2292,7 @@
     },
     {
      "name": "report_issue",
-     "description": "Report a problem, missing capability, or feedback about GALAIUS ITSELF — not the\nsite/app you're automating — to its maintainers, so it gets fixed. Use when galaius errors\nin a way that blocks you, behaves unexpectedly, or is missing something you needed.\n\nFiles a GitHub issue on galaius's repo when gh is authed; otherwise opens the prefilled\nissue page in the user's browser (they just press Submit — tell them). Don't include\nsecrets/credentials; galaius appends its version + platform itself.\nkind: bug | limitation | feedback.",
+     "description": "Record a problem, missing capability, or feedback about GALAIUS ITSELF — not the\nsite/app you're automating — for the person to read and pass on if they choose. Use when\ngalaius errors in a way that blocks you, behaves unexpectedly, or is missing something you\nneeded.\n\nThe report is saved in a private file on this computer and the answer says where; nothing\ngoes to GitHub or any public place. Set public=True only when the person told you to file\na public issue: then galaius files it on its public tracker when gh is authed, otherwise it\nreturns a prefilled issue link for them to open (tell them). Don't include secrets or\ncredentials; galaius appends its version + platform itself.\nkind: bug | limitation | feedback.",
      "inputSchema": {
       "properties": {
        "title": {
@@ -2307,6 +2307,11 @@
         "default": "bug",
         "title": "Kind",
         "type": "string"
+       },
+       "public": {
+        "default": false,
+        "title": "Public",
+        "type": "boolean"
        }
       },
       "required": [
@@ -3543,7 +3548,7 @@
     },
     {
      "name": "run_actions",
-     "description": "Execute a sequence of actions on a browser session or desktop window.\n\nTARGET — the `target` param picks ONE surface:\n- A web page (the common case): leave `target` unset (or \"browser\"); actions run on browser\n  your own session (or the named `session`). This is the default for all web automation.\n- A NATIVE desktop app (not a web page — e.g. a terminal, editor, Electron/GTK/Qt window):\n  set `target=<window title substring>`. Call list_desktop_windows FIRST to discover titles.\n- The whole desktop: `target=\"screen\"` (all monitors combined) or `target=\"screen:<index>\"`\n  for one monitor (list_desktop_windows shows the monitor indexes) — Linux, Windows, macOS.\n  key_press / type_text there go to the desktop itself (the focused window, the OS launcher;\n  \"super\" is the Windows key / Linux launcher, \"cmd+space\" Spotlight on macOS):\n  [{\"type\":\"key_press\",\"key\":\"super\"}, {\"type\":\"type_text\",\"text\":\"settings\",\"clear_first\":false},\n   {\"type\":\"wait_for\",\"text\":\"Settings\"}, {\"type\":\"key_press\",\"key\":\"Return\"},\n   {\"type\":\"wait_for\",\"window\":\"Settings\"}].\nA desktop `target` and a `session` you named are mutually exclusive. For a website, leave\n`target` unset.\n\nTARGETING a click/type_text/hover/drag/scroll — any of: `ref` (browser, from\nget_interactive_elements / get_page_state / screenshot — unique, survives re-renders),\n`element` index (desktop), `selector` (CSS), `name`(+`role`) (accessible name), or `x`,`y`\ncoordinates. Use whichever fits; a `ref` avoids the \"N elements match\" ambiguity a bare\nname/selector can hit. A scroll's anchor picks WHICH widget receives the wheel (the one\nunder the pointer) — anchor it on the scrollable area (unanchored = window center on\ndesktop, current pointer in the browser).\n\nEach action needs a 'type' key to select the action model.\n\nMutating: click, double_click, type_text, scroll, drag, navigate, evaluate_js, upload_file, key_press, click_element, resize\n  - type_text with NO ref/selector types into whatever is focused — after a click on a field,\n    just type; you don't need to name the field twice.\n  - press (browser): mousedown, HOLD for `hold` seconds, mouseup — the only way to observe a\n    `:active` depth cue, since a click's down+up is instantaneous and a JS-dispatched\n    PointerEvent is untrusted so Chromium ignores it. Pair with record/screenshot to capture\n    the held frame; read the effect via computed style (`matches(':active')` under-reports).\n  - `wait` accepts a duration on ANY action (\"3\", \"8s\", \"1500ms\", \"1m\"), a load state\n    (\"networkidle\"/\"load\"/\"domcontentloaded\"), or a CSS selector to wait for.\n  - click: `button` picks which mouse button — \"left\" (default), \"right\", or \"middle\". A\n    right-click is the ONLY way to open a context menu gated on Qt.RightButton / contextmenu;\n    works on both desktop and browser targets.\n  - resize (DESKTOP/nested only): set the window to an exact width+height after launch — check\n    a layout at a narrower size without relaunching. Browser targets use emulate_device instead.\n  - double_click: a real dblclick on browser AND desktop/nested targets — select a word, fire\n    a dblclick handler (two clicks don't coalesce); takes `button` like click.\n  - select_text (browser): make a real DOM text selection in an element — for a selection-gated\n    control like a Lexical inline toolbar (drag dispatches drag-and-drop, not a selection).\nObservations: screenshot, wait_for, http_request, hover, annotate\nDialogs: handle_dialog — arm how the NEXT native JS dialog (confirm/alert/prompt) is answered:\n  {\"type\":\"handle_dialog\",\"action\":\"accept\"|\"dismiss\",\"prompt_text\":\"...\"} placed BEFORE the\n  step that triggers it (one-shot). Unarmed dialogs are dismissed (a confirm()-gated click\n  then no-ops) — every dialog is reported in the step output with its message.\nTab control: new_tab, switch_tab, close_tab\nMedia: emulate_device also forces CSS media features — `reduced_motion:\"reduce\"` (verify a\n  site's `@media (prefers-reduced-motion)` branch live), `color_scheme:\"dark\"`,\n  `forced_colors:\"active\"`; `\"null\"` clears one. They can be set ALONE (no viewport needed,\n  no page reload) and persist across new tabs and viewport changes.\nViewport: emulate_device — set the session to a device profile (a Playwright `device` name like\n  \"iPhone 13\", or explicit width+height (+ device_scale_factor/is_mobile/has_touch), or\n  reset=true) to verify responsive/mobile layouts at true device metrics. Run it before\n  navigating; the return value of an evaluate_js step is surfaced JSON-serialised as that step's\n  output (use `return <expr>` or an arrow that returns).\nTiming: sleep — a FIXED pause (max 30s). Use ONLY for genuine fixed delays (e.g. an\n  animation). To wait on something concrete, do NOT sleep-and-guess: attach `wait` to the\n  preceding action, or add a `wait_for` step — both block exactly until the condition holds.\nComparison: compare — VLM comparison of snapshots from earlier steps (by 1-based index).\n\nBrowser-only actions (navigate, evaluate_js, wait_for, upload_file, new_tab, switch_tab, close_tab, emulate_device, select_text) error when used with a desktop target.\n\nAny action can include 'wait' to wait after execution (networkidle, load, domcontentloaded, or a CSS selector — browser only).\nwait_for blocks until ONE condition holds — prefer it over `sleep`. Browser: a `selector`\n  reaches `state`, or a `text` substring appears. Desktop (any OS): `window=\"<title substring>\"`\n  appears (state \"visible\") or is gone (\"hidden\"); `text=\"<words>\"` is READ on screen (OCR, this\n  OS's own engine) until it appears / is gone, as whole words, never counting the echo of text\n  galaius typed there. What is read: `region=\"window\"` (default: the ACTIVE window of a screen\n  target), `\"screen\"`, or `[x,y,w,h]`. No condition = a pause of `timeout` ms.\nAny action can include 'observe' (a VLM query string) to capture a screenshot after execution and analyze it. The snapshot is stored by step index for later compare actions.\n\nscope: CSS selector to restrict the final capture to a page sub-tree (browser only).\nwait: after all actions, wait for a condition (browser only).\nquery: when set, returns vision analysis of the final state (or, with record, of the recording).\nrecord: when True, capture one frame per step and have a video model read them in order — so\n    it understands what each action produced (the flow), not just the end state. Works on\n    browser and desktop targets, on the live session (no context reset). Cost is bounded: the\n    frames are sampled to config.video_max_frames, so a short interaction keeps every step and\n    a long one is evenly down-sampled.\ndebug_dir: when set, dump inputs/outputs/screenshots to this directory for debugging.\nallow_self: permit driving the editor window hosting THIS session. Refused by default,\n    because a command typed there (a reload, a close) can kill the agent mid-task. Prefer\n    opening a separate window — a fresh one also picks up a rebuilt extension.",
+     "description": "Execute a sequence of actions on a browser session or desktop window.\n\nTARGET — the `target` param picks ONE surface:\n- A web page (the common case): leave `target` unset (or \"browser\"); actions run on browser\n  your own session (or the named `session`). This is the default for all web automation.\n- A NATIVE desktop app (not a web page — e.g. a terminal, editor, Electron/GTK/Qt window):\n  set `target=<window title substring>`. Call list_desktop_windows FIRST to discover titles.\n- The whole desktop: `target=\"screen\"` (all monitors combined) or `target=\"screen:<index>\"`\n  for one monitor (list_desktop_windows shows the monitor indexes) — Linux, Windows, macOS.\n  key_press / type_text there go to the desktop itself (the focused window, the OS launcher;\n  \"super\" is the Windows key / Linux launcher, \"cmd+space\" Spotlight on macOS):\n  [{\"type\":\"key_press\",\"key\":\"super\"}, {\"type\":\"type_text\",\"text\":\"settings\",\"clear_first\":false},\n   {\"type\":\"wait_for\",\"text\":\"Settings\"}, {\"type\":\"key_press\",\"key\":\"Return\"},\n   {\"type\":\"wait_for\",\"window\":\"Settings\"}].\nA desktop `target` and a `session` you named are mutually exclusive. For a website, leave\n`target` unset.\n\nTARGETING a click/type_text/hover/drag/scroll — any of: `ref` (browser, from\nget_interactive_elements / get_page_state / screenshot — unique, survives re-renders),\n`element` index (desktop), `selector` (CSS), `name`(+`role`) (accessible name), or `x`,`y`\ncoordinates. Use whichever fits; a `ref` avoids the \"N elements match\" ambiguity a bare\nname/selector can hit. A scroll's anchor picks WHICH widget receives the wheel (the one\nunder the pointer) — anchor it on the scrollable area (unanchored = window center on\ndesktop, current pointer in the browser).\n\nEach action needs a 'type' key to select the action model.\n\nMutating: click, double_click, type_text, scroll, drag, navigate, evaluate_js, upload_file, key_press, click_element, resize, press\n  - type_text with NO ref/selector types into whatever is focused — after a click on a field,\n    just type; you don't need to name the field twice.\n  - press (browser): HOLD the pointer on a target for `hold` seconds (<= 30), then release — the\n    only way to observe a `:active` depth cue or a long-press, since a click's down+up is\n    instantaneous and a JS-dispatched PointerEvent is untrusted. On a touch context\n    (emulate_device phone profile) it is a real finger (Chromium only; Firefox / WebKit only\n    tap, so it errors): touchstart / touchend, and at 0.5 s without moving > 10 px the\n    trusted right-button `contextmenu` a phone raises there, the touch ending cancelled (no\n    click) — `long_press=false` keeps the bare touch sequence. On a mouse context: mousedown,\n    wait, mouseup. `move_to` [x, y] (+ `move_at` s into the hold) drags while held or cancels\n    the long press; `capture` (+ `path`, `query`) takes a frame at the end of the hold, before\n    the release. Desktop (native window) targets do not support it. Read a pressed effect via\n    computed style (`matches(':active')` under-reports).\n  - `wait` accepts a duration on ANY action (\"3\", \"8s\", \"1500ms\", \"1m\"), a load state\n    (\"networkidle\"/\"load\"/\"domcontentloaded\"), or a CSS selector to wait for.\n  - click: `button` picks which mouse button — \"left\" (default), \"right\", or \"middle\". A\n    right-click is the ONLY way to open a context menu gated on Qt.RightButton / contextmenu;\n    works on both desktop and browser targets.\n  - resize (DESKTOP/nested only): set the window to an exact width+height after launch — check\n    a layout at a narrower size without relaunching. Browser targets use emulate_device instead.\n  - double_click: a real dblclick on browser AND desktop/nested targets — select a word, fire\n    a dblclick handler (two clicks don't coalesce); takes `button` like click.\n  - select_text (browser): make a real DOM text selection in an element — for a selection-gated\n    control like a Lexical inline toolbar (drag dispatches drag-and-drop, not a selection).\nObservations: screenshot, wait_for, http_request, hover, annotate\nDialogs: handle_dialog — arm how the NEXT native JS dialog (confirm/alert/prompt) is answered:\n  {\"type\":\"handle_dialog\",\"action\":\"accept\"|\"dismiss\",\"prompt_text\":\"...\"} placed BEFORE the\n  step that triggers it (one-shot). Unarmed dialogs are dismissed (a confirm()-gated click\n  then no-ops) — every dialog is reported in the step output with its message.\nTab control: new_tab, switch_tab, close_tab\nMedia: emulate_device also forces CSS media features — `reduced_motion:\"reduce\"` (verify a\n  site's `@media (prefers-reduced-motion)` branch live), `color_scheme:\"dark\"`,\n  `forced_colors:\"active\"`; `\"null\"` clears one. They can be set ALONE (no viewport needed,\n  no page reload) and persist across new tabs and viewport changes.\nViewport: emulate_device — set the session to a device profile (a Playwright `device` name like\n  \"iPhone 13\", or explicit width+height (+ device_scale_factor/is_mobile/has_touch), or\n  reset=true) to verify responsive/mobile layouts at true device metrics. Run it before\n  navigating; the return value of an evaluate_js step is surfaced JSON-serialised as that step's\n  output (use `return <expr>` or an arrow that returns).\nTiming: sleep — a FIXED pause (max 30s). Use ONLY for genuine fixed delays (e.g. an\n  animation). To wait on something concrete, do NOT sleep-and-guess: attach `wait` to the\n  preceding action, or add a `wait_for` step — both block exactly until the condition holds.\nComparison: compare — VLM comparison of snapshots from earlier steps (by 1-based index).\n\nBrowser-only actions (navigate, evaluate_js, wait_for, upload_file, new_tab, switch_tab, close_tab, emulate_device, select_text) error when used with a desktop target.\n\nAny action can include 'wait' to wait after execution (networkidle, load, domcontentloaded, or a CSS selector — browser only).\nwait_for blocks until ONE condition holds — prefer it over `sleep`. Browser: a `selector`\n  reaches `state`, or a `text` substring appears. Desktop (any OS): `window=\"<title substring>\"`\n  appears (state \"visible\") or is gone (\"hidden\"); `text=\"<words>\"` is READ on screen (OCR, this\n  OS's own engine) until it appears / is gone, as whole words, never counting the echo of text\n  galaius typed there. What is read: `region=\"window\"` (default: the ACTIVE window of a screen\n  target), `\"screen\"`, or `[x,y,w,h]`. No condition = a pause of `timeout` ms.\nAny action can include 'observe' (a VLM query string) to capture a screenshot after execution and analyze it. The snapshot is stored by step index for later compare actions.\n\nscope: CSS selector to restrict the final capture to a page sub-tree (browser only).\nwait: after all actions, wait for a condition (browser only).\nquery: when set, returns vision analysis of the final state (or, with record, of the recording).\nrecord: when True, capture one frame per step and have a video model read them in order — so\n    it understands what each action produced (the flow), not just the end state. Works on\n    browser and desktop targets, on the live session (no context reset). Cost is bounded: the\n    frames are sampled to config.video_max_frames, so a short interaction keeps every step and\n    a long one is evenly down-sampled.\ndebug_dir: when set, dump inputs/outputs/screenshots to this directory for debugging.\nallow_self: permit driving the editor window hosting THIS session. Refused by default,\n    because a command typed there (a reload, a close) can kill the agent mid-task. Prefer\n    opening a separate window — a fresh one also picks up a rebuilt extension.",
      "inputSchema": {
       "$defs": {
        "AnnotateAction": {
@@ -4776,6 +4781,199 @@
         "title": "NewTabAction",
         "type": "object"
        },
+       "PressAction": {
+        "additionalProperties": false,
+        "description": "Press and HOLD the pointer on a target, then release — browser only.\n\nA plain `click` is down+up in the same instant, so a UA state that only exists while the\nbutton is held (`:active`, and the depth cue a designer attaches to it) is never observable:\nthere is no frame to screenshot or record. A JS-dispatched PointerEvent cannot substitute —\nsynthetic events are untrusted, so Chromium does not apply `:active` for them (#103).\n\nTarget it like a click (`ref` / `selector` / `name` / `x`,`y`); `hold` is how long the pointer\nstays down, in seconds.\n\nOn a TOUCH context (`emulate_device` with touch, a phone profile) it is a real finger: trusted\ntouchstart / touchmove / touchend through CDP, so Chromium is the only engine that holds\n(Firefox / WebKit contexts only tap, said as an error). Desktop Chromium never turns a held\ntouch into the platform's long-press, so at LONG_PRESS_SECONDS, if the finger has not moved\npast TOUCH_SLOP_PX, the press sends the trusted right-button `contextmenu` a phone raises\nthere and ends the touch with touchcancel (no click after), as a phone does; `long_press=false`\nkeeps the bare touch sequence. On a mouse context it is mousedown, wait, mouseup (`long_press`\ndoes not apply).\n\n`move_to` [x, y] drags the pointer there while held, `move_at` seconds into the hold (default:\nat the end of `hold`); a `move_at` under LONG_PRESS_SECONDS cancels the long press, as a real\nmove does. `capture` takes a frame at the end of the hold, BEFORE the release (a batch is\nblocked while it holds): `path` saves it, `query` has it described; the frame is also a\n`compare` step. Pair with `record` to capture the pressed state as motion.",
+        "properties": {
+         "wait": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Wait"
+         },
+         "observe": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Observe"
+         },
+         "ref": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Ref"
+         },
+         "selector": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Selector"
+         },
+         "x": {
+          "anyOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "X"
+         },
+         "y": {
+          "anyOf": [
+           {
+            "type": "integer"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Y"
+         },
+         "name": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Name"
+         },
+         "role": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Role"
+         },
+         "type": {
+          "const": "press",
+          "default": "press",
+          "title": "Type",
+          "type": "string"
+         },
+         "hold": {
+          "default": 1.0,
+          "title": "Hold",
+          "type": "number"
+         },
+         "button": {
+          "default": "left",
+          "enum": [
+           "left",
+           "right",
+           "middle"
+          ],
+          "title": "Button",
+          "type": "string"
+         },
+         "long_press": {
+          "default": true,
+          "title": "Long Press",
+          "type": "boolean"
+         },
+         "move_to": {
+          "anyOf": [
+           {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+             {
+              "type": "integer"
+             },
+             {
+              "type": "integer"
+             }
+            ],
+            "type": "array"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Move To"
+         },
+         "move_at": {
+          "anyOf": [
+           {
+            "type": "number"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Move At"
+         },
+         "capture": {
+          "default": false,
+          "title": "Capture",
+          "type": "boolean"
+         },
+         "path": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Path"
+         },
+         "query": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "default": null,
+          "title": "Query"
+         }
+        },
+        "title": "PressAction",
+        "type": "object"
+       },
        "ResizeAction": {
         "additionalProperties": false,
         "description": "Resize the target NATIVE window to ``width`` x ``height`` pixels — desktop/nested only.\n\nUse it to check a layout at a different size without relaunching the app: resize, screenshot,\nresize back. Before this the only way was to shell out to ``xdotool windowsize`` alongside\ngalaius (#84). Coordinates and refs are window-relative, so re-detect after a resize — the\nprevious detection's boxes describe the OLD layout.\n\nFor a BROWSER viewport use ``emulate_device`` instead (true device metrics: CSS size, DPR,\ntouch), which this action deliberately does not duplicate.",
@@ -5549,6 +5747,7 @@
            "key_press": "#/$defs/KeyPressAction",
            "navigate": "#/$defs/NavigateAction",
            "new_tab": "#/$defs/NewTabAction",
+           "press": "#/$defs/PressAction",
            "resize": "#/$defs/ResizeAction",
            "screenshot": "#/$defs/ScreenshotAction",
            "scroll": "#/$defs/ScrollAction",
@@ -5633,6 +5832,9 @@
           },
           {
            "$ref": "#/$defs/ResizeAction"
+          },
+          {
+           "$ref": "#/$defs/PressAction"
           }
          ]
         },

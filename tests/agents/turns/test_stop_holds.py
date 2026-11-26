@@ -95,3 +95,30 @@ def test_work_from_the_run_it_works_for_releases_it_once_that_run_runs_again(mon
     _report_from("lead")
     agent_queue.dispatch("r1")
     assert len(provider.messages) == 2 and reg.get_run("r1").held_at is None
+
+
+@pytest.mark.parametrize("by", [HIM, StopActor(kind="agent", name="coordinator")], ids=["person", "agent"])
+def test_stopping_a_run_a_message_woke_before_any_turn_hands_nothing_back(monkeypatch, by):
+    """2026-11-24: the sweep woke runs ended since October; stopping them (never started again) read each as just ended and handed its
+    October report back to the run that had asked it. A run no turn began on ends as it had ended."""
+    setup_queue(monkeypatch)
+    _agent("asker", "none")
+    reg.register(run_id="woken", pid=999996, provider="queue-fake", name="woken", task="t", agent="tester", parent_run_id="asker",
+                 provider_session_id="vendor-woken")
+    reg.finish("woken", exit_code=0, first=0)
+    reg._merge_record_locked("woken", {"finished_at": time.time() - 20 * 86400})
+    ended = reg.get_run("woken").finished_at
+    with reg.record_lock("woken"):
+        reg.begin_resume_locked("woken")
+    assert reg.get_run("woken").finished_at is None
+    assert reg.stop("woken", by=by) is True
+    run = reg.get_run("woken")
+    assert run.finished_at == ended and run.woken_from is None
+    assert run.status == "done", "it ends as it had ended, never `stopped` over its old end date"
+    assert (run.held_at is not None) is (by == HIM), "a person's stop still holds it"
+    assert run.finished_at < relations_since(), "an end older than the watch's start is no end to hand back"
+
+
+def relations_since() -> float:
+    from galaius.agents.catalog import relations
+    return relations.handback_since()

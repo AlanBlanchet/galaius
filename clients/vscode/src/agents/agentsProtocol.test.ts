@@ -159,6 +159,44 @@ for (const mode of ["torn", "rotation", "crash-replay"] as const) test(
   },
 );
 
+// `before`: panel lines ahead of the call (ux-critic 9575a3c6: a tail holding only some of them still reads the earlier ones).
+for (const [name, partials, before] of [["short", 5, 0], ["past the cold tail", 150, 0], ["past the cold tail, lines before", 150, 3]] as const) test(
+  `an answer being written reads as nothing in the panel's readers (${name}): its partial lines never fill a window`, (t) => {
+  if (!fs.existsSync(built)) return t.skip("run npm run compile first");
+  delete require_.cache[require_.resolve(built)];
+  const reader = require_(built);
+  const root = path.join(TEST_OUT, `agents-partial-${process.pid}-${Date.now()}`);
+  const directory = path.join(root, ".galaius", "out", "agents");
+  fs.mkdirSync(directory, { recursive: true });
+  const previousHome = process.env.HOME;
+  process.env.HOME = root;
+  const file = path.join(directory, "root.jsonl");
+  const line = (event: object) => `${JSON.stringify(event)}\n`;
+  try {
+    // The answer shows as it is written (galaius `partial`); the panel keeps reading each answer once.
+    const lead = Array.from({ length: before }, (_, index) => line({ kind: "text", text: `earlier ${index}` })).join("");
+    fs.writeFileSync(file, lead + line({ kind: "tool", event_id: "call", tool: "Bash", tool_input: "ls" }));
+    for (let step = 1; step <= partials; step += 1) {
+      fs.appendFileSync(file, line({ kind: "partial", provider_cursor: "m1:0", text: "word ".repeat(Math.min(step * 40, 400)) }));
+    }
+    const activity = reader.createAgentActivityReader({ eventLimit: 40, transcriptLimit: 300 });
+    const kinds = (read: { events: { kind: string }[] }) => read.events.map((event) => event.kind);
+    const lines = [...Array<string>(before).fill("text"), "tool"];
+    assert.deepEqual(kinds(activity.read("root")), lines, "a cold read holds the lines before the block, no partial");
+    fs.appendFileSync(file, line({ kind: "partial", provider_cursor: "m1:0", text: "word ".repeat(9999) }));
+    assert.deepEqual(kinds(activity.read("root")), lines, "a warm read of a growing block adds nothing");
+    fs.appendFileSync(file, line({ kind: "text", provider_cursor: "m1:0", text: "the answer" }));
+    assert.deepEqual(kinds(activity.read("root")), [...lines, "text"], "its closing text is the one answer");
+    assert.deepEqual(kinds(reader.createAgentActivityReader({ eventLimit: 40, transcriptLimit: 300 }).read("root")), [...lines, "text"], "a cold open after it reads the same");
+    assert.deepEqual(reader.readAgentActivity("root", 40).map((event: { kind: string }) => event.kind), [...lines, "text"]);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    fs.rmSync(root, { recursive: true });
+  }
+  },
+);
+
 test("generated runtime decoders reject malformed nested wire fields", (t) => {
   // Declarations are erased at runtime; this proves Python generation also owns hostile JSON.
   const generated = path.join(

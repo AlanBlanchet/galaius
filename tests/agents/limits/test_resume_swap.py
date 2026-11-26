@@ -74,7 +74,9 @@ OWN = SimpleNamespace(id=None)
 
 
 def _hold(kind: str, login: Subscription | SimpleNamespace) -> None:
-    if kind == "pool" or (kind == "stop" and login.id is None):   # the own login keeps no pool reading of its stop: only the refusal
+    if kind == "overload":   # the vendor's API overloaded twice in a row for the model on this login (`registry._remember_vendor_refusal`)
+        quota.record_refusal("claude", "fable-fixture", subscription=login.id, bench=600.0)
+    elif kind == "pool" or (kind == "stop" and login.id is None):   # the own login keeps no pool reading of its stop: only the refusal
         quota.record_refusal("claude", "fable-fixture", said=FABLE_POOL, subscription=login.id)
     elif kind == "stop":
         login.observe_pools((quota.ModelPool(pool="fable", used_percent=97, resets_at=datetime.now(UTC) + timedelta(days=2), observed_at=datetime.now(UTC)),))
@@ -94,6 +96,8 @@ def _resume() -> tuple[str | None, object]:
     ("window", ("a",), "b", "fable-fixture"),      # (b) the first login's whole usage window shut: his second takes it, a login-wide hold is no wait
     ("pool", ("a", "b", "own"), "a", "lower-model"),      # (c) the Fable pool shut on every login: the next ranked model on its own login, never a wait for the pool's reset
     ("stop", ("a", "b", "own"), "a", "lower-model"),
+    ("overload", ("a",), "b", "fable-fixture"),    # (e) overloaded twice on his first login: the same model on his second, never the overloaded one again
+    ("overload", ("a", "b", "own"), "a", "lower-model"),   # (f) overloaded on every login: the next ranked model, never a wait
     ("pool", ("a", "b"), None, "fable-fixture"),   # (d) shut on both subscription logins, open on the PC's own: the same model there, the session carried
 ])
 def test_a_resumed_conversation_goes_to_his_other_login_else_to_the_next_ranked_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
@@ -109,6 +113,22 @@ def test_a_resumed_conversation_goes_to_his_other_login_else_to_the_next_ranked_
     if runs_on == "b":
         assert (logins["b"].folder / f"{session}.jsonl").is_file(), "its session was carried to the login that took the turn"
         assert reg.get_run("r1").subscription_id == logins["b"].id
+
+
+@pytest.mark.parametrize("sender", ["operator", reg.CUT_RESUME_SENDER])   # his message; the automatic resume of a cut run
+def test_with_one_provider_and_every_login_overloaded_a_resume_takes_the_lower_model_and_the_bench_stands(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sender: str) -> None:
+    """No other login and no other provider can take the turn, so a resume (his message, a « Continuer »; the automatic one) forgets this login's notes (`AgentRun.prepare_continue`).
+    An overload bench is the vendor's, never the login's: it stands, so the resume starts at once on the lower model, never on the overloaded one again.
+    The rest of the file leaves another provider installed on this PC, which hid it."""
+    provider, logins, _ = _stopped_run(monkeypatch, tmp_path)
+    monkeypatch.setattr(fallback, "PROVIDERS", {"claude": provider})   # the one provider installed, as on a clean runner
+    for login in (*logins.values(), OWN):
+        _hold("overload", login)
+    messaging.deliver_message("r1", "go on", sender=sender)
+    agent_queue.dispatch("r1")
+    assert (reg.get_run("r1").subscription_id, reg.get_run("r1").model) == (logins["a"].id, "lower-model")
+    for held in (logins["a"].id, logins["b"].id, None):
+        assert quota.blocked_until("claude", "fable-fixture", subscription=held) is not None, "forgetting the login did not end the vendor's overload"
 
 
 @pytest.mark.parametrize("line", [

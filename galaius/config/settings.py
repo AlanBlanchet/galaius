@@ -421,11 +421,20 @@ class Config(BaseSettings):
     # How many agent runs may work on this computer at once, every conversation's; one more spawn waits
     # in line until one ends (`galaius.agents.spawn_line`). The owner's own conversations are not counted.
     agent_runs_max: Annotated[int, Field(ge=1)] = 6
+    # Roles whose runs never wait for a place (spawned or resumed): they are counted, never held. The deploy owner behind builders
+    # waited 50 min twice (2026-11-24) while the slices it ships waited on it; a deployer's own memory is the memory hold's to refuse.
+    agent_runs_unqueued_roles: tuple[str, ...] = ("deployer",)
     # Minutes a run's only activity may be waiting on other runs (`galaius agents wait`) before the run list flags it
     # (« attend 83da9bab depuis 14 min »): waiting on another agent, a run ends its turn and the reply resumes it.
     agent_waiting_flag_minutes: Annotated[float, Field(gt=0)] = 5.0
     # Seconds between two such waits of a run within which the second carries on the first's start (a loop of short waits).
     agent_waiting_gap_seconds: Annotated[float, Field(ge=0)] = 60.0
+    # How old a message may be for the sweep that hands a message pending behind a dispatcher a power-off took to a dispatcher again
+    # (`galaius.agents.agent_queue.revive_orphans`): an older one is told expired and wakes nothing, since an ended run never starts by itself.
+    agent_message_expiry_hours: Annotated[float, Field(gt=0)] = 2.0
+    # Tool calls that are process bookkeeping rather than the task, beyond the built-in ones (`galaius.agents.run_slowness.BOOKKEEPING`):
+    # label to a regular expression matched against the call's input. `galaius conversation slow` and `doctor` count them per run.
+    bookkeeping_calls: dict[str, str] = Field(default_factory=dict)
     # How many rounds a critic role may take on one maker's work before an agent asking for another is refused
     # (`galaius.agents.turns.critic_rounds`). The person is never refused.
     agent_critic_cap: CriticCap = Field(default_factory=lambda: CriticCap())
@@ -435,6 +444,9 @@ class Config(BaseSettings):
     agent_record_recall: RecordRecall = Field(default_factory=lambda: RecordRecall())
     # What a coordinator's card reads at the turn his words start (`galaius.agents.turns.facts`).
     agent_turn_facts: TurnFacts = Field(default_factory=lambda: TurnFacts())
+    # How long a run may wait in the spawn line, held by a pause (memory, usage limit), before the run that asked it is told once,
+    # with the holders named (`galaius.agents.spawn_line.SpawnLine.report_slow`).
+    agent_pause_notice_minutes: Annotated[float, Field(gt=0)] = 10.0
     agent_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 45
     agent_run_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 20
     # The agents' kernel soft limit (`MemoryHigh`), a share of RAM: past it their pages are reclaimed and they slow down,

@@ -90,6 +90,8 @@ def fits_argv(text: str) -> bool:
 #: A transcript is read by a human, and a 50k-char tool result is not read — it is scrolled past,
 #: while bloating every refresh that parses the file. Keep the head, say what was cut.
 _CLIP = 2000
+#: The end of a clipped text kept when it is what the text concludes with: a tool's output (its error, its last lines), a Stop-hook verdict.
+_CLIP_TAIL = _CLIP // 2
 def _safe_process_detail(value: str) -> str:
     """One redacted diagnostic line; child output must never become a credential log."""
     value = re.sub(
@@ -343,6 +345,10 @@ class AgentProvider(ABC):
     #: Its user config below the home folder that can register galaius as an MCP server already (`meshed`); None: a
     #: run's mesh is always its own (Codex lays it over its entry as `-c mcp_servers.galaius.*`).
     mcp_config: ClassVar[str | None] = None
+    #: Globs, inside a login folder, of what this CLI keeps there that informs a run beyond its config: the notes it remembers of a
+    #: folder it worked in, the skills its account syncs. `Subscription.adopt` takes the owner's default login's into a subscription's,
+    #: so a run there starts as informed as one on the default login.
+    adopted_globs: ClassVar[tuple[str, ...]] = ()
     #: The records in a login's sessions folder it writes a session's usage windows to, `{session}` its id
     #: (`usage_record`); None: it writes none there.
     usage_records: ClassVar[str | None] = None
@@ -656,7 +662,7 @@ class AgentProvider(ABC):
     #: The cut each HTTP status of its provider's API names when a turn fails on it (`cut_of`): 401, the login
     #: was refused (expired, revoked, switched to another account). A 429 is no cut by itself: only a refusal naming its
     #: window (`quota.REFUSAL`) is a usage limit, a short rate limit is the turn's own failure.
-    CUT_STATUS: ClassVar[Mapping[int, RunCut]] = {401: RunCut.login_lost}
+    CUT_STATUS: ClassVar[Mapping[int, RunCut]] = {401: RunCut.login_lost, **dict.fromkeys((500, 502, 503, 529), RunCut.overloaded)}
     #: What a 401 says when an API key was refused, not a login (`cut_of`): its words decide then (« Invalid API key ·
     #: Please run /login » is a login to sign in again).
     KEY_REFUSED: ClassVar[re.Pattern[str]] = re.compile(r"\bAPI[ _-]?key\b", re.IGNORECASE)
@@ -671,9 +677,14 @@ class AgentProvider(ABC):
         r"|\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|ENETDOWN)\b"
         r"|getaddrinfo|\bdns (?:failure|lookup failed)\b|\bfetch failed\b",
         re.IGNORECASE)
+    #: What a turn says when its provider's API answered that it could not take it (`RunCut.overloaded`), as a status-less line
+    #: gives it: the CLI's own sentence (Claude Code, recorded 2026-11-23: « API Error: 529 Overloaded. This is a server-side
+    #: issue, usually temporary ») or the vendor's error type. Never the bare word « overloaded »: a tool's or a worker pool's own
+    #: failure says it too, and is no answer from the vendor's API; a status the program gave decides first (`CUT_STATUS`).
+    OVERLOADED: ClassVar[re.Pattern[str]] = re.compile(r"\bAPI Error: (?:500|502|503|529)\b|\boverloaded_error\b", re.IGNORECASE)
     #: The words a failed turn says each cut in when its program gives no status (`cut_of`), checked in order: a usage
     #: refusal first — one is answered by the vendor's own server, so it reached it.
-    cut_words: ClassVar[Mapping[RunCut, re.Pattern[str]]] = {RunCut.usage_limit: REFUSAL, RunCut.network_lost: NETWORK_LOST}
+    cut_words: ClassVar[Mapping[RunCut, re.Pattern[str]]] = {RunCut.usage_limit: REFUSAL, RunCut.network_lost: NETWORK_LOST, RunCut.overloaded: OVERLOADED}
 
     @classmethod
     def cut_of(cls, text: str, status: object = None) -> RunCut | None:
@@ -1141,6 +1152,7 @@ class ClaudeCodeProvider(AgentProvider):
     confines_tools = True
     vocabulary = CLAUDE_VOCABULARY
     mcp_config = ".claude.json"
+    adopted_globs = ("projects/*/memory/**/*", "skills/synced/**/*", "plugins/synced/**/*")
     folder_settings_off = ("--setting-sources", "user")
     reads_mid_turn = True
     takes_turn_settings = True
@@ -1609,6 +1621,7 @@ class ClaudeCodeProvider(AgentProvider):
             self.binary, "-p",
             "--output-format", "stream-json",
             "--verbose",  # mandatory companion to stream-json
+            "--include-partial-messages",  # a text block's words as they are written (`PartialBlocks`), as the editor extension asks
             # Our run id IS the vendor's session id, so `claude --resume <run_id>` works and no
             # mapping table can go stale.
             "--session-id", run_id,
@@ -1816,6 +1829,7 @@ class ClaudeCodeProvider(AgentProvider):
             *(["--fork-session", "--session-id", fork_to] if fork_to else []),
             "--output-format", "stream-json",
             "--verbose",
+            "--include-partial-messages",
         ] + (["--model", model] if model else []) + self._permission_flag(permission_mode, fence_decides, allowed_tools) + self._setting_sources() + (turn.arguments() if turn else []) + self.role_arguments(agent, agent_prompt, allowed_tools, denied_tools) + self._mcp_arguments(mcp_config, allowed_tools, strict=fence_decides)
 
     #: Claude's two usage dialects: ``message.usage`` / ``result.usage`` and ``result.modelUsage[model]``. Each reports
@@ -1929,13 +1943,19 @@ class ClaudeCodeProvider(AgentProvider):
             return AgentEvent(kind="started", session_id=sid, raw_type=kind, available_tools=tuple(tools),
                               text=f"session up in {raw.get('cwd', '?')} ({len(tools)} tools)")
 
+        if kind == "stream_event":
+            return self._partial(raw, ledger)
+
         if kind == "assistant":
             msg = raw.get("message") or {}
             texts, thinking, tool, tool_input, tool_id = [], [], None, "", ""
+            block_key = ""
             for block in msg.get("content") or []:
                 btype = block.get("type")
                 if btype == "text":
                     texts.append(block.get("text", ""))
+                    if isinstance(msg.get("id"), str):
+                        block_key = ledger.blocks.close(msg["id"])
                 elif btype == "thinking":
                     thinking.append(block.get("thinking", ""))
                 elif btype == "tool_use":
@@ -1958,7 +1978,7 @@ class ClaudeCodeProvider(AgentProvider):
             if thinking and not any(t.strip() for t in texts):
                 return AgentEvent(kind="thinking", text=_clip("".join(thinking)),
                                   session_id=sid, raw_type=kind, **live)
-            return AgentEvent(kind="text", text="".join(texts), session_id=sid, raw_type=kind,
+            return AgentEvent(kind="text", text="".join(texts), session_id=sid, raw_type=kind, provider_cursor=block_key,
                               **live)
 
         if kind == "user":
@@ -1975,7 +1995,7 @@ class ClaudeCodeProvider(AgentProvider):
                         body = " ".join(b.get("text", "") for b in body if isinstance(b, dict))
                     # `is_error` is how Claude says the call failed; the Codex branches already
                     # carry it as `status`, and a failed call must not read as a success downstream.
-                    return AgentEvent(kind="tool_result", text=_clip(str(body or "")),
+                    return AgentEvent(kind="tool_result", text=_clip(str(body or ""), tail=_CLIP_TAIL),
                                       tool_id=str(block.get("tool_use_id") or ""),
                                       status="failed" if block.get("is_error") else "completed",
                                       session_id=sid, raw_type=kind)
@@ -1987,7 +2007,7 @@ class ClaudeCodeProvider(AgentProvider):
                     text = str(block.get("text") or "")
                     said = "prompt" if not raw.get("isSynthetic") else (
                         "check" if text.startswith(_STOP_HOOK_FEEDBACK) else "injected")
-                    return AgentEvent(kind=said, text=_clip(text, tail=_CLIP // 2 if said == "check" else 0),
+                    return AgentEvent(kind=said, text=_clip(text, tail=_CLIP_TAIL if said == "check" else 0),
                                       session_id=sid, raw_type=kind)
             return AgentEvent(kind="other", session_id=sid, raw_type=kind)
 
@@ -2040,6 +2060,18 @@ class ClaudeCodeProvider(AgentProvider):
             )
 
         return AgentEvent(kind="other", session_id=sid, raw_type=kind)
+
+    def _partial(self, raw: dict, ledger: UsageLedger) -> AgentEvent | None:
+        """A text block of the main thread still being written (`--include-partial-messages`): its `partial` event when
+        its text so far is due (`PartialBlocks.delta`). Every other delta (thinking, a tool's input, a sub-agent's text) and
+        the block and message boundaries tell a reader nothing the lines they frame do not: no event."""
+        event, message = raw.get("event") or {}, raw.get("api_message_id")
+        delta = event.get("delta") or {}
+        if event.get("type") != "content_block_delta" or delta.get("type") != "text_delta" or raw.get("parent_tool_use_id") is not None \
+                or not isinstance(message, str) or not isinstance(event.get("index"), int):
+            return None
+        due = ledger.blocks.delta(message, event["index"], str(delta.get("text") or ""))
+        return None if due is None else AgentEvent(kind="partial", text=due[1], provider_cursor=due[0], session_id=raw.get("session_id"), raw_type="stream_event")
 
     def discover(self) -> list[dict]:
         """`claude agents --json` lists every live Claude session — including the user's own
@@ -2826,7 +2858,7 @@ class CodexProvider(AgentProvider):
                     tool="Shell", tool_id=str(item.get("id") or ""),
                     tool_input=_clip(str(item.get("command") or "")),
                     status=("failed" if failed else "completed") if completed else "running",
-                    text=_clip(str(item.get("aggregated_output") or item.get("status") or "")),
+                    text=_clip(str(item.get("aggregated_output") or item.get("status") or ""), tail=_CLIP_TAIL),
                 )
             if item_type == "file_change":
                 changes = item.get("changes") or []
@@ -3084,7 +3116,7 @@ class KeyProgramProvider(AgentProvider):
                 return AgentEvent(kind="tool_result" if status in ("completed", "failed") else "tool", session_id=session, raw_type="effect",
                                   tool=str(raw.get("title") or detail.get("toolName") or "tool"), tool_id=str(raw.get("id") or ""),
                                   tool_input=_clip(str(display.get("summary") or "")), status="failed" if status == "failed" else "completed" if status else "running",
-                                  text=_clip(str(state.get("outputText") or "")))
+                                  text=_clip(str(state.get("outputText") or ""), tail=_CLIP_TAIL))
             case TURN_END, _:
                 usage = raw.get("usage")
                 if raw.get("outcome") != "finished":

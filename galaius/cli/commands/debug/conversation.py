@@ -18,6 +18,8 @@ from galaius.agents import pc_state
 from galaius.agents.pc_state import Live
 from galaius.agents import run_ledger
 from galaius.agents.run_ledger import GONE, RunLedger, RunQuery, RunRow, Said, Stats, own_conversation, parse_since, stats
+from galaius.agents import messaging
+from galaius.agents.history.run_efficiency import Efficiency, EfficiencyLimits, assess, findings, look
 from galaius.agents.run_slowness import Slowness, slowness
 
 conversation_app = App(name="conversation", help="Read what ran in a conversation: recent runs, how one ended, counts and spend, limits.")
@@ -332,6 +334,7 @@ def messages(*, conversation: Annotated[str | None, Parameter(help="A conversati
 class SlowOut(BaseModel):
     covers: str
     slowness: Slowness
+    efficiency: Efficiency
 
 
 def _split(item, dark: float | None = None) -> str:
@@ -340,6 +343,16 @@ def _split(item, dark: float | None = None) -> str:
     shown = "" if dark is None else f" · dark {_span(dark)}"
     return (f"tools {_span(item.tools)} · model {_span(item.model)} · waits {_span(waits.total())} "
             f"(agents {_span(waits.agent)}, deploy {_span(waits.deploy)}, ci {_span(waits.ci)}, timer {_span(waits.timer)}, you {_span(waits.user)}, jobs {_span(waits.job)}) · idle {_span(item.idle)}{shown}")
+
+
+def _lost(profile, item) -> str:
+    """What a run lost besides time, as a suffix of its line: its bookkeeping share, and what the efficiency read says of its start, end and model."""
+    said = f" · bookkeeping {profile.bookkeeping_calls()}/{profile.calls} ({profile.bookkeeping_calls() / profile.calls:.0%})" if profile.calls else ""
+    if item is None:
+        return said
+    for flag, text in (("started with less", ", ".join(item.started_with_less)), ("vendor end", item.vendor_end[:80]), ("model", item.model_below_pick), ("effort", item.effort_below_role)):
+        said += f" · {flag}: {text}" if text else ""
+    return said + (f" · start unjudged ({item.start_unjudged})" if item.start_unjudged else "")
 
 
 @conversation_app.command
@@ -357,12 +370,17 @@ def slow(*, conversation: Annotated[str | None, Parameter(help="A conversation i
     rows = _rows(ledger, query)
     start = query.since or 0.0
     report = slowness(ledger, rows, since=start, top=max(1, top))
+    found = assess(ledger, rows, now=report.until)
     if json_out:
-        print(SlowOut(covers=covers, slowness=report).model_dump_json(indent=1))
+        print(SlowOut(covers=covers, slowness=report, efficiency=found).model_dump_json(indent=1))
         return
+    judged = {item.run_id: item for item in found.runs}
+    roles = {item.role: item for item in found.by_role}
     total = report.total
     print(f"{covers} · {total.runs} runs · active {_span(total.active)} (parked and dark time excluded) · dark {_span(report.dark)}: no run of these wrote for 15 min before a later event")
     print(f"  {_split(total)}")
+    print(f"  bookkeeping: {total.bookkeeping} of {total.calls} tool calls ({total.bookkeeping_share():.0%}) · started with less than the role's normal: "
+          f"{sum(bool(i.started_with_less) for i in found.runs)} of {total.runs} runs · ended by a vendor error: {sum(bool(i.vendor_end) for i in found.runs)}")
     if total.queued_runs:
         print(f"  queued before start: {total.queued_runs} runs, total {_span(total.queued_total)}, median {_span(total.queued_median or 0)}, max {_span(total.queued_max or 0)}")
     else:
@@ -370,10 +388,60 @@ def slow(*, conversation: Annotated[str | None, Parameter(help="A conversation i
     print("longest (active time):")
     for profile in report.longest:
         queued = "" if profile.queued is None else f" · queued {_span(profile.queued)}"
-        print(f"  {profile.run_id[:8]} {profile.role:<20} {profile.status:<11} {_span(profile.active()):>6} · {_split(profile, profile.dark)}{queued}")
+        print(f"  {profile.run_id[:8]} {profile.role:<20} {profile.status:<11} {_span(profile.active()):>6} · {_split(profile, profile.dark)}{queued}{_lost(profile, judged.get(profile.run_id))}")
     for title, rollups in (("by role", report.by_role), ("by conversation", report.by_conversation if every or not query.conversation else [])):
         if rollups:
             print(f"{title}:")
             for item in rollups[:8]:
+                kept = roles.get(item.name) if title == "by role" else None
                 print(f"  {item.name[:22]:<22} {item.runs:>4} runs · active {_span(item.active):>6} · {_split(item)}"
-                      + (f" · queued median {_span(item.queued_median)}" if item.queued_median is not None else ""))
+                      + (f" · queued median {_span(item.queued_median)}" if item.queued_median is not None else "")
+                      + f" · bookkeeping {item.bookkeeping}/{item.calls} ({item.bookkeeping_share():.0%})"
+                      + (f" · started with less {kept.started_with_less}/{kept.runs}" + (f" (unjudged {kept.unjudged_starts})" if kept.unjudged_starts else "")
+                         + (f" · vendor ends {kept.vendor_ends}" if kept.vendor_ends else "") + (f" · below first model {kept.model_below_pick}" if kept.model_below_pick else "")
+                         + (f" · lower effort {kept.effort_below_role}" if kept.effort_below_role else "") if kept else ""))
+
+
+@conversation_app.command
+def check(*, since: Annotated[str | None, Parameter(help="6h, 30m, 2d. Default: the check's own window (6h).")] = None,
+          post: Annotated[bool, Parameter(negative=(), help="Send what broke, in plain words, to the run his latest web message reached; nothing is sent when nothing broke.")] = False,
+          to: Annotated[str | None, Parameter(help="With --post: the run to send to instead (an id or prefix).")] = None,
+          json_out: Annotated[bool, Parameter(name="--json", negative=(), help="One JSON object: `findings`, `efficiency`.")] = False) -> None:
+    """Did the agents spend their time and capability on their task, over every conversation on this computer: started with less than the role's
+    normal (tools, MCP servers, skills, memory notes), over 20% of their tool calls on bookkeeping, a wait of over 15 min for an agent place,
+    a run ended by a vendor error. The same read `galaius doctor` reports as its `efficiency` area; run every 6 hours by a timer with --post."""
+    try:
+        limits = EfficiencyLimits() if since is None else EfficiencyLimits(window=time.time() - parse_since(since))
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        raise SystemExit(2) from None
+    now = time.time()
+    report, found, said = look(RunLedger(), now=now, limits=limits)
+    if json_out:
+        print(json.dumps({"findings": said, "efficiency": found.model_dump()}, indent=1))
+    else:
+        print(f"{report.total.runs} runs in the last {_span(limits.window)} · {len(said)} finding{'s' if len(said) != 1 else ''}")
+        for line in said:
+            print(f"  ✗ {line}")
+    if post and said:
+        _post(said, limits, now, to)
+
+
+#: Who a message of the periodic check is from: no run, never the person.
+CHECK_SENDER = "efficiency-check"
+
+
+def _post(said: list[str], limits: EfficiencyLimits, now: float, to: str | None) -> None:
+    """Send the findings to the run his latest web message reached (or `to`): one message per window, so a retried timer does not repeat it."""
+    ledger = RunLedger()
+    try:
+        target = to or next(reversed(ledger.his_messages(since=now - 7 * 86400.0))).to_run
+    except (StopIteration, LookupError, ValueError):
+        print("ERROR: no run to send to: he typed no web message in 7 days (pass --to).", file=sys.stderr)
+        raise SystemExit(2) from None
+    body = "[Galaius agent-efficiency check, last " + _span(limits.window) + "] " + str(len(said)) + " finding" + ("s" if len(said) != 1 else "") + ":\n" + "\n".join(f"- {line}" for line in said)
+    delivery = messaging.deliver_message(target, body, sender=CHECK_SENDER, message_id=f"efficiency-check-{int(now // limits.window)}",
+                                         turn=messaging.agent_queue.MessageTurn(fyi=True))
+    print(delivery.text)
+    if delivery.state == "error":
+        raise SystemExit(1)

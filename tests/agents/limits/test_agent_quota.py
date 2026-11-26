@@ -643,6 +643,29 @@ def test_his_continue_keeps_a_model_familys_pool_until_its_reset_but_another_acc
     assert quota.blocked_until("claude", "claude-fable-5-2", now=now + 4) is None
 
 
+def test_forgetting_a_login_never_ends_an_overload_bench_but_ends_a_usage_block_it_was_heard_over() -> None:
+    now = 1795200861.0
+    quota.record_refusal("claude", "claude-fable-5-2", now=now, bench=600.0)
+    quota.record_refusal("claude", "claude-opus-5-5", said="Error: usage limit reached", now=now)
+    quota.record_refusal("claude", "claude-haiku-5", said="Error: usage limit reached", now=now)
+    quota.record_refusal("claude", "claude-haiku-5", now=now + 1, bench=600.0)   # an overload heard over a limit still standing: the limit's
+
+    for keep_pools in (False, True):
+        quota.forget_login("claude", keep_pools=keep_pools, now=now + 2)
+        assert quota.blocked_until("claude", "claude-fable-5-2", now=now + 3) == now + 600.0
+        assert quota.blocked_until("claude", "claude-opus-5-5", now=now + 3) is None
+        assert quota.blocked_until("claude", "claude-haiku-5", now=now + 3) is None
+    assert quota.blocked_until("claude", "claude-fable-5-2", now=now + 601) is None, "the bench ends by itself"
+
+
+def test_an_overload_bench_is_written_only_when_set_and_read_back() -> None:
+    now = 1795200861.0
+    quota.record_refusal("claude", "m-overloaded", now=now, bench=600.0)
+    quota.record_refusal("claude", "m-limited", said="Error: usage limit reached", now=now)
+    blocks = {key: block.model_dump(exclude_none=True) for key, block in quota._read(now).get("claude", quota.LoginUsage()).blocks.items()}
+    assert blocks["m-overloaded"]["overload"] is True and "overload" not in blocks["m-limited"]
+
+
 def test_every_pool_the_pc_reads_has_its_window_on_the_wire() -> None:
     """One table: a family `quota.POOLS` names without a `galaius_core.POOL_WINDOWS` entry would raise inside the report loop."""
     from galaius_core import POOL_WINDOWS

@@ -67,8 +67,14 @@ from galaius.host.paths import UserPaths
 #: account."), an account without access to a model. Not a quota: a fact about the LOGIN, remembered
 #: against that login (`record_unsupported`) for `UNSUPPORTED_RECHECK`, and never retried as a last
 #: resort the way a model under a quota block is.
+#: Claude Code's line for a model id its vendor no longer serves this account: « There's an issue with the selected model
+#: (claude-opus-4-7-20260416). It may not exist or you may not have access to it. » It is also an `UNSUPPORTED` refusal
+#: (read before: a start answered by it was no refusal at all and ran dead, 2026-09-22), and beyond the login's day it
+#: takes the model out of every ranking until its catalogue entry changes (`withdraw`).
+WITHDRAWN = re.compile(r"issue with the selected model\b[^\n]{0,120}?\bmay not exist", re.IGNORECASE)
 UNSUPPORTED = re.compile(
-    r"model is not supported when using"
+    rf"{WITHDRAWN.pattern}"
+    r"|model is not supported when using"
     r"|not supported when using .{0,60}account"
     r"|does not have access to (?:the )?model"
     r"|model_not_found"
@@ -445,6 +451,9 @@ class Block(BaseModel):
     #: The instant the vendor named that period reopening at; None when it named none. `until` is what this PC passes over
     #: for, never past it (`Refusal.latest`): a rolling window reopens before the instant it names.
     reopens_at: float | None = None
+    #: True for the short bench an overloaded API earned (`record_refusal`'s `bench`): the vendor's, not the login's, so
+    #: forgetting the login (`forget_login`) never ends it. Written only when set.
+    overload: bool = Field(default=False, exclude_if=lambda value: not value)
 
     @staticmethod
     def length(count: int) -> float:
@@ -589,6 +598,13 @@ def blocked_until(provider: str, model: str | None, *, subscription: UUID | None
     return max(untils, default=None)
 
 
+def overload_until(provider: str, model: str | None, *, subscription: UUID | None = None, now: float | None = None) -> float | None:
+    """When the overload bench (`Block.overload`) this model earned on this login ends, None when it is under none."""
+    moment = time.time() if now is None else now
+    block = _blocks(provider, subscription, moment).get(model or "")
+    return block.until if block is not None and block.overload and block.until > moment else None
+
+
 def pool_blocked_until(provider: str, model: str | None, *, subscription: UUID | None = None, now: float | None = None) -> float | None:
     """When this model's FAMILY pool (`POOLS`) is open again on this login (refused, or past his stop), None when it is not
     shut: the vendor said « Switch to another model » for exactly this family, unlike a model blocked by an account-level limit."""
@@ -629,8 +645,10 @@ def on_probation(provider: str, model: str | None, *, subscription: UUID | None 
     return block is not None and block.until <= moment
 
 
-def record_refusal(provider: str, model: str | None, *, said: str = "", subscription: UUID | None = None, now: float | None = None) -> float:
-    """Remember that this model refused; returns when it may be tried again.
+def record_refusal(provider: str, model: str | None, *, said: str = "", subscription: UUID | None = None, now: float | None = None,
+                   bench: float | None = None) -> float:
+    """Remember that this model refused; returns when it may be tried again. `bench`: how long to pass it over when the
+    vendor named no reset (an overload: seconds, not the earned hour).
 
     `said` is whatever the vendor wrote — the child's raw stream, an exception message, one
     event's text. A reset it STATES holds the block until then; without one the length is earned by refusals in a row
@@ -654,7 +672,7 @@ def record_refusal(provider: str, model: str | None, *, said: str = "", subscrip
             count = previous.count
         else:
             count = previous.count + 1
-        until = moment + Block.length(count)
+        until = moment + (Block.length(count) if bench is None else bench)
         latest = refusal.latest(now=moment) if refusal is not None else None
         if refusal is not None and refusal.reopens_at is not None and latest is not None:
             # The vendor STATED when it reopens: the block lasts until then, never a shorter default window (owner 2026-11-20:
@@ -666,7 +684,9 @@ def record_refusal(provider: str, model: str | None, *, said: str = "", subscrip
         if previous is not None and moment < previous.until:
             # A weaker signal never shortens a live block; clearing one early is `served`'s job.
             until = max(until, previous.until)
-        blocks[key] = Block(until=until, count=count, at=max(moment, previous.at) if previous else moment, **named)
+        # An overload bench is marked only when it is the whole block: one over a usage limit still standing stays that limit's.
+        overload = bench is not None and (previous is None or moment >= previous.until or previous.overload)
+        blocks[key] = Block(until=until, count=count, at=max(moment, previous.at) if previous else moment, overload=overload, **named)
         if family is not None and model and refusal.pool not in model.lower():
             # A model id that carries no family token (an alias) is not reached by the pool's key: it is noted itself.
             blocks[model] = blocks[key]
@@ -737,6 +757,8 @@ def remember(kind: RefusalKind, provider: str, model: str | None, *, login: str,
     (`record_unsupported`), NOTHING for a conversation too long for its own window (`context_exhausted`:
     its only durable fact is the hold on the login, `hold_named_window`)."""
     if kind == "model_capability_unsupported":
+        if model and WITHDRAWN.search(said):
+            withdraw(provider, model, said=said, now=now)
         return record_unsupported(provider, model, login=login, now=now)
     if kind == "context_exhausted":
         # No model to remember it against: every other one has the same window or a smaller one.
@@ -752,12 +774,65 @@ def unsupported_until(provider: str, model: str | None, *, login: str, now: floa
     return block.until if block is not None and block.until > moment else None
 
 
+def _withdrawn_path() -> Path:
+    return UserPaths.agents() / "quota-withdrawn.json"
+
+
+def _entry_of(model: str) -> str:
+    """The digest of `model`'s catalogue entry as this galaius reads it now (`Model.entry_digest`; "" for an id no entry
+    names). Imported here: the catalogue sits above this leaf module, which only asks it one question."""
+    from galaius.models.registry import Model
+
+    return Model.entry_digest(model)
+
+
+def withdraw(provider: str, model: str, *, said: str = "", now: float | None = None) -> None:
+    """The vendor says `model` may not exist: it stays out of every ranking (`withdrawn`) until its catalogue entry changes
+    (price, capabilities or id spelling; a new board score alone does not) — the entry's digest is what is remembered, so a
+    catalogue that still carries the id unchanged keeps it out and any change to the entry asks the vendor again. Not
+    per login (a ranking knows none): `served` lifts it when the model answers."""
+    moment = time.time() if now is None else now
+    path = _withdrawn_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with exclusive(os.open(path.with_name("#quota-withdrawn.lock"), os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)):
+        entries = _read_withdrawn()
+        entries[f"{provider}/{model}"] = {"entry": _entry_of(model), "at": moment, "said": " ".join(said.split())[:200]}
+        _write_json(path, entries)
+
+
+def _read_withdrawn() -> dict[str, dict[str, Any]]:
+    with suppress(Exception):
+        raw = json.loads(_withdrawn_path().read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            return {str(key): value for key, value in raw.items() if isinstance(value, dict) and isinstance(value.get("entry"), str)}
+    return {}
+
+
+def withdrawn() -> frozenset[tuple[str, str]]:
+    """Every (provider, model) the vendor said may not exist whose catalogue entry is still the one it said it of."""
+    return frozenset(tuple(key.split("/", 1)) for key, found in _read_withdrawn().items()  # type: ignore[misc]
+                     if "/" in key and found["entry"] == _entry_of(key.split("/", 1)[1]))
+
+
+def _unwithdraw(provider: str, model: str | None, *, at: float) -> None:
+    """An answer from `model` at `at` ends a withdrawal heard before it; one heard after it stands."""
+    found = _read_withdrawn().get(f"{provider}/{model}") if model else None
+    if found is None or found.get("at", 0.0) > at:   # every answer asks: the lock only when there is something remembered
+        return
+    path = _withdrawn_path()
+    with exclusive(os.open(path.with_name("#quota-withdrawn.lock"), os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)):
+        entries = _read_withdrawn()
+        if entries.pop(f"{provider}/{model}", None) is not None:
+            _write_json(path, entries)
+
+
 def served(provider: str, model: str | None, *, subscription: UUID | None = None, at: float | None = None) -> None:
     """This model answered (a turn it wrote, a run that finishes) at `at` (default now): whatever
     was remembered against it BEFORE that is over, and its login answered past every refusal
     remembered under it then (`lifted_after`). Writes only when there was something to forget or a
     lift to note; a refusal heard after the answer stands."""
     moment = time.time() if at is None else at
+    _unwithdraw(provider, model, at=moment)
     login_back(provider, subscription=subscription, at=moment)
     login = _login(provider, subscription)
     if login not in _read(time.time()):   # every answer asks: the lock only when there is something remembered
@@ -817,6 +892,9 @@ def forget_login(provider: str, *, subscription: UUID | None = None, now: float 
     `keep_pools`: a model family's pool the vendor refused (`POOLS`) stays: asking again cannot reopen it before its reset,
     only another account does (`note_login`).
 
+    An overload bench (`Block.overload`) always stays: the vendor's API was overloaded for that model, whoever asks and
+    whichever login: his « Continuer » or message is taken at once by the next ranked model, never by the overloaded one.
+
     Blocks are ended, never dropped: the answer that follows still notes the login's lift (`served`) for its
     other paused runs."""
     moment = time.time() if now is None else now
@@ -828,7 +906,7 @@ def forget_login(provider: str, *, subscription: UUID | None = None, now: float 
         if usage is None:
             return
         for key, block in usage.quota_blocks().items():
-            if block.until > moment and not (keep_pools and key.startswith("~")):
+            if block.until > moment and not block.overload and not (keep_pools and key.startswith("~")):
                 usage.blocks[key] = block.model_copy(update={"until": moment})
         usage.pauses.pop("usage_limit", None)
 
@@ -971,5 +1049,6 @@ def forget(provider: str | None = None, model: str | None = None) -> None:
         with _usage(time.time()) as entries:
             for usage in entries.values():
                 usage.blocks.clear()
+        _write_json(_withdrawn_path(), {})
         return
     served(provider, model)

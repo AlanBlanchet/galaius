@@ -12,7 +12,7 @@ from collections.abc import Iterable, Iterator, Mapping
 from contextlib import suppress
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Literal, Self, TypedDict
+from typing import Any, ClassVar, Literal, Self, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -25,6 +25,7 @@ EventKind = Literal[
     "started",     # session is up (id, cwd, tools known)
     "text",        # the agent said something
     "thinking",    # model's own reasoning, kept distinct so a reader can fold it away
+    "partial",     # a text block still being written: its text so far (cumulative); its `text` event follows and replaces it
     "tool",        # agent used a tool — the live "what is it doing" line
     "tool_result", # what that tool gave back
     "message",     # one agent addressing another — the edge in a sequence/graph view
@@ -55,6 +56,10 @@ class RunCut(StrEnum):
     #: Its program could not reach its provider's API at all (DNS, connect, the connection dropped): the vendor said
     #: nothing about the turn, so this is no answer — back after a bounded backoff (`registry.network_resume_at`).
     network_lost = "network_lost"
+    #: Its provider's API answered that it could not take the turn now (529 overloaded, 500, 502, 503: Claude Code ends on
+    #: « API Error: 529 Overloaded » after its own retries): the vendor never ran the turn, so this is no answer. Back after
+    #: a bounded backoff (`registry.overload_resume_at`), on another login or model once one overloaded twice in a row.
+    overloaded = "overloaded"
 
 
 #: Kinds that say nothing about what the AGENT did — the harness's own bookkeeping, kept in the
@@ -123,6 +128,21 @@ _UNSAFE_INTERACTION_KEYS = frozenset({".", "..", "__proto__", "prototype", "cons
 
 #: Who a message from the person (the CLI, the web) is from, on its queue item and message event (`from_run`).
 PERSON_SENDER = "operator"
+#: Who a message from an agent CLI's session outside galaius's runs is from (a coordinator in an editor, writing through
+#: `galaius agents send`): `session:<its conversation id>`, never the person (`PERSON_SENDER`). A reader tells it from a run
+#: and from the person by this prefix alone.
+SESSION_SENDER_PREFIX = "session:"
+
+
+def is_session_sender(sender: str | None) -> bool:
+    """Whether `sender` names an agent CLI's session outside galaius's runs (`session_sender`)."""
+    return bool(sender) and sender.startswith(SESSION_SENDER_PREFIX)
+
+
+def session_sender(session_id: str) -> str:
+    """The sender of a message written from the agent CLI session `session_id` outside galaius's runs (the id its CLI tells
+    its commands, `Caller.THREAD`; "" when it tells none)."""
+    return SESSION_SENDER_PREFIX + (session_id or "unknown")
 
 
 class InteractionField(BaseModel):
@@ -203,6 +223,64 @@ class _UsageCheckpoint(BaseModel):
     cost_usd: float | None
 
 
+class PartialBlocks(BaseModel):
+    """The text blocks a vendor stream is writing, folded from its delta lines into `partial` events.
+
+    A delta line carries a few words; a reader wants the block's text so far, a few times a second, and a mirror that
+    holds every delta (quadratic in the block's length) would outgrow the answer it follows. A block's text is therefore
+    reported again once it has grown by a step (a sixth of its length, between `MIN_STEP` and `MAX_STEP` characters;
+    its first words at once): a function of the stream's lines alone, so a re-read of the same stream gives the same
+    events. Blocks are keyed by their message and place among that message's text blocks (`key`): the `text` event that
+    closes a block (`close`) carries the key too, which is how a reader pairs the two."""
+
+    MIN_STEP: ClassVar[int] = 80
+    MAX_STEP: ClassVar[int] = 600
+    #: Past this length a block is no longer reported: a reader clips a bubble there.
+    LIMIT: ClassVar[int] = 20_000
+    #: A block opening with a bracket is a stamp or a « no reply » until its bracket closes: held, never shown half-written.
+    BRACKET_WAIT: ClassVar[int] = 60
+
+    #: Text blocks opened so far per message id (the next one's place), and closed ones.
+    opened: dict[str, int] = Field(default_factory=dict)
+    closed: dict[str, int] = Field(default_factory=dict)
+    #: A message's content index -> the key of the text block there.
+    places: dict[str, str] = Field(default_factory=dict)
+    #: A key -> the text so far, and how much of it was last reported.
+    text: dict[str, str] = Field(default_factory=dict)
+    reported: dict[str, int] = Field(default_factory=dict)
+
+    @staticmethod
+    def key(message: str, place: int) -> str:
+        return f"{message}:{place}"
+
+    def delta(self, message: str, index: int, words: str) -> tuple[str, str] | None:
+        """The block at content `index` of `message` grown by `words`: its key and text so far when that is to be
+        reported now, else None."""
+        slot = f"{message}#{index}"
+        if (key := self.places.get(slot)) is None:
+            key = self.places[slot] = self.key(message, self.opened.get(message, 0))
+            self.opened[message] = self.opened.get(message, 0) + 1
+        text = self.text[key] = self.text.get(key, "") + words
+        stripped = text.strip()
+        if not stripped or len(text) > self.LIMIT or (stripped.startswith("[") and "]" not in stripped and len(stripped) < self.BRACKET_WAIT) or stripped == NO_REPLY:
+            return None
+        grown = len(text) - self.reported.get(key, 0)
+        if key in self.reported and grown < min(max(len(text) // 6, self.MIN_STEP), self.MAX_STEP):
+            return None
+        self.reported[key] = len(text)
+        return key, text
+
+    def close(self, message: str) -> str:
+        """The key of the next text block `message` closes (its `assistant` line), its state spent."""
+        place = self.closed[message] = self.closed.get(message, 0)
+        self.closed[message] += 1
+        key = self.key(message, place)
+        self.text.pop(key, None)
+        self.reported.pop(key, None)
+        self.places = {slot: held for slot, held in self.places.items() if held != key}
+        return key
+
+
 class UsageLedger(BaseModel):
     """One vendor stream's usage reports folded into per-event figures whose SUM is the truth.
 
@@ -243,6 +321,8 @@ class UsageLedger(BaseModel):
     thinking: int = 0
     #: The thread's reasoning counter as last reported (Codex `reasoning_output_tokens`, cumulative per thread).
     reasoning: int = 0
+    #: The text blocks the stream is writing (`partial` events).
+    blocks: PartialBlocks = Field(default_factory=PartialBlocks)
 
     def think(self, delta: object) -> None:
         """One live thinking estimate's growth; a figure that is no count is not one."""
@@ -519,6 +599,8 @@ def _who(run_id: str | None) -> str:
         return "?"
     if run_id == PERSON_SENDER:
         return PERSON_SENDER
+    if is_session_sender(run_id):
+        return f"session {run_id[len(SESSION_SENDER_PREFIX):][:8]}"
     # Deliberately local: registry imports AgentEvent from this module, so a module-level
     # import would create the events<->registry cycle before either side declared its models.
     from galaius.agents import registry as reg

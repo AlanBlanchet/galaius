@@ -5,7 +5,9 @@ galaius, pydantic or mcp import is on its path.
 
 It opens a connection to the server named by its endpoint (started detached when nothing listens,
 one starter at a time under the endpoint's lock) and says who calls in one hello line: this
-process's environment, working folder and pid (`galaius.account.caller.Caller`). Then it forwards lines
+process's environment, working folder, pid and the runtime it runs from (two folders above its interpreter, as
+`Runtime.python` lays it out; `sys.prefix` names the base Python under `-I -S` on some builds). The server lists
+that runtime as in use while the process lives (`RuntimeStore.register`). Then it forwards lines
 both ways, keeping what a new connection needs: the client's handshake, replayed under a private id.
 
 - While a server starts, the client's handshake and first lists are answered from what the
@@ -120,6 +122,9 @@ class Endpoint:
             with open(self.log, "ab") as log:
                 server = subprocess.Popen(self.start, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, cwd=os.path.expanduser("~"),
                                           env={name: value for name, value in os.environ.items() if name in STARTER or name.startswith(STARTER_PREFIXES)})
+            # Its parent is this process until this process ends: left uncollected, it stays a zombie once it leaves, which off Linux
+            # reads as running to a liveness probe, so the runtime it ran would stay in use (2026-11-25 macOS runner).
+            threading.Thread(target=server.wait, daemon=True, name="relay-reaper").start()
             deadline = time.monotonic() + wait
             while time.monotonic() < deadline:
                 try:
@@ -305,7 +310,7 @@ class McpRelay:
         self.endpoint, self.conn, self.generation = endpoint, conn, self.generation + 1
         self.phase, self.server_requests = "handshake", set()
         threading.Thread(target=self._read_server, args=(conn, self.generation), daemon=True, name=f"relay-server-{self.generation}").start()
-        self.to_server(Line.of({"jsonrpc": "2.0", "method": HELLO, "params": {"environment": dict(os.environ), "cwd": os.getcwd(), "pid": os.getpid()}}))
+        self.to_server(Line.of({"jsonrpc": "2.0", "method": HELLO, "params": {"environment": dict(os.environ), "cwd": os.getcwd(), "pid": os.getpid(), "runtime": os.path.dirname(os.path.dirname(sys.executable))}}))
         if self.initialize is not None:
             self.send_initialize()
         return True

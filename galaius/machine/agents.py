@@ -111,6 +111,7 @@ _RESUMED_AFTER: dict[reg.CutCause, tuple[str, str]] = {
     "usage_limit": (reg.LIMIT_RESUME_SENDER, "the usage limit"),
     "login_lost": (reg.LOGIN_RESUME_SENDER, "signing in again"),
     "network_lost": (reg.CUT_RESUME_SENDER, "its provider's API could not be reached"),
+    "overloaded": (reg.CUT_RESUME_SENDER, "its provider's API was overloaded"),
     "process_gone": (reg.CUT_RESUME_SENDER, "its process went away"),
     "killed": (reg.CUT_RESUME_SENDER, "its process was killed"),
 }
@@ -1499,16 +1500,23 @@ class MachineAgents(BaseModel):
             providers = [provider for provider in program_providers() if policy.provider_active(provider.name) and provider.available()]
             if not criterion or not providers:
                 return ()
-            best = []
+            # ONE list over every CLI, the one a start walks (`run_agent`): a rank is only comparable inside one ranking, so a list
+            # per CLI put each CLI's best at rank 0 and the CLI listed first ran ahead of the globally best (2026-11-24: the box said
+            # Codex Nano, the start ran Claude Haiku under `provider ~ claude and price.in < 2`).
+            ranked = rank_candidates(criterion, dict(self.environment), providers=providers, weights=policy.weights_for(role), role=role)
+            runnable = []
             for provider in providers:
                 try:
-                    ranked = rank_candidates(criterion, dict(self.environment), providers=[provider], weights=policy.weights_for(role), role=role)
                     provider.validate_tool_policy(policy.tools_for(role), (), coarse_accepted=policy.accepts_coarse_tool_policy(role, provider.name))
                 except (ValueError, RuntimeError):
-                    continue  # this CLI cannot run the role (no model clears its rule, or its tool rules)
-                best.extend(ranked[:1])
-            # In the launcher's own order: the first is what "best available" runs.
-            return tuple(MachineAgentModel(provider=item.provider, model=item.model) for item in sorted(best, key=lambda item: item.rank))
+                    continue  # this CLI cannot run the role's tool rules
+                runnable.append(provider.name)
+            # The first candidate of each CLI, in the walk's own order: the first is what "best available" runs.
+            first: dict[str, MachineAgentModel] = {}
+            for item in ranked:
+                if item.provider in runnable:
+                    first.setdefault(item.provider, MachineAgentModel(provider=item.provider, model=item.model))
+            return tuple(first.values())
         except (OSError, ValueError, RuntimeError) as error:
             logger.warning("role models unavailable for %s: %s", role, error)
             return ()

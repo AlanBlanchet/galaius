@@ -77,6 +77,30 @@ def test_registry_preserves_ranked_selection_and_tool_denials():
         reg.AgentRun.model_validate({**original.model_dump(), "denied_tools": ["--bad"]})
 
 
+def test_records_naming_the_same_candidates_share_one_copy_each():
+    """2026-11-24: 14 equal ranked candidates per record were 10 of its 23 KB, held in every process that listed the runs."""
+    candidate = reg.LaunchCandidate(provider="fixture-a", model="top", catalog_id="example/top", rank=0)
+    register_run(candidates=(candidate,), run_id="r1")
+    register_run(candidates=(candidate,), run_id="r2")
+    first, second = reg.get_run("r1"), reg.get_run("r2")
+    assert first.candidates[0] is second.candidates[0]
+
+
+def test_a_record_cache_nobody_listed_from_is_dropped_and_listing_fills_it_again(monkeypatch):
+    """2026-11-24: a dispatcher listed the runs once and held 5.4k records for its life (435 MB at rest). A run's own
+    record read on every tick of its dispatcher is no listing: the cache goes once no listing came for the idle time."""
+    register_run(run_id="r1")
+    monkeypatch.setattr(reg, "RECORD_CACHE_IDLE_SECONDS", 0.04)
+    reg._cache_trimmer = None
+    assert [run.run_id for run in reg._stored_records()] == ["r1"] and reg._RECORD_CACHE
+    deadline = time.monotonic() + 5
+    while reg._RECORD_CACHE and time.monotonic() < deadline:
+        reg.get_run("r1")   # read by its dispatcher meanwhile: not a listing, the cache still goes
+        time.sleep(0.02)
+    assert not reg._RECORD_CACHE
+    assert [run.run_id for run in reg._stored_records()] == ["r1"] and reg._RECORD_CACHE
+
+
 def test_historical_record_does_not_enable_mesh_on_resume():
     original = register_run()
     (reg.agents_dir() / "r1.json").write_text(original.model_dump_json(exclude={"mesh_enabled"}))
@@ -2345,11 +2369,12 @@ _MODEL_LIMIT = "You've reached your Opus limit. Switch to another model, or mana
     # now (`spawn_line.Spawn.relaunching`), once; a relaunch that could not start leaves it to its reset, if it names one.
     (_SESSION_LIMIT, False, 60, "relaunch", "itself"),
     (_MODEL_LIMIT, False, 60, "relaunch", None),
+    ("You've reached your Fable limit. Switch to another model.", False, 60, "relaunch", None),   # as recorded (result line, 429): a late refusal past the spawn probe's window
     # It worked first: it is the pause's, resumed at the reset (never relaunched: its work would start over).
     (_SESSION_LIMIT, True, 60, "itself", "itself"),
     # Refused long ago: nobody is there to use a relaunch now.
     (_SESSION_LIMIT, False, 2 * 3600, "itself", "itself"),
-], ids=["session-limit-first-turn", "model-limit-first-turn", "worked-first", "refused-hours-ago"])
+], ids=["session-limit-first-turn", "model-limit-first-turn", "fable-pool-first-turn", "worked-first", "refused-hours-ago"])
 def test_a_run_its_limit_refused_before_it_did_anything_is_relaunched_once(resuming, said, worked, ended_ago, first, then):
     _ended_on("relaunch-me", said, pid=441, worked=worked)
     moment = time.time()
@@ -2420,9 +2445,10 @@ def test_a_run_a_person_stopped_never_comes_back_by_itself_nor_at_the_next_sign_
 def test_a_run_its_lost_login_stopped_is_claimed_once_and_a_second_loss_at_once_is_left_to_continuer(resuming, monkeypatch):
     run = _ended_on("login2", _LOGIN_EXPIRED, pid=413)
     assert reg.claim_resume("login2", now=run.finished_at + 60) is None, "resumed while its login is still lost"
-    claimed = reg.claim_resume("login2", signed_in=True, now=run.finished_at + 3 * 86400)  # signed in again days later
-    assert claimed is not None and claimed.resumed_at == run.finished_at + 3 * 86400
-    assert reg.claim_resume("login2", signed_in=True, now=run.finished_at + 3 * 86400 + 1) is None, "a second runner resumed it again"
+    assert reg.claim_resume("login2", signed_in=True, now=run.finished_at + 3 * 86400) is None, "signed in after a long weekend: his « Continuer » resumes it"
+    claimed = reg.claim_resume("login2", signed_in=True, now=run.finished_at + 5 * 3600)  # signed in again hours later
+    assert claimed is not None and claimed.resumed_at == run.finished_at + 5 * 3600
+    assert reg.claim_resume("login2", signed_in=True, now=run.finished_at + 5 * 3600 + 1) is None, "a second runner resumed it again"
     resumed = reg.begin_turn("login2", pid=414, model="claude-opus-5-5")
     with reg.raw_events_path("login2").open("a") as stream:
         stream.write(_claude_error_stream(_LOGIN_EXPIRED))
@@ -2442,6 +2468,22 @@ def test_a_cut_comes_back_by_itself_only_once_a_runner_here_resumes_cuts_and_onl
     after = _ended_on("cut-after", _LOGIN_EXPIRED, pid=422)
     reg._merge_record_locked("cut-after", {"finished_at": since + 5})
     assert not reg.self_resuming(before) and reg.self_resuming(reg.get_run("cut-after")) and after.run_id == "cut-after"
+
+
+@pytest.mark.parametrize("hours, resumes", [(1, True), (23, True), (25, False), (24 * 21, False)], ids=["1h", "23h", "25h", "three-weeks"])
+@pytest.mark.parametrize("how", [pytest.param("killed", marks=pytest.mark.skipif(os.name != "posix", reason="Windows has no SIGKILL: no exit there reads as one")), "process_gone"])
+def test_a_process_cut_comes_back_by_itself_only_within_a_day_of_its_end(resuming, how, hours, resumes):
+    """2026-11-24: 37 runs cut up to a month before woke at once and re-ran their stale briefs. A record whose process went
+    away more than `CUT_RESUME_WINDOW` ago stays as it is for a person; one cut an hour ago still comes back."""
+    reg.register(run_id="old-cut", pid=431, provider="claude", name="w", agent="app-engineer", model="claude-opus-5-5")
+    if how == "killed":
+        assert reg.finish("old-cut", exit_code=-9, first=0, expected_pid=431, expected_lifecycle_token=reg.get_run("old-cut").lifecycle_token)
+    else:
+        reg._merge_record_locked("old-cut", {"status": "interrupted", "finished_at": time.time()})
+    ended = reg.get_run("old-cut").finished_at
+    written = reg.schedule_resumes(now=ended + hours * 3600)
+    assert [(r.run_id, cut.resumes) for r, cut in written] == ([("old-cut", "itself")] if resumes else [])
+    assert (reg.get_run("old-cut").resumes == "itself") == resumes
 
 
 @pytest.mark.parametrize("exit_code, cause", [(-9, "killed"), (137, "killed"), (129, "killed"), (134, None), (139, None), (2, None)],
@@ -2521,6 +2563,67 @@ def test_a_run_a_network_failure_cut_comes_back_by_itself_until_its_backoff_runs
     assert reg.get_run("net1").resumed_cuts == len(reg.NETWORK_RESUME_BACKOFF)
 
 
+#: What Claude Code ends a turn on when the vendor's API is overloaded, verbatim from the runs of 2026-11-23 (result line `is_error`, `api_error_status` 529,
+#: `terminal_reason` api_error, after the CLI's own 7 retries): three runs died on it, one 20 minutes into its work.
+_OVERLOADED = "API Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a moment. If it persists, check https://status.claude.com."
+
+
+@pytest.mark.parametrize("hours, resumes", [(0.01, True), (23, True), (25, False), (24 * 21, False)], ids=["minutes", "23h", "25h", "three-weeks"])
+def test_a_run_ended_on_an_overload_is_woken_only_within_a_day_of_its_end(resuming, hours, resumes):
+    """A back-off cut is due at once for a runner looking late (`overload_resume_at` is its end plus seconds): an install arriving weeks
+    after it woke the run all the same. Past `CUT_RESUME_WINDOW` it stays as it is, for a person."""
+    run = _ended_on("ovl-old", _OVERLOADED, pid=512)
+    written = reg.schedule_resumes(now=run.finished_at + hours * 3600)
+    assert [value.run_id for value, _ in written] == (["ovl-old"] if resumes else [])
+
+
+def test_a_run_an_overload_cut_comes_back_by_itself_until_its_backoff_runs_out(resuming):
+    """A vendor 529 / 5xx never answered the turn: the run is CUT, not failed, and comes back by itself after a short backoff, each
+    try further from its end (owner 2026-11-23 « We should NEVER stop the user request and instead use a fallback »)."""
+    run = _ended_on("ovl1", _OVERLOADED, pid=511)
+    assert reg.cut_cause(run) == "overloaded"
+    ended_at = run.finished_at
+    for pause in reg.OVERLOAD_RESUME_BACKOFF:
+        written = reg.schedule_resumes(now=ended_at + 1)
+        assert [(value.run_id, value.resumes, value.resume_at) for value, _ in written] == [("ovl1", "itself", ended_at + pause)]
+        assert reg.claim_resume("ovl1", now=ended_at + pause - 1) is None, "never before its pause has passed"
+        assert reg.claim_resume("ovl1", now=ended_at + pause) is not None
+        ended_at += pause + 2   # its resumed turn is overloaded too
+        reg._update_fields("ovl1", {"finished_at": ended_at})
+    assert reg.schedule_resumes(now=ended_at + 1) == [], "an overload longer than the whole backoff is left to a person"
+    assert reg.get_run("ovl1").resume_at is None and reg.get_run("ovl1").resumed_cuts == len(reg.OVERLOAD_RESUME_BACKOFF)
+
+
+@pytest.mark.parametrize(("resumed_cut", "benched"), [(None, False), ("network_lost", False), ("overloaded", True)])
+def test_a_model_overloaded_twice_in_a_row_is_passed_over_on_that_login_so_the_next_resume_goes_elsewhere(resuming, resumed_cut, benched):
+    """The first overload waits and asks the same model again; the same cut heard again right after an automatic resume for it benches the model on
+    this login (`quota.blocked_until`), so the resume that follows runs on his other login or the next ranked model, as after a limit refusal."""
+    from galaius.agents.limits import quota
+    from galaius.agents.transport.events import RunCut
+
+    reg.register(run_id="ovl2", pid=512, provider="claude", name="w", agent="app-engineer", model="claude-opus-5-5")
+    reg._update_fields("ovl2", {"resumed_cut": resumed_cut})
+    reg._remember_vendor_refusal(reg.get_run("ovl2"), _OVERLOADED, cut=RunCut.overloaded)
+    assert (quota.blocked_until("claude", "claude-opus-5-5") is not None) is benched
+    assert quota.login_pause("claude") is None, "an overloaded vendor is no login's usage window: nothing else is held"
+
+
+@pytest.mark.parametrize(("other_takes_it", "waits"), [(False, True), (True, False)], ids=["alone", "another-login-or-provider"])
+def test_a_run_whose_model_is_benched_by_an_overload_resumes_when_the_bench_ends_unless_something_else_takes_the_turn(resuming, monkeypatch, other_takes_it, waits):
+    """One login, one provider, the model overloaded twice in a row: the automatic resume comes when the 600 s bench ends, not into the overload again after
+    its short backoff; with another login or provider to take the turn it is due after the backoff as before."""
+    from galaius.agents.limits import quota
+
+    run = _ended_on("ovl4", _OVERLOADED, pid=514)
+    reg._update_fields("ovl4", {"resumed_cut": "overloaded", "resumed_cuts": 1})
+    quota.record_refusal("claude", run.model, now=run.finished_at, bench=reg.OVERLOAD_BENCH)
+    monkeypatch.setattr(reg, "open_logins", lambda run: (object(),) if other_takes_it else ())
+    monkeypatch.setattr(reg.fallback, "moves", lambda run: False)
+    backoff = run.finished_at + reg.OVERLOAD_RESUME_BACKOFF[1]
+    assert reg.overload_resume_at(reg.get_run("ovl4"), now=run.finished_at + 1) == (run.finished_at + reg.OVERLOAD_BENCH if waits else backoff)
+    assert reg.overload_resume_at(reg.get_run("ovl4"), now=run.finished_at + reg.OVERLOAD_BENCH + 1) == backoff, "the bench over: the backoff alone"
+
+
 def test_one_run_is_read_along_its_own_launch_links_as_the_forest_lists_it():
     """A web read of one run rebuilt the whole forest each second its conversation stayed open (~0.3 s for
     1,500 runs, 2026-11-02); `tree_run` walks its launch links instead and must agree with `forest`."""
@@ -2574,3 +2677,57 @@ def test_a_mirror_is_current_only_when_written_after_its_stream(raw_after_mirror
     at = reg.events_path("m").stat().st_mtime_ns + raw_after_mirror_ns
     os.utime(reg.raw_events_path("m"), ns=(at, at))
     assert reg.mirror_is_current("m") is current
+
+
+@pytest.mark.parametrize("cause", ["usage_limit", "login_lost"])
+@pytest.mark.parametrize(("hours", "owed"), [(1, True), (23, True), (25, False), (24 * 6, False)], ids=["1h", "23h", "25h", "six-days"])
+def test_a_resume_due_at_once_is_owed_only_within_a_day_of_the_cut(resuming, monkeypatch, cause, hours, owed):
+    """A pool refusal with another login open (`limit_resume_at` due at its end) and a lost login (`sign_in`) had no age test: a
+    PC off for a week woke every such run at its next boot, as the process cuts did before `CUT_RESUME_WINDOW`. A longer weekend
+    resumes by his « Continuer »."""
+    register_run(run_id="due")
+    ended = time.time() - hours * 3600
+    with reg.record_lock("due"):
+        reg._merge_record_locked("due", {"status": "failed", "finished_at": ended})
+    run = reg.get_run("due")
+    monkeypatch.setattr(reg, "cut_cause", lambda candidate: cause)
+    monkeypatch.setattr(reg, "limit_resume_at", lambda candidate, **rest: candidate.finished_at)   # the pool / another login: due at its end
+    cut = reg.cut_resume(run, now=ended + hours * 3600)
+    assert (cut is not None) is owed
+
+
+def test_a_usage_limit_whose_reset_is_a_day_away_resumes_at_it_and_a_reset_nobody_took_for_a_day_does_not(resuming, monkeypatch):
+    register_run(run_id="ahead")
+    ended = time.time() - 30 * 3600
+    with reg.record_lock("ahead"):
+        reg._merge_record_locked("ahead", {"status": "failed", "finished_at": ended})
+    monkeypatch.setattr(reg, "cut_cause", lambda candidate: "usage_limit")
+    monkeypatch.setattr(reg, "limit_resume_at", lambda candidate, **rest: candidate.finished_at + 26 * 3600)   # a reset named a day away
+    run = reg.get_run("ahead")
+    assert reg.cut_resume(run, now=ended + 26 * 3600).resumes == "itself"
+    assert reg.cut_resume(run, now=ended + 26 * 3600 + reg.CUT_RESUME_WINDOW + 1) is None
+
+
+def test_a_cut_an_older_runtime_cannot_read_is_written_as_the_nearest_it_reads_and_read_back_as_its_own(tmp_path):
+    """Rolling back must not make a run vanish from its list: the record's `resumed_cut` and `stream_digest.cut` read in the
+    build before `overloaded` (their literals), the exact word beside, restored here."""
+    from typing import Literal, get_args
+
+    from pydantic import TypeAdapter
+
+    from galaius.agents.transport.events import RunCut
+
+    older = TypeAdapter(Literal[tuple(word for word in get_args(reg.CutCause) if word != "overloaded")])
+    register_run(run_id="ov")
+    digest = reg.StreamDigest(source="s", ending="error", cut=RunCut.overloaded, usage=reg.CountedTokens()).model_dump(mode="json")
+    with reg.record_lock("ov"):
+        reg._merge_record_locked("ov", {"resumed_cut": "overloaded", "resumed_cuts": 1, "stream_digest": digest})
+    on_disk = json.loads(reg._record_path("ov").read_text())
+    assert older.validate_python(on_disk["resumed_cut"]) == "network_lost" and on_disk["resumed_cut_exact"] == "overloaded"
+    assert on_disk["stream_digest"]["cut"] == "network_lost" and on_disk["stream_digest"]["cut_exact"] == "overloaded"
+    run = reg.get_run("ov")
+    assert run.resumed_cut == "overloaded" and run.stream_digest.cut is RunCut.overloaded
+    with reg.record_lock("ov"):   # another cut replaces it: no stale exact word survives
+        reg._merge_record_locked("ov", {"resumed_cut": "killed"})
+    assert "resumed_cut_exact" not in json.loads(reg._record_path("ov").read_text()) and reg.get_run("ov").resumed_cut == "killed"
+

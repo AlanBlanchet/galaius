@@ -32,6 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from galaius.agents.limits import fallback, quota
 from galaius.agents.catalog.connection import CatalogAuthenticationError, CatalogConnectionError, CatalogOffline
 from galaius.agents import registry as reg
+from galaius.config.settings import Config
 from galaius.account.caller import RUN_VARIABLES, Caller
 from galaius.agents.transport.events import AgentEvent, MessageFields
 from galaius.agents.providers import AgentProvider, _safe_process_detail, provider_for
@@ -346,6 +347,8 @@ class QueueItem(BaseModel):
         (`registry.LIMIT_RESUME_SENDER`)."""
         if self.sender == reg.PERSON_SENDER:
             return OPERATOR
+        if reg.is_session_sender(self.sender):
+            return f"an agent session outside galaius's runs ({self.sender[len(reg.SESSION_SENDER_PREFIX):][:8]})"
         origin = reg.get_run(self.sender)
         return f"another agent, {origin.name} (run {self.sender[:8]})" if origin is not None else f"Galaius on this computer ({self.sender})"
 
@@ -879,6 +882,74 @@ def _serve_once(token: str, working: dict[str, threading.Thread], idle_since: fl
     return time.monotonic() if handed or working else idle_since
 
 
+EXPIRED_ERROR = "expired: not delivered within {hours:g} h, its run's dispatcher was gone; an ended run is not woken for an old message, send it again if it still holds"
+#: What an in-flight message reads past `reg.CUT_RESUME_WINDOW` once its turn is found to have begun: its run's own resume no longer comes.
+TOO_OLD_TO_RESUME = "its turn was cut after it began, and it is too old for its run to resume by itself: « Continuer » continues it"
+
+
+def _expire_old_locked(run_id: str, now: float, bound: float) -> None:
+    """Every message of `run_id` still pending after `bound` seconds (its queueing) is `failed` with `EXPIRED_ERROR`, while the
+    caller owns the run lock: his own reads it as not delivered (`failed_items`) and a caller still waiting on it reads the
+    failure (`messaging`). A person's is also logged and put in the run's transcript, where the CLI and the editor read it
+    (`reg.note_error_locked`); an agent sender is not messaged: that would wake its own ended run.
+
+    A message already in flight (`running`) is not this bound's: its run was cut with its process and comes back with the
+    cut resume, inside `reg.CUT_RESUME_WINDOW`, which continues it (`dispatch` classifies what its turn did first, so what it
+    acted on is not done twice). Past that window the run does not come back by itself: the attempt's events say whether the
+    turn began (`replied`, said so) or not (`failed`, expired)."""
+    hours = bound / 3600
+    for item in _items(_state(run_id)):
+        age = now - (item.started_at or item.enqueued_at)
+        if item.state == "pending" and age > bound:
+            error = EXPIRED_ERROR.format(hours=hours)
+        elif item.state == "running" and age > reg.CUT_RESUME_WINDOW:
+            events = _attempt_events(run_id, item)
+            if any(item.turn.accepts(event) or event.kind == "tool" for event in events):
+                _replace_item_locked(run_id, item.id, state="replied", finished_at=now, waiting=None, waiting_since=None, attempt_token=None,
+                                     error=TOO_OLD_TO_RESUME)
+                continue
+            error = EXPIRED_ERROR.format(hours=reg.CUT_RESUME_WINDOW / 3600)
+        else:
+            continue
+        _replace_item_locked(run_id, item.id, state="failed", finished_at=now, waiting=None, waiting_since=None, attempt_token=None, error=error)
+        if item.sender == reg.PERSON_SENDER:
+            log.warning("agent queue: message %s to run %s not delivered, expired after %.1f h (%s)", item.message_id, run_id, age / 3600, item.state)
+            reg.note_error_locked(run_id, f"Your message was not delivered: it waited {age / 3600:.1f} h with no running dispatcher. Send it again if it still holds.", now=now)
+
+
+def revive_orphans() -> list[str]:
+    """Hand to a dispatcher again every run whose queue holds a message pending or in flight and whose dispatcher is gone: a
+    power-off or a crash took it, and until the next message to that run nothing delivered what waited (2026-11-23: a tester's report
+    to 3ef08f32 pending 7 h while the run read `done`, the owner's own message too). Only a message younger than
+    `Config.agent_message_expiry_hours`: an older one expires (`_expire_old_locked`), since an ended run never starts by itself
+    (2026-11-24: the first sweep woke 11 runs for messages pending since 10-26). The run reads `starting` meanwhile
+    (`begin_resume_locked`) like any run coming back for a message. The run ids revived; a queue that cannot be read is left alone."""
+    bound = Config().agent_message_expiry_hours * 3600
+    revived: list[str] = []
+    for queue_file in sorted(reg.agents_dir().glob(f"*{reg.QUEUE_SUFFIX}")):
+        payload = reg._read_private(queue_file)
+        if payload is None or not any(f'"{state}"'.encode() in payload for state in ACTIVE):
+            continue
+        run_id = queue_file.name.removesuffix(reg.QUEUE_SUFFIX)
+        try:
+            with reg.record_lock(run_id):
+                state = _state(run_id)
+                run = reg.get_run(run_id)
+                if run is None or _dispatcher_matches(state) or not any(item.state in ACTIVE for item in _items(state)):
+                    continue
+                if run.held_at is not None:   # a person's stop holds it (its process may still end): what waits goes once he releases it (`dispatch`)
+                    continue
+                _expire_old_locked(run_id, time.time(), bound)
+                if not any(item.state in ACTIVE for item in _items(_state(run_id))):
+                    continue
+                reg.begin_resume_locked(run_id)
+                ensure_dispatcher_locked(run_id, cwd=run.cwd or ".")
+            revived.append(run_id)
+        except (OSError, RuntimeError, ValueError, CorruptQueueStateError):
+            log.warning("agent queue %s: could not hand its waiting message to a dispatcher", queue_file, exc_info=True)
+    return revived
+
+
 def ensure_dispatcher(run_id: str, *, cwd: str = ".") -> int:
     with reg.record_lock(run_id):
         return ensure_dispatcher_locked(run_id, cwd=cwd)
@@ -1073,6 +1144,19 @@ def _fall_back_locked(run_id: str, item: QueueItem, run: "reg.AgentRun | None", 
     return True
 
 
+def _uncertain_locked(run_id: str, item: QueueItem, events: list[AgentEvent], error: str) -> tuple[AttemptState | None, str]:
+    """What becomes of a turn whose dispatcher went away (a power-off) with no end recorded, while the caller owns the run lock:
+    delivered once or reported, never left « uncertain » for someone to notice (owner 2026-11-23: 7 + 6 + 1 messages of three
+    runs stayed so). One that answered or acted (`settle`'s own test: its tool calls would run twice) was taken: it is `replied`,
+    the run's own resume continues it. One that did neither is sent again by the same tries as any turn that died saying nothing
+    (`_again_locked`: state None, the item is pending again); once those are spent it `failed`, which its sender reads."""
+    if any(item.turn.accepts(event) or event.kind == "tool" for event in events):
+        return "replied", "its turn was cut after it began; the run's own resume continues it"
+    if _again_locked(run_id, item, "its turn was cut before it answered or acted"):
+        return None, ""
+    return "failed", f"{error.removesuffix('; resend explicitly')}; sent again {len(RESUME_BACKOFF)} times without an answer"
+
+
 def settle(run_id: str, item: QueueItem, code: int) -> None:
     """Record how the attempt `item` ended once its provider child exited with `code`: replied, failed or uncertain.
     One whose CLI exited non-zero is replied when its turn answered all the same; tried again (`_again_locked`) when it
@@ -1261,15 +1345,20 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                 continue
             if recover is not None:
                 recovered_item, _ = recover
-                attempt_state, attempt_error = _classify_attempt(recovered_item, _attempt_events(run_id, recovered_item))
+                recovered_events = _attempt_events(run_id, recovered_item)
+                attempt_state, attempt_error = _classify_attempt(recovered_item, recovered_events)
                 with reg.record_lock(run_id):
                     current = item_locked(run_id, recovered_item.id)
                     if current is not None and current.state == "running":
-                        _replace_item_locked(
-                            run_id, current.id, state=attempt_state,
-                            finished_at=time.time(), error=attempt_error,
-                        )
-                    reg.end_resume_locked(run_id)
+                        if attempt_state == "uncertain":
+                            attempt_state, attempt_error = _uncertain_locked(run_id, current, recovered_events, attempt_error)
+                        if attempt_state is not None:
+                            _replace_item_locked(
+                                run_id, current.id, state=attempt_state,
+                                finished_at=time.time(), error=attempt_error,
+                            )
+                    if attempt_state is not None:
+                        reg.end_resume_locked(run_id)
                 continue
             if item is None:
                 time.sleep(pause)

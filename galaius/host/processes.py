@@ -145,6 +145,18 @@ def share_malloc_arenas(count: int = 2) -> None:
     mallopt(_M_ARENA_MAX, count)
 
 
+def return_free_memory() -> None:
+    """Give the operating system the heap pages this process freed (glibc `malloc_trim`): Python hands back an arena only
+    once none of its objects live, and the C heap keeps what was freed above a used page. A C library without it
+    (musl, macOS, Windows) keeps its own allocator as it is."""
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        ctypes.CDLL(None).malloc_trim(0)
+    except (OSError, AttributeError):
+        return
+
+
 def process_group_options() -> dict:
     """Spawn options making the child lead its own process tree, so `stop_process_tree` reaches
     every descendant (POSIX: a new session; Windows: a new process group)."""
@@ -415,6 +427,37 @@ def process_exited(pid: int) -> bool:
     parent never waits on it. False where there is no `/proc` (it cannot tell)."""
     fields = _stat_fields(pid)
     return fields is not None and bool(fields) and fields[0] in ("Z", "X")
+
+
+_SHELLS = frozenset({"bash", "sh", "dash", "zsh"})
+
+
+def _children(pid: int) -> list[int]:
+    """The direct children of `pid` (Linux: `/proc/<pid>/task/*/children`); empty when it has none or cannot be read."""
+    found: list[int] = []
+    try:
+        for task in Path(f"/proc/{pid}/task").iterdir():
+            found.extend(int(child) for child in (task / "children").read_text().split())
+    except (OSError, ValueError):
+        pass
+    return found
+
+
+def sleeps_in_shell(pid: int) -> bool:
+    """Whether `pid` (an agent CLI) only waits out a timer: it has a shell child (a tool call's) and every process
+    at the end of its tool shells' trees is `sleep`, so it runs nothing. A poll loop between two of its commands
+    reads False for that moment. Linux only (`/proc`); False elsewhere, where it cannot tell."""
+    if sys.platform in ("win32", "darwin"):
+        return False
+    leaves: list[str | None] = []
+    for shell in (child for child in _children(pid) if process_program(child) in _SHELLS):
+        below, depth = [shell], 0
+        while below and depth < 16:
+            ended = [(node, _children(node)) for node in below]
+            leaves.extend(process_program(node) for node, children in ended if not children and node != shell)
+            below = [child for _node, children in ended for child in children]
+            depth += 1
+    return bool(leaves) and all(leaf == "sleep" for leaf in leaves)
 
 
 #: How a run's own scope is named (`ceiling.run_scope_name`): this prefix, the run id, a nonce.
