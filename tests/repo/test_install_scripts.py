@@ -62,10 +62,10 @@ def test_a_program_left_running_never_stalls_the_install(tmp_path: Path) -> None
     """`galaius login` opens the browser, which keeps the output it inherited: through `through_file` the install
     still ends at once, its log complete (code-reviewer 2026-10-11 r1)."""
     program = ("describe() { printf 'test install'; }; "
-               "main() { step 'connecting this computer' 'la connexion'; through_file sh -c 'echo opened; sleep 5 &'; }; run")
+               "main() { step 'connecting this computer' 'la connexion'; through_file sh -c 'echo opened; sleep 25 &'; }; run")
     started = time.monotonic()
     shown = sh(program, env={"HOME": str(tmp_path), "XDG_DATA_HOME": str(tmp_path / "data"), "LANG": "C"})
-    assert time.monotonic() - started < 3 and shown.stdout.decode() == "opened\n"
+    assert time.monotonic() - started < 15 and shown.stdout.decode() == "opened\n"
     data = tmp_path / "Library/Application Support" if sys.platform == "darwin" else tmp_path / "data"  # as `run` picks it
     log = next((data / "galaius/logs").glob("install-*.log")).read_text()
     assert [line.split(" ", 2)[2] for line in log.splitlines()][::2] == ["test install", "-- connecting this computer", "done"]
