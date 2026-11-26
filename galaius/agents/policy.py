@@ -208,6 +208,8 @@ class Policy:
             return self, role
         selected = reference
         matches: list[AgentRevisionRef] = []
+        if capability is not None:
+            capability = self.catalog.snapshot.delegate_name(capability)     # a role spelled any way: the parent's pin is looked up under the declared name
         if parent is not None:
             parent_agent = self.catalog.at_revision(parent).revision(parent)
             delegates = [value for value in parent_agent.capabilities if value.kind == "delegate"]

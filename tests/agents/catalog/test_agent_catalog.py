@@ -962,9 +962,10 @@ async def test_a_child_delegates_through_the_capability_its_catalog_declares(adv
     with pytest.raises((ModelUnavailable, ValueError), match="no delegate capability 'ask_nobody'"):
         await run_agent(ClaudeCodeProvider(), "Judge the pixels", delegate="ask_nobody",
                         parent_run_id=parent_id, cwd=str(catalog_home), mesh=False)
-    with pytest.raises((ModelUnavailable, ValueError), match="did you mean 'ask_worker'"):   # the bare role name, as `--delegate tester` gave it
-        await run_agent(ClaudeCodeProvider(), "Judge the pixels", delegate="worker",
-                        parent_run_id=parent_id, cwd=str(catalog_home), mesh=False)
+    bare = await run_agent(ClaudeCodeProvider(), "Judge the pixels", delegate="worker",   # the bare role name, as `--delegate tester` gave it
+                           parent_run_id=parent_id, cwd=str(catalog_home), mesh=False)
+    await asyncio.wait_for(bare.wait(), 10)
+    assert reg.get_run(bare.run_id).agent_ref == pinned
 
 
 @pytest.mark.asyncio

@@ -115,6 +115,18 @@ class CatalogSnapshot(AgentCatalogSnapshot):
                 return agent
         raise RoleAbsent(sentence="pinned agent revision is absent from this catalog")
 
+    def delegate_name(self, name: str) -> str:
+        """The declared delegate capability `name` spells: itself, else the only one naming the same role another way (`visual-critic`, `visual_critic` and
+        `ask_visual-critic` are `ask_visual_critic`); a name no declared one matches is returned as given (`delegated` refuses it)."""
+        def role(value: str) -> str:
+            return value.replace("-", "_").removeprefix("ask_")
+
+        declared = {capability.name for agent in self.agents for capability in agent.capabilities if capability.kind == "delegate"}
+        if name in declared:
+            return name
+        same = [each for each in declared if role(each) == role(name)]
+        return same[0] if len(same) == 1 else name
+
     def delegated(self, name: str) -> AgentRevisionRef:
         """The revision a delegate capability of this name launches, wherever this catalog declares it.
 
@@ -123,13 +135,12 @@ class CatalogSnapshot(AgentCatalogSnapshot):
         outright, as was every child whose own record this computer cannot read (2026-10-15). The name
         resolves to the PIN the catalog declares for it, never to a role name read out of the tool's
         own name — that would launch a revision nobody pinned."""
+        name = self.delegate_name(name)
         pins = {capability.agent for agent in self.agents for capability in agent.capabilities
                 if capability.kind == "delegate" and capability.name == name}
         if not pins:
             declared = sorted({capability.name for agent in self.agents for capability in agent.capabilities if capability.kind == "delegate"})
-            near = f"ask_{name}"
-            hint = f"; did you mean {near!r}?" if near in declared else f"; declared: {', '.join(declared) or 'none'}"
-            raise CatalogConnectionError(f"the active server catalog declares no delegate capability {name!r}{hint}")
+            raise CatalogConnectionError(f"the active server catalog declares no delegate capability {name!r}; declared: {', '.join(declared) or 'none'}")
         if len(pins) == 1:
             return next(iter(pins))
         held = [pin for pin in pins if any(agent.id == pin.id and agent.revision == pin.revision for agent in self.agents)]
