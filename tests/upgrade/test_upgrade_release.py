@@ -24,12 +24,15 @@ from galaius.upgrade.source import ReleaseKeys, ReleaseSigner, ReleaseSource
 from galaius.upgrade.store import Addressed, Runtime, RuntimeReceipt, RuntimeStore, Uv
 from galaius.upgrade.supervisor import Supervision, Supervisor
 
+#: When the test releases were published: yesterday, so a release (60 days to live) is neither expired nor from the future whenever
+#: the suite runs (a fixed date made four tests fail the day it passed 60 days).
+PUBLISHED = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
 WHEEL = b"not really a wheel"
 LOCK = b"# nothing\n"
 
 
 def release(version: str, minutes: int, **changes) -> Release:
-    at = datetime(2026, 9, 28, tzinfo=UTC) + timedelta(minutes=minutes)
+    at = PUBLISHED + timedelta(minutes=minutes)
     wheels = tuple(ReleaseFile(name=name, version=version, sha256=hashlib.sha256(WHEEL).hexdigest(), file=f"{name.replace('-', '_')}-{version}-py3-none-any.whl")
                    for name in Release.packages)
     values = {"version": version, "released_at": at, "commit": f"{minutes:07x}", "expires_at": at + timedelta(days=60), "wheels": wheels,
@@ -136,7 +139,7 @@ def test_the_newest_build_is_activated_again_after_a_rollback_or_an_unpin(tmp_pa
 
 
 def test_an_expired_release_is_refused(tmp_path, signer, published, monkeypatch) -> None:
-    published.publish(signer, release("0.44.0", 30, expires_at=datetime(2026, 9, 28, 0, 31, tzinfo=UTC)))
+    published.publish(signer, release("0.44.0", 30, expires_at=PUBLISHED + timedelta(minutes=31)))
     assert "expired" in checker(tmp_path, signer, published, monkeypatch).run()
 
 
