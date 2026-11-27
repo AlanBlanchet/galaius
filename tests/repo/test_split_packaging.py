@@ -112,6 +112,42 @@ def test_type_generation_disables_external_catalog_discovery(tmp_path, sibling) 
     assert capture.read_text().splitlines() == expected + ["python", "-c", "import pydantic2ts"]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="generate-types.sh is a bash step of the extension build")
+def test_type_generation_writes_only_inside_its_own_checkout(tmp_path) -> None:
+    """The pre-commit hook runs `generate-types.sh` on every commit here: with a sibling galaius-core
+    checkout it must leave that checkout's schemas untouched (it once rewrote them on every commit)."""
+    repo = tmp_path / "public"
+    script = repo / "clients/vscode/scripts/generate-types.sh"
+    script.parent.mkdir(parents=True)
+    shutil.copyfile("clients/vscode/scripts/generate-types.sh", script)
+    core = tmp_path / "galaius-core"
+    schema_dir = core / "galaius_core" / "schema"
+    schema_dir.mkdir(parents=True)
+    (core / "pyproject.toml").touch()
+    sentinel = schema_dir / "prompt-contracts.schema.json"
+    sentinel.write_text("committed\n")
+    binary_dir = tmp_path / "bin"
+    binary_dir.mkdir()
+    log = tmp_path / "uv.log"
+    (binary_dir / "uv").write_text(
+        '#!/bin/sh\necho "$@" >> "$UV_LOG"\nprev=""\n'
+        'for a in "$@"; do [ "$prev" = "--output" ] && echo "// generated" > "$a"; prev="$a"; done\n'
+        'case "$*" in *runtime.py*) echo "{}";; esac\nexit 0\n'
+    )
+    (binary_dir / "node").write_text("#!/bin/sh\nexit 0\n")
+    for tool in binary_dir.iterdir():
+        tool.chmod(0o700)
+    before = {path: path.stat().st_mtime_ns for path in core.rglob("*")}
+    result = subprocess.run(
+        ["bash", str(script)], capture_output=True, text=True,
+        env=os.environ | {"PATH": f"{binary_dir}:{os.environ['PATH']}", "UV_LOG": str(log)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "pydantic2ts" in log.read_text() and "contracts.py" not in log.read_text()
+    assert sentinel.read_text() == "committed\n"
+    assert {path: path.stat().st_mtime_ns for path in core.rglob("*")} == before
+
+
 def test_generation_emits_exhaustive_runtime_decoders_from_python_wire_union() -> None:
     """Every Python wire variant must be accepted/rejected by generated executable validation."""
     generated = Path("clients/vscode/src/generated/types.ts").read_text()

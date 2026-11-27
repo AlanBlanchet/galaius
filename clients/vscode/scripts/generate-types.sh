@@ -34,32 +34,14 @@ if ! "${UV_RUN[@]}" python -c "import pydantic2ts" >/dev/null 2>&1; then
     exit 0
 fi
 
-# This repository consumes the released package. When a sibling galaius-core checkout exists,
-# regenerate the sibling's checked-in schema artifacts; an installed
-# core package is read-only and already carries its release schemas.
-CORE_SCHEMA_DIR="${GALAIUS_CORE_SCHEMA_DIR:-$CORE_SOURCE_DIR/galaius_core/schema}"
-if [ ! -f "$CORE_SOURCE_DIR/pyproject.toml" ] || [ ! -d "$CORE_SCHEMA_DIR" ]; then
-    CORE_SCHEMA_DIR=""
-fi
-
+# Writes only inside this checkout (the hook runs it on every commit here). galaius-core's checked-in schemas
+# are refreshed on purpose by `core-schemas.sh <core checkout>`, committed in galaius-core.
 "${UV_RUN[@]}" pydantic2ts \
     --module galaius.api_types \
     --output "$OUT"
 "${UV_RUN[@]}" pydantic2ts \
     --module galaius_core.prompts \
     --output "$EXT_DIR/src/generated/promptContracts.ts"
-if [ -n "$CORE_SCHEMA_DIR" ]; then
-    "${UV_RUN[@]}" python "$HERE/schema/contracts.py" prompt \
-        > "$CORE_SCHEMA_DIR/prompt-contracts.schema.json"
-    "${UV_RUN[@]}" python "$HERE/schema/contracts.py" account \
-        > "$CORE_SCHEMA_DIR/account-contracts.schema.json"
-    "${UV_RUN[@]}" python "$HERE/schema/contracts.py" workflow \
-        > "$CORE_SCHEMA_DIR/workflow-contracts.schema.json"
-    "${UV_RUN[@]}" python "$HERE/schema/contracts.py" admin \
-        > "$CORE_SCHEMA_DIR/admin-contracts.schema.json"
-else
-    echo "[generate-types] installed galaius-core detected; keeping its packaged schemas unchanged." >&2
-fi
 SCHEMA_OUT="$EXT_DIR/out/generated/conversation-schemas.json"
 mkdir -p "$(dirname "$SCHEMA_OUT")"
 "${UV_RUN[@]}" python "$HERE/schema/runtime.py" > "$SCHEMA_OUT"
