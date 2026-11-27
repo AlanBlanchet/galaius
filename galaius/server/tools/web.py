@@ -6,6 +6,8 @@ import base64
 import json
 from typing import Literal
 
+from mcp.types import CallToolResult, TextContent
+
 from galaius.actions.models import AnyAction
 from galaius.browser.manager import BrowserManager
 from galaius.config.settings import DEFAULT_LIMIT
@@ -13,6 +15,7 @@ from galaius.diagnostics.debug_output import Debug
 from galaius.actions.dispatch import _run_actions_browser, _run_actions_desktop
 from galaius.server import capture, core, targets, vlm
 from galaius.server.core import _AUTO_SESSION, _DBG_ACTIONS, _session_response, config, instrumented, mcp
+from galaius.server.pictures import Picture, with_pictures
 from galaius.browser.state import format_element_list
 
 
@@ -137,6 +140,9 @@ async def run_actions(
       - select_text (browser): make a real DOM text selection in an element — for a selection-gated
         control like a Lexical inline toolbar (drag dispatches drag-and-drop, not a selection).
     Observations: screenshot, wait_for, http_request, hover, annotate
+      - Each screenshot step's picture comes back with this reply (`[picture N]` in its report) and your own model
+        reads it, sized like the `screenshot` tool's (`return_image: false` keeps the text alone; at most 12 per
+        reply; a model with no image input is told so). Add `query` only to also have the vision model read it.
     Dialogs: handle_dialog — arm how the NEXT native JS dialog (confirm/alert/prompt) is answered:
       {"type":"handle_dialog","action":"accept"|"dismiss","prompt_text":"..."} placed BEFORE the
       step that triggers it (one-shot). Unarmed dialogs are dismissed (a confirm()-gated click
@@ -201,17 +207,26 @@ async def run_actions(
     # final state, avoiding a duplicate analysis.
     frames: list[bytes] | None = [] if record else None
     dispatch_query = None if record else query
+    pictures: list[Picture] = []  # what the screenshot steps captured, for the calling model to see
     if win:
         result = await _run_actions_desktop(
-            win, actions, dispatch_query, invocation_id=inv, record_frames=frames, wait=wait
+            win, actions, dispatch_query, invocation_id=inv, record_frames=frames, wait=wait, pictures=pictures
         )
     else:
         result = await _run_actions_browser(
-            mgr, actions, dispatch_query, scope, wait, session, invocation_id=inv, record_frames=frames
+            mgr, actions, dispatch_query, scope, wait, session, invocation_id=inv, record_frames=frames, pictures=pictures
         )
     if frames:
         result += await vlm._analyze_interaction_frames(frames, query)
-    return _recovered(mgr, result)  # a browser session may have self-recovered mid-run (#89)
+    # a browser session may have self-recovered mid-run (#89)
+    text, images = await with_pictures(_recovered(mgr, result), pictures)
+    if not images:
+        return text
+    # The declared `{"result": …}` shape stays; Claude Code and Codex both hand the model the images beside it.
+    return CallToolResult(
+        content=[TextContent(type="text", text=text), *(image.to_image_content() for image in images)],
+        structuredContent={"result": text},
+    )
 
 
 @mcp.tool(category="browser", fenced=True)

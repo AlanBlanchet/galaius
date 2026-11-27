@@ -219,7 +219,7 @@
   "server": "galaius",
   "name": "screenshot",
   "category": "vision",
-  "description": "Capture the current page or a desktop window."
+  "description": "Capture the current page or a desktop window, and SEE it: the picture comes back to you as an image your own model reads, with the text below. No query is needed to look."
  },
  {
   "server": "galaius",

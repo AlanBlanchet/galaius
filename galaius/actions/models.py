@@ -520,9 +520,11 @@ class ScreenshotAction(ObservationAction):
     path: str | None = None
     # Same as the standalone screenshot tool's: keep only [x, y, w, h] of the capture (its own pixels), then shrink to
     # `max_width`; the step's report says how an image point maps back to capture points. Page captures only, never an
-    # element (`selector` / `element`). A step always returns its image: there is no `return_image` here.
+    # element (`selector` / `element`).
     region: tuple[int, int, int, int] | None = None
     max_width: int | None = Field(None, gt=0)
+    # Same as the standalone screenshot tool's: the step's picture comes back with the batch's reply; False keeps its text alone.
+    return_image: bool = True
 
     @model_validator(mode="after")
     def _framing_is_for_page_captures(self):

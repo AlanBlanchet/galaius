@@ -347,6 +347,9 @@ class Config(BaseSettings):
     browser_type: Literal["chromium", "firefox", "webkit"] = "chromium"
     viewport_width: Annotated[int, Field(ge=1)] = 1280
     viewport_height: Annotated[int, Field(ge=1)] = 720
+    # Widest picture a capture hands the calling model (its own `max_width` on a call wins): about 1,200 image
+    # tokens at 1280x720. The saved file and the vision model get the full capture. Override: GALAIUS_SCREENSHOT_MAX_WIDTH.
+    screenshot_max_width: Annotated[int, Field(gt=0)] = 1280
     # Set: browser sessions persist profile (cookies, localStorage, login) under
     # <browser_profile_dir>/<session>, instead of the default ephemeral context (logs out every
     # launch). Lets an authenticated flow use the reliable DOM-ref path instead of the flaky

@@ -266,7 +266,7 @@ _MODEL_FIX = (
     "Pass model=<id> on this call, or set a requirement with "
     "`galaius config set image.criteria 'cap.vlm and aa.intelligence > 80%'` "
     "(video.criteria / audio.criteria / component.criteria for the other roles); list_providers "
-    "shows what is configured. Or skip the model: screenshot(return_image=True) hands you the pixels."
+    "shows what is configured. Or skip the model: screenshot() without query hands you the picture."
 )
 
 

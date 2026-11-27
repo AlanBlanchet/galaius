@@ -14,7 +14,6 @@ from typing import Literal, cast
 from pydantic import BaseModel, Field, ValidationError
 
 from mcp.types import CallToolResult, ContentBlock, TextContent
-from mcp.server.fastmcp.utilities.types import Image
 from playwright.async_api import Error as PlaywrightError
 from galaius.browser.manager import BrowserManager
 from galaius.config.settings import Config
@@ -29,6 +28,7 @@ from galaius.models.capability import supports_native_video_inline
 from galaius.host.processes import run_isolated_process
 from galaius.server import core, targets, vlm
 from galaius.server import browser_sandbox
+from galaius.server.pictures import Picture, with_pictures
 from galaius.server.core import _AUTO_SESSION, _NO_WINDOWS_MSG, _session_response, config, mcp
 from galaius.vision.types import MediaAnalysis, MediaItem, RecordingCapture, RecordingResult
 from galaius.vision.types import VLMResult
@@ -136,7 +136,9 @@ async def _record_response(
     return response
 
 
-def _record_tool_result(result: RecordingResult) -> RecordingResult:
+async def _record_tool_result(result: RecordingResult) -> RecordingResult:
+    """The recording's report, followed by the frames it sampled as images the calling model sees (sized like a
+    screenshot; none for a model with no image input, which is told so)."""
     frame_bytes = result._frame_bytes
     if len(frame_bytes) != len(result.capture.frame_timestamps):
         frame_bytes = []
@@ -148,10 +150,11 @@ def _record_tool_result(result: RecordingResult) -> RecordingResult:
     content: list[ContentBlock] = [
         TextContent(type="text", text=json.dumps(result.model_dump(mode="json")))
     ]
-    content.extend(
-        Image(data=frame, format="jpeg").to_image_content()
-        for frame in frame_bytes
-    )
+    # Every sampled frame (`video.max_frames` already bounds them): they pair with `frame_timestamps`.
+    note, images = await with_pictures("", [Picture(raw=frame) for frame in frame_bytes], limit=len(frame_bytes))
+    if note.strip():
+        content.append(TextContent(type="text", text=note.strip()))
+    content.extend(image.to_image_content() for image in images)
     return cast(RecordingResult, CallToolResult(
         content=content, structuredContent=result.model_dump(mode="json"), isError=False,
     ))
@@ -498,7 +501,8 @@ async def record(
     recordings stay video-only.
 
     start: True to begin recording, False to stop and export.
-    query: question for VLM visual analysis of the recording.
+    query: question for VLM visual analysis of the recording (a model call). Without it you still SEE the recording:
+        its sampled frames come back as images your own model reads (none for a model with no image input).
     duration: fixed clip length in seconds (desktop one-shot mode); omit for a start/stop session.
     fps: requested frames per second, default from config. Desktop capture uses this rate.
         Browser capture uses the recorder's own encoded rate; requested_fps preserves your
@@ -524,7 +528,7 @@ async def record(
         return await _record_scene(scene, duration, path, query)
     win, mgr, err = targets._resolve_target(target, session)
     if err:
-        return _record_tool_result(RecordingResult(
+        return await _record_tool_result(RecordingResult(
             capture=RecordingCapture(
                 status="unavailable", requested_fps=fps or config.video_fps,
                 timestamp_basis="derived_cadence", observation="indeterminate",
@@ -537,7 +541,7 @@ async def record(
         result = await _record_desktop(win, query, start, duration, fps, path)
     else:
         result = await _record_browser(mgr, start, query, path, session, fps=fps)
-    return _record_tool_result(result)
+    return await _record_tool_result(result)
 
 
 async def _record_scene(scene: str, duration: float | None, path: str | None, query: str | None) -> RecordingResult:

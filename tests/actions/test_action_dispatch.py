@@ -387,7 +387,7 @@ async def test_desktop_waits_before_capture_after_input_and_before_final_state(m
         events.append(('wait', seconds))
     async def capture(*args, **kwargs):
         events.append(('capture', None))
-        return b'png', 'captured'
+        return b'png', b'png', 'captured'
     async def key(value):
         events.append(('key', value))
     win = SimpleNamespace(wid=1, name='fixture', w=800, h=600, capture=lambda: b'png', press_key=key)
@@ -423,7 +423,7 @@ async def test_desktop_screenshot_wait_elapses_before_each_capture(monkeypatch):
     captured = []
     async def capture(*args, **kwargs):
         captured.append(time.monotonic())
-        return b'fixture', 'captured'
+        return b'fixture', b'fixture', 'captured'
     win = SimpleNamespace(wid=1, name='fixture', w=800, h=600, capture=lambda: b'fixture')
     monkeypatch.setattr(srv.capture, "_capture_desktop", capture)
     monkeypatch.setattr(srv.core, "_desktop_label", lambda win: 'fixture')

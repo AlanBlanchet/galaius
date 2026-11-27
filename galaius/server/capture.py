@@ -98,13 +98,15 @@ async def _capture_desktop(
     path: str | None = None,
     model_override: str | None = None,
     framing: Framing | None = None,
-) -> tuple[bytes, str]:
-    screenshot_bytes, note = (framing or Framing()).apply(win.capture())
+) -> tuple[bytes, bytes, str]:
+    """The window's capture as taken, as framed (what is analysed and saved), and the report on it."""
+    raw = win.capture()
+    screenshot_bytes, note = (framing or Framing()).apply(raw)
     context = _desktop_context(win) + (f"\n{note}" if note else "")
     result = await vlm._media_response(
         screenshot_bytes, context, query, path, model_override=model_override
     )
-    return screenshot_bytes, (result.text or context) + (f"\n{note}" if note and result.text else "")
+    return raw, screenshot_bytes, (result.text or context) + (f"\n{note}" if note and result.text else "")
 
 
 async def _annotate_desktop(
@@ -165,24 +167,25 @@ async def _element_screenshot(
     element: int | None,
     query: str | None = None,
     path: str | None = None,
-) -> str:
+) -> tuple[str, bytes | None]:
+    """What to say about one element, and its picture (None when there is none to take)."""
     page = await mgr.get_page(tab)
 
     if element is not None:
         el = mgr.get_element(element, tab)
         if el is None:
-            return core._not_found(f"Element {element}")
+            return core._not_found(f"Element {element}"), None
         if not el.playwright_ref:
-            return f"Element {element} has no ref attribute — cannot screenshot"
+            return f"Element {element} has no ref attribute — cannot screenshot", None
         locator = page.locator(el.playwright_ref)
         meta = f"[{el.index}] {el.role}: {el.name!r} ({el.width:.0f}x{el.height:.0f} at {el.x:.0f},{el.y:.0f})"
     else:
         locator = page.locator(selector)
         count = await locator.count()
         if count == 0:
-            return f"No element matches '{selector}'"
+            return f"No element matches '{selector}'", None
         if count > 1:
-            return f"'{selector}' matches {count} elements — use get_interactive_elements and element for precision"
+            return f"'{selector}' matches {count} elements — use get_interactive_elements and element for precision", None
         tag = await locator.evaluate("el => el.tagName.toLowerCase()")
         text = (await locator.inner_text())[:200]
         box = await locator.bounding_box()
@@ -194,9 +197,9 @@ async def _element_screenshot(
         await settle_page(page)  # an element photo goes stale exactly like a page one (#109)
         png_bytes = await locator.screenshot(type="png")
     except Exception as e:
-        return f"Cannot screenshot element: {e}"
+        return f"Cannot screenshot element: {e}", None
     result = await vlm._media_response(png_bytes, meta, query, path)
-    return result.text or meta
+    return result.text or meta, png_bytes
 
 
 _DURATION_UNITS = {"ms": 0.001, "s": 1.0, "m": 60.0, "": 1.0}

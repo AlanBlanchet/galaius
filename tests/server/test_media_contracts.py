@@ -186,7 +186,7 @@ async def test_real_ffmpeg_record_mcp_separates_sample_cadence_from_encoded_fps(
     assert len(images) <= cap
 
 
-def test_record_drops_unpaired_frame_evidence() -> None:
+async def test_record_drops_unpaired_frame_evidence() -> None:
     result = RecordingResult(
         capture=RecordingCapture(
             status="captured",
@@ -204,7 +204,7 @@ def test_record_drops_unpaired_frame_evidence() -> None:
     )
     result._frame_bytes = [b"first", b"unpaired"]
 
-    response = tools_desktop._record_tool_result(result)
+    response = await tools_desktop._record_tool_result(result)
 
     assert response.structuredContent["capture"]["frame_timestamps"] == []
     assert response.structuredContent["capture"]["observation"] == "indeterminate"

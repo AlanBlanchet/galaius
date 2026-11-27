@@ -35,8 +35,8 @@ async def test_screenshot_file_target_analyzes_without_capturing(monkeypatch, tm
     monkeypatch.setattr(srv.vlm, "_vlm", fake_vlm)
     # If it tried to capture, this would raise — proving no capture path is taken.
     monkeypatch.setattr(srv.targets, "_resolve_target", lambda *a, **k: pytest.fail("must not capture a file: target"))
-    out = await srv.tools.vision.screenshot(query="what shape?", target=target.format(p=p))
-    assert "a blue rectangle" in out and seen["data"] == img
+    out, shown = await srv.tools.vision.screenshot(query="what shape?", target=target.format(p=p))
+    assert "a blue rectangle" in out and seen["data"] == img and shown.data == img
     assert p.read_bytes() == img  # untouched — no clobber
 
 
@@ -63,7 +63,7 @@ async def test_screenshot_notes_when_path_overwrites_an_existing_file(monkeypatc
     monkeypatch.setattr(srv.targets, "_resolve_target", lambda *a, **k: (None, object(), None))
     monkeypatch.setattr(srv.capture, "_capture", async_capture(_State()))
     monkeypatch.setattr(srv.capture, "_scan_elements", async_capture([]))
-    out = await srv.tools.vision.screenshot(target="browser", path=str(existing))
+    out, _shown = await srv.tools.vision.screenshot(target="browser", path=str(existing))
     assert "overwrote existing file" in out and str(existing) in out
 
 
@@ -104,10 +104,9 @@ def test_a_screenshot_step_frames_a_page_capture_only(fields):
         ScreenshotAction(**fields)
 
 
-def test_a_screenshot_step_takes_the_standalone_tools_framing_and_no_return_image():
+def test_a_screenshot_step_takes_the_standalone_tools_framing_and_return_image():
     assert ScreenshotAction(region=(0, 100, 200, 200), max_width=100).region == (0, 100, 200, 200)
-    with pytest.raises(ValueError):
-        ScreenshotAction(return_image=True)  # a step always returns its image: the one parameter a model carried over from the tool
+    assert ScreenshotAction().return_image and not ScreenshotAction(return_image=False).return_image
 
 
 @pytest.mark.asyncio

@@ -253,8 +253,9 @@ async def test_a_provider_fault_on_a_page_query_reaches_the_agent_as_an_ERROR_st
     monkeypatch.setattr("galaius.vision.core.litellm.acompletion", no_credits)
     monkeypatch.setattr("galaius.vision.core._key_missing", lambda model: None)
     fn = getattr(srv.tools.vision.screenshot, "fn", srv.tools.vision.screenshot)
-    out = await fn(query="what is on this page?")
-    assert isinstance(out, str), "a provider fault must be a readable result, not an exception"
+    result = await fn(query="what is on this page?")
+    assert isinstance(result, list), "a provider fault must be a readable result, not an exception"
+    out, _capture_still_shown = result  # the caller can still look for itself
     assert out.startswith("ERROR:"), out
     assert "no credits remaining" in out and "out of credits" in out, out
     assert "list_providers" in out and "image.criteria" in out, out

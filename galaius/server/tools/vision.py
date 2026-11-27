@@ -3,11 +3,13 @@ measure_ui, transcribe. They resolve the target/quality plan and delegate to the
 helpers; the discover→verify→measure trio share the ``_run_ui_critique`` runner."""
 
 import base64
+import io
 import logging
 import re
 from pathlib import Path
 
-from mcp.server.fastmcp.utilities.types import Image
+from PIL import Image as PILImage
+from PIL import UnidentifiedImageError
 
 from galaius.config.settings import DEFAULT_LIMIT
 from galaius.diagnostics.debug_output import Debug
@@ -15,6 +17,7 @@ from galaius.desktop.frames import Framing, RegionOutsideCapture
 from galaius.desktop.accessibility.element import DesktopElement
 from galaius.models.capability import is_audio_model, is_transcription_only_model
 from galaius.server import capture, core, targets, vlm
+from galaius.server.pictures import Picture, with_pictures
 from galaius.server.core import (
     _AUTO_SESSION,
     _audio_mime,
@@ -50,7 +53,7 @@ async def screenshot(
     selector: str | None = None,
     element: int | None = None,
     path: str | None = None,
-    return_image: bool = False,
+    return_image: bool = True,
     debug_dir: str | None = None,
     target: str | None = None,
     session: str = _AUTO_SESSION,
@@ -58,37 +61,41 @@ async def screenshot(
     region: tuple[int, int, int, int] | None = None,
     max_width: int | None = None,
 ):
-    """Capture the current page or a desktop window.
+    """Capture the current page or a desktop window, and SEE it: the picture comes back to you as an image your own
+    model reads, with the text below. No query is needed to look.
 
     Default (target unset): operates on your own browser session (named in the reply).
     target=<window title>: captures a desktop window. target="screen"/"screen:<index>": the whole
     desktop or one monitor (use list_desktop_windows to discover windows + monitor indexes).
-    target="file:<path>": ANALYZE an existing image file (with query) instead of capturing — for an
+    target="file:<path>": LOOK AT an existing image file instead of capturing — for an
     artifact produced out-of-band; this never writes, so it can't clobber the file.
     A desktop target and a session you named are mutually exclusive.
 
-    Returns depend on parameters:
+    Returns the picture (see return_image) plus a text that depends on the parameters:
     - No selector/element, no query: page title + visible text content (browser) or, for a
       desktop window, already-detected interactive elements as a numbered ref list if any exist
       (else metadata + a pointer to get_interactive_elements). screenshot never runs VLM grounding.
-    - No selector/element, with query: full screenshot analyzed by VLM.
-    - With selector/element, no query: element metadata (browser only).
-    - With selector/element, with query: cropped element screenshot analyzed by VLM (browser only).
+    - No selector/element, with query: the VLM's analysis of the full screenshot.
+    - With selector/element, no query: element metadata (the picture is the element).
+    - With selector/element, with query: the VLM's analysis of the cropped element.
 
     element: integer index from get_interactive_elements (priority over selector).
     selector: CSS selector targeting one element (browser only).
-    query: question for VLM visual analysis of the captured content.
+    query: a question for galaius's configured vision model (a model call) — only when you want its reading too, or
+        your own model takes no image input. Without it no model is called.
     scope: CSS selector to restrict text extraction to a sub-tree (browser only).
     path: OUTPUT sink — saves the captured PNG here (overwrites any existing file, and says so). A
         relative path lands under ~/.galaius/out (galaius's output dir), never the server's cwd;
         "~" expands. The reply names the absolute file written. To ANALYZE an existing image, use
         target="file:<path>", not path.
-    return_image: when True, return the raw screenshot bytes as an MCP ImageContent alongside the text,
-        so the calling agent can SEE the pixels directly (not just a VLM summary).
+    return_image: False for the text alone. By default the capture comes back as an image (MCP ImageContent),
+        shrunk to screenshot.max_width (1280 px wide, at most 2048 tall; your max_width wins) with a note mapping
+        its points to capture points (image pixels: a browser emulating a device scale above 1 clicks in CSS
+        pixels, so divide by that scale). A caller whose model takes no image input gets the text and is told so.
     region: [x, y, w, h] — keep only this rectangle of the capture (in the capture's own pixels:
         monitor-relative for screen:<n>, window-relative for a window). Applied before query/path.
-    max_width: shrink the (cropped) image to at most this many pixels wide, aspect kept — a
-        5760-wide multi-monitor grab stays readable and cheap. With region/max_width the reply
+    max_width: shrink the (cropped) image to at most this many pixels wide, aspect kept — applies to the saved
+        file, the vision model's copy and yours (without it, only yours is shrunk). With region/max_width the reply
         states how an image point maps back to the capture coordinates click/hover take.
     model: override the configured VLM model for this call. Uses the VS Code configured model when not set.
     """
@@ -122,8 +129,13 @@ async def _screenshot(
     every captured image before it is analysed, saved or returned."""
     frame_note = ""
     if file_bytes is not None:
-        file_bytes, frame_note = framing.apply(file_bytes)
         src = target.strip()[5:]
+        try:
+            PILImage.open(io.BytesIO(file_bytes))
+        except UnidentifiedImageError:
+            return f"ERROR: {src!r} is not an image galaius can read"
+        raw = file_bytes
+        file_bytes, frame_note = framing.apply(raw)
         label = f"Image file: {src}"
         media_mime = MediaItem.detect_mime(file_bytes)
         media_format = media_mime.split("/", 1)[1]
@@ -133,15 +145,11 @@ async def _screenshot(
             )
             text = f"{label}\n{vlm._fmt_timing(r)}"
         else:
-            import io as _io
-
-            from PIL import Image as _PILImage
-            w, h = _PILImage.open(_io.BytesIO(file_bytes)).size
-            text = f"{label} ({w}x{h}) — pass query=… to analyze it, or use measure_ui for exact pixels."
+            w, h = PILImage.open(io.BytesIO(file_bytes)).size
+            text = f"{label} ({w}x{h}) — use measure_ui for exact pixels."
         text += f"\n{frame_note}" if frame_note else ""
         Debug.save("capture", file_bytes, ext=media_format, invocation_id=inv)
-        out = [text, Image(data=file_bytes, format=media_format)] if return_image else text
-        return out
+        return await _answer(text, Picture(raw=raw, framing=framing), return_image)
     win, mgr, err = targets._resolve_target(target, session)
     if err:
         return err
@@ -150,6 +158,7 @@ async def _screenshot(
     # target="file:<path>" above — `path` is an OUTPUT sink.
     overwrote_path = bool(path) and core._resolve_save_path(path).exists()
     img_bytes: bytes | None = None
+    picture: Picture | None = None  # what the caller is shown: the uncut capture and the framing asked for
     if (element is not None or selector is not None) and not win and framing != Framing():
         return "ERROR: region/max_width apply to page, window and screen captures, not to a browser element"
     if win:
@@ -159,7 +168,8 @@ async def _screenshot(
             if el is None:
                 nf = core._not_found(f"Element {element}")
                 return nf
-            img_bytes, frame_note = framing.apply(_crop_image(raw, el.x, el.y, el.w, el.h))
+            picture = Picture(raw=_crop_image(raw, el.x, el.y, el.w, el.h), framing=framing)
+            img_bytes, frame_note = framing.apply(picture.raw)
             geometry = f"({el.w}x{el.h} at {el.x},{el.y})"
             # The LABEL is what must not survive a screen change. Cropping the live frame at a
             # ref's coordinates is what was asked for; telling the model those pixels are a widget
@@ -182,9 +192,10 @@ async def _screenshot(
             )
             text = f"{core._desktop_label(win)}\n{result.text or meta}{note}"
         elif query:
-            img_bytes, description = await capture._capture_desktop(
+            raw, img_bytes, description = await capture._capture_desktop(
                 win, query, path, model_override=model, framing=framing
             )
+            picture = Picture(raw=raw, framing=framing)
             text = f"{core._desktop_label(win)}\n{description}"
         else:
             # No query → just capture. screenshot NEVER runs VLM grounding (get_interactive_elements'
@@ -192,6 +203,7 @@ async def _screenshot(
             # window, surface those refs so the capture is actionable; otherwise return metadata
             # and point the agent at the detect tool.
             raw = win.capture()
+            picture = Picture(raw=raw, framing=framing)
             img_bytes, frame_note = framing.apply(raw)
             dest = core._save_to_path(path, img_bytes) if path else None
             # Surface cached refs ONLY if they belong to the frame just captured — after a navigation
@@ -208,12 +220,13 @@ async def _screenshot(
             if dest is not None:
                 text += f"\n{core._saved_note(dest, img_bytes)}"
     elif element is not None or selector is not None:
-        text = _session_response(
-            session, await capture._element_screenshot(mgr, mgr.active_tab, selector, element, query, path)
-        )
+        report, img_bytes = await capture._element_screenshot(mgr, mgr.active_tab, selector, element, query, path)
+        picture = None if img_bytes is None else Picture(raw=img_bytes)
+        text = _session_response(session, report)
     else:
         state = await capture._capture(mgr, scope)
-        img_bytes, frame_note = framing.apply(base64.b64decode(state.screenshot_base64))
+        picture = Picture(raw=base64.b64decode(state.screenshot_base64), framing=framing)
+        img_bytes, frame_note = framing.apply(picture.raw)
         if frame_note:  # the VLM must read the same pixels the caller gets back
             state.screenshot_base64 = base64.b64encode(img_bytes).decode()
         dest = core._save_to_path(path, img_bytes) if path else None
@@ -246,8 +259,13 @@ async def _screenshot(
         )
     if img_bytes is not None:
         Debug.save("capture", img_bytes, ext="png", invocation_id=inv)
-    result = [text, Image(data=img_bytes, format="png")] if (return_image and img_bytes is not None) else text
-    return result
+    return await _answer(text, picture, return_image)
+
+
+async def _answer(text: str, picture: Picture | None, wanted: bool):
+    """What `screenshot` replies: the text alone, or the text and the image the caller's model reads."""
+    text, images = await with_pictures(text, [] if picture is None else [picture], wanted=wanted)
+    return [text, *images] if images else text
 
 
 @mcp.tool(category="vision", fenced=True)

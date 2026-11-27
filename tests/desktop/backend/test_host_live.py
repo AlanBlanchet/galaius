@@ -213,7 +213,7 @@ def test_open_wait_type_close_capture(live_display, tmp_path):
     listing = asyncio.run(srv.tools.desktop.list_desktop_windows())
     assert 'target="screen:0"' in listing, listing
     shot = tmp_path / "monitor.png"
-    reply = asyncio.run(
+    reply, _shown = asyncio.run(
         srv.tools.vision.screenshot(target="screen:0", region=[0, 0, 400, 200], max_width=200, path=str(shot))
     )
     assert not reply.startswith("ERROR"), reply

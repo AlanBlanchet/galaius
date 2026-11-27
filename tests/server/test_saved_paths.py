@@ -154,7 +154,7 @@ async def test_screenshot_names_the_absolute_file_it_wrote(sandbox, monkeypatch,
     monkeypatch.setattr(srv.targets, "_resolve_target", lambda *a, **k: (None, object(), None))
     monkeypatch.setattr(srv.capture, "_capture", AsyncMock(return_value=state))
     monkeypatch.setattr(srv.capture, "_scan_elements", AsyncMock(return_value=[]))
-    out = await srv.tools.vision.screenshot(target="browser", path="shots/page.png")
+    out, _shown = await srv.tools.vision.screenshot(target="browser", path="shots/page.png")
     assert _note(dest, png) in out and dest.read_bytes() == png
     assert ("overwrote existing file" in out) is preexisting
 

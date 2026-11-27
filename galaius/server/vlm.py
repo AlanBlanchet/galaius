@@ -71,8 +71,8 @@ async def _vlm(
         return VLMResult(
             text=(
                 f"ERROR: nothing to analyse — {why}. Not sent to the model. The window may be "
-                "crashed, unmapped, or on a GPU surface the grabber cannot read; re-check with "
-                "return_image=True, or capture target=\"screen\"."
+                "crashed, unmapped, or on a GPU surface the grabber cannot read; look at it with "
+                "screenshot() and no query, or capture target=\"screen\"."
             ),
             elapsed=0.0,
             model="(not called)",

@@ -180,7 +180,7 @@ One tool per job. The generic ones take a `target` — unset for the browser, a 
 | --- | --- |
 | `run_actions` | The workhorse — click, type, scroll, drag, key-press, `evaluate_js`, batched in one call, each step reporting what changed. |
 | `navigate` | Open a URL; returns title + visible text, or a vision answer with `query`. |
-| `screenshot` | Capture a page, window or screen. Add `query` for an interpretation, `return_image` for raw pixels. |
+| `screenshot` | Capture a page, window or screen: the calling model gets the picture and reads it. Add `query` to also have the configured vision model interpret it. |
 | `get_interactive_elements` | List what's clickable as numbered `ref`s — DOM scan in the browser, vision / AT-SPI on the desktop. |
 | `get_page_state` | URL, title, accessibility tree, visible text and the `ref` list. No model call. |
 | `review_ui` | Find defects — a severity-sorted critique (contrast, overflow, truncation, misalignment). Pass a `reference` image to judge how a build diverges from a target. |

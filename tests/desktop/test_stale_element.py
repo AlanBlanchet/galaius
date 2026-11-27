@@ -58,7 +58,7 @@ async def test_a_stale_ref_loses_its_LABEL_but_still_gets_looked_at(monkeypatch)
 
     monkeypatch.setattr(srv.vlm, "_media_response", capture_context)
 
-    out = await srv.tools.vision.screenshot(target="Code", element=1, query="what is this?")
+    out, _crop = await srv.tools.vision.screenshot(target="Code", element=1, query="what is this?")
 
     assert "Old Button" not in seen["context"], "the gone widget's name reached the model"
     assert "10x10 at 0,0" in seen["context"], "it should still say WHERE the crop came from"
@@ -94,6 +94,6 @@ async def test_a_fresh_ref_keeps_its_label(monkeypatch):
 
     monkeypatch.setattr(srv.vlm, "_media_response", capture_context)
 
-    out = await srv.tools.vision.screenshot(target="Code", element=1, query="what is this?")
+    out, _crop = await srv.tools.vision.screenshot(target="Code", element=1, query="what is this?")
     assert "Run" in seen["context"]
     assert "different frame" not in out

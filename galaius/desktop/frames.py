@@ -88,14 +88,16 @@ class RegionOutsideCapture(ValueError):
 
 class Framing(BaseModel):
     """Which part of a capture to hand back, and how big: crop to ``region`` (``x, y, w, h`` in the
-    capture's own pixels), then shrink to ``max_width`` keeping the aspect ratio. A 5760-wide
-    three-monitor grab becomes one readable monitor without a trip through ImageMagick.
+    capture's own pixels), then shrink to fit ``max_width`` and ``max_height`` keeping the aspect
+    ratio. A 5760-wide three-monitor grab becomes one readable monitor without a trip through
+    ImageMagick.
 
     ``apply`` returns the new PNG and a one-line note mapping image points back to capture points
     (the coordinates click / hover take), empty when nothing changed."""
 
     region: tuple[int, int, int, int] | None = None
     max_width: int | None = Field(None, gt=0)
+    max_height: int | None = Field(None, gt=0)
 
     @field_validator("region")
     @classmethod
@@ -105,7 +107,7 @@ class Framing(BaseModel):
         return region
 
     def apply(self, png: bytes) -> tuple[bytes, str]:
-        if self.region is None and self.max_width is None:
+        if self.region is None and self.max_width is None and self.max_height is None:
             return png, ""
         img = Image.open(io.BytesIO(png))
         width, height = img.size
@@ -118,13 +120,13 @@ class Framing(BaseModel):
         cropped = (x, y, w, h) != (0, 0, width, height)
         if cropped:
             img = img.crop((x, y, x + w, y + h))
-        scale = w / self.max_width if self.max_width and self.max_width < w else 1.0
+        scale = max(1.0, w / (self.max_width or w), h / (self.max_height or h))
         if scale == 1.0 and not cropped:
             return png, ""
         if scale != 1.0:
-            img = img.resize((self.max_width, max(1, round(h / scale))), Image.Resampling.LANCZOS)
+            img = img.resize((max(1, round(w / scale)), max(1, round(h / scale))), Image.Resampling.LANCZOS)
         buf = io.BytesIO()
-        img.save(buf, format="PNG")
+        (img if img.mode != "CMYK" else img.convert("RGB")).save(buf, format="PNG")
         note = (
             f"(image {img.width}x{img.height} = capture region {w}x{h}+{x}+{y}"
             + (f", downscaled scale {scale:g}" if scale != 1.0 else "")

@@ -49,6 +49,17 @@ from galaius.desktop.nested import NestedBackend
 _log = logging.getLogger("galaius")
 
 
+def _show(pictures: "list[Picture] | None", wanted: bool, raw: bytes, framing: Framing = Framing()) -> str:
+    """Hands the batch's reply this capture (`pictures`, what the calling model is shown); the step report's mention of
+    it, empty when the step keeps its text alone."""
+    if pictures is None or not wanted:
+        return ""
+    from galaius.server.pictures import Picture  # noqa: PLC0415 — circular: server imports dispatch
+
+    pictures.append(Picture(raw=raw, framing=framing))
+    return f"  [picture {len(pictures)}]"
+
+
 async def _finalize_step(
     action, i, step_idx, invocation_id, step_reports, record_frames, snapshots,
     *, capture_fn, context,
@@ -642,6 +653,7 @@ class _DesktopCtx(NamedTuple):
     step_idx: int
     invocation_id: str | None
     cdp: _CdpSlot | None = None
+    pictures: "list[Picture] | None" = None
 
     def say(self, report: str) -> None:
         self.step_reports.append(_step(self.i, self.action.type, report))
@@ -918,12 +930,12 @@ async def _d_screenshot(c: _DesktopCtx) -> None:
     from galaius.server.capture import _capture_desktop  # noqa: PLC0415 — circular
 
     framing = Framing(region=c.action.region, max_width=c.action.max_width)
-    screenshot_bytes, report = await _capture_desktop(c.win, c.action.query, c.action.path, framing=framing)
+    raw, screenshot_bytes, report = await _capture_desktop(c.win, c.action.query, c.action.path, framing=framing)
     c.snapshots[c.step_idx] = screenshot_bytes
     Debug.step_save(
         c.invocation_id, c.i, c.action.type, "screenshot", screenshot_bytes, ext="png"
     )
-    c.say(report)
+    c.say(report + _show(c.pictures, c.action.return_image, raw, framing))
 
 
 @_handles("annotate")
@@ -947,6 +959,7 @@ async def _run_actions_desktop(
     invocation_id: str | None = None,
     record_frames: list[bytes] | None = None,
     wait: str | None = None,
+    pictures: "list[Picture] | None" = None,
 ) -> str:
     # circular: server imports dispatch
     from galaius.server.capture import _capture_desktop  # noqa: PLC0415
@@ -1031,7 +1044,7 @@ async def _run_actions_desktop(
                     await handler(
                         _DesktopCtx(
                             win, wid, i, action, step_reports, snapshots, step_idx,
-                            invocation_id, cdp_slot,
+                            invocation_id, cdp_slot, pictures,
                         )
                     )
 
@@ -1053,7 +1066,7 @@ async def _run_actions_desktop(
         if batch_seconds is not None:
             await asyncio.sleep(batch_seconds)
         if query:
-            _, final_summary = await _capture_desktop(win, query)
+            _, _, final_summary = await _capture_desktop(win, query)
         else:
             final_summary = f"{win.name} ({win.w}x{win.h})"
 
@@ -1078,6 +1091,7 @@ async def _run_actions_browser(
     session: str,
     invocation_id: str | None = None,
     record_frames: list[bytes] | None = None,
+    pictures: "list[Picture] | None" = None,
 ) -> str:
     # circular: server imports dispatch
     from galaius.server.capture import _annotate_and_describe, _capture, _element_screenshot, _wait as _wait_fn  # noqa: PLC0415
@@ -1205,15 +1219,17 @@ async def _run_actions_browser(
 
             elif isinstance(action, ScreenshotAction):
                 if action.element is not None or action.selector is not None:
-                    report = await _element_screenshot(
+                    report, element_png = await _element_screenshot(
                         mgr, current_tab, action.selector, action.element, action.query, action.path
                     )
+                    if element_png is not None:
+                        report += _show(pictures, action.return_image, element_png)
                 else:
                     state = await _capture(mgr, action.scope, current_tab)
-                    snapshots[step_idx] = base64.b64decode(state.screenshot_base64)
-                    framed = ""
+                    raw = snapshots[step_idx] = base64.b64decode(state.screenshot_base64)
+                    framing, framed = Framing(region=action.region, max_width=action.max_width), ""
                     if action.region or action.max_width:
-                        snapshots[step_idx], framed = Framing(region=action.region, max_width=action.max_width).apply(snapshots[step_idx])
+                        snapshots[step_idx], framed = framing.apply(raw)
                         state = state.model_copy(update={"screenshot_base64": base64.b64encode(snapshots[step_idx]).decode()})
                     Debug.step_save(
                         invocation_id,
@@ -1231,6 +1247,7 @@ async def _run_actions_browser(
                         report = f"{state.title} — {state.visible_text[:300]}"
                     if action.path:
                         report += f"  ({_saved_note(dest, snapshots[step_idx])})"
+                    report += _show(pictures, action.return_image, raw, framing)
                     report += f"\n{framed}" if framed else ""
                     final = state
                 step_reports.append(_step(i, action.type, report))
@@ -1290,6 +1307,7 @@ async def _run_actions_browser(
                     # The frame taken while the pointer was still down: kept for `compare`, saved
                     # to `path`, described by `query` — the settled capture above is after release.
                     snapshots[step_idx] = action._frame
+                    entry += _show(pictures, True, action._frame)
                     if action.path:
                         entry += f"\n  held frame: {_saved_note(_save_to_path(action.path, action._frame), action._frame)}"
                     if action.query:

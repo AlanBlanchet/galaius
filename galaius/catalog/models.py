@@ -364,6 +364,20 @@ def context_window_of(model_id: str) -> int | None:
     return next((info.context_length for info in models if info.context_length and bare_model_name(info.id) == bare), None)
 
 
+def reads_images(model_id: str) -> bool | None:
+    """Whether the cached provider catalog says `model_id` takes image input: True when a row of that model (under any
+    reseller's spelling, `bare_model_name`) states it, False when every row that states its inputs leaves it out. None:
+    no such row, or the cached copy is not the provider's own list (LiteLLM's map states images only where flagged).
+    Read from the cache at any age and never fetched here: a screenshot waits on no network for it."""
+    raw = CACHE.read() or {}
+    if raw.get("source") != "openrouter":
+        return None
+    bare = bare_model_name(model_id)
+    stated = [row["input_modalities"] for row in raw.get("models") or []
+              if isinstance(row, dict) and row.get("input_modalities") and bare_model_name(str(row.get("id", ""))) == bare]
+    return any("image" in inputs for inputs in stated) if stated else None
+
+
 def _with_scores(models: list[ModelInfo]) -> list[ModelInfo]:
     """Same models, each carrying its capability score from the model registry (None if
     nobody measured it). Registry is the one place a score lives; catalog only ferries it."""
