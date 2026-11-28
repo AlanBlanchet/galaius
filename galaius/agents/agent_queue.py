@@ -789,6 +789,35 @@ HUB = "agent-dispatcher"
 HUB_IDLE_SECONDS = 30.0
 
 
+def _serving_tokens() -> frozenset[str] | None:
+    """The token of every dispatcher process running now (its `--serve <token>` argument), read from the process list; None where
+    that cannot be read (no `/proc`)."""
+    try:
+        entries = [entry.name for entry in os.scandir("/proc") if entry.name.isdigit()]
+    except OSError:
+        return None
+    found: set[str] = set()
+    for name in entries:
+        try:
+            arguments = Path(f"/proc/{name}/cmdline").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        if b"galaius.agents.agent_queue" in arguments and b"--serve" in arguments[:-1]:
+            found.add(arguments[arguments.index(b"--serve") + 1].decode(errors="replace"))
+    return frozenset(found)
+
+
+def _without_dead(hubs: Hubs, keep: str) -> Hubs:
+    """`hubs` less the runs handed to a dispatcher that is gone (killed, a restart of the PC: its `leave_when_done` never ran),
+    `keep` and the current one aside: 48 of them (247 run entries) had piled up in a day, each read by every dispatcher every
+    half second."""
+    serving = _serving_tokens()
+    if serving is None:
+        return hubs
+    alive = serving | {keep} | ({hubs.current.token} if hubs.current is not None else set())
+    return hubs.model_copy(update={"runs": {token: runs for token, runs in hubs.runs.items() if token in alive}})
+
+
 def _hub_change(change: Callable[[Hubs], Hubs]) -> Hubs:
     """Apply `change` to the dispatchers' state under its lock; an unreadable state is kept aside and read as none."""
     with reg.shared_state(HUB) as (raw, write, keep_aside):
@@ -826,6 +855,7 @@ def ensure_dispatcher_locked(run_id: str, *, cwd: str = ".", environment: Mappin
             served = {name: value for name, value in (environment or os.environ).items() if name not in RUN_VARIABLES}
             process = reg.start_participant("galaius.agents.agent_queue", "--serve", token, cwd=cwd, environment=served, contain=True)
             hub = Hub(pid=process.pid, started=process_started(process.pid), token=token, interpreter=interpreter)
+            hubs = _without_dead(hubs, token)
         handed = hubs.runs.get(hub.token, ())
         return hubs.model_copy(update={"current": hub, "runs": {**hubs.runs, hub.token: handed if run_id in handed else (*handed, run_id)}})
 

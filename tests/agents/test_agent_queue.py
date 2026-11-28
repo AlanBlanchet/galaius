@@ -1169,3 +1169,19 @@ def test_a_persons_expired_message_is_logged_and_shown_in_the_runs_transcript_wi
     assert any("r1" in record.getMessage() and message_id in record.getMessage() and "5.0 h" in record.getMessage() for record in caplog.records)
     told = [event for event in reg.read_messages("r1") if event.kind == "error" and "not delivered" in (event.text or "")]
     assert len(told) == 1 and reg.get_run("r1").status == "done"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="the process list is /proc")
+def test_the_runs_handed_to_a_dispatcher_that_is_gone_are_dropped_when_another_starts():
+    """2026-11-28: 48 dispatchers' tokens (247 run entries) had piled up in the shared state: a dispatcher killed, or the PC
+    restarted, never ran `leave_when_done`. A token is serving while a process runs `agent_queue --serve <token>`."""
+    import subprocess
+    alive = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", "galaius.agents.agent_queue", "--serve", "live-token"])
+    try:
+        hubs = agent_queue.Hubs(current=agent_queue.Hub(pid=alive.pid, started=1, token="current-token", interpreter="x"),
+                                runs={"dead-token": ("a",), "live-token": ("b",), "current-token": ("c",), "new-token": ("d",)})
+        assert agent_queue._serving_tokens() >= {"live-token"}
+        assert agent_queue._without_dead(hubs, "new-token").runs == {"live-token": ("b",), "current-token": ("c",), "new-token": ("d",)}
+    finally:
+        alive.kill()
+        alive.wait()
