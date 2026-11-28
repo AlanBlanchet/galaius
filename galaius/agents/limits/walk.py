@@ -88,6 +88,27 @@ def walk(units: Iterable[Unit], *, now: float | None = None) -> Step | None:
     return Step(first.unit, first.shut, tuple(passed))
 
 
+def _subscriptions(provider: str, *, besides: UUID | None) -> list[UUID]:
+    """His subscription logins of `provider` signed in here, in his order, but `besides` and one at a cap he set."""
+    found: list[UUID] = []
+    for subscription in Subscription.all():
+        if subscription.provider != provider or subscription.id == besides:
+            continue
+        try:
+            RunSubscription(subscription_id=subscription.id, limits=subscription.limits() or SubscriptionLimits()).check()
+        except SubscriptionRefused:
+            continue
+        found.append(subscription.id)
+    return found
+
+
+def logins_from(provider: str, first: UUID | None) -> list[UUID | None]:
+    """Every login of this PC a turn of `provider`'s CLI may run on, `first` (None: this PC's own) ahead: then his other
+    subscription logins, then this PC's own."""
+    others = _subscriptions(provider, besides=first)
+    return [first, *others] if first is None else [first, *others, None]
+
+
 def logins_of(run: "reg.AgentRun", provider: str) -> list[UUID | None]:
     """The logins of this PC `provider`'s next turn of `run` may run on: on the run's own program the one it is pinned to first
     (None: this PC's own login), then his other subscription logins in his order, then this PC's own (a run pinned to a lost
@@ -100,18 +121,7 @@ def logins_of(run: "reg.AgentRun", provider: str) -> list[UUID | None]:
     program = PROVIDERS.get(provider)
     if program is None or not program.auth_home_env:
         return [pinned]
-    others: list[UUID | None] = []
-    for subscription in Subscription.all():
-        if subscription.provider != provider or subscription.id == pinned:
-            continue
-        try:
-            RunSubscription(subscription_id=subscription.id, limits=subscription.limits() or SubscriptionLimits()).check()
-        except SubscriptionRefused:
-            continue
-        others.append(subscription.id)
-    if provider != run.provider:
-        return [*others, None]
-    return [None, *others] if pinned is None else [pinned, *others, None]
+    return logins_from(provider, pinned) if provider == run.provider else [*_subscriptions(provider, besides=None), None]
 
 
 def units_of(table: Sequence["reg.LaunchCandidate"], logins: Mapping[str, Sequence[UUID | None]]) -> list[Unit]:

@@ -10,7 +10,9 @@ kernel otherwise killing runs at the slice's cap.
 
 from __future__ import annotations
 
+import math
 import time
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, Self
@@ -99,12 +101,31 @@ class Hold(BaseModel):
             return memory is not None and memory.hold(now=now) is not None
         return Hold.of_login(self.provider or "", self.subscription, now=now) is not None
 
+    def _reopens(self) -> str:
+        return _moment(datetime.fromtimestamp(self.until)) if self.until is not None else "sa réouverture"
+
+    @property
+    def login_name(self) -> str:
+        """The login it holds, as the line names it: this PC's own, or a subscription by its short id (never an account name)."""
+        return "ce PC" if self.subscription is None else f"abonnement {str(self.subscription)[:8]}"
+
+    @staticmethod
+    def said(holds: Sequence[Hold], *, promise: bool = True) -> str:
+        """The line of a turn waiting on `holds` (never empty): the usage limits, each login named with its reopening, the first
+        to reopen ahead (« en pause : limite d'usage claude jusqu'à 17:21 (ce PC), claude jusqu'à demain 09:00 (abonnement
+        be6a6546), reprise sans clic »); with no usage limit among them, the first one's own line."""
+        limits = sorted((hold for hold in dict.fromkeys(holds) if hold.reason == "usage_limit"), key=lambda hold: hold.until or math.inf)
+        if not limits:
+            return holds[0].line(promise=promise)
+        first, *rest = limits
+        named = [f"jusqu'à {first._reopens()} ({first.login_name})", *(f"{hold.provider} jusqu'à {hold._reopens()} ({hold.login_name})" for hold in rest)]
+        return f"en pause : limite d'usage {first.provider} {', '.join(named)}" + (", reprise sans clic" if promise else "")
+
     def line(self, *, promise: bool = True) -> str:
         """The waiting run's line (`agents list`, `agents send`): « en pause : limite d'usage claude jusqu'à 17:21, reprise
         sans clic »; `promise` False where nothing waits to start it (a start refused, `Paused` outside the line)."""
         if self.reason == "usage_limit":
-            at = _moment(datetime.fromtimestamp(self.until)) if self.until is not None else "sa réouverture"
-            return f"en pause : limite d'usage {self.provider} jusqu'à {at}" + (", reprise sans clic" if promise else "")
+            return f"en pause : limite d'usage {self.provider} jusqu'à {self._reopens()}" + (", reprise sans clic" if promise else "")
         if self.reason == "login_lost":
             return f"en pause : connexion {self.provider} perdue" + (", reprise sans clic une fois reconnectée sur ce PC (dans les 24 h : au-delà, « Continuer »)" if promise else "")
         memory = self.cause
@@ -130,7 +151,7 @@ class Paused(PermissionError):
     instead of saying which login is held until when (2026-10-23 16:29)."""
 
     def __init__(self, holds: tuple[Hold, ...]) -> None:
-        super().__init__("; ".join(hold.line(promise=False) for hold in holds))
+        super().__init__(Hold.said(holds, promise=False))
         self.holds = holds
 
 

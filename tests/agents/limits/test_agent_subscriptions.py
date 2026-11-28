@@ -245,7 +245,8 @@ async def test_a_held_login_never_hides_his_next_subscription(tmp_path: Path, mo
         return
     with pytest.raises(admission.Paused) as paused:
         await launch
-    assert [hold.subscription for hold in paused.value.holds] == [logins[runs_on].id]
+    waited = [logins[runs_on].id] if second != "usage" else [logins["first"].id, logins["second"].id, None]   # every held login, the first to reopen ahead
+    assert [hold.subscription for hold in paused.value.holds] == waited
 
 
 @pytest.mark.parametrize(("parent", "asked", "named", "pinned"), [

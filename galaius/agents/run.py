@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 import functools
 import hashlib
+import itertools
 import json
 import logging
 import math
@@ -1486,10 +1487,50 @@ def resolve_role(policy: Policy, agent: str | None, *, reference: AgentRevisionR
     return policy, role, AgentRevisionRef(id=selected.id, revision=selected.revision)
 
 
-def _reopening(provider: str, logins: Iterable[UUID | None]) -> admission.Hold | None:
-    """The usage-limit hold among `provider`'s `logins` that reopens first; None when none is held."""
-    holds = [hold for login in logins if (hold := admission.Hold.usage(provider, login)) is not None]
-    return min(holds, key=lambda hold: hold.until if hold.until is not None else math.inf, default=None)
+def _held(provider: str, logins: Iterable[UUID | None]) -> tuple[admission.Hold, ...]:
+    """The usage-limit holds among `provider`'s `logins`, the one reopening first ahead; empty when none is held."""
+    holds = (hold for login in logins if (hold := admission.Hold.usage(provider, login)) is not None)
+    return tuple(sorted(holds, key=lambda hold: hold.until if hold.until is not None else math.inf))
+
+
+def _next_login_takes(spares: Mapping[str, Sequence[UUID | None]], candidate: reg.LaunchCandidate, shut: UUID | None) -> bool:
+    """Whether walked `candidate`, its login `shut` just now, has another nothing shuts for it. True only while `shut` reads shut,
+    and the walk takes an unshut one first, so each login is asked once."""
+    unshut = lambda login: quota.shut(candidate.provider, candidate.model, subscription=login) is None   # noqa: E731
+    return candidate.provider in spares and not unshut(shut) and any(unshut(login) for login in spares[candidate.provider])
+
+
+#: The most candidates a `no_candidate` refusal's record carries (`NoCandidate.skips`).
+_SKIPS_KEPT: int = next(bound.max_length for bound in NoCandidate.model_fields["skips"].metadata if hasattr(bound, "max_length"))
+#: What a `no_candidate` line says: its first reasons (the table's order), the first candidates of each and the start and end of the
+#: first one's words (a vendor's own can run to kilobytes; what to do closes them).
+_REASONS_SAID, _NAMES_SAID, _WHY_START, _WHY_END = 3, 2, 200, 120
+
+
+def _no_candidate(agent: str, skipped: Sequence[reg.SkippedCandidate]) -> ModelUnavailable:
+    """The refusal of a start none of `skipped` could take, whatever the table's length: its record keeps the first candidate of
+    every reason, then the others in the table's order up to its bound; its words are one line."""
+    reasons: dict[str, list[int]] = {}
+    for index, entry in enumerate(skipped):
+        reasons.setdefault(entry.reason, []).append(index)
+    firsts = {indexes[0] for indexes in reasons.values()}
+    kept = sorted(firsts | set(itertools.islice((index for index in range(len(skipped)) if index not in firsts), max(_SKIPS_KEPT - len(firsts), 0))))
+    said = []
+    for reason, indexes in itertools.islice(reasons.items(), _REASONS_SAID):
+        names = [f"{skipped[index].candidate.provider}/{skipped[index].candidate.model}" for index in indexes[:_NAMES_SAID]]
+        if more := len(indexes) - len(names):
+            names.append(f"+{more}")
+        why = " ".join((skipped[indexes[0]].message or "no details recorded").split())
+        if len(why) > _WHY_START + _WHY_END:
+            why = f"{why[:_WHY_START]} … {why[-_WHY_END:]}"
+        said.append(f"{len(indexes)} {reason} ({', '.join(names)}: {why})")
+    if left := len(reasons) - len(said):
+        said.append(f"+{left} other reasons")
+    return ModelUnavailable(
+        NoCandidate(skips=tuple(PassedOverCandidate(provider=entry.candidate.provider, model=entry.candidate.model, reason=entry.reason, until=entry.until)
+                                for entry in (skipped[index] for index in kept))),
+        f"No candidate for {agent!r} can start on this machine: {'; '.join(said) or 'the ranked list is empty'}",
+    )
 
 
 async def run_agent(
@@ -1743,8 +1784,14 @@ async def run_agent(
     caps: list[SubscriptionCap] = []
     pinned_id = pinned.subscription_id if pinned is not None else None
     lends: RunSubscription | None = None  # set once a candidate runs on a key beside its login (`_held_keys`)
-    # The logins a candidate may run on: its provider's offered ones, in his order, else the run's own.
-    logins = {provider: [option.subscription_id for option in options] for provider, options in offered.items()}
+    # A start no one offered logins (this PC's terminal, an agent: no web `choices`) walks every login of his a candidate's CLI may
+    # run on, the run's own first, as a resume does (`walk.logins_from`): one held hands it to the next at once. A member's lent
+    # run and a community agent's keep their one; a key spends cash and is no login walked.
+    spares = {} if choices is not None or community is not None or (pinned is not None and pinned.lent) else \
+        {name: walk.logins_from(name, pinned_id) for name, each in by_name.items() if name not in offered and each.auth_home_env and not _keyed(each)}
+    switch = Config().agent_login_switch_percent
+    # The logins a candidate may run on: its provider's offered ones, in his order, else its walked ones, else the run's own.
+    logins = {provider: [option.subscription_id for option in options] for provider, options in offered.items()} | spares
     # A quota note is read against the login a candidate would first run on: the first one whose window is open.
     noted = {index: until for index, candidate in enumerate(candidates)
              if (until := _noted_until(candidate.provider, candidate.model, logins.get(candidate.provider, [pinned_id]))) is not None}
@@ -1752,7 +1799,7 @@ async def run_agent(
     # asked afresh before each candidate: a refusal heard from one model pauses its login's others, and a provider
     # offered several runs on the next of them (`first_under_cap`). Every login of every candidate held: the spawn waits
     # in line (`admission.Paused`) for the one reopening first, never refused for it.
-    waits: dict[int, admission.Hold] = {}
+    waits: dict[int, tuple[admission.Hold, ...]] = {}
     chosen_index = -1
     pending = deque([index for index in range(len(candidates)) if index not in noted] + sorted(noted, key=noted.__getitem__))   # every unit shut: the one reopening first is asked first
     #: Candidates passed over only because this login was refused them before: asked again, once, when
@@ -1769,14 +1816,27 @@ async def run_agent(
         if (candidate.provider, candidate.model) in passed_over:
             skipped.append(_skip_record(candidate, _skip("quota_exceeded", f"{candidate.provider}/{candidate.model} refused this brief before it started; relaunched on the next ranked model")))
             continue
-        if candidate.provider not in offered and (hold := admission.Hold.usage(candidate.provider, pinned_id)) is not None:
-            waits[index] = hold
-            skipped.append(_skip_record(candidate, _skip("quota_exceeded", hold.line()), until=hold.until))
-            continue
         candidate_provider = by_name[candidate.provider]
         candidate_pin, candidate_env = pinned, environment
         own_login = False   # runs on this PC's own login though logins were offered (`_own_login_takes`)
-        if candidate.provider in offered:
+        switched = False    # runs on another of his logins than the one it was asked on (`spares`)
+        if candidate.provider not in offered:
+            walked = logins.get(candidate.provider, [pinned_id])
+            ready = [login for login in walked if admission.Hold.usage(candidate.provider, login) is None]
+            if not ready:
+                waits[index] = holds = _held(candidate.provider, walked)
+                skipped.append(_skip_record(candidate, _skip("quota_exceeded", admission.Hold.said(holds)), until=holds[0].until))
+                continue
+            # The first nothing shuts for this model, under his switch share first: a login a person asked for stays while it runs.
+            taken = min(ready, key=lambda login: (quota.shut(candidate.provider, candidate.model, subscription=login) is not None,
+                                                  subscription is None and len(ready) > 1 and Subscription.past_switch(candidate.provider, login, switch)))
+            if switched := taken != pinned_id:
+                candidate_pin = None if taken is None else RunSubscription(subscription_id=taken, limits=Subscription.of(taken).limits() or SubscriptionLimits())
+                own = Subscription.unpinned(environment)
+                candidate_env = own if candidate_pin is None else candidate_pin.bound(own, candidate.provider)
+                log.warning("run %s: %s/%s starts on %s, not on %s", (run_id or "-")[:8], candidate.provider, candidate.model,
+                            taken or "this PC's own login", pinned_id or "this PC's own login")
+        else:
             options = offered[candidate.provider]
             if _keyed(candidate_provider):  # each key runs only an id its own vendor list names
                 options = [option for option in options if option.subscription_id is None or (known := Subscription.of(option.subscription_id).vendor_models()) is None
@@ -1786,15 +1846,18 @@ async def run_agent(
                 log.warning("run %s: every %s login offered is held or signed out: %s runs on this PC's own login", (run_id or "-")[:8], candidate.provider, candidate.model)
             else:
                 candidate_pin, candidate_env, passed = RunSubscription.first_under_cap(options, environment, candidate.provider, candidate.model)
-                if (hold := _reopening(candidate.provider, passed.held)) is not None:
-                    waits[index] = hold  # waited on should this candidate not start on another of his logins
+                # With every offered one held or signed out, this PC's own login was looked at too (`_own_login_takes`): held, it is waited on beside them.
+                beside = (None,) if candidate_pin is None and not _keyed(candidate_provider) \
+                    and all(quota.login_pause(candidate.provider, subscription=option.subscription_id) is not None for option in options) else ()
+                if holds := _held(candidate.provider, (*passed.held, *beside)):
+                    waits[index] = holds  # waited on should this candidate not start on another of his logins
                 if candidate_pin is None:
                     caps.extend(passed.caps)
-                    skipped.append(_skip_record(candidate, _skip("quota_exceeded", hold.line()), until=hold.until) if hold is not None and not passed.said
+                    skipped.append(_skip_record(candidate, _skip("quota_exceeded", admission.Hold.said(holds)), until=holds[0].until) if holds and not passed.said
                                    else _skip_record(candidate, _skip("subscription_capped" if passed.caps else "subscription_missing", passed.said)))
                     continue
         candidate_pin_id = candidate_pin.subscription_id if candidate_pin is not None else None
-        candidate_fence = fence if fence is None or not offered else \
+        candidate_fence = fence if fence is None or not (offered or switched) else \
             fence.model_copy(update={"homes": candidate_pin.homes() if candidate_pin is not None else RunSubscription.closed(name for name in offered if name != candidate.provider or not own_login)})
         # Named once per role, per provider (`accepts_coarse_tool_policy`) — a provider that can
         # only enforce a SANDBOX, not this role's specific tool names, runs it anyway only when
@@ -1807,7 +1870,7 @@ async def run_agent(
         # share one auth check regardless of which wire protocol's "bare model name" key
         # (ANTHROPIC_MODEL, OPENAI_MODEL) produced them.
         route_key = json.dumps(
-            {k: v for k, v in routed.items() if k not in ("ANTHROPIC_MODEL", "OPENAI_MODEL")},
+            [str(candidate_pin_id), {k: v for k, v in routed.items() if k not in ("ANTHROPIC_MODEL", "OPENAI_MODEL")}],
             sort_keys=True,
         )
         reason = await _unavailable(
@@ -1845,6 +1908,8 @@ async def run_agent(
                 )
         if reason is not None:
             skipped.append(_skip_record(candidate, reason))
+            if reason.code == "unauthenticated" and _next_login_takes(spares, candidate, candidate_pin_id):
+                pending.appendleft(index)  # this login is paused as lost now: the same model on his next one
             continue
         candidate_effort = policy.effort_for(agent, f"{candidate.provider}/{resolved_model}", chosen=reasoning)
         # Preflight cleared what's knowable BEFORE the child starts. Spawn it and give it a
@@ -1911,7 +1976,7 @@ async def run_agent(
         if candidate_fence is None and community is None and candidate_provider.touch_of(candidate_permission_mode) is TouchScope.READ_ONLY:
             # A read-only run reads its folder alone and writes in its scratch alone, the kernel refusing the rest.
             if (spec := reading()) is not None:
-                candidate_fence = spec if not offered else \
+                candidate_fence = spec if not (offered or switched) else \
                     spec.model_copy(update={"homes": candidate_pin.homes() if candidate_pin is not None else RunSubscription.closed(offered)})
         command_kwargs: dict[str, object] = dict(
             cwd=cwd, model=candidate_model, agent=agent, permission_mode=candidate_permission_mode,
@@ -2011,6 +2076,8 @@ async def run_agent(
             if candidate.provider in offered and admission.Hold.usage(candidate.provider, candidate_pin_id) is not None \
                     and any(admission.Hold.usage(candidate.provider, login) is None for login in logins[candidate.provider]):
                 pending.appendleft(index)  # its login just reached its limit: the same model on his next one, before any lower one
+            elif _next_login_takes(spares, candidate, candidate_pin_id):
+                pending.appendleft(index)  # its login just shut this model: the same model on his next one, before any lower one
             continue
         chosen = candidate
         chosen_index = index
@@ -2040,24 +2107,16 @@ async def run_agent(
     if chosen is None or process is None or chosen_provider is None or model is None:
         # Nothing else could start: it starts once a held login reopens, never refused for it — one whose launch was just
         # refused naming its reopening included (`quota.record_refusal` paused it).
-        waits = waits or {index: hold for index, candidate in enumerate(candidates)
-                        if (hold := _reopening(candidate.provider, logins.get(candidate.provider, [pinned_id]))) is not None}
+        waits = waits or {index: holds for index, candidate in enumerate(candidates)
+                          if (holds := _held(candidate.provider, logins.get(candidate.provider, [pinned_id])))}
         if waits:
-            raise admission.Paused(tuple(dict.fromkeys(waits.values())))
+            raise admission.Paused(tuple(dict.fromkeys(hold for holds in waits.values() for hold in holds)))
         if caps:
             # A cap is what stood in the way: said as such, the window reopening first (an allowance or a wait opens it).
             raise SubscriptionCapped(min(caps, key=lambda cap: cap.resets_at or datetime.max.replace(tzinfo=UTC)))
         if skipped and all(entry.reason == "subscription_missing" for entry in skipped):
             raise SubscriptionRefused("not_signed_in", skipped[0].message or "its subscription is not signed in on this PC")
-        walked = "\n".join(
-            f"  {s.candidate.provider}/{s.candidate.model}: {s.reason} — {s.message or 'no details recorded'}"
-            for s in skipped
-        )
-        raise ModelUnavailable(
-            NoCandidate(skips=tuple(PassedOverCandidate(provider=entry.candidate.provider, model=entry.candidate.model, reason=entry.reason, until=entry.until)
-                                    for entry in skipped)),
-            f"No candidate for {agent!r} can start on this machine; the ranked list was:\n{walked}",
-        )
+        raise _no_candidate(agent, skipped)
     provider = chosen_provider
     registered = reg.register(
         run_id=run_id, pid=process.pid, provider=provider.name, name=label,

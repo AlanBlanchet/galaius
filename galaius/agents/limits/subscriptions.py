@@ -382,6 +382,13 @@ class Subscription(BaseModel):
             self._write(state.model_copy(update={"usage": usage}))
         return usage
 
+    @classmethod
+    def past_switch(cls, provider: str, login: UUID | None, percent: Mapping[str, int]) -> bool:
+        """Whether a reading of `provider`'s `login` (None: this PC's own) is at or past his switch share (`percent`, per
+        window) of a window; no reading: under every one."""
+        readings = quota.own_readings(provider) if login is None else cls.of(login).usage()
+        return any((share := percent.get(reading.window)) is not None and reading.used_percent >= share for reading in readings)
+
     def check(self, limits: SubscriptionLimits, allowance: SubscriptionAllowance | None = None) -> None:
         """Refused (`SubscriptionCapped`) while a window of its usage is at its cap."""
         if (cap := limits.reached(self.usage(), allowance)) is not None:

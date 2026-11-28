@@ -450,6 +450,11 @@ class Config(BaseSettings):
     # How long a run may wait in the spawn line, held by a pause (memory, usage limit), before the run that asked it is told once,
     # with the holders named (`galaius.agents.spawn_line.SpawnLine.report_slow`).
     agent_pause_notice_minutes: Annotated[float, Field(gt=0)] = 10.0
+    # A start from this computer's terminal or an agent leaves a login whose last usage reading is at or past this share of its
+    # window for another of his under it; never a wait: with none under, it runs there (`Subscription.past_switch`). Windows
+    # left out: never passed over before the vendor refuses.
+    agent_login_switch_percent: dict[Literal["five_hour", "weekly", "monthly"], Annotated[int, Field(ge=1, le=100)]] = Field(
+        default_factory=lambda: {"five_hour": 90, "weekly": 95, "monthly": 95})
     agent_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 45
     agent_run_memory_max_percent: Annotated[int, Field(ge=1, le=100)] = 20
     # The agents' kernel soft limit (`MemoryHigh`), a share of RAM: past it their pages are reclaimed and they slow down,

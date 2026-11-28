@@ -57,6 +57,7 @@ from galaius.agents import agent_queue
 from galaius.agents.spawn_wait import POLL_SECONDS, YIELDED, published, verdict
 from galaius.agents.catalog import relations
 from galaius.agents.turns.critic_rounds import CriticRounds, turn_of
+from galaius.agents.limits import walk
 from galaius.agents.limits.admission import Hold, Paused, SoftMemory, turn_hold
 from galaius.agents import registry as reg
 from galaius.agents.catalog.community import CommunityAgent, gist, named
@@ -1153,7 +1154,7 @@ class SpawnLine(BaseModel):
     def _defer(self, run_id: str, spawn: Spawn, holds: tuple[Hold, ...], *, asker: int | None) -> Admission:
         """`run_id`'s place back to `waiting`, behind every spawn waiting, until one of `holds` lifts (`_turn`); its
         waiter started when `asker` (the process that tried it) holds it, else the waiter itself does."""
-        said = min(holds, key=lambda hold: hold.until or float("inf")).line()
+        said = Hold.said(holds)
         with self._places() as places:
             place = next((place for place in places if place.run_id == run_id), None)
             if place is not None:
@@ -1239,7 +1240,7 @@ class SpawnLine(BaseModel):
                               holder_started=process_started(me), parent_run_id=run.parent_run_id)
                 places.append(place)
             index = places.index(place)
-            said = hold.line() if hold is not None else ""
+            said = Hold.said(self._every_login(run, hold)) if hold is not None else ""
             if place.state == "waiting" and place.said != said:
                 places[index] = place = place.model_copy(update={"said": said})
             head = next((other for other in places if other.queued()), None)
@@ -1262,6 +1263,14 @@ class SpawnLine(BaseModel):
         and the line's (`places`). His own turn passes a login's pause alone (`_probe`)."""
         hold = turn_hold(run.provider, run.subscription_id, self.memory)
         return None if hold is not None and hold.reason != "memory" and self._probe(run, places) else hold
+
+    @staticmethod
+    def _every_login(run: reg.AgentRun, hold: Hold) -> tuple[Hold, ...]:
+        """`hold` and, for a usage limit, the ones on every other login `run`'s next turn could take (`walk.logins_of`): the line
+        names each with its reopening (the turn moves to the first that opens, `agent_queue.dispatch`)."""
+        if hold.reason != "usage_limit":
+            return (hold,)
+        return (hold, *(other for login in walk.logins_of(run, run.provider) if (other := Hold.usage(run.provider, login)) is not None))
 
     @staticmethod
     def _probe(run: reg.AgentRun, places: list[Place]) -> bool:

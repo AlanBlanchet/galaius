@@ -916,6 +916,8 @@ def usage_heard(provider: str, usage: tuple[UsageWindow, ...], *, asked: float, 
     at 51 % by 13:46, held every turn of that login until its named reopening. A refusal heard while the reading was on
     its way stands; a reading with a window at or past its allowance, or none, lifts nothing; a wrong lift costs one
     refused start, which pauses again."""
+    if usage and subscription is None:
+        _keep_own_readings(provider, usage)
     if not usage or any(window.used_percent >= 100 for window in usage):
         return
     login = _login(provider, subscription)
@@ -923,6 +925,32 @@ def usage_heard(provider: str, usage: tuple[UsageWindow, ...], *, asked: float, 
     pause = None if record is None else record.pauses.get("usage_limit")
     if pause is not None and pause.at < asked:
         _note_lift(login, asked, past=pause.at)
+
+
+def _own_readings_path() -> Path:
+    return UserPaths.agents() / "own-login-usage.json"
+
+
+def _own_readings() -> dict[str, list]:
+    with suppress(OSError, ValueError):
+        if isinstance(raw := json.loads(_own_readings_path().read_text(encoding="utf-8")), dict):
+            return raw
+    return {}
+
+
+def _keep_own_readings(provider: str, usage: tuple[UsageWindow, ...]) -> None:
+    """The last usage reading of `provider`'s login of this PC's own, for a start in another process (a subscription's is in its folder)."""
+    _write_json(_own_readings_path(), {**_own_readings(), provider: [window.model_dump(mode="json") for window in usage]})
+
+
+def own_readings(provider: str) -> tuple[UsageWindow, ...]:
+    """This PC's own `provider` login's last reading of the windows not reopened since; none read: empty."""
+    now = datetime.now(UTC)
+    try:
+        windows = tuple(UsageWindow.model_validate(window) for window in _own_readings().get(provider, ()))
+    except (TypeError, ValueError):
+        return ()
+    return tuple(window for window in windows if window.resets_at is None or window.resets_at > now)
 
 
 def _note_lift(login: str, at: float, *, past: float) -> None:
