@@ -1,0 +1,15 @@
+{"type": "system", "subtype": "init", "session_id": "s"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Starting the background check."}]}, "parent_tool_use_id": null, "session_id": "s"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01XvKX6nyGAQZyGZaBCwJH73", "name": "Bash", "input": {"command": "sleep 60", "run_in_background": true}}]}, "parent_tool_use_id": null, "session_id": "s"}
+{"type": "system", "subtype": "task_started", "task_id": "b71n9dqgv", "tool_use_id": "toolu_01XvKX6nyGAQZyGZaBCwJH73", "session_id": "s"}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01XvKX6nyGAQZyGZaBCwJH73", "content": "Command running in background."}]}, "parent_tool_use_id": null, "session_id": "s"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "LANCE"}]}, "parent_tool_use_id": null, "session_id": "s"}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2, "result": "LANCE", "stop_reason": "end_turn", "session_id": "s"}
+{"type": "system", "subtype": "task_updated", "task_id": "b71n9dqgv", "session_id": "s"}
+{"type": "system", "subtype": "task_notification", "task_id": "b71n9dqgv", "tool_use_id": "toolu_01XvKX6nyGAQZyGZaBCwJH73", "status": "completed", "summary": "Background command \"Run sleep 60 in the background\" complete", "session_id": "s"}
+{"type": "system", "subtype": "init", "session_id": "s"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "[no reply]"}]}, "parent_tool_use_id": null, "session_id": "s"}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1, "result": "[no reply]", "stop_reason": "end_turn", "origin": {"kind": "task-notification", "producer": "session-task"}, "session_id": "s"}
+{"type": "system", "subtype": "init", "session_id": "s"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Rome"}]}, "parent_tool_use_id": null, "session_id": "s"}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1, "result": "Rome", "stop_reason": "end_turn", "session_id": "s"}

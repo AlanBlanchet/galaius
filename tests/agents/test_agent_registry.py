@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Collection, Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -32,6 +33,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from galaius_core import StopActor, TokenCounts
+from galaius.agents import agent_queue
 from galaius.agents import registry as reg
 from galaius.agents.limits import walk
 from galaius.agents.limits import quota
@@ -1371,22 +1373,37 @@ def _wake_stream(name: str) -> list[str]:
     return (TESTS / "fixtures" / "agents" / f"claude_wake_{name}.jsonl").read_text().splitlines()
 
 
-def _followed(run_id: str, lines: list[str], his: dict[int, str] | None = None, unsaid: bool = True) -> list[AgentEvent]:
-    """`lines` written to run `run_id`'s raw stream one at a time, each followed by a mirror refresh, a message of his
-    (`his`) sent ahead of line `n`. A reader follows the mirror by byte offset, so every refresh only appends to it, and
-    with `unsaid` at no step does it hold a `NO_REPLY` as something said. Returns the whole read at the end."""
+#: A message of his, a report owing no reply, and a message of his written on the run with no queue holding it.
+_HIS = {"from_run": reg.PERSON_SENDER, "text": "Are we done?"}
+_REPORT = {"from_run": "peer", "text": "## peer — done", "relation": Relation.REPORT}
+_UNQUEUED = {**_HIS, "queued": False}
+
+
+def _followed(run_id: str, lines: list[str], sent: Mapping[int, dict] | None = None, handed: Collection[int] = (), unsaid: int | None = None) -> list[AgentEvent]:
+    """`lines` written to run `run_id`'s raw stream one at a time, each followed by a mirror refresh. Ahead of line `n`,
+    the message `sent[n]` is written to the run and queued for it, and for each `n` of `handed` the oldest one waiting is
+    handed to it, as this PC's dispatcher and inbox hook claim it. A reader follows the mirror by byte offset, so every
+    refresh only appends to it, and before line `unsaid` (every line by default) it never holds a `NO_REPLY` as something
+    said. Returns the whole read at the end."""
     register_run(run_id=run_id, name=run_id, provider="claude", task="t")
+    register_run(run_id="peer", name="peer", provider="claude", task="t")
     mirror = reg.StreamMirror(run_id)
     held = b""
     for index, line in enumerate(lines):
-        if text := (his or {}).get(index):
-            reg.record_message_event(from_run=reg.PERSON_SENDER, to_run=run_id, text=text)
+        if message := dict((sent or {}).get(index, {})):
+            queued = message.pop("queued", True)
+            message_id = reg.record_message_event(to_run=run_id, **message)
+            if queued:
+                agent_queue.enqueue(run_id, message_id=message_id, sender=message["from_run"])
+        if index in handed:
+            with reg.record_lock(run_id):
+                assert agent_queue.claim_next_locked(run_id) is not None
         reg.raw_events_path(run_id).open("a").write(line + "\n")
         mirror.refresh()
         written = reg.events_path(run_id).read_bytes()
         assert written.startswith(held), f"line {index} rewrote what a reader already has"
         held = written
-        if unsaid:
+        if unsaid is None or index < unsaid:
             assert not [event for event in _mirrored_events(run_id) if event.get("text") == NO_REPLY and not event.get("quiet")], f"line {index}"
     events = reg.read_events(run_id)
     assert [(event["kind"], event.get("text"), event.get("quiet", False)) for event in _mirrored_events(run_id)] \
@@ -1422,7 +1439,7 @@ def test_an_empty_woken_turn_leaves_his_answers_as_they_are():
     from galaius.agents.catalog.relations import closing_parts
 
     first = _wake_stream("task_end")[:7]  # up to the first turn's ending: « LANCE »
-    events = _followed("resumed", [*first, *_wake_stream("resume")], his={len(first): "Answer exactly FAIT."})
+    events = _followed("resumed", [*first, *_wake_stream("resume")], sent={len(first): {**_HIS, "text": "Answer exactly FAIT."}}, handed={len(first)})
     assert [event.text for event in events if event.kind == "text" and not event.quiet] == ["LANCE", "FAIT"]
     assert closing_parts(events) == ("LANCE", "FAIT")
 
@@ -1432,20 +1449,54 @@ def _turn(reply: str, woken: bool, tail: tuple[dict, ...] = ()) -> list[str]:
     return [json.dumps(line) for line in (_INIT, _said(reply), *tail, {"type": "result", "subtype": "success", "is_error": False, "session_id": "s", "result": reply, **origin})]
 
 
-@pytest.mark.parametrize(("lines", "his", "quiet"), [
-    # A turn nothing says a task opened (a run's first, a typed prompt its stream never shows): shown.
-    (_turn(NO_REPLY, woken=False), {}, [False]),
-    # He wrote before the reply: shown, though a task's end opened the turn.
-    (_turn(NO_REPLY, woken=True), {1: "Are we done?"}, [False]),
-    # He wrote after it, while the turn was closing (a Stop hook running): that reply answered the task, not him.
-    (_turn(NO_REPLY, woken=True), {2: "Are we done?"}, [True]),
+@pytest.mark.parametrize("answer", ["Rome", NO_REPLY])
+def test_a_question_still_waiting_gets_no_woken_reply_under_it(answer):
+    """A recorded web conversation: asked while a background task was pending, the message waits; the task ends and wakes a
+    turn that never had it, then the next turn is handed it. The woken `NO_REPLY` is never said, whatever he is answered."""
+    lines = [line.replace('"Rome"', json.dumps(answer)) for line in _wake_stream("asked_while_waiting")]
+    events = _followed("asked", lines, sent={7: _HIS}, handed={12}, unsaid=13)
+    replies = [event for event in events if event.kind == "text"]
+    assert [event.text for event in replies if not event.quiet][-2:] == ["LANCE", answer]
+    assert [event.quiet for event in replies if event.text == NO_REPLY] == [True, False][:1 + (answer == NO_REPLY)]
+
+
+def _turn(reply: str, woken: bool) -> list[str]:
+    """A turn's stream lines: its start, its reply, its ending (`woken`: a background task's end opened it)."""
+    origin = {"origin": {"kind": "task-notification", "producer": "session-task"}} if woken else {}
+    return [json.dumps(line) for line in (_INIT, _said(reply), {"type": "result", "subtype": "success", "is_error": False, "session_id": "s", "result": reply, **origin})]
+
+
+_SILENT, _WOKEN = _turn(NO_REPLY, woken=False), _turn(NO_REPLY, woken=True)
+_CUT = _turn("Working on it.", woken=False)[:2]
+
+
+@pytest.mark.parametrize(("lines", "sent", "handed", "quiet"), [
+    # A turn nothing says a task opened (a run's first, a typed prompt its stream never shows).
+    pytest.param(_SILENT, {}, (), [False], id="nothing-says-who"),
+    # Handed to the woken turn while it ran: it answers him.
+    pytest.param(_WOKEN, {1: _HIS}, {1}, [False], id="handed-while-it-ran"),
+    # Written before or after the reply and still waiting: the woken turn never had it.
+    pytest.param(_WOKEN, {1: _HIS}, (), [True], id="waiting-written-before-the-reply"),
+    pytest.param(_WOKEN, {2: _HIS}, (), [True], id="waiting-written-after-the-reply"),
+    # Handed once the reply was written (the turn still closing): that reply answered the task.
+    pytest.param(_WOKEN, {2: _HIS}, {2}, [True], id="handed-after-the-reply"),
+    # His message opens a turn.
+    pytest.param(_SILENT, {0: _HIS}, {0}, [False], id="opens-the-turn"),
+    # His message starts a process that first runs a former one's notice: that turn is not his, the next one is.
+    pytest.param([*_WOKEN, *_SILENT], {0: _HIS}, {0}, [True, False], id="opens-the-turn-after-a-woken-one"),
+    # The same after a turn cut before its ending.
+    pytest.param([*_CUT, *_WOKEN, *_SILENT], {2: _HIS}, {2}, [True, False], id="after-a-cut-turn"),
+    # A report written during his turn and handed to the next one opens that next turn alone.
+    pytest.param([*_SILENT, *_SILENT], {0: _HIS, 1: _REPORT}, {0, 3}, [False, True], id="report-written-during-his-turn"),
+    # A message no queue holds reaches the turn it is written in.
+    pytest.param(_WOKEN, {1: _UNQUEUED}, (), [False], id="unqueued"),
     # More than the marker: shown whole.
-    (_turn(f"{NO_REPLY} The build failed.", woken=True), {}, [False]),
-    # Cut before its ending, the next turn following: nothing says who opened it, so it shows.
-    ([*_turn(NO_REPLY, woken=True)[:2], *_turn("Next.", woken=False)], {}, [False]),
+    pytest.param(_turn(f"{NO_REPLY} The build failed.", woken=True), {}, (), [False], id="more-than-the-marker"),
+    # Cut before its ending, the next turn following: nothing says who opened it.
+    pytest.param([*_WOKEN[:2], *_turn("Next.", woken=False)], {}, (), [False], id="cut-before-its-ending"),
 ])
-def test_a_no_reply_he_may_be_owed_is_shown(lines, his, quiet):
-    events = _followed("owed", lines, his=his, unsaid=False)
+def test_a_no_reply_he_may_be_owed_is_shown(lines, sent, handed, quiet):
+    events = _followed("owed", lines, sent=sent, handed=handed, unsaid=0)
     assert [event.quiet for event in events if event.kind == "text" and event.text.startswith(NO_REPLY)] == quiet
 
 

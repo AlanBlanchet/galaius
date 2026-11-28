@@ -2662,6 +2662,17 @@ def _thinking_update(stored: AgentRun, estimate: int, *, urgent: bool) -> dict[s
     return {"thinking_live": live}
 
 
+def _handed(run_id: str) -> dict[str, int | None]:
+    """The raw line each message queued for run `run_id` was handed to it at (its queue item's; None: not yet), by
+    message id; empty when its queue cannot be read, each message then taken where it is written (`WakeReply`)."""
+    from galaius.agents import agent_queue  # it imports this module
+
+    try:
+        return {item.message_id: item.raw_index for item in agent_queue.items_seen(run_id)}
+    except (OSError, agent_queue.CorruptQueueStateError):
+        return {}
+
+
 class StreamReader:
     """A run's events as `read_events` returns them — its raw vendor stream through its provider's parser, a corrupt or
     half-written line skipped, the messages recorded on its side placed at the raw line each was sent at (`_interleave`)
@@ -2680,19 +2691,21 @@ class StreamReader:
         self.raw = False
 
     def __iter__(self) -> Iterator[AgentEvent]:
-        return WakeReply.marked(self.run_id, self._events())
+        # The messages before the queue: one written is queued under the same lock, so each read here is in `_handed` too.
+        messages = read_messages(self.run_id)
+        return WakeReply.marked(self.run_id, self._events(messages), _handed(self.run_id), self.first)
 
-    def _events(self) -> Iterator[AgentEvent]:
+    def _events(self, messages: list[AgentEvent]) -> Iterator[AgentEvent]:
         lines = _raw_lines(self.run_id, self.first) if self.provider is not None else None
         if lines is None:
             yield from self._appended()
-            yield from read_messages(self.run_id)
+            yield from messages
             return
         self.raw = True
         # A message belongs before every parsed event from a later line; one with no anchor at the END (`_interleave`'s
         # order: by anchor, the file's order between equal ones).
-        messages = [(at, event) for at, event in enumerate(read_messages(self.run_id)) if event.raw_index is None or event.raw_index >= self.first]
-        pending = deque(sorted(messages, key=lambda pair: (math.inf if pair[1].raw_index is None else pair[1].raw_index, pair[0])))
+        placed = [(at, event) for at, event in enumerate(messages) if event.raw_index is None or event.raw_index >= self.first]
+        pending = deque(sorted(placed, key=lambda pair: (math.inf if pair[1].raw_index is None else pair[1].raw_index, pair[0])))
         total = self.first
         for index, line in enumerate(lines, start=self.first):
             total = index + 1
@@ -2915,7 +2928,8 @@ class StreamMirror:
             updates |= _thinking_update(stored, self.ledger.thinking, urgent=bool(updates))
             if updates:
                 _update_fields(self.run_id, updates)
-        merged = list(WakeReply.marked(self.run_id, _interleave(parsed, read_messages(self.run_id), self.lines + len(stream_lines(tail)))))
+        merged = list(WakeReply.marked(self.run_id, _interleave(parsed, read_messages(self.run_id), self.lines + len(stream_lines(tail))),
+                                       _handed(self.run_id)))
         kept = self.written
         if len(merged) >= len(kept) and all(new is old or new.model_copy(update={"at": old.at}) == old for new, old in zip(merged, kept)) \
                 and self._append(merged[len(kept):]):

@@ -8,6 +8,7 @@ Unrecognised line becomes ``kind="other"`` rather than dropped — a vendor addi
 must never make a run look idle.
 """
 
+from collections import deque
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -625,48 +626,88 @@ HARNESS_INPUT = ("<task-notification", "<system-reminder")
 
 
 class WakeReply:
-    """Marks `quiet` the `NO_REPLY` reply of each turn of run `run_id` that only its harness opened: since its previous
-    turn ended every message to it is a `Relation.REPORT` or a `HARNESS_INPUT` line, no prompt typed, or its program says
-    a background task's end opened it (`AgentEvent.woken`). That word comes with the turn's ending, so in a turn the
-    stream shows starting, a `NO_REPLY` reply nothing earlier decides is held, then given just before the ending: what a
-    reader following the events already has is never changed under it. A turn cut before its ending gives it as written
-    once the next one starts (shown, never hidden); one still open keeps it. A reply he wrote ahead of is never quiet."""
+    """Marks `quiet` the `NO_REPLY` reply of each turn of run `run_id` that only its harness opened: nothing reached
+    that turn but `Relation.REPORT` messages and `HARNESS_INPUT` lines, no prompt typed, or its program says a
+    background task's end opened it (`AgentEvent.woken`) and nothing else reached it while it ran.
 
-    def __init__(self, run_id: str) -> None:
+    A message reaches a turn when it is handed to it, never when it is written: `handed` gives, for each message queued
+    for the run, the raw line it was handed at (None: not yet; `first`: where the events read begin). Handed before a
+    turn starts it opens that turn, unless the turn ends woken: it then waits for the next (a resume first runs the
+    notices a former process left). Handed while a turn runs, it joins it. A message no queue holds reaches the turn it
+    is written in.
+
+    The program's word comes with the ending, so in a turn the stream shows starting, a `NO_REPLY` reply that word alone
+    decides is held, then given just before the ending: what a reader following the events already has is never changed
+    under it. A turn cut before its ending gives it as written once the next one starts (shown, never hidden); one still
+    open keeps it."""
+
+    def __init__(self, run_id: str, handed: Mapping[str, int | None] | None = None, first: int = 0) -> None:
         self.run_id = run_id
-        #: None: no message to it this turn yet; True: only its harness opened it; False: anything else did.
+        self.queued: Mapping[str, int | None] = handed or {}
+        #: (raw line, message id) of each queued message handed from `first` on that the stream has not reached yet.
+        self.coming = deque(sorted((line, message) for message, line in self.queued.items() if line is not None and line >= first))
+        #: Each queued message written to it so far: True for a report.
+        self.reports: dict[str, bool] = {}
+        #: What the stream itself shows reaching this turn. None: nothing; True: only its harness; False: anything else.
         self.reports_only: bool | None = None
+        #: Queued messages (True: a report) handed before this turn started, while it ran up to its last output, since it.
+        self.openers: list[bool] = []
+        self.within: list[bool] = []
+        self.recent: list[bool] = []
         #: The stream showed this turn start and not end yet.
         self.started = False
         #: This turn's `NO_REPLY` replies whose opener only its ending says.
         self.held: list[AgentEvent] = []
 
+    def _harness_only(self, *messages: list[bool]) -> bool | None:
+        """`reports_only` with the queued `messages` counted in."""
+        reached = [report for group in messages for report in group]
+        if self.reports_only is False or not all(reached):
+            return False
+        return True if self.reports_only or reached else None
+
     def mark(self, event: AgentEvent) -> tuple[AgentEvent, ...]:
         """The events `event` lets a reader have, in order: none while it is held, held ones ahead of it once decided."""
+        if event.kind != "message" and event.raw_index is not None:
+            while self.coming and self.coming[0][0] <= event.raw_index:
+                report = self.reports.get(self.coming.popleft()[1], False)
+                (self.recent if self.started else self.openers).append(report)
+        if event.kind in ("text", "partial", "thinking", "tool", "tool_result"):
+            self.within, self.recent = self.within + self.recent, []
+        elif event.kind == "started" and self.started:  # the turn before was cut: what it never answered opens this one
+            self.openers, self.recent = self.recent, []
         silent = event.kind in ("text", "done") and event.text.strip() == NO_REPLY
-        if event.kind == "text" and silent and self.started and self.reports_only is None:
+        if_woken = self._harness_only(self.within, self.recent) is not False
+        if_not = self._harness_only(self.openers, self.within, self.recent) is True
+        if event.kind == "text" and silent and self.started and if_woken and not if_not:
             self.held.append(event)
             return ()
         ends = event.kind in ("done", "error", "cancelled")
-        by_task = ends and event.woken and (bool(self.held) or self.reports_only is None)
-        if silent and (self.reports_only is True or by_task):
+        by_task = ends and event.woken and (bool(self.held) or if_woken)
+        if silent and (by_task or if_not):
             event = event.model_copy(update={"quiet": True})
         released: list[AgentEvent] = []
         if ends or event.kind == "started":
             released = [reply.model_copy(update={"quiet": True}) if by_task else reply for reply in self.held]
             self.held, self.started = [], not ends
         if ends:
-            self.reports_only = None
+            self.reports_only, self.within, self.recent = None, [], []
+            if not event.woken:
+                self.openers = []
         elif event.kind == "prompt":
             self.reports_only = False
         elif event.kind == "injected" and event.text.lstrip().startswith(HARNESS_INPUT):
             self.reports_only = self.reports_only is not False
         elif event.kind == "message" and event.to_run == self.run_id and event.from_run != self.run_id:
-            self.reports_only = self.reports_only is not False and event.relation is Relation.REPORT
+            if event.event_id in self.queued:
+                self.reports[event.event_id] = event.relation is Relation.REPORT
+            else:
+                self.reports_only = self.reports_only is not False and event.relation is Relation.REPORT
         return (*released, event)
 
     @classmethod
-    def marked(cls, run_id: str, events: Iterable[AgentEvent]) -> Iterator[AgentEvent]:
+    def marked(cls, run_id: str, events: Iterable[AgentEvent], handed: Mapping[str, int | None] | None = None,
+               first: int = 0) -> Iterator[AgentEvent]:
         """`events` of run `run_id`, in their stream's order, each reply of a quiet wake marked (`mark`)."""
-        wake = cls(run_id)
+        wake = cls(run_id, handed, first)
         return (given for event in events for given in wake.mark(event))
