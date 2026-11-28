@@ -862,6 +862,20 @@ def test_the_head_publishes_who_starts_ahead_of_the_line_and_a_yielding_waiter_h
     assert started == [child.run_id]
 
 
+def test_a_resumed_turn_at_the_head_publishes_so_the_lean_waiters_behind_it_sleep(at_work, started):
+    """2026-11-26: a resumed turn first in line published nothing, so each spawn behind it read a headless line and started
+    its full waiter every 30 s."""
+    line = SpawnLine(limit=1, waiting_flag_minutes=5, waiting_gap_seconds=60)
+    at_work("a")
+    ended = register_run(run_id="other", pid=None)
+    with line.resuming(ended) as admitted:
+        assert not admitted
+    behind = line.enter(_spawn())
+    at, ready = spawn_wait.published(reg.shared_state_seen(READY_STATE))
+    assert ready == frozenset() and at > 0
+    assert spawn_wait.verdict(reg.shared_state_seen("spawn-line"), reg.shared_state_seen(READY_STATE), behind.run_id, now=at + 1.0, since=at - 100.0) == "sleep"
+
+
 def test_a_full_waiter_not_next_in_line_hands_its_place_to_its_lean_parent(at_work, started, monkeypatch):
     line = SpawnLine(limit=1, waiting_flag_minutes=5, waiting_gap_seconds=60)
     at_work("a")

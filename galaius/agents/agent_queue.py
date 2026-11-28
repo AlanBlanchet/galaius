@@ -56,6 +56,13 @@ RESUME_BACKOFF: tuple[float, ...] = (5.0, 20.0)
 #: (the table's next unit, `walk`): a loop guard, the walk itself ends it as soon as no unit can run.
 LIMIT_FALLBACKS = 6
 _POLL_SECONDS = 0.1
+#: How often a dispatcher looks at a run at work, where it only waits for the turn to end (what is sent meanwhile reaches
+#: the turn by its hook): one thread per such run reading its queue and record ten times a second held half a core
+#: (2026-11-26, 14 threads).
+_WORKING_PAUSE_SECONDS = 1.0
+#: How often the dispatcher reads which runs it was handed (`serve`): ten times a second is a lock, a read and a parse
+#: for nothing between hand-offs.
+_HUB_LOOK_SECONDS = 0.5
 #: Runs whose hand-off to another provider was refused (`fallback.hand_on`) in this dispatcher: their turn goes to their own provider.
 _HANDOFF_REFUSED: set[str] = set()
 _DISPATCHER_RECOVERY_TIMEOUT = 30.0
@@ -856,7 +863,7 @@ def serve(token: str) -> None:
             log.warning("agent dispatcher %s: %s", token[:8], error)
         if idle_since is None:
             return
-        time.sleep(_POLL_SECONDS)
+        time.sleep(_HUB_LOOK_SECONDS)
 
 
 def _serve_once(token: str, working: dict[str, threading.Thread], idle_since: float) -> float | None:
@@ -1243,7 +1250,7 @@ def dispatch(run_id: str, dispatcher_token: str | None = None) -> None:
                     _drained_locked(run_id, dispatcher_token)
                     return
                 if run.working():
-                    item = None
+                    item, pause = None, _WORKING_PAUSE_SECONDS
                 elif running is not None:
                     # The previous dispatcher may have died after the provider child finished but
                     # before it could persist the item's terminal state. Inspect the transcript

@@ -17,6 +17,7 @@ import errno
 import hashlib
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -85,6 +86,32 @@ def test_records_naming_the_same_candidates_share_one_copy_each():
     register_run(candidates=(candidate,), run_id="r2")
     first, second = reg.get_run("r1"), reg.get_run("r2")
     assert first.candidates[0] is second.candidates[0]
+
+
+def test_a_later_listing_looks_only_at_what_moved_and_still_sees_every_change(monkeypatch):
+    """2026-11-26: every listing stat-ed 38k files. A later one reads what the system says moved, nothing else."""
+    register_run(run_id="r1")
+    register_run(run_id="r2")
+    listed = lambda: [run.run_id for run in reg._stored_records()]
+    assert listed() == listed() == ["r1", "r2"]   # the second listing starts the watch
+    looked, look = [], reg._stat_cached_record
+    monkeypatch.setattr(reg, "_stat_cached_record", lambda path: looked.append(path.name) or look(path))
+    assert listed() == ["r1", "r2"]
+    if sys.platform.startswith("linux"):
+        assert looked == [], "nothing moved, nothing looked at"
+    register_run(run_id="r3")
+    reg._update_fields("r1", {"name": "renamed"})
+    assert listed() == ["r1", "r2", "r3"]
+    assert reg._stored_records()[0].name == "renamed"
+    if sys.platform.startswith("linux"):
+        assert set(looked) == {"r1.json", "r3.json"}
+    reg._record_path("r2").unlink()
+    assert listed() == ["r1", "r3"]
+    shutil.rmtree(reg.agents_dir())   # the folder replaced under a running poller
+    register_run(run_id="r9")
+    assert listed() == ["r9"]
+    register_run(run_id="r10")
+    assert listed() == ["r10", "r9"]
 
 
 def test_a_record_cache_nobody_listed_from_is_dropped_and_listing_fills_it_again(monkeypatch):

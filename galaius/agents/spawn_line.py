@@ -1246,6 +1246,11 @@ class SpawnLine(BaseModel):
             admitted = hold is None and place.state == "waiting" and self._admits(places, run.parent_run_id, first=head is place)
             if admitted:
                 places[index] = place.model_copy(update={"state": "starting", "holder": me, "holder_started": process_started(me)})
+            elif head is place:
+                # At the head, it publishes as a full waiter does: with a resumed turn first in line and silent, every lean
+                # waiter read the line as headless and started its 300 MB full waiter every 30 s (2026-11-26, ten of them
+                # held two cores).
+                self._publish(places)
         try:
             yield admitted
         finally:

@@ -115,7 +115,8 @@ class SubscriptionWatch(BaseModel):
     def heard(self) -> None:
         """Every running run's usage lines appended since the last call: a run pinned to a subscription feeds that subscription's
         windows and pools, one on this PC's own login that login's (`login_heard`); a pool at his stop holds its family there."""
-        running = [run for run in reg.running_runs() if run.subscription_id is not None]
+        live = reg.running_runs()   # one sweep of the run records (~0.1 s of CPU for 5,600) for both kinds
+        running = [run for run in live if run.subscription_id is not None]
         for run in running:
             provider = PROVIDERS[run.provider]
             files = (reg.raw_events_path(run.run_id), *filter(None, (self._session_record(run),)))
@@ -126,7 +127,7 @@ class SubscriptionWatch(BaseModel):
                     Subscription.of(run.subscription_id).observe_pools(pools)
                 except SubscriptionRefused:
                     pass  # signed out while it ran: nothing to keep
-        own = [run for run in reg.running_runs() if run.subscription_id is None and run.provider in PROVIDERS]
+        own = [run for run in live if run.subscription_id is None and run.provider in PROVIDERS]
         for run in own:  # a run on this PC's own login: the same lines say that login's windows, with no subscription to keep them in
             provider = PROVIDERS[run.provider]
             path = reg.raw_events_path(run.run_id)

@@ -58,6 +58,7 @@ from galaius.isolation.fence import FenceSpec
 from galaius.host.paths import UserPaths
 from galaius.host.file_lock import LockTimeout, SoleHolder, exclusive
 from galaius.host.file_stamp import FileStamp
+from galaius.host.folder_changes import FolderChanges
 from galaius.host.pinned_directory import DescriptorDirectory, PinnedDirectory
 from galaius.host.private_files import PRIVATE_FILES
 from galaius.host.processes import detached_options, end_process_tree, platform_signals, process_ancestry, process_started, process_unit, return_free_memory
@@ -3287,7 +3288,16 @@ def running_runs() -> list[AgentRun]:
 
     `list_runs` derives every run from its transcript; a caller polling for live work must not
     pay for the whole history on each tick."""
-    return [run for run in _stored_records() if _status_for(run) == "running"]
+    return [run for run in _stored_records() if _may_run(run) and _status_for(run) == "running"]
+
+
+def _may_run(run: AgentRun) -> bool:
+    """Whether `_status_for` can read `run` « running » at all, decided from its record alone: nearly every record of a
+    long history cannot, and is never probed."""
+    ended = run.status in TERMINAL_STATUSES
+    if run.kind in ("provider_child", "conversation"):
+        return not ended
+    return run.exit_code is None and not (ended and run.pid_started is None)
 
 
 def settle_gone() -> list[AgentRun]:
@@ -3782,7 +3792,9 @@ def _trim_idle_record_cache() -> None:
     while True:
         time.sleep(max(1.0, RECORD_CACHE_IDLE_SECONDS / 4))
         if time.monotonic() - _cache_read_at >= RECORD_CACHE_IDLE_SECONDS:
-            _RECORD_CACHE.clear()
+            with _LISTING_LOCK:
+                _LISTING.forget()
+                _RECORD_CACHE.clear()
             gc.collect()
             return_free_memory()
             _cache_trimmer = None
@@ -3803,24 +3815,88 @@ def _stat_cached_record(path: Path | os.DirEntry) -> AgentRun | None:
     return run
 
 
+#: How long a kept listing takes the kernel's word on what changed (`_Listing`) before every record is looked at again.
+RECORDS_RELIST_SECONDS = 60.0
+
+
+class _Listing:
+    """The registry's records as last listed, by file name: a poller's next listing looks only at the files the kernel
+    names as changed (`FolderChanges`). Listing a folder of 38,000 files and checking 5,700 records took 0.1 to 0.2 s of CPU each
+    time, several times every 5 s with nothing moving (2026-11-26). Watched from the second listing on, so a one-shot
+    command takes no watch; where none can be had, every listing reads the folder."""
+
+    def __init__(self) -> None:
+        self.folder: Path | None = None
+        self.changes: FolderChanges | None = None
+        self.records: dict[str, AgentRun] = {}
+        self.ordered: list[AgentRun] | None = None
+        self.listed_at: float | None = None
+
+    def forget(self) -> None:
+        if self.changes is not None:
+            self.changes.close()
+        self.__init__()
+
+    def read(self, folder: Path) -> list[AgentRun]:
+        """Every readable record of `folder`, by file name."""
+        if folder != self.folder:
+            self.forget()
+            self.folder = folder
+        changed = None
+        if self.changes is not None and self.listed_at is not None and time.monotonic() - self.listed_at < RECORDS_RELIST_SECONDS:
+            changed = self.changes.take()
+        if changed is None:
+            self._list(folder)
+        else:
+            for path in changed:
+                if not self._holds_a_record(path.name):
+                    continue
+                run = _stat_cached_record(path)
+                if run is self.records.get(path.name):
+                    continue
+                if run is None:
+                    del self.records[path.name]
+                else:
+                    self.records[path.name] = run
+                self.ordered = None
+        if self.ordered is None:
+            self.ordered = [self.records[name] for name in sorted(self.records)]
+        return list(self.ordered)
+
+    def _list(self, folder: Path) -> None:
+        if self.listed_at is not None and (self.changes is None or not self.changes.usable):
+            self.changes = FolderChanges.watch((folder,))   # before the listing: a write during it is told next time
+        elif self.changes is not None:
+            self.changes.take()   # this listing covers what it held
+        listed_at = time.monotonic()
+        with os.scandir(folder) as scan:
+            self.records = {entry.name: run for entry in scan
+                            if self._holds_a_record(entry.name) and (run := _stat_cached_record(entry)) is not None}
+        self.listed_at, self.ordered = listed_at, None
+
+    @staticmethod
+    def _holds_a_record(name: str) -> bool:
+        return name.endswith(".json") and not name.endswith(QUEUE_SUFFIX) and not name.startswith(".")
+
+
+_LISTING = _Listing()
+#: `_LISTING` is one for the process; its listers (a runner's threads) take turns.
+_LISTING_LOCK = threading.RLock()
+
+
 def _stored_records() -> list[AgentRun]:
-    """Every readable run record, by file name, each re-read only when its file moved. One
-    `scandir` and no `Path` per file: over 3k records, globbing then sorting `Path` objects was
-    most of a poller's 150 ms tick. Each listing marks the cache read (`_trim_idle_record_cache`): one run's own record
-    read every 100 ms by its dispatcher does not."""
+    """Every readable run record, by file name, each re-read only when its file moved (`_Listing`). Each listing marks
+    the cache read (`_trim_idle_record_cache`): one run's own record read every 100 ms by its dispatcher does not."""
     global _cache_read_at, _cache_trimmer
     _cache_read_at = time.monotonic()
     if _cache_trimmer is None:
         _cache_trimmer = threading.Thread(target=_trim_idle_record_cache, name="record-cache-trim", daemon=True)
         _cache_trimmer.start()
-    try:
-        with os.scandir(agents_dir()) as scan:
-            entries = sorted((entry for entry in scan if entry.name.endswith(".json") and not entry.name.endswith(QUEUE_SUFFIX)
-                              and not entry.name.startswith(".")), key=lambda entry: entry.name)
-    except FileNotFoundError:
+    folder = agents_dir()
+    if not folder.is_dir():
         return []
-    with _pinned_registry():   # the folder checked once, not once per record (~a quarter of a listing, 2026-11-16)
-        records = [run for run in map(_stat_cached_record, entries) if run is not None]
+    with _LISTING_LOCK, _pinned_registry():   # the folder checked once, not once per record (~a quarter of a listing, 2026-11-16)
+        records = _LISTING.read(folder)
     _cache_read_at = time.monotonic()   # a cold listing takes seconds: idle counts from its end
     return records
 
