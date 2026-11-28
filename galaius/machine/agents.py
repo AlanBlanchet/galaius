@@ -315,6 +315,15 @@ class MachineSessions:
             await self._host.close()
 
 
+def _fence_trial() -> tuple[bool, str]:
+    """`available()` for a start: a trial that never ended (a PC too loaded) refuses it typed, never as this PC's own fault and
+    never unfenced."""
+    try:
+        return available()
+    except subprocess.TimeoutExpired:
+        raise AgentRefused("fence_broken", "this PC is too busy to check that it can isolate the run (its trial did not end in time): ask again in a minute") from None
+
+
 class MachineAgents(BaseModel):
     """Answers one MachineAgentRequest (already checked: this machine, signed, not expired), from
     the owner's CURRENT settings on this machine: its agent roots (name -> resolved folder), the
@@ -1098,7 +1107,7 @@ class MachineAgents(BaseModel):
             return False
         if PeerSwitch.is_off():
             raise AgentRefused("agents_off", "its owner switched off the runs other of his PCs place here (`galaius machine peer off`)")
-        ready, reason = available()
+        ready, reason = _fence_trial()
         if not ready and not (placed is not None and placed.unfenced_ok):
             raise AgentRefused("fence_broken", f"this PC cannot isolate the run ({reason}) and its owner has not allowed runs placed here without isolation; "
                                            "that allowance is not built into the web app yet (no page or button sets it): make the isolation work here, or place the run on another PC")
@@ -1126,7 +1135,7 @@ class MachineAgents(BaseModel):
         staging copy when that folder is write-after-review. The folder needs a level its owner set
         (read or later): an agent folder never opens on its own. Built once here so a start that
         cannot be fenced is refused before anything runs; every turn builds it again."""
-        ready, reason = available()
+        ready, reason = _fence_trial()
         if not ready:
             raise AgentRefused("fence_broken", f"the agent fence is on here but cannot be built: {reason}; its owner switches it off there with `galaius machine fence off` to start agents unfenced")
         if self.places is None or self.reviews is None:

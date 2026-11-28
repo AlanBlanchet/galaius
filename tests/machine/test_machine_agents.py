@@ -1408,6 +1408,20 @@ def test_with_the_fence_on_an_agent_never_starts_unfenced(base: Path, tmp_path: 
     assert agents.runs.read() == ()
 
 
+def test_a_start_whose_fence_trial_never_ends_is_refused_typed_and_never_runs_unfenced(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A loaded PC: the trial's timeout escaped, the asker read « its own code failed »."""
+    def busy() -> tuple[bool, str]:
+        raise subprocess.TimeoutExpired("bwrap", 40)
+
+    monkeypatch.setattr("galaius.machine.agents.available", busy)
+    agents = _fenced_agents(base, tmp_path, ("false",), project="write")
+    for asked in ({}, {"require_fence": True}):
+        with pytest.raises(AgentRefused, match="too busy to check") as refused:
+            _answer(agents, _request("start", root="project", role="app-engineer", text="tidy", **asked))
+        assert refused.value.refusal.reason == "fence_broken"
+    assert agents.runs.read() == ()
+
+
 def test_in_a_write_after_review_folder_the_agent_works_in_a_staging_copy(base: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("galaius.machine.agents.available", lambda: (True, ""))
     run_id = uuid4()

@@ -830,3 +830,28 @@ def test_a_read_only_run_launches_the_browsers_this_pc_installed(home: Path, tmp
     spec = FenceSpec.reading((PROVIDERS["claude"],), home / "docs", scratch=tmp_path / "scratch", state=tmp_path / "state")
     assert FenceBind(source=browsers, target=browsers, writable=False) in spec.build().binds
     assert fence.inside_environment()[fence.BROWSERS] == str(browsers)
+
+
+@pytest.mark.parametrize(("slow", "tried"), [pytest.param(1, [20, 40], id="ends-on-the-second-try"), pytest.param(2, [20, 40], id="never-ends")])
+def test_a_fence_trial_slow_on_a_loaded_pc_gets_a_second_longer_try(monkeypatch: pytest.MonkeyPatch, slow: int, tried: list[int]) -> None:
+    waited: list[int] = []
+
+    def run(command, *, timeout, **_):
+        waited.append(timeout)
+        if len(waited) <= slow:
+            raise subprocess.TimeoutExpired(command, timeout)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(fence.sys, "platform", "linux")
+    monkeypatch.setattr(fence.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(fence, "userns_refusal", lambda bwrap: None)
+    monkeypatch.setattr(fence, "landlock_abi", lambda: fence._SCOPE_ABI)
+    monkeypatch.setattr(fence.Outer, "command", lambda self, argv: argv)
+    monkeypatch.setattr(fence.subprocess, "run", run)
+    asked = fence.available.__wrapped__   # past the process's cached answer
+    if slow < 2:
+        assert asked() == (True, "")
+    else:
+        with pytest.raises(subprocess.TimeoutExpired):
+            asked()
+    assert waited == tried

@@ -1188,10 +1188,15 @@ def _confine_child(writable: list[Path]) -> None:
         raise
 
 
+#: How long the fence's trial run gets, then its second try when the first did not end: a loaded PC answers late.
+_TRIAL_SECONDS = (20, 40)
+
+
 @functools.cache
 def available() -> tuple[bool, str]:
     """(this PC can build the fence, why not): Linux, bubblewrap installed, Landlock scopes, and
-    one trial run succeeding (user namespaces may be blocked by the system's policy)."""
+    one trial run succeeding (user namespaces may be blocked by the system's policy). A trial that ends in neither of its
+    two tries raises `subprocess.TimeoutExpired`: it says nothing of the fence, so it is never read as « cannot be built »."""
     if not sys.platform.startswith("linux"):
         return False, f"the agent fence needs Linux (bubblewrap and Landlock); on {sys.platform} agents are not fenced yet"
     bwrap = shutil.which("bwrap")
@@ -1201,8 +1206,14 @@ def available() -> tuple[bool, str]:
         return False, refusal
     if (abi := landlock_abi()) < _SCOPE_ABI:
         return False, f"this kernel's Landlock (ABI {abi}) cannot scope sockets and signals: Linux 6.12 or later is needed"
-    trial = subprocess.run(Outer().command([bwrap, "--unshare-user", "--unshare-pid", "--unshare-net", "--die-with-parent",
-                                         "--ro-bind", "/", "/", "true"]), capture_output=True, text=True, timeout=20, check=False)
+    command = Outer().command([bwrap, "--unshare-user", "--unshare-pid", "--unshare-net", "--die-with-parent", "--ro-bind", "/", "/", "true"])
+    for patience in _TRIAL_SECONDS:
+        try:
+            trial = subprocess.run(command, capture_output=True, text=True, timeout=patience, check=False)
+            break
+        except subprocess.TimeoutExpired:
+            if patience == _TRIAL_SECONDS[-1]:
+                raise
     if trial.returncode != 0:
         return False, f"bubblewrap cannot start here: {(trial.stderr.strip().splitlines() or ['exit ' + str(trial.returncode)])[-1][:200]}"
     return True, ""
