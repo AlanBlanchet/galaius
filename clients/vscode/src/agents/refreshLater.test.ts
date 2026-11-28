@@ -31,6 +31,25 @@ test("writes faster than the wait still refresh within the cap, and a quiet burs
   assert.ok(ranAt[0] >= 90 && ranAt[0] < 250, String(ranAt[0]));
 });
 
+test("writes every 100 ms refresh once a second, counted from the previous refresh's start, render included", async (t) => {
+  if (!fs.existsSync(built)) return t.skip("run npm run compile first");
+  const { refreshLater } = require_(built);
+  const started = Date.now();
+  const ranAt: number[] = [];
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const render = () => {   // 300 ms of work, as a panel's render takes
+    ranAt.push(Date.now() - started);
+    const until = Date.now() + 300;
+    while (Date.now() < until);
+  };
+  for (let write = 0; write < 50; write++) {   // a write every 100 ms for 5 s
+    timer = refreshLater(timer, render, 250, 1000);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const gaps = ranAt.slice(1).map((at, index) => at - ranAt[index]);
+  assert.ok(ranAt.length >= 5 && gaps.every((gap) => gap <= 1150), `refreshes at ${ranAt}, gaps ${gaps}`);
+});
+
 test("one registry read serves every caller of a turn, the next turn reads again", async (t) => {
   if (!fs.existsSync(built)) return t.skip("run npm run compile first");
   const root = path.join(TEST_OUT, `refresh-later-${process.pid}-${Date.now()}`);
@@ -52,6 +71,34 @@ test("one registry read serves every caller of a turn, the next turn reads again
     assert.notEqual(readAgentRuns(), readAgentRuns(), "callers get their own array");
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(readAgentRuns().length, first.length + 1, "the next turn reads again");
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    fs.rmSync(root, { recursive: true });
+  }
+});
+
+test("the deduplicated messages are kept while no message file changed and follow every change", (t) => {
+  if (!fs.existsSync(built)) return t.skip("run npm run compile first");
+  const root = path.join(TEST_OUT, `messages-memo-${process.pid}-${Date.now()}`);
+  const directory = path.join(root, ".galaius", "out", "agents");
+  fs.mkdirSync(directory, { recursive: true });
+  const previousHome = process.env.HOME;
+  process.env.HOME = root;
+  try {
+    delete require_.cache[require_.resolve(built)];
+    const { readAgentMessages } = require_(built);
+    const line = (text: string) => JSON.stringify({ from_run: "a", to_run: "b", text }) + "\n";
+    const file = path.join(directory, "b.messages.jsonl");
+    fs.writeFileSync(file, line("one") + line("one"));
+    const first = readAgentMessages();
+    assert.deepEqual(first.map((m: { text: string }) => m.text), ["one"], "a repeated exchange once");
+    first.pop();
+    assert.equal(readAgentMessages().length, 1, "a caller's change never reaches the kept result");
+    fs.appendFileSync(file, line("two"));
+    assert.deepEqual(readAgentMessages().map((m: { text: string }) => m.text), ["one", "two"]);
+    fs.unlinkSync(file);
+    assert.deepEqual(readAgentMessages(), []);
   } finally {
     if (previousHome === undefined) delete process.env.HOME;
     else process.env.HOME = previousHome;

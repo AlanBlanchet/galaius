@@ -64,9 +64,11 @@ export const isRegistryFile = (name: string): boolean => !name.startsWith(".");
  *  mtime) and held until it goes; one `parse` refuses is left out until it changes. The registry holds thousands of
  *  finished runs whose files never change again: parsing them all on each repaint took 1.4 to 1.6 s (5,616 records,
  *  64 MB, 2026-11-26). Only a listing and one `stat` per file are repeated. */
-function changedOnly<T>(suffix: string, parse: (text: string) => T): () => T[] {
+function changedOnly<T>(suffix: string, parse: (text: string) => T): (() => T[]) & { generation: () => number } {
   let held = new Map<string, { stamp: string; value?: T }>();
-  return () => {
+  /** Moves each time a file came, changed or went since the last read: what a caller's own derived result is kept against. */
+  let generation = 0;
+  const read = () => {
     const dir = agentsDir();
     let names: string[];
     try {
@@ -100,9 +102,11 @@ function changedOnly<T>(suffix: string, parse: (text: string) => T): () => T[] {
       next.set(file, entry);
       if (entry.value !== undefined) values.push(entry.value);
     }
+    if (next.size !== held.size || [...next].some(([file, entry]) => held.get(file) !== entry)) generation += 1;
     held = next;
     return values;
   };
+  return Object.assign(read, { generation: () => generation });
 }
 
 const runRecords = changedOnly(".json", (text): AgentRun => {
@@ -127,23 +131,24 @@ function shownStatus(run: AgentRun): RunStatus {
   );
 }
 
-const firstPoked = new WeakMap<object, number>();
+/** Per timer `refreshLater` returned: when its burst began, or, once it fired, when that refresh started. */
+const burst = new WeakMap<object, { first: number; fired: boolean }>();
 
-/** A refresh asked `wait` ms after the latest of a burst of writes, never later than `maxWait` after the first: a run writing
- *  faster than `wait` kept a panel from refreshing until it stopped (8 s measured, perf-critic 2026-11-28). `previous` is the
- *  timer this returned last; the new one replaces it. */
+/** A refresh asked `wait` ms after the latest of a burst of writes, and never later than `maxWait` after the start of the
+ *  previous refresh (or after the burst's first write when none came lately): a run writing faster than `wait` kept a panel
+ *  from refreshing until it stopped (8 s measured), then, counted from the first write, refreshed every 1 s plus its own
+ *  render (0.69 a second; perf-critic 2026-11-28). `previous` is the timer this returned last; the new one replaces it. */
 export function refreshLater(previous: ReturnType<typeof setTimeout> | undefined, run: () => void, wait: number, maxWait = 1000): ReturnType<typeof setTimeout> {
   const now = Date.now();
   let first = now;
-  if (previous) {
-    first = firstPoked.get(previous) ?? now;
-    clearTimeout(previous);
-  }
+  const before = previous ? burst.get(previous) : undefined;
+  if (previous) clearTimeout(previous);
+  if (before !== undefined && (!before.fired || now - before.first < maxWait)) first = before.first;
   const timer: ReturnType<typeof setTimeout> = setTimeout(() => {
-    firstPoked.delete(timer);
+    burst.set(timer, { first: Date.now(), fired: true });
     run();
   }, Math.max(0, Math.min(wait, first + maxWait - now)));
-  firstPoked.set(timer, first);
+  burst.set(timer, { first, fired: false });
   return timer;
 }
 
@@ -382,14 +387,21 @@ const messageFiles = changedOnly(".messages.jsonl", (text): AgentMessage[] => {
 
 /** Every recorded exchange, in file order. These are the edges a sequence view draws; without
  *  them the panel can only show monologues side by side. */
+let messages: { generation: number; value: AgentMessage[] } | undefined;
+
 export function readAgentMessages(): AgentMessage[] {
+  const files = messageFiles();
+  const generation = messageFiles.generation();
+  // 50 MB of messages (9,222 of them) were deduplicated again on every read: 180 ms of the 267 (perf-critic 2026-11-28).
+  if (messages !== undefined && messages.generation === generation) return [...messages.value];
   const seen = new Set<string>();
   const out: AgentMessage[] = [];
-  for (const message of messageFiles().flat()) {
+  for (const message of files.flat()) {
     const key = `${message.from_run} ${message.to_run} ${message.text}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push({ ...message });
   }
-  return out;
+  messages = { generation, value: out };
+  return [...out];
 }
