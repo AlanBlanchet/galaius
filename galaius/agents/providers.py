@@ -1087,6 +1087,10 @@ def provider_caveat_note(provider: "AgentProvider") -> str:
 #: `other`, so a vendor adding an event cannot vanish silently.
 _HARNESS_BOOKKEEPING = frozenset({"hook_started", "hook_response"})
 
+#: The `origin.kind` of a `result` line whose turn a background task's end opened, never words of anyone (2.1.288-2.1.332:
+#: a Bash task, a Monitor's event or end), with or without a `task_notification` line ahead of it.
+_TASK_WAKE = "task-notification"
+
 #: How Claude Code opens the `isSynthetic` user turn carrying a Stop hook's block.
 _STOP_HOOK_FEEDBACK = "Stop hook feedback:"
 
@@ -2052,6 +2056,7 @@ class ClaudeCodeProvider(AgentProvider):
                 kind="error" if failed else "done",
                 session_id=sid, raw_type=kind,
                 text=detail, cut=self.cut_of(detail, raw.get("api_error_status")) if failed else None,
+                woken=isinstance(origin := raw.get("origin"), dict) and origin.get("kind") == _TASK_WAKE,
                 cost_usd=cost,
                 final_text=has_final, usage=settled,
                 **ContextGauge.reported({"context_window": window, "thinking_tokens": thought}),

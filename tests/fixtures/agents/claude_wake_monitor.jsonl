@@ -1,0 +1,16 @@
+{"type": "system", "subtype": "init", "session_id": "s"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_014Ft1vm389sgQxjy8eAEmpk", "name": "Monitor", "input": {"command": "sleep 12; echo PRET; sleep 25; echo FIN", "description": "wait"}}]}, "parent_tool_use_id": null, "session_id": "s"}
+{"type": "system", "subtype": "background_tasks_changed", "session_id": "s"}
+{"type": "system", "subtype": "task_started", "task_id": "bb8bg3k8i", "tool_use_id": "toolu_014Ft1vm389sgQxjy8eAEmpk", "description": "wait", "session_id": "s"}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_014Ft1vm389sgQxjy8eAEmpk", "content": "Command running in background."}]}, "parent_tool_use_id": null, "session_id": "s"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "LANCE"}]}, "parent_tool_use_id": null, "session_id": "s"}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2, "result": "LANCE", "stop_reason": "end_turn", "session_id": "s"}
+{"type": "system", "subtype": "init", "session_id": "s"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "[no reply]"}]}, "parent_tool_use_id": null, "session_id": "s"}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1, "result": "[no reply]", "stop_reason": "end_turn", "origin": {"kind": "task-notification", "producer": "session-task"}, "session_id": "s"}
+{"type": "system", "subtype": "task_updated", "task_id": "bb8bg3k8i", "session_id": "s"}
+{"type": "system", "subtype": "task_notification", "task_id": "bb8bg3k8i", "tool_use_id": "toolu_014Ft1vm389sgQxjy8eAEmpk", "status": "completed", "summary": "Monitor \"wait\" stream ended", "session_id": "s"}
+{"type": "system", "subtype": "background_tasks_changed", "session_id": "s"}
+{"type": "system", "subtype": "init", "session_id": "s"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "[no reply]"}]}, "parent_tool_use_id": null, "session_id": "s"}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1, "result": "[no reply]", "stop_reason": "end_turn", "origin": {"kind": "task-notification", "producer": "session-task"}, "session_id": "s"}

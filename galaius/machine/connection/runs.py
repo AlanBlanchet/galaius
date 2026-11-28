@@ -118,10 +118,11 @@ class Runs(Events, MachineFile):
 
     @staticmethod
     def _final_text(events: list[AgentEvent]) -> str:
-        terminal = next((event for event in reversed(events) if event.kind == "done" and event.final_text and event.text.strip()), None)
+        said = [event for event in events if event.text.strip() and not event.quiet]
+        terminal = next((event for event in reversed(said) if event.kind == "done" and event.final_text), None)
         if terminal is not None:
             return terminal.text
-        last = next((event for event in reversed(events) if event.kind == "text" and event.text.strip()), None)
+        last = next((event for event in reversed(said) if event.kind == "text"), None)
         return "" if last is None else last.text
 
     @property

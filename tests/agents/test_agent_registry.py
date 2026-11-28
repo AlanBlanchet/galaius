@@ -36,6 +36,7 @@ from galaius.agents import registry as reg
 from galaius.agents.limits import walk
 from galaius.agents.limits import quota
 from galaius.agents.transport.events import NO_REPLY, AgentEvent, Relation
+from galaius.machine.connection.runs import Runs
 from galaius.host.pinned_directory import DescriptorDirectory
 from galaius.host.private_files import PRIVATE_FILES
 from galaius.host.processes import process_exited
@@ -1363,6 +1364,89 @@ def test_a_reply_to_a_background_task_notification_is_quiet_and_the_notification
     assert opened.kind == ("prompt" if wake == "Are we done?" else "injected")
     said = [event for event in events if event.kind in ("text", "done") and event.text.strip() == reply.strip()]
     assert said and all(event.quiet is quiet for event in said)
+
+
+def _wake_stream(name: str) -> list[str]:
+    """A recorded Claude headless stream of a run woken by its background tasks (`tests/fixtures/agents/claude_wake_<name>`)."""
+    return (TESTS / "fixtures" / "agents" / f"claude_wake_{name}.jsonl").read_text().splitlines()
+
+
+def _followed(run_id: str, lines: list[str], his: dict[int, str] | None = None, unsaid: bool = True) -> list[AgentEvent]:
+    """`lines` written to run `run_id`'s raw stream one at a time, each followed by a mirror refresh, a message of his
+    (`his`) sent ahead of line `n`. A reader follows the mirror by byte offset, so every refresh only appends to it, and
+    with `unsaid` at no step does it hold a `NO_REPLY` as something said. Returns the whole read at the end."""
+    register_run(run_id=run_id, name=run_id, provider="claude", task="t")
+    mirror = reg.StreamMirror(run_id)
+    held = b""
+    for index, line in enumerate(lines):
+        if text := (his or {}).get(index):
+            reg.record_message_event(from_run=reg.PERSON_SENDER, to_run=run_id, text=text)
+        reg.raw_events_path(run_id).open("a").write(line + "\n")
+        mirror.refresh()
+        written = reg.events_path(run_id).read_bytes()
+        assert written.startswith(held), f"line {index} rewrote what a reader already has"
+        held = written
+        if unsaid:
+            assert not [event for event in _mirrored_events(run_id) if event.get("text") == NO_REPLY and not event.get("quiet")], f"line {index}"
+    events = reg.read_events(run_id)
+    assert [(event["kind"], event.get("text"), event.get("quiet", False)) for event in _mirrored_events(run_id)] \
+        == [(event.kind, event.text, event.quiet) for event in events]
+    return events
+
+
+@pytest.mark.parametrize(("stream", "shown"), [
+    # The task ended between turns: its notification line, then the turn it opens (the shape of a web conversation's wake).
+    ("task_end", ["LANCE"]),
+    # It ended while the turn before was still writing: the next turn opens with no line of its own but its ending's word.
+    ("task_end_mid_turn", ["A short story about a lighthouse."]),
+    # A Monitor's event wakes it with no notification line at all, then its end with one.
+    ("monitor", ["LANCE"]),
+    # A wake answered with words shows them.
+    ("words", ["LANCE", "La commande est finie."]),
+])
+def test_a_turn_only_a_task_end_opened_says_nothing_with_its_no_reply(stream, shown):
+    """Real recorded streams (Claude Code 2.1.332): what a woken turn answered `NO_REPLY` is no answer, in the mirror as it
+    grows and in a whole read; every other reply is left as written and stays the run's answer."""
+    from galaius.agents.catalog.relations import closing_parts
+
+    events = _followed("wake", _wake_stream(stream))
+    assert [event.text for event in events if event.kind == "text" and not event.quiet] == shown
+    assert NO_REPLY not in closing_parts(events) and closing_parts(events)[-1] == shown[-1]
+    assert all(event.summary(viewer="wake") == "" for event in events if event.text == NO_REPLY)
+    assert Runs._final_text(events) == shown[-1]
+
+
+def test_an_empty_woken_turn_leaves_his_answers_as_they_are():
+    """A resume meets a background task the previous process left: the CLI first runs an empty woken turn, then answers him.
+    Nothing of either answer is hidden or replaced."""
+    from galaius.agents.catalog.relations import closing_parts
+
+    first = _wake_stream("task_end")[:7]  # up to the first turn's ending: « LANCE »
+    events = _followed("resumed", [*first, *_wake_stream("resume")], his={len(first): "Answer exactly FAIT."})
+    assert [event.text for event in events if event.kind == "text" and not event.quiet] == ["LANCE", "FAIT"]
+    assert closing_parts(events) == ("LANCE", "FAIT")
+
+
+def _turn(reply: str, woken: bool, tail: tuple[dict, ...] = ()) -> list[str]:
+    origin = {"origin": {"kind": "task-notification", "producer": "session-task"}} if woken else {}
+    return [json.dumps(line) for line in (_INIT, _said(reply), *tail, {"type": "result", "subtype": "success", "is_error": False, "session_id": "s", "result": reply, **origin})]
+
+
+@pytest.mark.parametrize(("lines", "his", "quiet"), [
+    # A turn nothing says a task opened (a run's first, a typed prompt its stream never shows): shown.
+    (_turn(NO_REPLY, woken=False), {}, [False]),
+    # He wrote before the reply: shown, though a task's end opened the turn.
+    (_turn(NO_REPLY, woken=True), {1: "Are we done?"}, [False]),
+    # He wrote after it, while the turn was closing (a Stop hook running): that reply answered the task, not him.
+    (_turn(NO_REPLY, woken=True), {2: "Are we done?"}, [True]),
+    # More than the marker: shown whole.
+    (_turn(f"{NO_REPLY} The build failed.", woken=True), {}, [False]),
+    # Cut before its ending, the next turn following: nothing says who opened it, so it shows.
+    ([*_turn(NO_REPLY, woken=True)[:2], *_turn("Next.", woken=False)], {}, [False]),
+])
+def test_a_no_reply_he_may_be_owed_is_shown(lines, his, quiet):
+    events = _followed("owed", lines, his=his, unsaid=False)
+    assert [event.quiet for event in events if event.kind == "text" and event.text.startswith(NO_REPLY)] == quiet
 
 
 @pytest.mark.parametrize("watcher", ["mirror", "whole_read"])

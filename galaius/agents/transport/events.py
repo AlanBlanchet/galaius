@@ -470,9 +470,12 @@ class AgentEvent(OlderTokens, ContextGauge):
     #: structured output), not only a stop reason. Media execution must prefer this over an
     #: earlier free-form assistant block.
     final_text: bool = False
-    #: For a "text" or a "done": exactly `NO_REPLY`, ending a turn only « no reply » reports opened (`WakeReply`): read
+    #: For a "text" or a "done": exactly `NO_REPLY`, in a turn only its harness opened (`WakeReply`): read
     #: as no answer by every reader (no bubble, no notice, no last line). Left out when False.
     quiet: bool = Field(default=False, exclude_if=lambda value: not value)
+    #: For a "done" or "error": its program says a background task's end opened this turn (Claude Code's `result.origin`),
+    #: whatever lines precede it: a Bash task, a Monitor's event. Left out when False.
+    woken: bool = Field(default=False, exclude_if=lambda value: not value)
     #: When galaius FIRST OBSERVED this line, not when the agent produced it — vendor writes
     #: no timestamp, we watch the stream, so this is the one honestly-available clock. Lets a
     #: view tell a working agent from a stopped one, order a conversation, and fire a message
@@ -622,19 +625,37 @@ HARNESS_INPUT = ("<task-notification", "<system-reminder")
 
 
 class WakeReply:
-    """Marks `quiet` the `NO_REPLY` reply of each turn of run `run_id` that only its harness opened: every
-    message to it since its previous turn ended is a `Relation.REPORT` or a `HARNESS_INPUT` line (a background task's end),
-    no prompt typed. A turn its stream shows no opening for (a resume, a stream read from the middle) is never quiet:
-    shown, never hidden."""
+    """Marks `quiet` the `NO_REPLY` reply of each turn of run `run_id` that only its harness opened: since its previous
+    turn ended every message to it is a `Relation.REPORT` or a `HARNESS_INPUT` line, no prompt typed, or its program says
+    a background task's end opened it (`AgentEvent.woken`). That word comes with the turn's ending, so in a turn the
+    stream shows starting, a `NO_REPLY` reply nothing earlier decides is held, then given just before the ending: what a
+    reader following the events already has is never changed under it. A turn cut before its ending gives it as written
+    once the next one starts (shown, never hidden); one still open keeps it. A reply he wrote ahead of is never quiet."""
 
     def __init__(self, run_id: str) -> None:
         self.run_id = run_id
-        #: None: no message to it this turn yet; True: only « no reply » reports; False: anything else opened it.
+        #: None: no message to it this turn yet; True: only its harness opened it; False: anything else did.
         self.reports_only: bool | None = None
+        #: The stream showed this turn start and not end yet.
+        self.started = False
+        #: This turn's `NO_REPLY` replies whose opener only its ending says.
+        self.held: list[AgentEvent] = []
 
-    def mark(self, event: AgentEvent) -> AgentEvent:
-        quiet = event.kind in ("text", "done") and self.reports_only is True and event.text.strip() == NO_REPLY
-        if event.kind in ("done", "error", "cancelled"):
+    def mark(self, event: AgentEvent) -> tuple[AgentEvent, ...]:
+        """The events `event` lets a reader have, in order: none while it is held, held ones ahead of it once decided."""
+        silent = event.kind in ("text", "done") and event.text.strip() == NO_REPLY
+        if event.kind == "text" and silent and self.started and self.reports_only is None:
+            self.held.append(event)
+            return ()
+        ends = event.kind in ("done", "error", "cancelled")
+        by_task = ends and event.woken and (bool(self.held) or self.reports_only is None)
+        if silent and (self.reports_only is True or by_task):
+            event = event.model_copy(update={"quiet": True})
+        released: list[AgentEvent] = []
+        if ends or event.kind == "started":
+            released = [reply.model_copy(update={"quiet": True}) if by_task else reply for reply in self.held]
+            self.held, self.started = [], not ends
+        if ends:
             self.reports_only = None
         elif event.kind == "prompt":
             self.reports_only = False
@@ -642,10 +663,10 @@ class WakeReply:
             self.reports_only = self.reports_only is not False
         elif event.kind == "message" and event.to_run == self.run_id and event.from_run != self.run_id:
             self.reports_only = self.reports_only is not False and event.relation is Relation.REPORT
-        return event.model_copy(update={"quiet": True}) if quiet else event
+        return (*released, event)
 
     @classmethod
     def marked(cls, run_id: str, events: Iterable[AgentEvent]) -> Iterator[AgentEvent]:
-        """`events` of run `run_id`, in their stream's order, each reply of a quiet wake marked."""
+        """`events` of run `run_id`, in their stream's order, each reply of a quiet wake marked (`mark`)."""
         wake = cls(run_id)
-        return (wake.mark(event) for event in events)
+        return (given for event in events for given in wake.mark(event))

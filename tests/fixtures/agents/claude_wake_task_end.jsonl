@@ -1,0 +1,13 @@
+{"type": "system", "subtype": "init", "session_id": "s"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01LoMrY1Mdqgu5FCZzirsox5", "name": "Bash", "input": {"command": "sleep 12", "description": "Sleep 12 seconds in background", "run_in_background": true}}]}, "parent_tool_use_id": null, "session_id": "s"}
+{"type": "system", "subtype": "background_tasks_changed", "session_id": "s"}
+{"type": "system", "subtype": "task_started", "task_id": "bkbyr3c2b", "tool_use_id": "toolu_01LoMrY1Mdqgu5FCZzirsox5", "description": "Sleep 12 seconds in background", "session_id": "s"}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01LoMrY1Mdqgu5FCZzirsox5", "content": "Command running in background."}]}, "parent_tool_use_id": null, "session_id": "s"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "LANCE"}]}, "parent_tool_use_id": null, "session_id": "s"}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2, "result": "LANCE", "stop_reason": "end_turn", "session_id": "s"}
+{"type": "system", "subtype": "task_updated", "task_id": "bkbyr3c2b", "session_id": "s"}
+{"type": "system", "subtype": "task_notification", "task_id": "bkbyr3c2b", "tool_use_id": "toolu_01LoMrY1Mdqgu5FCZzirsox5", "status": "completed", "summary": "Background command \"Sleep 12 seconds in background\" completed (exit code 0)", "session_id": "s"}
+{"type": "system", "subtype": "background_tasks_changed", "session_id": "s"}
+{"type": "system", "subtype": "init", "session_id": "s"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "[no reply]"}]}, "parent_tool_use_id": null, "session_id": "s"}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1, "result": "[no reply]", "stop_reason": "end_turn", "origin": {"kind": "task-notification", "producer": "session-task"}, "session_id": "s"}

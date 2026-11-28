@@ -1,0 +1,6 @@
+{"type": "system", "subtype": "task_notification", "task_id": "bdpvyw0id", "tool_use_id": "toolu_01QMKkZJ7HUgChY6cUUDosBS", "status": "stopped", "summary": "Background shell command didn't finish before the previous session ended", "session_id": "s"}
+{"type": "system", "subtype": "init", "session_id": "s"}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 0, "result": "", "stop_reason": null, "origin": {"kind": "task-notification"}, "session_id": "s"}
+{"type": "system", "subtype": "init", "session_id": "s"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "FAIT"}]}, "parent_tool_use_id": null, "session_id": "s"}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1, "result": "FAIT", "stop_reason": "end_turn", "session_id": "s"}

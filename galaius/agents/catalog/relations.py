@@ -481,7 +481,8 @@ def closing_parts(events: Sequence[AgentEvent]) -> tuple[str, ...]:
     start, an end-of-turn check (a Stop hook's block) or a turn's ending closes, its last text, else that ending's text (a
     failed resume's reason too: it is why the run failed); a stretch's newest report
     listing a report's sections (`REPORT_SECTIONS`) comes before that last text. Text injected into a turn (a message read
-    at a step) closes no stretch. A quiet wake's reply (`AgentEvent.quiet`) says nothing."""
+    at a step) closes no stretch. A quiet wake's reply (`AgentEvent.quiet`) says nothing, nor does the ending of a woken
+    turn that answered nothing (its text names why the turn stopped)."""
     parts: dict[str, None] = {}
     said = sectioned = ""
     for event in (*events, None):
@@ -491,7 +492,7 @@ def closing_parts(events: Sequence[AgentEvent]) -> tuple[str, ...]:
             said = text
             if any(report_section(text, name) for name in REPORT_SECTIONS):
                 sectioned = text
-        elif event is not None and event.kind in ("done", "error") and not said:
+        elif event is not None and event.kind in ("done", "error") and not said and not (event.woken and event.kind == "done" and not event.final_text):
             said = (event.text or "").strip()
         if event is None or event.kind in ("started", "check", "done", "error"):
             for part in (sectioned, said) if sectioned != said else (said,):
