@@ -1369,8 +1369,8 @@ def test_a_reply_to_a_background_task_notification_is_quiet_and_the_notification
 
 
 def _wake_stream(name: str) -> list[str]:
-    """A recorded Claude headless stream of a run woken by its background tasks (`tests/fixtures/agents/claude_wake_<name>`)."""
-    return (TESTS / "fixtures" / "agents" / f"claude_wake_{name}.jsonl").read_text().splitlines()
+    """A recorded Claude headless stream of a run woken by its background tasks (`tests/fixtures/agents/wake/<name>`)."""
+    return (TESTS / "fixtures" / "agents" / "wake" / f"{name}.jsonl").read_text().splitlines()
 
 
 #: A message of his, a report owing no reply, and a message of his written on the run with no queue holding it.
@@ -1415,7 +1415,7 @@ def _followed(run_id: str, lines: list[str], sent: Mapping[int, dict] | None = N
     # The task ended between turns: its notification line, then the turn it opens (the shape of a web conversation's wake).
     ("task_end", ["LANCE"]),
     # It ended while the turn before was still writing: the next turn opens with no line of its own but its ending's word.
-    ("task_end_mid_turn", ["A short story about a lighthouse."]),
+    ("mid_turn", ["A short story about a lighthouse."]),
     # A Monitor's event wakes it with no notification line at all, then its end with one.
     ("monitor", ["LANCE"]),
     # A wake answered with words shows them.
@@ -1453,7 +1453,7 @@ def _turn(reply: str, woken: bool, tail: tuple[dict, ...] = ()) -> list[str]:
 def test_a_question_still_waiting_gets_no_woken_reply_under_it(answer):
     """A recorded web conversation: asked while a background task was pending, the message waits; the task ends and wakes a
     turn that never had it, then the next turn is handed it. The woken `NO_REPLY` is never said, whatever he is answered."""
-    lines = [line.replace('"Rome"', json.dumps(answer)) for line in _wake_stream("asked_while_waiting")]
+    lines = [line.replace('"Rome"', json.dumps(answer)) for line in _wake_stream("queued_question")]
     events = _followed("asked", lines, sent={7: _HIS}, handed={12}, unsaid=13)
     replies = [event for event in events if event.kind == "text"]
     assert [event.text for event in replies if not event.quiet][-2:] == ["LANCE", answer]
