@@ -74,6 +74,8 @@ function changedOnly<T>(suffix: string, parse: (text: string) => T): (() => T[])
     try {
       names = fs.readdirSync(dir).filter((n) => isRegistryFile(n) && n.endsWith(suffix) && !n.endsWith(".queue.json"));
     } catch {
+      if (held.size > 0) generation += 1;   // the folder went: what was kept of it goes too
+      held = new Map();
       return []; // no registry yet — nothing has been spawned
     }
     const next: typeof held = new Map();

@@ -99,6 +99,10 @@ test("the deduplicated messages are kept while no message file changed and follo
     assert.deepEqual(readAgentMessages().map((m: { text: string }) => m.text), ["one", "two"]);
     fs.unlinkSync(file);
     assert.deepEqual(readAgentMessages(), []);
+    fs.writeFileSync(file, line("three"));
+    assert.equal(readAgentMessages().length, 1);
+    fs.rmSync(directory, { recursive: true });   // the run folder gone: nothing is kept of it
+    assert.deepEqual(readAgentMessages(), []);
   } finally {
     if (previousHome === undefined) delete process.env.HOME;
     else process.env.HOME = previousHome;
