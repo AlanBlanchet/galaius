@@ -50,7 +50,7 @@ class Upkeep(Runs):
     deliver_seconds = 60
     #: How often the tray icon's presence is looked at (written only when it changed), and its run count read again.
     presence_seconds = 1.0
-    presence_runs_seconds = 5.0
+    presence_runs_seconds = 10.0
     #: How often the tray icon is looked for, and started again when it ended (`TrayLauncher.ensure`).
     tray_seconds = 60.0
     #: What the tray icon shows (`_present`), and the presence lock this runner holds once it took it.
@@ -197,6 +197,16 @@ class Upkeep(Runs):
             logger.warning("runs unreadable for the tray: %s", error)
             return before
 
+    #: How long a heartbeat reuses the GPUs it listed: a GPU does not come and go within a minute, and every beat (3 s) started `nvidia-smi`
+    #: (17 starts a minute from a 700 MB process, 2026-11-28).
+    accelerators_seconds = 60.0
+    _accelerated: tuple[float, list[dict[str, object]]] | None = None
+
+    def _accelerators(self) -> list[dict[str, object]]:
+        if self._accelerated is None or time.monotonic() - self._accelerated[0] >= self.accelerators_seconds:
+            self._accelerated = time.monotonic(), inventory.accelerators()
+        return [dict(item) for item in self._accelerated[1]]
+
     def _beat(self, connected: MachineConfig) -> dict[str, object]:
         """What every heartbeat says (the hello leaves before it): this PC's runtimes, resources, its file roots and
         agent settings as its machine file says NOW (a change made here reaches the server with the
@@ -206,7 +216,7 @@ class Upkeep(Runs):
         current = self._current_config(connected)
         build = BuildIdentity.installed()
         return {"build": build.model_dump(mode="json") if build is not None else None,
-                "console_windows": [shown.model_dump(mode="json") for shown in ConsoleWatch.recent()[-5:]], "runtimes": inventory.runtimes(current), "accelerators": inventory.accelerators(), "functions": inventory.functions(), "resources": inventory.resources(current.working_directory),
+                "console_windows": [shown.model_dump(mode="json") for shown in ConsoleWatch.recent()[-5:]], "runtimes": inventory.runtimes(current), "accelerators": self._accelerators(), "functions": inventory.functions(), "resources": inventory.resources(current.working_directory),
                 "file_roots": current.reported_file_roots(), "agent_settings": current.agent_state(self._settings_detail, self._settings_refused).model_dump(mode="json"),
                 "busy": self.busy()}
 

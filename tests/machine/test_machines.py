@@ -1422,3 +1422,18 @@ def test_a_signed_token_swap_is_taken_and_one_not_signed_by_the_current_token_is
     with pytest.raises(TokenSwapped):
         runner.take_token_swap(config, _signed(config, unsigned))
     assert runner.load().token.get_secret_value() == fresh
+
+
+def test_a_heartbeat_lists_the_gpus_once_a_minute_not_at_every_beat(monkeypatch: pytest.MonkeyPatch) -> None:
+    """2026-11-28: every beat (3 s) started `nvidia-smi` from the 700 MB runner process: 17 starts a minute for a list that never moves."""
+    from galaius.machine.connection.runner import MachineRunner
+
+    asked: list[int] = []
+    monkeypatch.setattr(inventory, "accelerators", lambda: asked.append(1) or [{"kind": "cuda", "name": "G", "memory_mb": 1}])
+    runner = MachineRunner.__new__(MachineRunner)
+    first = runner._accelerators()
+    first[0]["name"] = "changed by a caller"
+    assert runner._accelerators() == [{"kind": "cuda", "name": "G", "memory_mb": 1}] and len(asked) == 1
+    monkeypatch.setattr(MachineRunner, "accelerators_seconds", 0.0)
+    runner._accelerators()
+    assert len(asked) == 2
