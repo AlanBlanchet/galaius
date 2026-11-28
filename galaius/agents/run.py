@@ -403,6 +403,11 @@ def resume_model(run: reg.AgentRun, policy: Policy, env: dict[str, str], *, prov
     return resolve_model(step.unit.model, env, provider=provider, weights=policy.weights_for(run.agent))
 
 
+#: How long one login check gets, then its second try when the first did not complete: a loaded PC answers late (2026-11-28: load
+#: 51 on 12 cores, every Claude start refused while six runs worked on the same login).
+_LOGIN_CHECK_SECONDS = (10, 30)
+
+
 async def _unavailable(
     provider: AgentProvider, policy: Policy, *, permission_mode: str | None, images: bool,
     allowed_tools: list[str] | None, denied_tools: tuple[str, ...], env: dict[str, str],
@@ -460,7 +465,10 @@ async def _unavailable(
         try:
             # Claude Code's local auth check can take several seconds on a cold CLI start;
             # keep the provider's bounded probe budget instead of dropping a usable candidate.
-            auth_cache[key] = (await provider.authenticated(checked, timeout=10), provider.login(checked))
+            for patience in _LOGIN_CHECK_SECONDS:
+                if (signed_in := await provider.authenticated(checked, timeout=patience)) is not None:
+                    break
+            auth_cache[key] = (signed_in, provider.login(checked))
         except NotImplementedError:
             auth_cache[key] = (True, "")
     if auth_cache[key][0] is None:
@@ -1802,8 +1810,8 @@ async def run_agent(
     waits: dict[int, tuple[admission.Hold, ...]] = {}
     chosen_index = -1
     pending = deque([index for index in range(len(candidates)) if index not in noted] + sorted(noted, key=noted.__getitem__))   # every unit shut: the one reopening first is asked first
-    #: Candidates passed over only because this login was refused them before: asked again, once, when
-    #: nothing else started — the same never-a-veto rule as a quota note, at the cost of one refused start.
+    #: Candidates passed over only because this login was refused them before, or because its check did not complete: asked again,
+    #: once, when nothing else started — the same never-a-veto rule as a quota note, at the cost of one refused start.
     remembered: list[int] = []
     asking_again = False
     while pending or (chosen is None and remembered and not asking_again):
@@ -1890,6 +1898,10 @@ async def run_agent(
             quota.login_back(candidate.provider, subscription=candidate_pin_id)
         elif reason.code == "unauthenticated":
             quota.pause_login(candidate.provider, "login_lost", subscription=candidate_pin_id, said=reason.message)
+        elif reason.code == "auth_check_failed" and asking_again:
+            reason = None   # nothing else started and its login reads neither way: the vendor is asked, never « no candidate »
+        elif reason.code == "auth_check_failed":
+            remembered.append(index)
         if reason is None and not asking_again \
                 and (asked_again := quota.unsupported_until(candidate.provider, candidate.model, login=login)):
             remembered.append(index)

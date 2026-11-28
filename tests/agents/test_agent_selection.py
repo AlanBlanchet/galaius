@@ -533,8 +533,7 @@ async def test_every_candidate_unavailable_is_one_clear_failure(team, tmp_path):
     with pytest.raises(ModelUnavailable) as caught:
         await run_agent(None, "t", agent="tester", cwd=str(tmp_path), mesh=False)
     text = str(caught.value)
-    assert "beta/b-strong: cli_missing" in text and "alpha/a-mid: unauthenticated" in text
-    assert "alpha/a-weak: unauthenticated" in text
+    assert "1 cli_missing (beta/b-strong: " in text and "2 unauthenticated (alpha/a-mid, alpha/a-weak: " in text and "\n" not in text
     assert "install beta" in text and "sign in with its CLI" in text
 
 

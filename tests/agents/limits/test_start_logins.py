@@ -129,6 +129,23 @@ async def test_each_login_the_vendor_refuses_is_asked_once_then_the_start_waits_
     assert {hold.subscription for hold in paused.value.holds} == {None, spare.id} and len(paused.value.holds) == 2
 
 
+@pytest.mark.parametrize(("answers", "asked"), [
+    pytest.param((None, True), [10, 30], id="answers-on-the-second-try"),
+    pytest.param((None, None), [10, 30], id="never-completes"),
+])
+async def test_a_login_check_that_times_out_on_a_loaded_pc_never_ends_a_start(claude, monkeypatch: pytest.MonkeyPatch, answers: tuple[bool | None, ...], asked: list[int]) -> None:
+    """The member: load 51, `claude auth status` timed out, « No candidate » on every model while six runs worked on that login."""
+    heard: list[float] = []
+
+    async def authenticated(self, env, *, timeout):
+        heard.append(timeout)
+        return answers[min(len(heard), len(answers)) - 1]
+
+    monkeypatch.setattr(_Claude, "authenticated", authenticated)
+    run, _ = await claude()
+    assert run.status == "done" and heard == asked and not run.skipped
+
+
 async def test_the_login_a_person_asked_for_stays_while_its_vendor_runs_it(claude) -> None:
     picked = _login("a")
     _login("b")
