@@ -1510,9 +1510,10 @@ def _next_login_takes(spares: Mapping[str, Sequence[UUID | None]], candidate: re
 
 #: The most candidates a `no_candidate` refusal's record carries (`NoCandidate.skips`).
 _SKIPS_KEPT: int = next(bound.max_length for bound in NoCandidate.model_fields["skips"].metadata if hasattr(bound, "max_length"))
-#: What a `no_candidate` line says: its first reasons (the table's order), the first candidates of each and the start and end of the
-#: first one's words (a vendor's own can run to kilobytes; what to do closes them).
-_REASONS_SAID, _NAMES_SAID, _WHY_START, _WHY_END = 3, 2, 200, 120
+#: What a `no_candidate` line says, in the characters a spawn's place keeps (`spawn_line.Place.said`): its first reasons (the table's
+#: order), the first candidates of each and the first one's words, cut in their middle to fit (a vendor's own run to kilobytes; what
+#: to do closes them).
+_LINE_MAX, _REASONS_SAID, _NAMES_SAID = 500, 3, 2
 
 
 def _no_candidate(agent: str, skipped: Sequence[reg.SkippedCandidate]) -> ModelUnavailable:
@@ -1523,21 +1524,21 @@ def _no_candidate(agent: str, skipped: Sequence[reg.SkippedCandidate]) -> ModelU
         reasons.setdefault(entry.reason, []).append(index)
     firsts = {indexes[0] for indexes in reasons.values()}
     kept = sorted(firsts | set(itertools.islice((index for index in range(len(skipped)) if index not in firsts), max(_SKIPS_KEPT - len(firsts), 0))))
-    said = []
+    shown = []   # per reason said: its heading and its first candidate's words
     for reason, indexes in itertools.islice(reasons.items(), _REASONS_SAID):
         names = [f"{skipped[index].candidate.provider}/{skipped[index].candidate.model}" for index in indexes[:_NAMES_SAID]]
         if more := len(indexes) - len(names):
             names.append(f"+{more}")
-        why = " ".join((skipped[indexes[0]].message or "no details recorded").split())
-        if len(why) > _WHY_START + _WHY_END:
-            why = f"{why[:_WHY_START]} … {why[-_WHY_END:]}"
-        said.append(f"{len(indexes)} {reason} ({', '.join(names)}: {why})")
-    if left := len(reasons) - len(said):
-        said.append(f"+{left} other reasons")
+        shown.append((f"{len(indexes)} {reason} ({', '.join(names)}: ", " ".join((skipped[indexes[0]].message or "no details recorded").split())))
+    head = f"No candidate for {agent!r} can start on this machine: "
+    tail = f"; +{left} other reasons" if (left := len(reasons) - len(shown)) else ""
+    # The words' room, shared evenly: what the headings, their closing « ) » and the separators leave.
+    room = max((_LINE_MAX - len(head) - len(tail) - sum(len(heading) + 3 for heading, _ in shown)) // max(len(shown), 1), 20)
+    said = [f"{heading}{why if len(why) <= room else f'{why[:room // 2]}…{why[len(why) - (room - room // 2 - 1):]}'})" for heading, why in shown]
     return ModelUnavailable(
         NoCandidate(skips=tuple(PassedOverCandidate(provider=entry.candidate.provider, model=entry.candidate.model, reason=entry.reason, until=entry.until)
                                 for entry in (skipped[index] for index in kept))),
-        f"No candidate for {agent!r} can start on this machine: {'; '.join(said) or 'the ranked list is empty'}",
+        f"{head}{'; '.join(said) or 'the ranked list is empty'}{tail}"[:_LINE_MAX],
     )
 
 

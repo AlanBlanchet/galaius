@@ -17,6 +17,7 @@ from galaius.agents import run as run_module
 from galaius.agents.limits import quota, walk
 from galaius.agents.limits.admission import Paused
 from galaius.agents.limits.subscriptions import RunSubscription, Subscription
+from galaius.agents.policy import Policy
 from galaius.agents.run import ModelUnavailable, run_agent
 from galaius.agents.spawn_line import SpawnLine
 from galaius.agents.transport.events import RunCut
@@ -158,6 +159,8 @@ async def test_a_refusal_past_the_records_places_keeps_every_reason_and_says_it_
     """The member: 149 candidates passed over, `NoCandidate.skips` holds 64, the spawn died on the record's own validation."""
     install_provider(monkeypatch, _Codex())
     use_policy(monkeypatch, agents={"tester": "fixture-model"}, reasoning={"tester": "medium"}, providers={"codex": False})
+    # A PC whose policy sentence names a long path (macOS temporary folders): the line still fits what a spawn keeps.
+    monkeypatch.setattr(Policy, "off_sentence", lambda self, name: f"{name} is switched off in {'/a-long-folder' * 30}/policy.json; switch it on there")
     table = tuple(reg.LaunchCandidate(provider="codex", model=f"model-{index}", rank=index) for index in range(148))
     table += (reg.LaunchCandidate(provider="claude", model="fixture-model", rank=148),)
     monkeypatch.setattr(run_module, "rank_candidates", lambda rule, env, *, providers, weights="", role=None, among=None: table)
