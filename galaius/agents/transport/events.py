@@ -472,7 +472,7 @@ class AgentEvent(OlderTokens, ContextGauge):
     #: earlier free-form assistant block.
     final_text: bool = False
     #: For a "text" or a "done": exactly `NO_REPLY`, in a turn only its harness opened (`WakeReply`): read
-    #: as no answer by every reader (no bubble, no notice, no last line). Left out when False.
+    #: as no answer by every reader (no bubble, no notice, never a last line: its ending summarises « done »). Left out when False.
     quiet: bool = Field(default=False, exclude_if=lambda value: not value)
     #: For a "done" or "error": its program says a background task's end opened this turn (Claude Code's `result.origin`),
     #: whatever lines precede it: a Bash task, a Monitor's event. Left out when False.
@@ -516,7 +516,8 @@ class AgentEvent(OlderTokens, ContextGauge):
     def summary(self, viewer: str | None = None) -> str:
         """One line for a supervisor row — what this agent is doing right now."""
         if self.quiet:
-            return ""  # a quiet wake's reply and its ending: nothing for anyone to read
+            # Nothing for anyone to read, yet its turn ended: left silent, the line would fall back to the turn's start.
+            return "done" if self.kind == "done" else ""
         if self.kind == "tool":
             return f"using {self.tool}" if self.tool else "using a tool"
         if self.kind == "rate_limit":

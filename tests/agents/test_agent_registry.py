@@ -1335,7 +1335,8 @@ def test_a_quiet_wake_reply_is_marked_in_every_mirror_and_says_nothing(provider,
     said = [event for event in second if event.kind in ("text", "done") and event.text.strip() == reply.strip()]
     assert said and all(event.quiet is quiet for event in said)
     assert [event.get("quiet", False) for event in _mirrored_events("lead")] == [event.quiet for event in events]
-    assert all(event.summary(viewer="lead") == "" for event in said) is quiet  # never the record's last line
+    assert any(event.kind == "text" for event in said)
+    assert all(event.summary(viewer="lead") != reply.strip() for event in said) is quiet  # never the record's last line
     assert (reply.strip() in closing_parts(events)) is not quiet
 
 
@@ -1429,7 +1430,9 @@ def test_a_turn_only_a_task_end_opened_says_nothing_with_its_no_reply(stream, sh
     events = _followed("wake", _wake_stream(stream))
     assert [event.text for event in events if event.kind == "text" and not event.quiet] == shown
     assert NO_REPLY not in closing_parts(events) and closing_parts(events)[-1] == shown[-1]
-    assert all(event.summary(viewer="wake") == "" for event in events if event.text == NO_REPLY)
+    assert all(event.summary(viewer="wake") != NO_REPLY for event in events if event.text == NO_REPLY)
+    # Its record's last line: the run reads ended, never the woken turn's start (« session up in … », shown for its answer once its PC is off).
+    assert reg.StreamDigest.of("", events, viewer="wake").last == "done"
     assert Runs._final_text(events) == shown[-1]
 
 
@@ -1442,11 +1445,6 @@ def test_an_empty_woken_turn_leaves_his_answers_as_they_are():
     events = _followed("resumed", [*first, *_wake_stream("resume")], sent={len(first): {**_HIS, "text": "Answer exactly FAIT."}}, handed={len(first)})
     assert [event.text for event in events if event.kind == "text" and not event.quiet] == ["LANCE", "FAIT"]
     assert closing_parts(events) == ("LANCE", "FAIT")
-
-
-def _turn(reply: str, woken: bool, tail: tuple[dict, ...] = ()) -> list[str]:
-    origin = {"origin": {"kind": "task-notification", "producer": "session-task"}} if woken else {}
-    return [json.dumps(line) for line in (_INIT, _said(reply), *tail, {"type": "result", "subtype": "success", "is_error": False, "session_id": "s", "result": reply, **origin})]
 
 
 @pytest.mark.parametrize("answer", ["Rome", NO_REPLY])
@@ -2283,7 +2281,7 @@ def test_a_pid_given_to_another_process_is_neither_the_run_nor_stopped_with_it()
 # ── a listing reads a run's transcript only when it changed ────────────────────────────────────
 
 
-def _said(text: str) -> str:
+def _said_line(text: str) -> str:
     return json.dumps({"type": "assistant", "session_id": "s",
                        "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}) + "\n"
 
@@ -2308,14 +2306,14 @@ def test_a_listing_rereads_a_transcript_only_when_it_changed(monkeypatch, ended,
     register_run(pid=999999)
     reg._update_fields("r1", {"pid_started": 111})  # its process, told from a later one given its pid
     register_run("r0", pid=None)
-    reg.raw_events_path("r1").write_text(_said("working") + (_ENDED if ended else ""))
+    reg.raw_events_path("r1").write_text(_said_line("working") + (_ENDED if ended else ""))
     reg.list_runs()
 
     if change == "process_died":
         alive["value"] = False
     elif change == "stream_grew":
         with reg.raw_events_path("r1").open("a") as stream:
-            stream.write(_said("still working") + _ENDED)
+            stream.write(_said_line("still working") + _ENDED)
     elif change == "message_arrived":
         assert reg.record_message(from_run="r0", to_run="r1", text="one more thing")
     reads: list[str] = []
