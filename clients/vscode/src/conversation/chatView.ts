@@ -12,7 +12,7 @@
 import * as fs from "fs";
 import * as vscode from "vscode";
 
-import { AgentRun as StoredAgentRun, activityOf, readAgentRuns } from "../agents/agents";
+import { AgentRun as StoredAgentRun, activityOf, readAgentRuns, isRegistryFile, refreshLater } from "../agents/agents";
 import { chatFiles } from "./chatFiles";
 import { CHAT_COMMANDS } from "./chatCommands";
 import { agentLabel, conversationTitle, roleOf } from "../team/roster";
@@ -944,9 +944,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private watch(): void {
     this.stopWatching();
     try {
-      this.watcher = fs.watch(agentsDir(), () => {
-        clearTimeout(this.timer);
-        this.timer = setTimeout(() => this.render(), 250); // coalesce a burst of writes
+      this.watcher = fs.watch(agentsDir(), (_event, name) => {
+        if (name && !isRegistryFile(String(name))) return;
+        this.timer = refreshLater(this.timer, () => this.render(), 250); // coalesce a burst of writes
       });
     } catch (err) {
       this.log.appendLine(`chat view is not following changes: ${err}`);

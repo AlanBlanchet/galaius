@@ -7,7 +7,7 @@
 import * as fs from "fs";
 import * as vscode from "vscode";
 
-import { readAgentMessages, readAgentRuns } from "../agents/agents";
+import { readAgentMessages, readAgentRuns, isRegistryFile, refreshLater } from "../agents/agents";
 import { agentLabel } from "./roster";
 import { companyOf, readOrg } from "./org";
 import { scopeStore } from "../workspace/scopeStore";
@@ -27,9 +27,9 @@ export class SequencePanel {
     // hold rather than opening yet another beside your code.
     claimColumn("sequence", this.panel.viewColumn);
     try {
-      this.watcher = fs.watch(agentsDir(), () => {
-        if (this.timer) clearTimeout(this.timer);
-        this.timer = setTimeout(() => this.render(), 300);
+      this.watcher = fs.watch(agentsDir(), (_event, name) => {
+        if (name && !isRegistryFile(String(name))) return;
+        this.timer = refreshLater(this.timer, () => this.render(), 300);
       });
       this.watcher.on("error", () => {});
     } catch {

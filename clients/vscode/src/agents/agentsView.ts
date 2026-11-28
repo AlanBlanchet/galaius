@@ -8,13 +8,12 @@
  *  divided — "what is running in this repo" is the question being asked. Provider and model
  *  groupings exist too, and the mode persists so the panel opens the way you left it.
  *
- *  Read-only over the registry Python writes (galaius.agents.registry), refreshed by watching
- *  that directory. The extension never spawns or supervises anything itself.
+ *  Read-only over the registry Python writes (galaius.agents.registry). The extension never spawns or supervises
+ *  anything itself.
  *
  *  The pure decisions below are exported and unit-tested in agentsView.test.ts; the tree class
  *  needs the vscode module, which only exists inside the extension host.
  */
-import * as fs from "fs";
 import * as vscode from "vscode";
 
 import { AgentRun, readAgentActivity, readAgentRuns } from "./agents";
@@ -27,7 +26,6 @@ import {
   statusIcon,
 } from "./agentsFormat";
 import { runTooltip } from "../billing/billingPresentation";
-import { agentsDir } from "../paths";
 import { orgTree, readOrg } from "../team/org";
 import type { ScopeStore } from "../workspace/scopeStore";
 
@@ -51,18 +49,14 @@ export class Node extends vscode.TreeItem {
 export class AgentsProvider implements vscode.TreeDataProvider<Node>, vscode.Disposable {
   private readonly emitter = new vscode.EventEmitter<Node | undefined>();
   readonly onDidChangeTreeData = this.emitter.event;
-  private watcher: fs.FSWatcher | undefined;
-  private timer: ReturnType<typeof setTimeout> | undefined;
-  /** Ticks while anything runs, so elapsed times advance even with no registry write. */
-  private ticker: ReturnType<typeof setInterval> | undefined;
 
   /** Which workspace to show. Set once at activation; the panels share ONE store so the tree and
    *  the workplace can never disagree about which team you are looking at. */
   scopeStore: ScopeStore | undefined;
 
-  constructor(private readonly memento: vscode.Memento) {
-    this.watch();
-  }
+  /** No watch and no timer here: no view registers this tree, and a 2 s poll re-reading the whole registry for it held a
+   *  core per editor window (2026-11-26). A view that shows it asks for its own refresh. */
+  constructor(private readonly memento: vscode.Memento) {}
 
   get groupBy(): GroupBy {
     return this.memento.get<GroupBy>(GROUP_KEY, "project");
@@ -77,29 +71,8 @@ export class AgentsProvider implements vscode.TreeDataProvider<Node>, vscode.Dis
     this.emitter.fire(undefined);
   }
 
-  /** Watch the registry directory. It is created lazily by the first spawn, so it is made here —
-   *  otherwise the watch would silently attach to nothing and the panel would never update. */
-  private watch(): void {
-    try {
-      const dir = agentsDir();
-      fs.mkdirSync(dir, { recursive: true });
-      this.watcher = fs.watch(dir, () => {
-        if (this.timer) clearTimeout(this.timer);
-        this.timer = setTimeout(() => this.refresh(), 250); // debounce a burst of writes
-      });
-      this.watcher.on("error", () => {});
-    } catch {
-      /* unwatchable → the ticker below still refreshes while work is live */
-    }
-    this.ticker = setInterval(() => {
-      if (readAgentRuns().some((r) => r.status === "running")) this.refresh();
-    }, 2000);
-  }
-
   dispose(): void {
-    this.watcher?.close();
-    if (this.timer) clearTimeout(this.timer);
-    if (this.ticker) clearInterval(this.ticker);
+    this.emitter.dispose();
   }
 
   getTreeItem(node: Node): vscode.TreeItem {

@@ -10,7 +10,7 @@
 import * as fs from "fs";
 import * as vscode from "vscode";
 
-import { readAgentActivity, readAgentMessages, readAgentRuns } from "../agents/agents";
+import { readAgentActivity, readAgentMessages, readAgentRuns, isRegistryFile, refreshLater } from "../agents/agents";
 import { agentsDir } from "../paths";
 import { buildTeam } from "../team/teamState";
 import { selectedRunId } from "./workplaceMessage";
@@ -352,9 +352,9 @@ export class WorkplacePanel {
    *  meant to be watched, and a second of lag reads as a frozen picture. */
   private watch(): void {
     try {
-      this.watcher = fs.watch(agentsDir(), () => {
-        clearTimeout(this.timer);
-        this.timer = setTimeout(() => this.render(), 150);
+      this.watcher = fs.watch(agentsDir(), (_event, name) => {
+        if (name && !isRegistryFile(String(name))) return;
+        this.timer = refreshLater(this.timer, () => this.render(), 150);
       });
     } catch (err) {
       this.log.appendLine(`workplace is not following changes: ${err}`);

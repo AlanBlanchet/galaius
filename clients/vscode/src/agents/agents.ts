@@ -56,41 +56,115 @@ function alive(pid: number): boolean {
   }
 }
 
-/** Every run record on disk, oldest first. A corrupt record is skipped rather than hiding the
- *  rest — a half-written file during a crash must not blank the whole panel. */
-export function readAgentRuns(): AgentRun[] {
-  const dir = agentsDir();
-  let names: string[];
-  try {
-    names = fs.readdirSync(dir).filter((n) => n.endsWith(".json"));
-  } catch {
-    return []; // no registry yet — nothing has been spawned
-  }
-  const runs: AgentRun[] = [];
-  for (const name of names) {
+/** A registry file readers care about: never a hidden one (a mirror's own state files, tens of MB rewritten as it works;
+ *  a file still being written). */
+export const isRegistryFile = (name: string): boolean => !name.startsWith(".");
+
+/** A reader of every registry file ending `suffix`, in name order, each parsed once per change of the file (inode, size,
+ *  mtime) and held until it goes; one `parse` refuses is left out until it changes. The registry holds thousands of
+ *  finished runs whose files never change again: parsing them all on each repaint took 1.4 to 1.6 s (5,616 records,
+ *  64 MB, 2026-11-26). Only a listing and one `stat` per file are repeated. */
+function changedOnly<T>(suffix: string, parse: (text: string) => T): () => T[] {
+  let held = new Map<string, { stamp: string; value?: T }>();
+  return () => {
+    const dir = agentsDir();
+    let names: string[];
     try {
-      const raw = decodeAgentRun(olderWritten(JSON.parse(fs.readFileSync(path.join(dir, name), "utf8"))));
-      if (!agentFile(raw.run_id, ".json")) continue;
-      const run: AgentRun = {
-        ...raw,
-        run_id: raw.run_id,
-        provider: raw.provider,
-        name: raw.name,
-        status: runStatusOf(raw.status),
-      };
-      // Liveness is the one field the file cannot vouch for. The agent's own stream is consulted
-      // too: a detached run's exit code is written by nobody, so the probe alone called every
-      // finished agent a crash at the moment it succeeded.
-      run.status = livenessOf(
-        run.status,
-        run.pid,
-        typeof run.pid === "number" ? alive(run.pid) : false,
-        run.status === "running" ? streamEnded(run.run_id) : false,
-        // Did it ever say anything? A vanished run that wrote a transcript finished; one that
-        // wrote nothing is what a crash looks like. Only consulted when the stream cannot tell.
-        Boolean(run.last) || Boolean(run.usage?.output),
-      );
-      runs.push(run);
+      names = fs.readdirSync(dir).filter((n) => isRegistryFile(n) && n.endsWith(suffix) && !n.endsWith(".queue.json"));
+    } catch {
+      return []; // no registry yet — nothing has been spawned
+    }
+    const next: typeof held = new Map();
+    const values: T[] = [];
+    for (const name of names.sort()) {
+      const file = path.join(dir, name);
+      let entry: { stamp: string; value?: T };
+      try {
+        // Taken before the read: a write landing in between leaves an older stamp, so it is read again next time.
+        const info = fs.statSync(file);
+        const stamp = `${info.ino}:${info.size}:${info.mtimeMs}`;
+        const known = held.get(file);
+        if (known?.stamp === stamp) {
+          entry = known;
+        } else {
+          const text = fs.readFileSync(file, "utf8");
+          try {
+            entry = { stamp, value: parse(text) };
+          } catch {
+            entry = { stamp };
+          }
+        }
+      } catch {
+        continue; // gone or unreadable now: looked at again next time
+      }
+      next.set(file, entry);
+      if (entry.value !== undefined) values.push(entry.value);
+    }
+    held = next;
+    return values;
+  };
+}
+
+const runRecords = changedOnly(".json", (text): AgentRun => {
+  const raw = decodeAgentRun(olderWritten(JSON.parse(text)));
+  if (!agentFile(raw.run_id, ".json")) throw new Error("unsafe run id");
+  return { ...raw, run_id: raw.run_id, provider: raw.provider, name: raw.name, status: runStatusOf(raw.status) };
+});
+
+/** The status to show for a record. Liveness is the one field the file cannot vouch for, so a record saying it works is
+ *  probed on every read. The agent's own stream is consulted too: a detached run's exit code is written by nobody, so the
+ *  probe alone called every finished agent a crash at the moment it succeeded. */
+function shownStatus(run: AgentRun): RunStatus {
+  if (run.status !== "starting" && run.status !== "running") return run.status;
+  return livenessOf(
+    run.status,
+    run.pid,
+    typeof run.pid === "number" ? alive(run.pid) : false,
+    run.status === "running" ? streamEnded(run.run_id) : false,
+    // Did it ever say anything? A vanished run that wrote a transcript finished; one that
+    // wrote nothing is what a crash looks like. Only consulted when the stream cannot tell.
+    Boolean(run.last) || Boolean(run.usage?.output),
+  );
+}
+
+const firstPoked = new WeakMap<object, number>();
+
+/** A refresh asked `wait` ms after the latest of a burst of writes, never later than `maxWait` after the first: a run writing
+ *  faster than `wait` kept a panel from refreshing until it stopped (8 s measured, perf-critic 2026-11-28). `previous` is the
+ *  timer this returned last; the new one replaces it. */
+export function refreshLater(previous: ReturnType<typeof setTimeout> | undefined, run: () => void, wait: number, maxWait = 1000): ReturnType<typeof setTimeout> {
+  const now = Date.now();
+  let first = now;
+  if (previous) {
+    first = firstPoked.get(previous) ?? now;
+    clearTimeout(previous);
+  }
+  const timer: ReturnType<typeof setTimeout> = setTimeout(() => {
+    firstPoked.delete(timer);
+    run();
+  }, Math.max(0, Math.min(wait, first + maxWait - now)));
+  firstPoked.set(timer, first);
+  return timer;
+}
+
+let readThisTurn: AgentRun[] | undefined;
+
+/** Every run record on disk, oldest first. A corrupt record is skipped rather than hiding the
+ *  rest — a half-written file during a crash must not blank the whole panel. One read serves every caller of the same
+ *  synchronous turn (a chat refresh asked for it 4 to 8 times, 0.5 s of CPU each, perf-critic 2026-11-28); the next turn reads again. */
+export function readAgentRuns(): AgentRun[] {
+  if (readThisTurn === undefined) {
+    readThisTurn = readAllRuns();
+    setImmediate(() => { readThisTurn = undefined; });
+  }
+  return [...readThisTurn];
+}
+
+function readAllRuns(): AgentRun[] {
+  const runs: AgentRun[] = [];
+  for (const record of runRecords()) {
+    try {
+      runs.push({ ...record, status: shownStatus(record) });
     } catch {
       continue;
     }
@@ -291,38 +365,31 @@ export interface AgentMessage {
   at?: number | null;
 }
 
-/** Every recorded exchange, in file order. These are the edges a sequence view draws; without
- *  them the panel can only show monologues side by side. */
-export function readAgentMessages(): AgentMessage[] {
-  const dir = agentsDir();
-  let names: string[];
-  try {
-    names = fs.readdirSync(dir).filter((n) => n.endsWith(".messages.jsonl"));
-  } catch {
-    return [];
-  }
-  const seen = new Set<string>();
-  const out: AgentMessage[] = [];
-  for (const name of names.sort()) {
-    let text: string;
+const messageFiles = changedOnly(".messages.jsonl", (text): AgentMessage[] => {
+  const messages: AgentMessage[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
     try {
-      text = fs.readFileSync(path.join(dir, name), "utf8");
+      const raw = JSON.parse(line);
+      if (!raw?.from_run || !raw?.to_run) continue;
+      messages.push({ from_run: raw.from_run, to_run: raw.to_run, text: String(raw.text ?? "") });
     } catch {
       continue;
     }
-    for (const line of text.split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        const raw = JSON.parse(line);
-        if (!raw?.from_run || !raw?.to_run) continue;
-        const key = `${raw.from_run} ${raw.to_run} ${raw.text ?? ""}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        out.push({ from_run: raw.from_run, to_run: raw.to_run, text: String(raw.text ?? "") });
-      } catch {
-        continue;
-      }
-    }
+  }
+  return messages;
+});
+
+/** Every recorded exchange, in file order. These are the edges a sequence view draws; without
+ *  them the panel can only show monologues side by side. */
+export function readAgentMessages(): AgentMessage[] {
+  const seen = new Set<string>();
+  const out: AgentMessage[] = [];
+  for (const message of messageFiles().flat()) {
+    const key = `${message.from_run} ${message.to_run} ${message.text}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ ...message });
   }
   return out;
 }

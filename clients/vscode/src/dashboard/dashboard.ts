@@ -23,7 +23,7 @@ import {
   COMMON_CURRENCIES,
 } from "../billing/currency";
 import { scopeStore } from "../workspace/scopeStore";
-import { readAgentRuns, summarise, withDepth } from "../agents/agents";
+import { readAgentRuns, summarise, withDepth, isRegistryFile, refreshLater } from "../agents/agents";
 import { describeAge as describeBoardAge, readLeaderboard } from "./leaderboard";
 import { describeAge, ageSeconds, isLive, loadCatalog, seeingModels, type Catalog } from "./catalog";
 import { agentsDir, usageLogPathFor, GALAIUS_CONFIG_PATH } from "../paths";
@@ -208,7 +208,9 @@ export class DashboardPanel {
     for (const dir of dirs) {
       try {
         fs.mkdirSync(dir, { recursive: true });
-        const w = fs.watch(dir, () => this.scheduleRefresh());
+        const w = fs.watch(dir, (_event, name) => {
+          if (!name || isRegistryFile(String(name))) this.scheduleRefresh();
+        });
         w.on("error", () => {}); // a transient watch error must not crash the panel
         this.watchers.push(w);
       } catch {
@@ -230,8 +232,7 @@ export class DashboardPanel {
   }
 
   private scheduleRefresh(): void {
-    if (this.refreshTimer) clearTimeout(this.refreshTimer);
-    this.refreshTimer = setTimeout(() => this.refresh(), 300); // coalesce bursty appends
+    this.refreshTimer = refreshLater(this.refreshTimer, () => this.refresh(), 300); // coalesce bursty appends
   }
 
   static createOrShow(
